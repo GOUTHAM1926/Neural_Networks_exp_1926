@@ -40,6 +40,7 @@
 // under #ifdef __CUDA_ARCH__ — no need to re-declare them here.
 #include "ReductionOps.h"
 #include "ReductionUtils.h"  // For ReductionLayout
+#include "device/AllocatorRegistry.h"  // multi-CTA staging buffer alloc
 
 namespace OwnTensor {
 namespace cuda {
@@ -235,6 +236,11 @@ struct ReduceOp {
     const scalar_t*  __restrict__ src;
     out_scalar_t*    __restrict__ dst;
     int64_t step_stride;
+    // Multi-CTA staging (populated only when config.should_global_reduce()).
+    // cta_buf: num_outputs * ctas_per_output * sizeof(arg_t), uninitialised.
+    // semaphores: num_outputs ints, zero-initialised by host before launch.
+    void* cta_buf    = nullptr;
+    int*  semaphores = nullptr;
 };
 
 } // namespace detail
@@ -345,9 +351,13 @@ __global__ void unified_reduce_kernel(detail::ReduceOp<scalar_t, out_scalar_t, o
     if (output_idx >= (index_t)config.num_outputs) return;
 
     // ── 2. Map this thread to its starting input index ──
+    // input_mult[CTA] term: when ctas_per_output > 1, each block along grid.y
+    // owns a disjoint slice of the reduced axis. Without this term, all CTAs
+    // for a given output_idx would walk the same range (the multi-CTA bug).
     index_t idx =
         (index_t)threadIdx.x * config.input_mult[detail::GpuReduceConfig::BLOCK_X] +
-        (index_t)threadIdx.y * config.input_mult[detail::GpuReduceConfig::BLOCK_Y];
+        (index_t)threadIdx.y * config.input_mult[detail::GpuReduceConfig::BLOCK_Y] +
+        (index_t)blockIdx.y  * config.input_mult[detail::GpuReduceConfig::CTA];
 
     const index_t end    = (index_t)config.num_inputs;
     const index_t stride = (index_t)config.step_input;
@@ -436,9 +446,54 @@ __global__ void unified_reduce_kernel(detail::ReduceOp<scalar_t, out_scalar_t, o
     if (config.should_block_y_reduce())
         value = block_y_reduce(value, op.ops, shared_memory);
 
-    // ── 6. Write output (only the designated leader thread) ──
+    // ── 6. Write output ──
     bool is_leader = (!config.should_block_x_reduce() || threadIdx.x == 0) &&
                      (!config.should_block_y_reduce() || threadIdx.y == 0);
+
+    // ── 6a. Multi-CTA path: stage partial → atomic last-CTA detect → combine + store ──
+    // Mirrors PyTorch's ReduceOp::global_reduce (aten/src/ATen/native/cuda/Reduce.cuh).
+    // Layout (matches PT's staging_memory_offset when block_x_reduce is active):
+    //   cta_buf slot      = blockIdx.y + blockIdx.x * gridDim.y     (size: gridDim.x * gridDim.y)
+    //   semaphores slot   = blockIdx.x                              (size: gridDim.x, zero-init)
+    if (config.should_global_reduce()) {
+        arg_t* cta_buf = reinterpret_cast<arg_t*>(op.cta_buf);
+
+        // (1) per-CTA leader writes its partial into the staging buffer
+        if (is_leader) {
+            index_t slot = (index_t)blockIdx.y + (index_t)blockIdx.x * (index_t)gridDim.y;
+            cta_buf[slot] = value;
+        }
+        __threadfence();   // partial must be globally visible before semaphore bump
+        __syncthreads();
+
+        // (2) last-CTA detection: one atomicAdd per output-column tile (blockIdx.x)
+        __shared__ bool s_is_last;
+        if (threadIdx.x == 0 && threadIdx.y == 0) {
+            int prev = atomicAdd(&op.semaphores[blockIdx.x], 1);
+            s_is_last = (prev == config.ctas_per_output - 1);
+        }
+        __syncthreads();
+        if (!s_is_last) return;
+
+        // (3) last CTA reduces the cpo partials sequentially and writes dst.
+        // One thread does the combine — cpo is small (typically <= 64).
+        if (threadIdx.x == 0 && threadIdx.y == 0) {
+            __threadfence();   // acquire pattern after the atomic
+            arg_t combined = op.ops.identity();
+            for (int i = 0; i < config.ctas_per_output; i++) {
+                index_t slot = (index_t)i + (index_t)blockIdx.x * (index_t)gridDim.y;
+                combined = op.ops.combine(combined, cta_buf[slot]);
+            }
+            auto final_val = op.ops.project(combined);
+            if constexpr (std::is_same_v<out_scalar_t, __half>)
+                op.dst[output_idx] = from_float<out_scalar_t>(static_cast<float>(final_val));
+            else
+                op.dst[output_idx] = static_cast<out_scalar_t>(final_val);
+        }
+        return;
+    }
+
+    // ── 6b. Single-CTA path (unchanged): leader writes dst directly ──
     if (is_leader) {
         auto final_val = op.ops.project(value);
 
@@ -478,6 +533,22 @@ inline void launch_reduce_kernel(
     op.dst = dst;
     op.step_stride = step_stride;
 
+    // Multi-CTA staging: allocate cta_buf (uninit) and semaphores (zero-init).
+    // Sized exactly like PyTorch's: num_outputs*ctas_per_output accumulators and
+    // num_outputs ints. Uses the caching allocator so repeated launches reuse
+    // the same blocks — no per-call cudaMalloc/cudaFree.
+    using arg_t = decltype(ops.identity());
+    Allocator* scratch = nullptr;
+    if (config.should_global_reduce()) {
+        scratch = AllocatorRegistry::get_caching_allocator();
+        const dim3 g = config.grid();
+        size_t cta_bytes = sizeof(arg_t) * static_cast<size_t>(g.x) * static_cast<size_t>(g.y);
+        size_t sem_bytes = sizeof(int)   * static_cast<size_t>(g.x);
+        op.cta_buf    = scratch->allocate(cta_bytes);
+        op.semaphores = reinterpret_cast<int*>(scratch->allocate(sem_bytes));
+        cudaMemsetAsync(op.semaphores, 0, sem_bytes, stream);
+    }
+
     const int nt = config.num_threads;
 
     // Dispatch on Path at compile time + num_threads for launch_bounds.
@@ -509,6 +580,13 @@ inline void launch_reduce_kernel(
     }
 
     #undef LAUNCH_KERNEL
+
+    // Return scratch blocks to the caching allocator. The allocator pools them
+    // for reuse on the next launch, so this is essentially free.
+    if (scratch) {
+        scratch->deallocate(op.cta_buf);
+        scratch->deallocate(op.semaphores);
+    }
 }
 
 } // namespace cuda
