@@ -2,9 +2,4 @@
 
 This repository contains experiments with neural networks using custom tensor and autograd libraries aimed to create a deep learning framework from scratch with no outer dependencies (no cublas or other nvidia libraries) using just cpp and cuda (custom C++ and cuda kernels for all types of operations including own  custom matmul library from scratch) ,enabling for all datatypes better than pytorch/ tensorflow and other  frameworks efficient training stack ... .  
 
-```
-
-
-
-## Author
-Goutham_Reddy_K_1926.
+- Goutham_Reddy_K_1926  ... .
