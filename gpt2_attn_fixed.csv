@@ -1,2 +1,0 @@
-step,loss,val_loss,lr,grad_norm,dt_ms,tok_per_sec
-19,8.186974,8.126839,0.000064,1.410145,967704.793026,67.723133

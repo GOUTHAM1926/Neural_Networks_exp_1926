@@ -81,11 +81,7 @@ __device__ __host__ inline uint16_t float_to_bfloat16(float f) {
         }
     }
 
-    // Overflow, clamp to Infinity
-    if (exponent > 0x8E) {  // exponent > 142 decimal (127+15)
-        return static_cast<uint16_t>((sign >> 16) | 0x7F80u);
-    }
-
+   
     // Normal rounding and truncation
     uint32_t lsb = (u >> 16) & 1u;
     uint32_t rounding_bias = 0x7FFFu;

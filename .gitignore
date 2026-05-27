@@ -90,7 +90,13 @@ checkpoints/
 # =========================
 BluTrain/
 BluTrain_new/
+BluTrain_best_precision/
 final_merge_conflict_fix/
+
+# =========================
+# Third-party embedded git repos (NVIDIA CUTLASS clone — not a submodule)
+# =========================
+cutlass/
 
 # =========================
 # Gradient dump folders (large binary parameter dumps, multi-GB)
