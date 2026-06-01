@@ -26,21 +26,24 @@
 
 *(This section documents my deep-dive into the GPT-2 block architecture, understanding exactly how the data flows through the 4 linear layers, how Q, K, and V are formed, and where the GELU activation sits, before analyzing the bias gradients.)*
 
-GPT-2 is built like a stack. In the 124M parameter version, there are **12 identical Transformer Blocks** stacked on top of each other. The data goes into Block 1, comes out, and feeds into Block 2, continuing until it reaches Block 12. 
+GPT-2 is built like a stack. In the 124M parameter version, there are **12 identical Transformer Blocks** stacked on top of each other. The data goes into Block 1, comes out, and feeds into Block 2, continuing until it reaches Block 12.
 
 Inside each block, there are **4 Linear Layers**. A Linear Layer is a specific mathematical operation: `Output = (Input * Weights) + Bias`. Let's walk through them step-by-step.
 
 ### 1.1 Layer A: Attention Projection (`c_attn`)
 
 The input arrives from the Layer Normalization at the start of the block.
+
 - **Input Shape**: `[16, 1024, 768]` (16 batches, 1024 words, 768 numbers per word).
 
 The goal of this layer is to project the 768 numbers into a much larger list of 2304 numbers to prepare for the Attention math.
+
 - **Weights (`w`)**: `[768, 2304]`
 - **Bias (`b`)**: `[2304]`
 - **Operation**: `[16, 1024, 768] * [768, 2304] = [16, 1024, 2304]`
 
-**The Chop and The Heads**: 
+**The Chop and The Heads**:
+
 1. We take the `[16, 1024, 2304]` output and chop it into 3 equal piles: Q (Query), K (Key), and V (Value). Each pile is `[16, 1024, 768]`.
 2. We then split each 768 into 12 "heads" of 64 numbers. The shape becomes `[16, 1024, 12, 64]`.
 3. The Multi-Head Attention math runs: `(Softmax(Q * K) * V)`. This consumes the separated Q, K, V tensors. The output is still `[16, 1024, 12, 64]`.
@@ -49,6 +52,7 @@ The goal of this layer is to project the 768 numbers into a much larger list of 
 ### 1.2 Layer B: Attention Output (`c_proj`)
 
 After the heads are glued back together, the 768 numbers are just "sitting next to each other" without being fully integrated. Layer B mixes them.
+
 - **Input**: The glued attention output `[16, 1024, 768]`.
 - **Weights (`w`)**: `[768, 768]`
 - **Bias (`b`)**: `[768]`
@@ -59,6 +63,7 @@ This completes the Attention half of the block. The data then undergoes a Residu
 ### 1.3 Layer C: MLP Expansion (`c_fc`)
 
 This layer starts the Feed-Forward network. Its goal is to "blow up" the data into a much larger space so the model can compute more complex patterns.
+
 - **Input**: `[16, 1024, 768]`
 - **Weights (`w`)**: `[768, 3072]`
 - **Bias (`b`)**: `[3072]`
@@ -67,18 +72,21 @@ This layer starts the Feed-Forward network. Its goal is to "blow up" the data in
 ### 1.4 The GELU Activation
 
 The neural network needs non-linearity to learn complex rules. We apply the GELU (Gaussian Error Linear Unit) function right here in the middle of the MLP.
-- It takes the `[16, 1024, 3072]` tensor, bends the numbers mathematically, and outputs the exact same shape `[16, 1024, 3072]`. 
+
+- It takes the `[16, 1024, 3072]` tensor, bends the numbers mathematically, and outputs the exact same shape `[16, 1024, 3072]`.
 - **Important**: GELU is only applied here, in the middle of the MLP. There is no activation function after Layer D.
 
 ### 1.5 Layer D: MLP Contraction (`c_proj`)
 
 The final layer shrinks the data back down to its original size so it can move on to the next block.
+
 - **Input**: The GELU output `[16, 1024, 3072]`.
 - **Weights (`w`)**: `[3072, 768]`
 - **Bias (`b`)**: `[768]`
 - **Operation**: `[16, 1024, 3072] * [3072, 768] = [16, 1024, 768]`.
 
 **Totals across the model**:
+
 - 4 Linear Layers per block × 12 blocks = **48 total Linear Layers** (and 48 bias gradients to calculate).
 - 2 MLP layers per block × 12 blocks = **24 total MLP layers**.
 - 1 GELU per block × 12 blocks = **12 total GELU operations**.
