@@ -77,7 +77,7 @@ endif
 # value from `nvidia-smi --query-gpu=compute_cap`.
 SM_ARCH ?= 86
 
-CXXFLAGS = -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mavx512fim -mfma -mf16c $(FTIME_FLAG)
+CXXFLAGS = -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mfma -mf16c $(FTIME_FLAG)
 NVCCFLAGS = -std=c++17 -Xcompiler="-fPIC" -arch=sm_$(SM_ARCH) --use_fast_math  -O3 --expt-relaxed-constexpr 
 
 # =============================================================================

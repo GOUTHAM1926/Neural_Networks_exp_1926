@@ -148,7 +148,7 @@ falls back to `.contiguous()` here.
 
 ---
 
-## 6. Colleague's Packed SDPA — the layout-level fix
+## 6. Colleague's(kathir's) Packed SDPA — the layout-level fix
 
 Instead of trying to make the merge a free view, the trick is to **never
 produce the layout that needs merging in the first place**. The kernel reads
