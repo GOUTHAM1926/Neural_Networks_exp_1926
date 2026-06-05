@@ -78,12 +78,14 @@ checkpoints/
 *.ckpt
 
 # =========================
-# Nsight Systems / profiling reports
+# Nsight Systems / Nsight Compute profiling reports
 # =========================
 *.nsys-rep
 *.qdrep
 *.qdstrm
 *.sqlite
+*.ncu-rep
+*.ncu-proj
 
 # =========================
 # BluTrain working dirs (not part of this repo — separate trees)
