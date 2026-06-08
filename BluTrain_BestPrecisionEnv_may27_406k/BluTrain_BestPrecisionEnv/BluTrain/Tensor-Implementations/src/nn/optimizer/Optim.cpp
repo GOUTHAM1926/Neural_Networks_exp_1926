@@ -871,10 +871,32 @@ Optimizer::Optimizer(const std::vector<Tensor>& params) : params_(params) {
 }
 
 void Optimizer::zero_grad() {
+   // Fast path: every GPU-resident grad (any dtype) goes into one multi-tensor
+   // launch that zeros bytes via uint4 stores. Collapses N per-parameter
+   // cudaMemsetAsync calls into ~ceil(N/48) kernel launches. For GPT-2 (148
+   // params) that's 4 launches per zero_grad() instead of 148.
+   //
+   // Dtype-agnostic: works for FP32 / FP16 / BF16 / int / complex because
+   // numeric zero is all-zero bytes for every type we use. CPU-resident grads
+   // still use the per-param path.
+   std::vector<cuda::ZeroTensorInfo> gpu_grads;
+   gpu_grads.reserve(params_.size());
+
    for (auto& p : params_) {
-       if (p.requires_grad() && p.has_grad()) {
+       if (!p.requires_grad() || !p.has_grad()) continue;
+
+       if (p.device().is_cuda()) {
+           gpu_grads.push_back({
+               p.grad(),
+               static_cast<int64_t>(p.grad_nbytes())
+           });
+       } else {
            p.zero_grad();
        }
+   }
+
+   if (!gpu_grads.empty()) {
+       cuda::multi_tensor_zero_cuda(gpu_grads);
    }
 }
 

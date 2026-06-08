@@ -407,8 +407,8 @@ static void launch_layer_norm_backward(
     const T* grad_y, const T* x, const float* mean, const float* rstd, const T* gamma,
     T* grad_x, float* grad_gamma, float* grad_beta, int rows, int cols) {
     if (grad_gamma != nullptr || grad_beta != nullptr) {
-        cudaMemset(grad_gamma, 0, cols * sizeof(float));
-        cudaMemset(grad_beta, 0, cols * sizeof(float));
+        cudaMemsetAsync(grad_gamma, 0, cols * sizeof(float), 0);
+        cudaMemsetAsync(grad_beta,  0, cols * sizeof(float), 0);
         dim3 threads(32, 8);
         int bx = (cols+31)/32, by = std::max(1, std::min(32, 128/bx));
         ln_backward_gamma_beta_kernel<T><<<dim3(bx,by), threads>>>(grad_y, x, mean, rstd, grad_gamma, grad_beta, rows, cols);
@@ -487,7 +487,7 @@ template<typename T>
 static void launch_rms_norm_backward(const T* gy, const T* x, const float* rstd, const T* gamma,
     T* gx, float* gg, int rows, int cols) {
     if (gg) {
-        cudaMemset(gg, 0, cols*sizeof(float));
+        cudaMemsetAsync(gg, 0, cols*sizeof(float), 0);
         dim3 threads(32,8); int bx = (cols+31)/32, by = std::max(1, std::min(64, 512/bx));
         rms_backward_gamma_kernel<T><<<dim3(bx,by), threads>>>(gy, x, rstd, gg, rows, cols);
     }

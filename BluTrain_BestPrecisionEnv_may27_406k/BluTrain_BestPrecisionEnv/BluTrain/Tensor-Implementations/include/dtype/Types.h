@@ -81,10 +81,10 @@ __device__ __host__ inline uint16_t float_to_bfloat16(float f) {
         }
     }
 
-    // Overflow, clamp to Infinity
-    if (exponent > 0x8E) {  // exponent > 142 decimal (127+15)
-        return static_cast<uint16_t>((sign >> 16) | 0x7F80u);
-    }
+    // NOTE: bfloat16 shares fp32's 8-bit exponent, so its range is identical
+    // to fp32 (~3.4e38). Any finite fp32 value is representable in bf16 — there
+    // is NO overflow to clamp. (The old `exponent > 0x8E` clamp wrongly flushed
+    // every |x| >= 2^16 to Inf; that was an fp16-style guard mis-applied to bf16.)
 
     // Normal rounding and truncation
     uint32_t lsb = (u >> 16) & 1u;

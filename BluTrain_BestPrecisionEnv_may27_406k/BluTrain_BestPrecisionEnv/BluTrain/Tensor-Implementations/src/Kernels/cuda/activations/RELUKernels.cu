@@ -14,7 +14,8 @@ __global__ void relu_forward_kernel(
 
     for (int64_t i = idx; i < numel; i += stride) {
         float val = to_float(input[i]);
-        output[i] = from_float<T>(val > 0.0f ? val : 0.0f);
+        // Branch-free ReLU: (x + |x|) * 0.5 — propagates NaN unlike the ternary form
+        output[i] = from_float<T>((val + fabsf(val)) * 0.5f);
     }
 }
 
@@ -30,7 +31,9 @@ __global__ void relu_backward_kernel(
     for (int64_t i = idx; i < numel; i += stride) {
         float val = to_float(input[i]);
         float grad = to_float(grad_output[i]);
-        grad_input[i] = from_float<T>(val > 0.0f ? grad : 0.0f);
+        // Branch-free mask: (val>0) → {0.f,1.f}, then grad * mask
+        float mask = static_cast<float>(val > 0.0f);
+        grad_input[i] = from_float<T>(grad * mask);
     }
 }
 
