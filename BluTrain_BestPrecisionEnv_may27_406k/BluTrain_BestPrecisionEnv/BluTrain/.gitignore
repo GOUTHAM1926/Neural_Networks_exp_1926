@@ -1,0 +1,114 @@
+_runner
+data/
+build/
+checkpoints/
+lib/
+dist/lib/
+dist/build/
+Training_logs/
+
+
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+*.png
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# debug information files
+*.dwo
+
+# Global
+*.vscode
+local_test
+doc
+
+
+.log
+*.csv
+.gdb*
+*.patch
+*.nsys*
+*.json
+_runner
+_runner_
+.cursorrules
+.windsurfrules
+
+./snippet_runner
+snippet_runner
+*.bin
+*.py
+*.png
+*.md
+*.ckpt
+.cache
+*.sqlite
+log/
+logs/
+Training-Logs/
+Training_Logs/
+Track_Logs/
+*.npy
+*.pt
+checkpoint/
+Checkpoint/
+Checkpoints/
+.ipynb
+data/
+Data/
+DATA/
+Plots/
+Track_Logs/
+Track_logs/
+*.json
+_runner
+_runner_
+*.txt
+*.ipynb
+*_runner_
+*_runner
+
+
+
+
+
+
+
+
+
+

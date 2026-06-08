@@ -51,6 +51,7 @@ this is a giant grid of numbers, a tensor of shape `[50304, 768]`, it has 50304 
 I verified this by looking at the exact code in both our C++ script and PyTorch,
 
 in `fullgpt.py` (PyTorch), the initialization is:
+
 ```python
 def _init_weights(self, module):
     if isinstance(module, nn.Embedding):
@@ -58,6 +59,7 @@ def _init_weights(self, module):
 ```
 
 in `gpt2_fmha_ddp.cpp` (our C++ script), the initialization is:
+
 ```cpp
 wte.weight = init_rng_.normal(Shape{{vocab_size, n_embd}}, 0.02f);
 ```
@@ -125,13 +127,13 @@ for GPT-2 124M which normally has around 162 million parameters, removing 38.6 m
 
 ### 1.5 How gradient accumulation works with weight tying
 
-I had a doubt here: if both the entrance (embedding lookup) and the exit (matmul with transpose) use the same `wte.weight` tensor, then during the backward pass, the gradient `dW` must accumulate contributions from both paths,
+if both the entrance (embedding lookup) and the exit (matmul with transpose) use the same `wte.weight` tensor, then during the backward pass, the gradient `dW` must accumulate contributions from both paths,
 
 ```
 dW = (embedding backward path contribution) + (LM head matmul backward path contribution)
 ```
 
-the embedding path produces a contiguous gradient of shape `[50304, 768]`, the LM head path computes the gradient of the transposed view so it produces a gradient of shape `[768, 50304]` which must be transposed back to `[50304, 768]` before adding to `dW`, and this transpose operation during the backward pass is exactly where the bug I am documenting originated
+the embedding path produces a contiguous gradient of shape `[50304, 768]`, the LM head path computes the gradient of the transposed view so it produces a gradient of shape `[768, 50304]` which must be transposed back to `[50304, 768]` before adding to `dW`, and this transpose operation during the backward pass is exactly where the bug was !
 
 ### 1.6 Memory savings — permanent vs temporary gradients
 
@@ -271,6 +273,7 @@ race condition in the reduction kernel).
 But at the bottom of the document, they noted a second, separate issue:
 
 > **Not Yet Done**
+>
 > - [ ] Investigate the **separate `wte.weight` issue** — cpp/py ratio ≈ 1/5760
 >   (essentially zero). Looks like weight tying: in C++ `GPT::forward` the
 >   LM-head matmul uses `autograd::transpose(wte.weight)` and the gradient
@@ -361,13 +364,16 @@ gradient of `p[i]`. **No stride metadata. No layout check.**
 ### Putting it together — the scramble
 
 For `wte.weight` (contiguous `[50304, 768]`, strides `[768, 1]`):
+
 - `p[k]` is the logical entry at `(row = k/768, col = k%768)`
 
 For the strided gradient storage S (physically `[768, 50304]` from
 TransposeBackward):
+
 - `g[k] = S[k]` is the gradient of the logical entry at `(row' = k%50304, col' = k/50304)`
 
 So when the optimizer does `p[k] -= lr * g[k]`:
+
 - It applies the gradient computed for word `(k%50304, k/50304)`
 - To the parameter of word `(k/768, k%768)`
 
@@ -870,6 +876,7 @@ For each element pair, what's the typical scaling? Median across all elements.
 ### Our two bugs had different fingerprints
 
 **Weight tying bug (wte.weight)** = scramble fingerprint:
+
 - L2 norm ratio: 1.0006 (matches PyTorch magnitude)
 - cosine: 0.001 (random direction)
 - element ratio: 1/3472 to 1/5760 (per-element values bear no relationship)
@@ -881,6 +888,7 @@ larger, some 100,000× smaller, the median of these random pairings happened
 to be around 1/5760.
 
 **Reduction bug (biases)** = uniform under-scale fingerprint:
+
 - L2 norm ratio: 0.06 / 0.17 / 0.20 depending on layer (= 1/cpo for each shape)
 - cosine: 1.0 (same direction, just shrunk)
 - element ratio: matches L2 ratio (each element uniformly scaled by same factor)
@@ -892,6 +900,7 @@ only 1 of 17 CTAs' partial work survived the race.
 ### After both fixes
 
 Both bugs now show:
+
 - L2 norm ratio ≈ 1.000003 (within fp32 noise)
 - cosine ≈ 1.000000 (perfect direction match)
 - element ratio ≈ 1.000000 (each element matches)

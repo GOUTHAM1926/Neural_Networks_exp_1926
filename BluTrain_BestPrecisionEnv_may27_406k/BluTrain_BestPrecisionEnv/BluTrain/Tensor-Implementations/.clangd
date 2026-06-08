@@ -1,0 +1,7 @@
+CompileFlags:
+  Add:
+    - -DWITH_CUDA
+    - -std=c++20
+    - -Iinclude
+    - -I/usr/local/cuda/include
+    - -fopenmp

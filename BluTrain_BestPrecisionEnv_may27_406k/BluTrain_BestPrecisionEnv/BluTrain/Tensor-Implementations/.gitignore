@@ -1,0 +1,82 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# debug information files
+*.dwo
+
+# Global
+*.vscode
+local_test
+doc
+
+# Local
+Log.md 
+Syntax.md
+sleef/
+Trigonometryfiles/
+CUDA_Computation_Tests
+*.tldr
+currently_working_on/
+misc_files/
+ImplLogs/
+Data-Parallel-DP/
+data2/
+.log
+.csvdata/
+docu/
+.log
+*.csv
+.gdb*
+*.patch
+*.nsys*
+./snippet_runner
+snippet_runner
+*.bin
+*.py
+*.png
+snippet_runner
+*.md
+*.ckpt
+.cache
+*.sqlite
+*.pt
+*.pyc
+*.pyo
+*.blas_backend
+.blas_backend

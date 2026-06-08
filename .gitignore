@@ -89,16 +89,23 @@ checkpoints/
 
 # =========================
 # BluTrain working dirs (not part of this repo — separate trees)
+# Anchored to repo root with leading '/' so they DON'T match the nested
+# BluTrain/ inside BluTrain_BestPrecisionEnv_may27_406k (which we DO track).
 # =========================
-BluTrain/
-BluTrain_new/
-BluTrain_best_precision/
-final_merge_conflict_fix/
+/BluTrain/
+/BluTrain_new/
+/BluTrain_best_precision/
+/final_merge_conflict_fix/
 
 # =========================
-# Third-party embedded git repos (NVIDIA CUTLASS clone — not a submodule)
+# Third-party embedded git repos (clones for study — not submodules)
 # =========================
 cutlass/
+triton/
+rocBLAS/
+Tensile/
+DeepGEMM/
+ThunderKittens/
 
 # =========================
 # Gradient dump folders (large binary parameter dumps, multi-GB)
@@ -138,4 +145,29 @@ gpt2_*.txt
 Resolving*.md
 HANDOFF.md
 output.md
+
+# =========================
+# BluTrain_BestPrecisionEnv_may27_406k — track SOURCE only.
+# Heavy artifacts (checkpoints ~1.4GB ea, model/data .bin 95-475MB,
+# build objects, logs, profiles) stay local; re-fetch on the B300 box.
+# =========================
+BluTrain_BestPrecisionEnv_may27_406k/**/checkpoints/
+BluTrain_BestPrecisionEnv_may27_406k/**/checkpoints_may26/
+BluTrain_BestPrecisionEnv_may27_406k/**/*.ckpt
+BluTrain_BestPrecisionEnv_may27_406k/**/*.bin
+BluTrain_BestPrecisionEnv_may27_406k/**/*.pt
+BluTrain_BestPrecisionEnv_may27_406k/**/*.pth
+BluTrain_BestPrecisionEnv_may27_406k/**/*.npy
+BluTrain_BestPrecisionEnv_may27_406k/**/lib/
+BluTrain_BestPrecisionEnv_may27_406k/**/build/
+BluTrain_BestPrecisionEnv_may27_406k/**/log/
+BluTrain_BestPrecisionEnv_may27_406k/**/Training_logs/
+BluTrain_BestPrecisionEnv_may27_406k/**/nsys_logs/
+BluTrain_BestPrecisionEnv_may27_406k/**/*.nsys-rep
+BluTrain_BestPrecisionEnv_may27_406k/**/*.ncu-rep
+BluTrain_BestPrecisionEnv_may27_406k/**/*.sqlite
+BluTrain_BestPrecisionEnv_may27_406k/**/hellaswag/*.bin
+BluTrain_BestPrecisionEnv_may27_406k/**/hellaswag/*.jsonl
+# locally-built test binary from the reduction port
+BluTrain_BestPrecisionEnv_may27_406k/**/reduction_final_test
 
