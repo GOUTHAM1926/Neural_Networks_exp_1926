@@ -250,6 +250,3 @@ GPU (N=2048): REG 21.4 ms    vs  ZACC 60.8 ms    →  REG 2.85× faster
   thread computes a small tile held in registers.
 
 ---
-
-*Status: living doc — extend it as the journey continues (tiled GPU GEMM next: watch 60 ms →
-a few ms). Benchmarks reproducible via the two `.cu` files in the experiments folder.*

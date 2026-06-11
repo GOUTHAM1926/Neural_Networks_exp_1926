@@ -296,6 +296,7 @@ LSB — bit-exactly matching cuBLAS.
 | Item | Status in B | Where |
 |------|-------------|-------|
 | Reductions (4 bugs + nan-removal + multi-CTA + vec4 + fastdivmod + 32-bit guard) | ✅ (90/90 sm_86) | reduction files |
+| Reductions — 16-bit InnerContiguous input-vectorization (VT0=8, Part F) | 🆕 (112/112 sm_86, BBP) | `ReductionKernels.cuh`, `ReductionImplGPU.cu` |
 | Weight-tying Gradient Layout Contract | ✅ | `AutogradMeta.cpp` |
 | Adam eps-in-denominator | ✅ | `MultiTensorKernels_sm89.cu` |
 | Activations 3-layer restructure (math outside autograd) | ✅ | `ActivationOps.cpp` (179 lines, 0 math), kernels |
@@ -314,6 +315,75 @@ LSB — bit-exactly matching cuBLAS.
 
 **Build:** `/usr/local/cuda-13.0/bin/nvcc`; `make tensor`. Header-dep gotcha:
 after editing a header, `rm` the dependent `.o` (make doesn't track header deps).
+
+---
+
+## Part F — Post-sprint work (2026-06-11): 16-bit input-vectorization in the reduction kernel
+
+**Repo:** `BluTrain_best_precision` (BBP). **GPU tested:** RTX 3060 (sm_86), CUDA 13.0.
+
+**What & why.** Ported PyTorch's *"vectorize along input"* path (`Reduce.cuh`
+`input_vectorized_thread_reduce_impl`) for **16-bit** dtypes on the
+**InnerContiguous** (last-axis) reduction. Previously the kernel used scalar
+strided loads with `VT0 = 4` accumulators for *all* dtypes/paths. Now, for fp16/bf16
+InnerContiguous reductions, a thread issues **one 128-bit `VecLoad<scalar_t,8>`** per
+step into **8 independent accumulators** — matching PyTorch's `input_vec_size = 8`
+for 2-byte types (eight 16-bit values fill one 128-bit transaction).
+
+**Files changed** (`Tensor-Implementations/`):
+
+- `include/ops/helpers/ReductionKernels.cuh`:
+  - `GpuReduceConfig`: new `int input_vec_size = 1` field.
+  - `build_reduce_config<acc_t>(…, int input_vec_hint = 1)`: gate that sets
+    `input_vec_size` and divides the block work-dim by the width. Fires only for
+    `path == InnerContiguous && reduced_count >= 128 && reduced_count % hint == 0`.
+    `num_inputs` stays in **element** units (so `MeanOps`' divisor and the multi-CTA
+    math are unchanged); only the block geometry is sized in vector units.
+  - `unified_reduce_kernel<…, int VT0, bool INPUT_VEC>`: new `INPUT_VEC` branch in
+    the InnerContiguous case doing the contiguous 128-bit load into `acc[VT0]`.
+  - Launcher: dispatches the `VT0=8, INPUT_VEC=true` kernel under
+    `if constexpr (sizeof(scalar_t) == 2) { if (config.input_vec_size == 8) … }`,
+    so the 8-wide kernel is only instantiated for 2-byte types.
+- `src/UnaryOps/cuda/ReductionImplGPU.cu`: value-reduction and mean dispatchers pass
+  `input_vec_hint = (sizeof(CudaT)==2) ? 8 : 1`. Index (argmin/argmax) and Welford
+  variance dispatchers keep `hint = 1` (scalar path) — index ops need the per-element
+  index, Welford is precision-sensitive.
+
+**Design choices (honest scope):**
+
+- **InnerContiguous only.** OuterContiguous (the bias-gradient case) reduces a
+  *strided* axis, so a thread can't pull 8 contiguous values in one load — it stays
+  on the `VT0=4` strided path (unchanged). fp32 also stays on `VT0=4` everywhere.
+- **No head/tail peel.** Gating on `reduced_count % 8 == 0` guarantees every row base
+  is 16-byte aligned, so the wide load is always aligned — simpler than PyTorch's
+  unaligned-head handling. Non-multiples of 8 fall back to the scalar path.
+- 4-accumulator ILP remains the **baseline for all paths**; 8 is the **only** 16-bit
+  InnerContiguous exception.
+
+**Validation.** `reduction_final_test` = **112/112** (90 prior + 22 new input-vec
+cases: gate-on at 128/256/1024/2048/1000, gate-off fallbacks at 1001/130/<128,
+multi-CTA at 262144, mean-divisor checks; f16 + bf16). New micro-benchmark
+`reduction_ilp_benchmark.cpp` for before/after timings.
+
+**Measured (RTX 3060, `sum(axis=-1)`, before → after):**
+
+| case | f16 / bf16 | note |
+|---|---|---|
+| aligned large (e.g. 16384×1024) | +2–6% | already ~92% of ~360 GB/s — bandwidth-bound |
+| `R = 1000` (= 8×125) | **~+25%** (241 → 300 GB/s) | scalar strided path was inefficient here |
+| fp32, and non-÷8 sizes | unchanged | correctly stay on scalar path |
+
+No regressions; the expected register-pressure occupancy drop from 8 accumulators did
+not materialise.
+
+**Caveats / not done:** small win on the 3060 because 16-bit reductions are already
+bandwidth-bound there — likely larger on higher-bandwidth GPUs (A100/H100/B300),
+**not yet benchmarked** on those. The formal technical report (`madhu.txt`/`.pdf`) was
+**left unchanged**: its ILP paragraph + benchmarks are scoped to the bias-gradient
+(OuterContiguous) path, which this change does not touch, and we have no
+report-hardware (RTX 6000 Ada) numbers for the InnerContiguous path. Full conceptual
+write-up (4-vs-8, Volkov/latency truth + sources) is in
+`bias_gradient_reduce_sum_kernel_usage.md` §10.3.
 
 ---
 
