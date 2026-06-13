@@ -250,3 +250,113 @@ GPU (N=2048): REG 21.4 ms    vs  ZACC 60.8 ms    →  REG 2.85× faster
   thread computes a small tile held in registers.
 
 ---
+
+## Part 8 — My Hands-on Journey: Coding the Naive `ijk` Loop (V1)
+
+Yesterday, I embarked on coding the raw, naive `ijk` matrix multiplication kernel completely from scratch in C++. I documented every single step and decision I made directly inside my [`matmul_experiments.cpp`](file:///home/blu-bridge016/Downloads/Neural_Networks_exp_1926/matmul_experiments.cpp) file. Here is the step-by-step breakdown of my manual coding experimentation:
+
+### Step 1: Solving the Matrix Allocation Problem
+
+I started by allocating the $A$, $B$, and $C$ matrices, which led to a massive realization about memory layout. I had three choices:
+
+1. **Stack 2D Arrays (`float A[M][K]`):** Simple, but causes a stack overflow for large dimensions (like $1000 \times 1000$).
+2. **Heap 2D Pointer Arrays (`float** A`):** This is terrible for performance! Each row is a separate memory allocation, scattering the rows across RAM. Worse, it creates a **"pointer chasing"** nightmare. If I tried to copy this to the GPU, it would crash because the GPU cannot follow CPU pointers.
+3. **Flat 1D Arrays on the Heap (`float* A = new float[M*K]`):** **This is the winner.** It scales to any size, ensures memory is contiguous (cache-friendly), and is exactly how the GPU operates. I access elements using math: `A[i * K + k]` instead of `A[i][k]`.
+
+### Step 2: Perfecting Matrix Printing
+
+I wrote loops to print the matrices to the console to verify my math. However, I ran into an issue where an extra space was printed after the last element of every row (e.g., `[1 1 1 ]`). I couldn't just insert `if` statements inside the `std::cout <<` chain.
+
+- **The Fix:** I split the print statements and added a conditional check: `if (j < K - 1) std::cout << " ";`. This resulted in perfectly formatted rows like `[1 1 1]`.
+
+### Step 3: Pausing Execution and Hardware Profiling
+
+I wanted to actually *see* my CPU allocating the matrices in real-time. I added a `std::cin.get()` at the end of the program to freeze it before the memory was freed with `delete[]`.
+
+- **The Discovery:** Opening Linux `htop`, I couldn't find my `./a.out` process initially. I learned that for a $1000 \times 1000$ matrix, it only took 12 MB of RAM, which is invisible on my 32GB system! I had to scale up to $10000 \times 10000$ matrices to see a massive **1.2 GB memory spike** in `htop`. I also learned to use `Shift + M` in the `top` command to sort by memory.
+
+### Step 4: Building a Professional Benchmark Harness
+
+I needed to measure how fast my `ijk` loop was running. I didn't just wrap a simple timer; I built a robust benchmarking setup:
+
+- **`std::chrono`:** I used `std::chrono::high_resolution_clock` to measure execution down to the nanoseconds, safely converting it to a readable double in seconds.
+- **The Accumulation Bug:** I initially ran my timer in a loop 10 times to get an average. But `C[i*N+j] += ...` accumulates! By run 10, the matrix held garbage astronomical numbers.
+- **The Fix:** I learned to use `std::memset(C, 0, size_C)` before *every single run* to properly zero the output matrix.
+- **Warmup Runs:** I implemented 3 "warmup" runs before the 10 timed runs to prime the CPU cache.
+
+### Step 5: Testing with Realistic Deep Learning Shapes
+
+Rather than benchmarking arbitrary dimensions like $2000 \times 2000$, I updated my parameters to represent a real Transformer workload. I used the dimensions of the **MLP (Feed-Forward) layer in GPT-2 Small**:
+
+- $M = 1024$ (Sequence Length / Context Window)
+- $K = 768$ (Embedding Dimension)
+- $N = 3072$ (MLP Expansion Size, which is $4 \times K$)
+
+### Step 6: Unleashing Multi-Threading with OpenMP
+
+My raw C++ triple loop was only using 1 core of my CPU while the rest slept. I fixed this by including `#include <omp.h>` and adding a single compiler pragma:
+
+```cpp
+#pragma omp parallel for
+for (int i = 0; i < M; ++i) { ... }
+```
+
+- **Why the Outer Loop?** I learned that putting the pragma on the outermost `i` loop is critical. If I put it on the innermost `j` loop, the CPU would waste all its time creating and destroying threads millions of times (thread overhead), making it agonizingly slow.
+
+*(This completely sets the stage for testing GCC optimization flags like `-O3` and `-march=native`, which I documented deeply in my `compiler_flags_gcc.md` notes!)*
+
+### Step 7: The Benchmark Results (Scaling the Optimizations)
+
+After setting up the professional benchmarking harness and verifying the code, I ran a massive series of 14 experiments to see exactly how much performance I could squeeze out of my CPU using only compiler flags and OpenMP. I tested three specific matrix shapes:
+
+1. **Small Square:** $M, N, K = 200$
+2. **GPT-2 MLP Expansion:** $M=1024, N=768, K=3072$
+3. **Large Square:** $M, N, K = 2000$
+
+Here is the exact journey of how the execution time plummeted as I added optimizations:
+
+#### 1. Baseline: No Optimizations (`g++ matmul_experiments.cpp`)
+
+Running the raw C++ code with zero compiler help. Only one CPU thread is doing all the work.
+
+- **$200 \times 200 \times 200$:** ~0.1348 secs
+- **GPT-2 Shape:** ~6.32 secs
+- **$2000 \times 2000 \times 2000$:** ~17.0 secs
+
+*(Observation: Looking at the Linux system monitor, only 1 thread was at 100% usage while the rest were idle. The OS scheduler occasionally hopped the workload to different threads to spread the heat, but at any given moment, only one thread was executing the math).*
+
+#### 2. Adding `-O2` (`g++ -O2 matmul_experiments.cpp`)
+
+*Reminder: It is a capital letter "O", not a zero "0"!*
+This flag enables automated generic software optimizations like Instruction Scheduling, Common Subexpression Elimination, Loop Optimizations, Dead Code Elimination, and Strict Function Inlining.
+
+- **$200 \times 200 \times 200$:** ~0.00235 secs *(Massive drop!)*
+- **GPT-2 Shape:** ~3.8 secs
+- **$2000 \times 2000 \times 2000$:** ~7.0 secs
+
+#### 3. Adding `-O3` (`g++ -O3 matmul_experiments.cpp`)
+
+This flag enables even more aggressive software optimizations, particularly loop unrolling and aggressive vectorization logic.
+
+- **$200 \times 200 \times 200$:** ~0.00065 secs
+- **GPT-2 Shape:** ~1.04 secs
+- **$2000 \times 2000 \times 2000$:** ~1.8 secs
+
+#### 4. Adding `-march=native` (`g++ -O3 -march=native matmul_experiments.cpp`)
+
+While `-O3` optimizes the logic, `-march=native` allows the compiler to use my specific CPU's advanced physical hardware. My Intel i7 14700K supports **AVX2** (Advanced Vector Extensions), allowing it to load 256 bits (8 `float32` numbers) at once and compute them in a single clock cycle (SIMD Vectorization). *(Note: Our massive AMD EPYC 9754 server CPU supports AVX-512, which can do 16 `float32` numbers at once!)*
+
+- **$200 \times 200 \times 200$:** ~0.00048 secs
+- **GPT-2 Shape:** ~0.555 secs
+- **$2000 \times 2000 \times 2000$:** ~1.10 secs
+
+#### 5. Unleashing OpenMP Multi-Threading (`-fopenmp`)
+
+Finally, I activated `#pragma omp parallel for` in the code and compiled with the `-fopenmp` flag. Instead of 1 thread, all 27 threads grabbed chunks of the outer `i` loop and worked concurrently.
+
+- **$2000 \times 2000 \times 2000$ (OpenMP only):** ~1.35 secs
+- **$2000 \times 2000 \times 2000$ (OpenMP + `-O3` + `-march=native`):** ~0.92 secs!
+
+**The Final Result:** Through sheer compiler magic and simple multi-threading, I took a naive `ijk` matrix multiplication for $2000 \times 2000$ from **17.0 seconds down to 0.92 seconds**.
+
+I have officially pushed the CPU to its limits with the naive `ijk` ordering. Tomorrow, the GPU experiments begin, alongside testing the other 5 loop orderings (`ikj`, `kij`, etc.)!

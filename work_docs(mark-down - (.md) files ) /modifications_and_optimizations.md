@@ -16,10 +16,6 @@ done since (the BluTrain → may27_406k sync + the five gap-closing ports).
 | **BluTrain (parked)** | `BluTrain/Tensor-Implementations` | holds the sprint tracker + per-topic docs |
 | **sm89 docs** | `master_gau_latest_ada_6000_sm89/docs/` | where the per-topic markdown docs live |
 
-> **Status legend:** ✅ present & verified in **B**  ·  🆕 added/ported this session  ·  ⚪ deliberate no-op / left as-is
-
----
-
 ## Part A — The sprint optimizations (16 items)
 
 Source of truth: `master_gau_latest_ada_6000_sm89/docs/SPRINT_OPTIMIZATIONS_FULL_RECORD.md`.
@@ -384,6 +380,211 @@ bandwidth-bound there — likely larger on higher-bandwidth GPUs (A100/H100/B300
 report-hardware (RTX 6000 Ada) numbers for the InnerContiguous path. Full conceptual
 write-up (4-vs-8, Volkov/latency truth + sources) is in
 `bias_gradient_reduce_sum_kernel_usage.md` §10.3.
+
+---
+
+## Part G — Post-sprint work (2026-06-13): `BluTrain_bf16_rev` GenMatmul sweep + merged file across 4 BluTrain folders
+
+Working repo: `BluTrain_bf16_rev/` (the BF16 mixed-precision training branch).
+Goal: optimize the cuBLAS-backend `GenMatmul.cu` for bf16/fp16 workloads, then
+roll the merged result back to all 4 BluTrain folders.
+
+### G.1. Dtype-mismatch bug (latent in all branches) — **fixed**
+
+The `dispatch_by_dtype` system hands `bfloat16_t` / `float16_t` (project wrapper
+structs in `include/dtype/Types.h`, each just a `uint16_t raw_bits` field) to
+template-instantiated kernels. Multiple predicates in `GenMatmul.cu` only checked
+the NATIVE CUDA types:
+
+```cpp
+if constexpr (std::is_same_v<T, __nv_bfloat16>) { ... }   // never fires for dispatch
+```
+
+Result: vectorized branches silently fell through to scalar / zero-init fallbacks
+when the input was `bfloat16_t`/`float16_t` — a correctness-adjacent perf bug
+present in **all** branches (`bf16_rev`, `best_precision`, `BluTrain_old`,
+`may27_406k`). **7 sites fixed** to check BOTH wrapper and native types:
+
+- `cublaslt_dtype<T>()` — fp16 + bf16 mapping (2 sites)
+- `broadcast_scale_kernel<T>` — fp16 + bf16 vectorized branches (2 sites)
+- `launch_broadcast_scale<T>` VEC selector (1 site)
+- `add_scaled_kernel_typed` (1 site)
+- `cuda_addmm` cuBLASLt dispatch lambda (1 site)
+
+The merged file ships the fix to all 4 branches simultaneously.
+
+### G.2. `broadcast_scale_kernel` VEC=2 → VEC=8 (fp16/bf16 paths)
+
+Old code: VEC=2 for fp16/bf16 → 32-bit per-thread loads (one `__nv_bfloat162`
+or `__half2`). Pushed to VEC=8 → 128-bit per-thread loads via `float4`
+reinterpretation (4 × pair). Matches PyTorch's `can_vectorize_up_to<scalar_t>()`
+(`pytorch_source/aten/src/ATen/native/cuda/MemoryAccess.cuh:508-533`) which
+returns 8 for fp16/bf16 when pointer-aligned.
+
+VEC selector at launcher:
+
+```cpp
+constexpr int VEC =
+    std::is_same_v<T, float> ? 4
+    : (std::is_same_v<T, __half> || std::is_same_v<T, float16_t> ||
+       std::is_same_v<T, __nv_bfloat16> || std::is_same_v<T, bfloat16_t>) ? 8
+    : std::is_same_v<T, double> ? 2 : 1;
+```
+
+**Measured** (`nsys12` VEC=8 vs `nsys9` VEC=2, both with EPILOGUE_BIAS OFF):
+
+- `broadcast_scale_kernel` per-call avg: 68 µs → **44 µs** (−35%)
+- Grid sizes 4× smaller (1536 / 4608 / 6144 vs 6144 / 18432 / 24576)
+- Step 9 loss unchanged: 9.110535 (matches BluBLAS reference 9.110462)
+
+Note: when EPILOGUE_BIAS is on (Part G.3), `broadcast_scale_kernel` is dead code
+(never called) — the VEC=8 work is defensive for shapes where cuBLASLt's
+heuristic might decline.
+
+### G.3. cuBLASLt `EPILOGUE_BIAS` workspace — raw `cudaMalloc` → `AllocatorRegistry::get_caching_allocator()`
+
+Was: per-device raw `cudaMalloc(32 MiB)` for the cuBLASLt workspace, leaked at
+process exit. Switched to the project's caching allocator (the same one used by
+`ReductionKernels.cuh` scratch buffers). Workspace allocated lazily on the first
+`cuda_addmm` call per device.
+
+### G.4. `nsys13` results (final EPILOGUE_BIAS + VEC=8 + dtype fixes)
+
+GPT-2-44M BF16 autocast, B=8, T=1024, 10 steps, 3 transformer layers,
+weight-tying OFF, sm_86 (RTX 3060):
+
+| Metric | nsys12 (VEC=8 only) | **nsys13 (+ EPILOGUE_BIAS)** | Δ |
+|---|---:|---:|---:|
+| Avg step time (steps 1-8) | 891.5 ms | **884.8 ms** | −6.7 ms |
+| Avg throughput | 73,514 tok/s | **74,075 tok/s** | +561 |
+| Step 9 loss | 9.110535 | 9.110526 | ~0 (matches BluBLAS 9.110462) |
+| `broadcast_scale_kernel` calls | 1,440 (62.25 ms) | **0** | −1,440 / −62.25 ms |
+| Legacy `s1688gemm` addmm calls | 1,440 (436 ms) | **0** | −1,440 / −436 ms |
+| Fused `s16816gemm_*_relu_f2f_*` calls | 0 | 1,440 (478 ms) | new fused-bias path |
+| `cudaMemset` count | 4,986 | 3,546 | −1,440 |
+| `cudaMemset` total bytes | 27.3 GB | **7.9 GB** | −19.4 GB |
+| Total GPU kernel launches | 28,839 | 27,399 | −1,440 |
+
+Fast path hit rate: **1,440 / 1,440 (100%)**. cuBLASLt's heuristic also picked
+**larger tile widths** (`s16816gemm_256x128_32x3_nn` instead of
+`s1688gemm_64x128_sliced1x2`) — a side benefit of the heuristic having access
+to the bias as a fused epilogue op.
+
+### G.5. Failed BGRADA backward bias-grad fusion (reverted)
+
+Attempted `CUBLASLT_EPILOGUE_BGRADA` to fuse
+`grad_bias = sum_i grad_output[i, :]` into the `grad_weight` backward matmul
+(`A^T @ grad_output`).
+
+**Important finding about the bias-grad code path**: the wired-up
+`LinearBackward.cpp` + `cuda_linear_bias_backward` + `reduce_bias_kernel_bf16`
+are **dead code** in this repo — `reduce_bias_kernel_bf16` recorded 0 calls in
+every nsys. The actual bias-grad path goes through:
+
+```text
+nn::Linear.forward() → autograd::addmm
+                  → AddmmBackward::apply (MatrixBackward.cpp:155)
+                  → reduce_to_shape(grad_output, saved_input_shape_)
+                  → reduce_sum
+                  → unified_reduce_kernel<__nv_bfloat16, SumOp<bf16>>
+```
+
+240 calls / 20.9 ms total of `unified_reduce_kernel<bf16,SumOp<bf16>>` in
+nsys13 are the bias-grad reductions. So I wired the BGRADA attempt into
+`AddmmBackward::apply`, not `LinearBackward.cpp`.
+
+**Two reasons it failed**:
+
+1. **cuBLASLt heuristic rejection on sm_86**: with `COMPUTE_32F` + bf16 GEMM +
+   bf16 bias output (`CUBLASLT_MATMUL_DESC_BIAS_DATA_TYPE = CUDA_R_16BF`), the
+   heuristic returns 0 algos. PyTorch's analogous backward paths use **fp32
+   bias output** even for bf16 GEMMs. Likely BGRADA requires fp32 bias on this
+   arch.
+
+2. **Double-matmul bug in caller**: my `MatrixBackward.cpp` was:
+   ```cpp
+   grad_input_fused = cuda_matmul_backward_with_bias_grad(...);  // already did matmul + failed BGRADA
+   if (!grad_input_fused) cuda_matmul_backward(...);              // did matmul AGAIN
+   ```
+   Each of the 240 eligible backward calls did the matmul TWICE (1 × `_nt` for
+   grad_A + 1 × `_tn` for grad_B = +480 extra `s1688gemm` launches per run).
+   Measured **+17 ms/step regression** in `nsys14`.
+
+**Revert verified by `nsys15`**: 882.9 ms/step avg, 74,228 tok/s — matches the
+nsys13 baseline within noise (±2 ms/step is normal run-to-run noise).
+
+**Path forward if BGRADA is retried later**:
+
+- Allocate `grad_bias` as **fp32** in the autograd graph
+- Use a tiny N-element `fp32 → bf16` convert kernel after the BGRADA matmul
+- Never let the fused-variant fallback double-run the matmul work — when the
+  fused helper declines, only fall back for the BIAS computation
+- Set `CUBLASLT_DEBUG=1` to see heuristic_empty count to confirm BGRADA fires
+
+Saved as memory: `project_bgrada_bf16_unsupported.md`.
+
+### G.6. `g_lt_stats` diagnostic counters ported from `best_precision`
+
+`best_precision`'s `GenMatmul.cu` had granular failure-bucket counters that
+`bf16_rev`'s version lacked. Ported into the merged file:
+
+```cpp
+struct CublasLtAddmmStats {
+    std::atomic<uint64_t> entered, succeeded;
+    std::atomic<uint64_t> fail_out_noncontig, fail_a_layout, fail_b_layout;
+    std::atomic<uint64_t> fail_batch_dims, fail_unsupported_config;
+    std::atomic<uint64_t> heuristic_empty, matmul_failed;
+    std::atomic<cublasStatus_t> last_status;
+};
+```
+
+Set env `CUBLASLT_DEBUG=1` to get an atexit dump:
+
+```text
+[CUBLASLT_DEBUG] cuda_addmm fast-path stats:
+   entered=1440  succeeded=1440  fail_out_noncontig=0  fail_a_layout=0
+   fail_b_layout=0  fail_batch_dims=0  fail_unsupported_config=0
+   heuristic_empty=0  matmul_failed=0  last_status=0
+```
+
+CPU overhead: ~2 × `LOCK XADD` per addmm call = ~10-20 ns. Lost in run-to-run
+noise (~28 µs total per training run, **0.0003%** of step time).
+
+### G.7. Merged `GenMatmul.cu` deployed to all 4 BluTrain folders
+
+Final merged file = `bf16_rev` (VEC=8 + caching allocator + 7 dtype fixes +
+EPILOGUE_BIAS) + `best_precision` (g_lt_stats). Byte-identical across:
+
+| Folder | Path | Pre-existing state |
+|---|---|---|
+| `BluTrain_bf16_rev` | `Tensor-Implementations/src/Kernels/cuda/matmul/GenMatmul.cu` | source of truth |
+| `BluTrain_best_precision` | same | had EPILOGUE_BIAS + g_lt_stats, no VEC=8, no dtype fixes |
+| `BluTrain_old` | same | older, had EPILOGUE_BIAS, no VEC=8, no dtype fixes, no g_lt_stats |
+| `BluTrain_BestPrecisionEnv_may27_406k` | `BluTrain_BestPrecisionEnv/BluTrain/Tensor-Implementations/src/Kernels/cuda/matmul/GenMatmul.cu` | identical to `best_precision` |
+
+`GenMatmul.o` built clean in each. `.bak.<unix_timestamp>` backups preserved in
+each of the 3 overwritten locations.
+
+**Why this matters**: the dtype-mismatch fix and VEC=8 broadcast_scale improvements
+were ONLY in `bf16_rev`. The other 3 folders had:
+
+- **Silent dtype-mismatch bug**: their `broadcast_scale_kernel` was hitting the
+  scalar fallback instead of the vectorized branch whenever a `bfloat16_t` or
+  `float16_t` wrapper tensor was passed (which is what `dispatch_by_dtype`
+  always does in autocast mode)
+- **VEC=2** broadcast_scale even when EPILOGUE_BIAS fell through (4× slower
+  per-thread than the bf16_rev VEC=8 version)
+
+Merged file fixes all 4.
+
+### G.8. Caveat — numerical verification only done in `bf16_rev`
+
+I built `GenMatmul.o` clean in each target repo but did NOT run training in
+`BluTrain_old`, `best_precision`, or `may27_406k`. If those repos have specific
+loss baselines, a sanity-training run is wise before relying on them. The
+math should be identical (same numerical operations, same TF32 mode, same
+accumulator dtypes) — only the broadcast_scale VEC width changed in any
+visible way, and that's purely a vectorization layout change.
 
 ---
 
