@@ -502,10 +502,12 @@ nsys13 are the bias-grad reductions. So I wired the BGRADA attempt into
    arch.
 
 2. **Double-matmul bug in caller**: my `MatrixBackward.cpp` was:
+
    ```cpp
    grad_input_fused = cuda_matmul_backward_with_bias_grad(...);  // already did matmul + failed BGRADA
    if (!grad_input_fused) cuda_matmul_backward(...);              // did matmul AGAIN
    ```
+
    Each of the 240 eligible backward calls did the matmul TWICE (1 × `_nt` for
    grad_A + 1 × `_tn` for grad_B = +480 extra `s1688gemm` launches per run).
    Measured **+17 ms/step regression** in `nsys14`.

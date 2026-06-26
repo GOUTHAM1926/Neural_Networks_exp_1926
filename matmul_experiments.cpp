@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <omp.h>
 using namespace std;
 int main() {
   int M = 2000;
@@ -234,14 +235,45 @@ int main() {
   // [1 1 1]
   //  ijk loop (looping order)and global accumulation
   double avg_time = 0.0L;
-  int num_runs = 10;
+  int num_runs = 5;
   int warmup_runs = 3;
-  // warm up runs :
+  // If wants to use explicit number of threads ,then to set those many threads
+  // , can use this cpp function : "omp_set_num_threads(n)" where "n" is the
+  // number of threads in which u want to run that prgm/application ,
+  //  to use max threads in any given system ,there are two methods :
+  //  1)omp_set_num_threads(omp_get_max_threads()) ; 2)dont use any of these omp
+  //  functions(omp_set_max_threads(),omp_get_max_threads(), just that compiler
+  //  directive " #pragma omp parallel for  is enough and it will take all the
+  //  threads in that given system and parallelize over all threads")
+
+  /*
+  omp_get_num_procs() returns the number of physical + logical processors
+  (cores) available to your program on the hardware. On an i7-14700K, both
+  omp_get_max_threads() and omp_get_num_procs() will likely return 28 (your
+  total logical cores). So in practice they are almost always the same number.
+
+  The subtle difference:
+  omp_get_num_procs() = "How many logical cores does this machine physically
+  have?" omp_get_max_threads() = "How many threads will OpenMP actually use in
+  the next parallel region?"
+
+  They can differ in one situation: if you called omp_set_num_threads(4)
+  earlier, then: omp_get_num_procs() still returns 28 (hardware doesn't change)
+  omp_get_max_threads() now returns 4 (because you changed the thread limit)
+
+  So omp_get_num_procs() always tells you the hardware truth, while
+  omp_get_max_threads() tells you the current OpenMP configuration. For your
+  experiments, omp_get_max_threads() is the one you want!
+  */
+  // omp_set_num_threads(20);
+  //    warm up runs :
   for (int run = 0; run < warmup_runs; ++run) {
     std::memset(C, 0, size_C);
-#pragma omp parallel for // openmp multiple threads parallelization ,
+    // #pragma omp parallel for // openmp multiple threads parallelization ,
     for (int i = 0; i < M; ++i) {
+      // #pragma omp parallel for
       for (int j = 0; j < N; ++j) {
+#pragma omp parallel for
         for (int k = 0; k < K; ++k) {
           C[i * N + j] += A[i * K + k] * B[k * N + j];
         }
@@ -253,9 +285,11 @@ int main() {
   for (int run = 0; run < num_runs; ++run) {
     std::memset(C, 0, size_C);
     auto start = std::chrono::high_resolution_clock::now();
-#pragma omp parallel for // openmp multiple threads parallelization ,
+    // #pragma omp parallel for // openmp multiple threads parallelization ,
     for (int i = 0; i < M; ++i) {
+      // #pragma omp parallel for
       for (int j = 0; j < N; ++j) {
+#pragma omp parallel for
         for (int k = 0; k < K; ++k) {
           C[i * N + j] += A[i * K + k] * B[k * N + j];
         }
@@ -269,11 +303,14 @@ int main() {
     avg_time += diff.count();
   }
   avg_time /= num_runs;
-  std::cout << "Time taken(naive-ijk loop with only -fopenmp "
-               " flag in "
-               "compiling command  and with openmp implementation in code "
-               "(M=2000,N=2000,K=2000)   : "
-            << avg_time << "secs" << std::endl;
+  std::cout
+      << "Time taken(naive-ijk loop with  openmp implementation(on j -loop  "
+         ") in code and with "
+         "-fopenmp flag and    "
+         "with -O3 and -march=native  optimization flag   in "
+         "compilation command)"
+         " (M=2000,N=2000,K=2000)   : "
+      << avg_time << "secs" << std::endl;
   // printing Matrix-C :
   //   std::cout << "Matrix C" << std::endl;
   //   for (int i = 0; i < M; i++) {

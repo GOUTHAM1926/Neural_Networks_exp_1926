@@ -95,7 +95,13 @@ checkpoints/
 /BluTrain/
 /BluTrain_new/
 /BluTrain_best_precision/
+/BluTrain_bf16_rev/
+/BluTrain_old/
 /final_merge_conflict_fix/
+
+# Timestamped .bak.<unix_ts> backups (e.g. GenMatmul.cu.bak.1781363057)
+# Plain *.bak above doesn't match these; add explicit pattern.
+*.bak.*
 
 # =========================
 # Third-party embedded git repos (clones for study — not submodules)
@@ -171,3 +177,8 @@ BluTrain_BestPrecisionEnv_may27_406k/**/hellaswag/*.jsonl
 # locally-built test binary from the reduction port
 BluTrain_BestPrecisionEnv_may27_406k/**/reduction_final_test
 
+# =========================
+# Technical Reports
+# =========================
+blutrain_technical_report/
+Blu_Train_submitted-version/
