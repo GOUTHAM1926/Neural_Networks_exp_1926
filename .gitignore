@@ -112,7 +112,7 @@ rocBLAS/
 Tensile/
 DeepGEMM/
 ThunderKittens/
-
+BLUBLAS_kota/
 # =========================
 # Gradient dump folders (large binary parameter dumps, multi-GB)
 # =========================
@@ -182,3 +182,9 @@ BluTrain_BestPrecisionEnv_may27_406k/**/reduction_final_test
 # =========================
 blutrain_technical_report/
 Blu_Train_submitted-version/
+
+# =========================
+# PTX ISA reference docs (downloaded PDFs + text dumps, ~100MB total)
+# Local-only reference; don't bloat the repo.
+# =========================
+ptx_docs/

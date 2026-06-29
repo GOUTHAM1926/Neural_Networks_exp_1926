@@ -1,7 +1,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
-#include <omp.h>
+// #include <omp.h> //enable when using omp functions  ,
 using namespace std;
 int main() {
   int M = 2000;
@@ -233,9 +233,9 @@ int main() {
   // [1 1 1]
   // [1 1 1]
   // [1 1 1]
-  //  ijk loop (looping order)and global accumulation
+
   double avg_time = 0.0L;
-  int num_runs = 5;
+  int num_runs = 10;
   int warmup_runs = 3;
   // If wants to use explicit number of threads ,then to set those many threads
   // , can use this cpp function : "omp_set_num_threads(n)" where "n" is the
@@ -265,36 +265,67 @@ int main() {
   omp_get_max_threads() tells you the current OpenMP configuration. For your
   experiments, omp_get_max_threads() is the one you want!
   */
+
   // omp_set_num_threads(20);
   //    warm up runs :
+  ////  ijk loop (looping order)and global accumulation
   for (int run = 0; run < warmup_runs; ++run) {
     std::memset(C, 0, size_C);
     // #pragma omp parallel for // openmp multiple threads parallelization ,
+
     for (int i = 0; i < M; ++i) {
+
       // #pragma omp parallel for
       for (int j = 0; j < N; ++j) {
-#pragma omp parallel for
+        // float sum = 0.0f;
+        //  #pragma omp parallel for
         for (int k = 0; k < K; ++k) {
+          // sum += A[i * K + k] * B[k * N + j];
           C[i * N + j] += A[i * K + k] * B[k * N + j];
         }
+        // C[i * N + j] = sum;
       }
     }
   }
 
+  //   // ikj loop  (looping-order)and global accumulation ,
+
+  //   for (int i = 0; i < M; ++i) {
+  //     for (int k = 0; k < K; ++k) {
+  //       for (int j = 0; j < N; ++j) {
+  //         C[i * N + j] += A[i * K + k] * B[k * N + j];
+  //       }
+  //     }
+  //   }
+  // }
   // actual calculation runs :
+  ////  ijk loop (looping order)and global accumulation
   for (int run = 0; run < num_runs; ++run) {
     std::memset(C, 0, size_C);
     auto start = std::chrono::high_resolution_clock::now();
     // #pragma omp parallel for // openmp multiple threads parallelization ,
+
     for (int i = 0; i < M; ++i) {
       // #pragma omp parallel for
       for (int j = 0; j < N; ++j) {
-#pragma omp parallel for
+        // float sum = 0.0f;
+        //  #pragma omp parallel for
         for (int k = 0; k < K; ++k) {
+          //  sum += A[i * K + k] * B[k * N + j];
           C[i * N + j] += A[i * K + k] * B[k * N + j];
         }
+        // C[i * N + j] = sum;
       }
     }
+
+    // // ikj loop (looping-order) and global-accumulation
+    // for (int i = 0; i < M; ++i) {
+    //   for (int k = 0; k < K; ++k) {
+    //     for (int j = 0; j < N; ++j) {
+    //       C[i * N + j] += A[i * K + k] * B[k * N + j];
+    //     }
+    //   }
+    // }
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
     // auto diff = (end - start).count();
@@ -303,14 +334,12 @@ int main() {
     avg_time += diff.count();
   }
   avg_time /= num_runs;
-  std::cout
-      << "Time taken(naive-ijk loop with  openmp implementation(on j -loop  "
-         ") in code and with "
-         "-fopenmp flag and    "
-         "with -O3 and -march=native  optimization flag   in "
-         "compilation command)"
-         " (M=2000,N=2000,K=2000)   : "
-      << avg_time << "secs" << std::endl;
+  std::cout << "Time taken(naive-ijk loop with  -O1 optimization flag in "
+               "compilation flag) for the "
+               "config  (M=2000,N=2000,K=2000) and with  no temporary "
+               "sum_variable(to avoid global ram writes for every "
+               "accumulation) for accumulations   : "
+            << avg_time << "secs" << std::endl;
   // printing Matrix-C :
   //   std::cout << "Matrix C" << std::endl;
   //   for (int i = 0; i < M; i++) {
