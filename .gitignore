@@ -112,7 +112,6 @@ rocBLAS/
 Tensile/
 DeepGEMM/
 ThunderKittens/
-BLUBLAS_kota/
 # =========================
 # Gradient dump folders (large binary parameter dumps, multi-GB)
 # =========================
