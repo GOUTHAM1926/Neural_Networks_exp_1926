@@ -1,0 +1,206 @@
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.35\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=18pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.4,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={TFLOPS},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x12x64},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=0]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=512, Causal=0},
+                title style={font=\bfseries},
+                ymin=0, ymax=22918,
+                yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=0, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x12x64,17630) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x12x64,12975) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}\hfill
+    \begin{subfigure}{0.62\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=14pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.15,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={TFLOPS},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x12x64, 4x12x64, 8x16x64, 16x12x64},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=0]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=1024, Causal=0},
+                title style={font=\bfseries},
+                ymin=0, ymax=40612,
+                yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=0, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x12x64,21767) (4x12x64,29970) (8x16x64,30922) (16x12x64,31240) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x12x64,18748) (4x12x64,22272) (8x16x64,18446) (16x12x64,17983) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}
+    \caption{Forward Attention TFLOPS: Causal=0. Higher is better.}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.35\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=18pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.4,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={TFLOPS},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x12x64},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=0]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=512, Causal=1},
+                title style={font=\bfseries},
+                ymin=0, ymax=11746,
+                yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=0, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x12x64,9035) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x12x64,6253) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}\hfill
+    \begin{subfigure}{0.62\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=14pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.15,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={TFLOPS},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x12x64, 4x12x64, 8x16x64, 16x12x64},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=0]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=1024, Causal=1},
+                title style={font=\bfseries},
+                ymin=0, ymax=36016,
+                yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=0, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x12x64,16053) (4x12x64,23594) (8x16x64,27705) (16x12x64,27646) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x12x64,11263) (4x12x64,17981) (8x16x64,17012) (16x12x64,16470) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}
+    \caption{Forward Attention TFLOPS: Causal=1. Higher is better.}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=14pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.2,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={TFLOPS},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x16x64, 1x32x128, 4x32x128},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=0]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=2048, Causal=0},
+                title style={font=\bfseries},
+                ymin=0, ymax=40392,
+                yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=0, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x16x64,28087) (1x32x128,28520) (4x32x128,29106) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x16x64,23285) (1x32x128,31071) (4x32x128,28259) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}\hfill
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=14pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.2,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={TFLOPS},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x16x64, 1x32x128, 4x32x128},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=0]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=2048, Causal=1},
+                title style={font=\bfseries},
+                ymin=0, ymax=36002,
+                yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=0, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x16x64,23549) (1x32x128,26600) (4x32x128,27693) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x16x64,17326) (1x32x128,26149) (4x32x128,25561) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}
+    \caption{Forward Attention TFLOPS: T=2048. Higher is better.}
+\end{figure}

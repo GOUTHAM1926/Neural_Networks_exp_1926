@@ -1,0 +1,2226 @@
+
+;; Function main (main, funcdef_no=2138, decl_uid=51979, cgraph_uid=796, symbol_order=1342) (executed once)
+
+
+Analyzing loop at matmul_experiments.cpp:303
+matmul_experiments.cpp:303:25: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:303:25: note:   === vect_analyze_loop_form ===
+matmul_experiments.cpp:303:25: missed:   not vectorized: multiple nested loops.
+matmul_experiments.cpp:303:25: missed:  bad loop form.
+matmul_experiments.cpp:303:25: missed: couldn't vectorize loop
+
+Analyzing loop at matmul_experiments.cpp:308
+matmul_experiments.cpp:308:23: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:308:23: note:   === vect_analyze_loop_form ===
+matmul_experiments.cpp:308:23: missed:   not vectorized: multiple nested loops.
+matmul_experiments.cpp:308:23: missed:  bad loop form.
+matmul_experiments.cpp:308:23: missed: couldn't vectorize loop
+
+Analyzing loop at matmul_experiments.cpp:310
+matmul_experiments.cpp:310:25: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:310:25: note:   === vect_analyze_loop_form ===
+matmul_experiments.cpp:310:25: note:    === vect_analyze_loop_form ===
+matmul_experiments.cpp:310:25: note:     === get_loop_niters ===
+Analyzing # of iterations of loop 7
+  exit condition [1999, + , 4294967295] != 0
+  bounds on difference of bases: -1999 ... -1999
+  result:
+    # of iterations 1999, bounded by 1999
+matmul_experiments.cpp:310:25: note:   Considering outer-loop vectorization.
+matmul_experiments.cpp:310:25: note:    === get_loop_niters ===
+Analyzing # of iterations of loop 6
+  exit condition [1999, + , 4294967295] != 0
+  bounds on difference of bases: -1999 ... -1999
+  result:
+    # of iterations 1999, bounded by 1999
+Creating dr for *_30
+analyze_innermost: success.
+	base_address: _73 + (sizetype) i_175 * 8000
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_73 + (sizetype) i_175 * 8000
+	Access function 0: {0B, +, 4}_6
+Creating dr for *_35
+analyze_innermost: success.
+	base_address: _68 + (sizetype) i_175 * 8000
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_68 + (sizetype) i_175 * 8000
+	Access function 0: {0B, +, 4}_7
+Creating dr for *_41
+analyze_innermost: success.
+	base_address: _70 + (sizetype) j_176 * 4
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 8000
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 64
+	base_object: *_70
+	Access function 0: {{0B, +, 4}_6, +, 8000}_7
+Creating dr for *_30
+analyze_innermost: success.
+	base_address: _73 + (sizetype) i_175 * 8000
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_73 + (sizetype) i_175 * 8000
+	Access function 0: {0B, +, 4}_6
+matmul_experiments.cpp:310:25: note:   === vect_analyze_data_refs ===
+matmul_experiments.cpp:310:25: note:   got vectype for stmt: D__lsm.58_164 = *_30;
+vector(4) float
+matmul_experiments.cpp:310:25: note:   analyze in outer loop: *(_68 + (sizetype) i_175 * 8000)
+analyze_innermost: success.
+matmul_experiments.cpp:310:25: note:   	outer base_address: _68 + (sizetype) i_175 * 8000
+	outer offset from base address: 0
+	outer constant offset from base address: 0
+	outer step: 0
+	outer base alignment: 4
+
+	outer base misalignment: 0
+	outer offset alignment: 128
+	outer step alignment: 128
+matmul_experiments.cpp:310:25: note:   got vectype for stmt: _36 = *_35;
+vector(4) float
+matmul_experiments.cpp:310:25: note:   analyze in outer loop: *(_70 + (sizetype) j_176 * 4)
+analyze_innermost: success.
+matmul_experiments.cpp:310:25: note:   	outer base_address: _70
+	outer offset from base address: 0
+	outer constant offset from base address: 0
+	outer step: 4
+	outer base alignment: 4
+
+	outer base misalignment: 0
+	outer offset alignment: 128
+	outer step alignment: 4
+matmul_experiments.cpp:310:25: note:   got vectype for stmt: _42 = *_41;
+vector(4) float
+matmul_experiments.cpp:310:25: note:   got vectype for stmt: *_30 = _288;
+vector(4) float
+matmul_experiments.cpp:310:25: note:   === vect_analyze_scalar_cycles ===
+matmul_experiments.cpp:310:25: note:   Analyze phi: j_176 = PHI <j_86(30), 0(17)>
+matmul_experiments.cpp:310:25: note:   Access function of PHI: {0, +, 1}_6
+matmul_experiments.cpp:310:25: note:   step: 1,  init: 0
+matmul_experiments.cpp:310:25: note:   Detected induction.
+matmul_experiments.cpp:310:25: note:   Analyze phi: .MEM_185 = PHI <.MEM_80(30), .MEM_186(17)>
+matmul_experiments.cpp:310:25: note:   Analyze phi: ivtmp_284 = PHI <ivtmp_283(30), 2000(17)>
+matmul_experiments.cpp:310:25: note:   Access function of PHI: {2000, +, 4294967295}_6
+matmul_experiments.cpp:310:25: note:   step: 4294967295,  init: 2000
+matmul_experiments.cpp:310:25: note:   Detected induction.
+matmul_experiments.cpp:310:25: note:   === vect_analyze_scalar_cycles ===
+matmul_experiments.cpp:310:25: note:   Analyze phi: k_177 = PHI <k_88(31), 0(15)>
+matmul_experiments.cpp:310:25: note:   Access function of PHI: {0, +, 1}_7
+matmul_experiments.cpp:310:25: note:   step: 1,  init: 0
+matmul_experiments.cpp:310:25: note:   Detected induction.
+matmul_experiments.cpp:310:25: note:   Analyze phi: .MEM_184 = PHI <.MEM_184(31), .MEM_185(15)>
+matmul_experiments.cpp:310:25: note:   Analyze phi: D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+matmul_experiments.cpp:310:25: note:   Access function of PHI: {D__lsm.58_164, +, _43}_7
+matmul_experiments.cpp:310:25: note:   step: _43,  init: D__lsm.58_164
+matmul_experiments.cpp:310:25: missed:   step unknown.
+matmul_experiments.cpp:310:25: note:   Analyze phi: ivtmp_286 = PHI <ivtmp_285(31), 2000(15)>
+matmul_experiments.cpp:310:25: note:   Access function of PHI: {2000, +, 4294967295}_7
+matmul_experiments.cpp:310:25: note:   step: 4294967295,  init: 2000
+matmul_experiments.cpp:310:25: note:   Detected induction.
+matmul_experiments.cpp:310:25: note:   Analyze phi: D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+matmul_experiments.cpp:310:25: note:   detected nested cycle: _44 = _43 + D__lsm.58_163;
+matmul_experiments.cpp:310:25: note:   Detected vectorizable nested cycle.
+matmul_experiments.cpp:310:25: note:   === vect_determine_precisions ===
+matmul_experiments.cpp:310:25: note:   ivtmp_283 has no range info
+matmul_experiments.cpp:310:25: note:   j_86 has range [0x1, 0x7d0]
+matmul_experiments.cpp:310:25: note:   can narrow to unsigned:11 without loss of precision: j_86 = j_176 + 1;
+matmul_experiments.cpp:310:25: note:   ivtmp_285 has no range info
+matmul_experiments.cpp:310:25: note:   k_88 has range [0x1, 0x7d0]
+matmul_experiments.cpp:310:25: note:   can narrow to unsigned:11 without loss of precision: k_88 = k_177 + 1;
+matmul_experiments.cpp:310:25: note:   _40 has range [0x0, 0xf423fc]
+matmul_experiments.cpp:310:25: note:   can narrow to unsigned:24 without loss of precision: _40 = _39 * 4;
+matmul_experiments.cpp:310:25: note:   _39 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:310:25: note:   _38 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:310:25: note:   can narrow to unsigned:22 without loss of precision: _38 = _37 + j_176;
+matmul_experiments.cpp:310:25: note:   _37 has range [0x0, 0x3d0130]
+matmul_experiments.cpp:310:25: note:   can narrow to unsigned:22 without loss of precision: _37 = k_177 * 2000;
+matmul_experiments.cpp:310:25: note:   _34 has range [0x0, 0xf423fc]
+matmul_experiments.cpp:310:25: note:   can narrow to unsigned:24 without loss of precision: _34 = _33 * 4;
+matmul_experiments.cpp:310:25: note:   _33 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:310:25: note:   _32 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:310:25: note:   can narrow to unsigned:22 without loss of precision: _32 = _26 + k_177;
+matmul_experiments.cpp:310:25: note:   _29 has range [0x0, 0xf423fc]
+matmul_experiments.cpp:310:25: note:   can narrow to unsigned:24 without loss of precision: _29 = _28 * 4;
+matmul_experiments.cpp:310:25: note:   _28 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:310:25: note:   _27 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:310:25: note:   can narrow to unsigned:22 without loss of precision: _27 = _26 + j_176;
+matmul_experiments.cpp:310:25: note:   === vect_pattern_recog ===
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand i_175 * 2000, type of def: external
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand (long unsigned int) _27, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _26 + j_176, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_recog_over_widening_pattern: detected: _29 = _28 * 4;
+matmul_experiments.cpp:310:25: note:   demoting long unsigned int to unsigned int
+matmul_experiments.cpp:310:25: note:   created pattern stmt: patt_250 = patt_251 * 4;
+matmul_experiments.cpp:310:25: note:   over_widening pattern recognized: patt_249 = (long unsigned int) patt_250;
+matmul_experiments.cpp:310:25: note:   extra pattern stmt: patt_251 = (unsigned int) _27;
+matmul_experiments.cpp:310:25: note:   extra pattern stmt: patt_250 = patt_251 * 4;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand (unsigned int) _27, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _26 + j_176, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand i_175 * 2000, type of def: external
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand (long unsigned int) _32, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _26 + k_177, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_recog_over_widening_pattern: detected: _34 = _33 * 4;
+matmul_experiments.cpp:310:25: note:   demoting long unsigned int to unsigned int
+matmul_experiments.cpp:310:25: note:   created pattern stmt: patt_247 = patt_248 * 4;
+matmul_experiments.cpp:310:25: note:   over_widening pattern recognized: patt_231 = (long unsigned int) patt_247;
+matmul_experiments.cpp:310:25: note:   extra pattern stmt: patt_248 = (unsigned int) _32;
+matmul_experiments.cpp:310:25: note:   extra pattern stmt: patt_247 = patt_248 * 4;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand (unsigned int) _32, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _26 + k_177, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand k_177 = PHI <k_88(31), 0(15)>, type of def: induction
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand k_177 * 2000, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand (long unsigned int) _38, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _37 + j_176, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_recog_over_widening_pattern: detected: _40 = _39 * 4;
+matmul_experiments.cpp:310:25: note:   demoting long unsigned int to unsigned int
+matmul_experiments.cpp:310:25: note:   created pattern stmt: patt_229 = patt_230 * 4;
+matmul_experiments.cpp:310:25: note:   over_widening pattern recognized: patt_228 = (long unsigned int) patt_229;
+matmul_experiments.cpp:310:25: note:   extra pattern stmt: patt_230 = (unsigned int) _38;
+matmul_experiments.cpp:310:25: note:   extra pattern stmt: patt_229 = patt_230 * 4;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand (unsigned int) _38, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _37 + j_176, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand k_177 = PHI <k_88(31), 0(15)>, type of def: induction
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand k_177 = PHI <k_88(31), 0(15)>, type of def: induction
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand ivtmp_286 = PHI <ivtmp_285(31), 2000(15)>, type of def: induction
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand j_176 = PHI <j_86(30), 0(17)>, type of def: induction
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand j_176 = PHI <j_86(30), 0(17)>, type of def: induction
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand ivtmp_284 = PHI <ivtmp_283(30), 2000(17)>, type of def: induction
+matmul_experiments.cpp:310:25: note:   === vect_analyze_data_ref_accesses ===
+matmul_experiments.cpp:310:25: note:   zero step in outer loop.
+matmul_experiments.cpp:310:25: note:   === vect_mark_stmts_to_be_vectorized ===
+matmul_experiments.cpp:310:25: note:   init: phi relevant? j_176 = PHI <j_86(30), 0(17)>
+matmul_experiments.cpp:310:25: note:   init: phi relevant? .MEM_185 = PHI <.MEM_80(30), .MEM_186(17)>
+matmul_experiments.cpp:310:25: note:   init: phi relevant? ivtmp_284 = PHI <ivtmp_283(30), 2000(17)>
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _27 = _26 + j_176;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _28 = (long unsigned int) _27;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _29 = _28 * 4;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _30 = _73 + _29;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? D__lsm.58_164 = *_30;
+matmul_experiments.cpp:310:25: note:   init: phi relevant? k_177 = PHI <k_88(31), 0(15)>
+matmul_experiments.cpp:310:25: note:   init: phi relevant? .MEM_184 = PHI <.MEM_184(31), .MEM_185(15)>
+matmul_experiments.cpp:310:25: note:   init: phi relevant? D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+matmul_experiments.cpp:310:25: note:   init: phi relevant? ivtmp_286 = PHI <ivtmp_285(31), 2000(15)>
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _32 = _26 + k_177;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _33 = (long unsigned int) _32;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _34 = _33 * 4;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _35 = _68 + _34;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _36 = *_35;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _37 = k_177 * 2000;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _38 = _37 + j_176;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _39 = (long unsigned int) _38;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _40 = _39 * 4;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _41 = _70 + _40;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _42 = *_41;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _43 = _36 * _42;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? _44 = _43 + D__lsm.58_163;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? k_88 = k_177 + 1;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? ivtmp_285 = ivtmp_286 - 1;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? if (ivtmp_285 != 0)
+matmul_experiments.cpp:310:25: note:   init: phi relevant? _288 = PHI <_44(13)>
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? *_30 = _288;
+matmul_experiments.cpp:310:25: note:   vec_stmt_relevant_p: stmt has vdefs.
+matmul_experiments.cpp:310:25: note:   mark relevant 5, live 0: *_30 = _288;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? j_86 = j_176 + 1;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? ivtmp_283 = ivtmp_284 - 1;
+matmul_experiments.cpp:310:25: note:   init: stmt relevant? if (ivtmp_283 != 0)
+matmul_experiments.cpp:310:25: note:   worklist: examine stmt: *_30 = _288;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _288 = PHI <_44(13)>, type of def: internal
+matmul_experiments.cpp:310:25: note:   mark relevant 5, live 0: _288 = PHI <_44(13)>
+matmul_experiments.cpp:310:25: note:   worklist: examine stmt: _288 = PHI <_44(13)>
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _43 + D__lsm.58_163, type of def: internal
+matmul_experiments.cpp:310:25: note:   inner-loop def-stmt defining outer-loop stmt.
+matmul_experiments.cpp:310:25: note:   mark relevant 3, live 0: _44 = _43 + D__lsm.58_163;
+matmul_experiments.cpp:310:25: note:   worklist: examine stmt: _44 = _43 + D__lsm.58_163;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _36 * _42, type of def: internal
+matmul_experiments.cpp:310:25: note:   mark relevant 3, live 0: _43 = _36 * _42;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>, type of def: nested cycle
+matmul_experiments.cpp:310:25: note:   mark relevant 3, live 0: D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+matmul_experiments.cpp:310:25: note:   worklist: examine stmt: D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _43 + D__lsm.58_163, type of def: internal
+matmul_experiments.cpp:310:25: note:   mark relevant 3, live 0: _44 = _43 + D__lsm.58_163;
+matmul_experiments.cpp:310:25: note:   already marked relevant/live.
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand *_30, type of def: internal
+matmul_experiments.cpp:310:25: note:   outer-loop def-stmt defining inner-loop stmt.
+matmul_experiments.cpp:310:25: note:   mark relevant 5, live 0: D__lsm.58_164 = *_30;
+matmul_experiments.cpp:310:25: note:   worklist: examine stmt: D__lsm.58_164 = *_30;
+matmul_experiments.cpp:310:25: note:   worklist: examine stmt: _43 = _36 * _42;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand *_35, type of def: internal
+matmul_experiments.cpp:310:25: note:   mark relevant 3, live 0: _36 = *_35;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand *_41, type of def: internal
+matmul_experiments.cpp:310:25: note:   mark relevant 3, live 0: _42 = *_41;
+matmul_experiments.cpp:310:25: note:   worklist: examine stmt: _42 = *_41;
+matmul_experiments.cpp:310:25: note:   worklist: examine stmt: _36 = *_35;
+matmul_experiments.cpp:310:25: note:   === vect_analyze_data_ref_dependences ===
+(compute_affine_dependence
+  ref_a: *_30, stmt_a: D__lsm.58_164 = *_30;
+  ref_b: *_30, stmt_b: *_30 = _288;
+(analyze_overlapping_iterations 
+  (chrec_a = {0B, +, 4}_6)
+  (chrec_b = {0B, +, 4}_6)
+  (overlap_iterations_a = [0])
+  (overlap_iterations_b = [0]))
+)
+(compute_affine_dependence
+  ref_a: *_35, stmt_a: _36 = *_35;
+  ref_b: *_30, stmt_b: *_30 = _288;
+) -> no dependence
+(compute_affine_dependence
+  ref_a: *_41, stmt_a: _42 = *_41;
+  ref_b: *_30, stmt_b: *_30 = _288;
+) -> no dependence
+matmul_experiments.cpp:310:25: note:   dependence distance  = 0.
+matmul_experiments.cpp:310:25: note:   dependence distance == 0 between *_30 and *_30
+matmul_experiments.cpp:310:25: note:   === vect_determine_vectorization_factor ===
+matmul_experiments.cpp:310:25: note:   ==> examining phi: j_176 = PHI <j_86(30), 0(17)>
+matmul_experiments.cpp:310:25: note:   ==> examining phi: .MEM_185 = PHI <.MEM_80(30), .MEM_186(17)>
+matmul_experiments.cpp:310:25: note:   ==> examining phi: ivtmp_284 = PHI <ivtmp_283(30), 2000(17)>
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _27 = _26 + j_176;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _28 = (long unsigned int) _27;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _29 = _28 * 4;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining pattern def stmt: patt_251 = (unsigned int) _27;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining pattern def stmt: patt_250 = patt_251 * 4;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining pattern statement: patt_249 = (long unsigned int) patt_250;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _30 = _73 + _29;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: D__lsm.58_164 = *_30;
+matmul_experiments.cpp:310:25: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:310:25: note:   nunits = 4
+matmul_experiments.cpp:310:25: note:   ==> examining phi: k_177 = PHI <k_88(31), 0(15)>
+matmul_experiments.cpp:310:25: note:   ==> examining phi: .MEM_184 = PHI <.MEM_184(31), .MEM_185(15)>
+matmul_experiments.cpp:310:25: note:   ==> examining phi: D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+matmul_experiments.cpp:310:25: note:   get vectype for scalar type:  float
+matmul_experiments.cpp:310:25: note:   vectype: vector(4) float
+matmul_experiments.cpp:310:25: note:   nunits = 4
+matmul_experiments.cpp:310:25: note:   ==> examining phi: ivtmp_286 = PHI <ivtmp_285(31), 2000(15)>
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _32 = _26 + k_177;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _33 = (long unsigned int) _32;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _34 = _33 * 4;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining pattern def stmt: patt_248 = (unsigned int) _32;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining pattern def stmt: patt_247 = patt_248 * 4;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining pattern statement: patt_231 = (long unsigned int) patt_247;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _35 = _68 + _34;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _36 = *_35;
+matmul_experiments.cpp:310:25: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:310:25: note:   nunits = 4
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _37 = k_177 * 2000;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _38 = _37 + j_176;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _39 = (long unsigned int) _38;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _40 = _39 * 4;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining pattern def stmt: patt_230 = (unsigned int) _38;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining pattern def stmt: patt_229 = patt_230 * 4;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining pattern statement: patt_228 = (long unsigned int) patt_229;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _41 = _70 + _40;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _42 = *_41;
+matmul_experiments.cpp:310:25: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:310:25: note:   nunits = 4
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _43 = _36 * _42;
+matmul_experiments.cpp:310:25: note:   get vectype for scalar type: float
+matmul_experiments.cpp:310:25: note:   vectype: vector(4) float
+matmul_experiments.cpp:310:25: note:   nunits = 4
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _44 = _43 + D__lsm.58_163;
+matmul_experiments.cpp:310:25: note:   get vectype for scalar type: float
+matmul_experiments.cpp:310:25: note:   vectype: vector(4) float
+matmul_experiments.cpp:310:25: note:   nunits = 4
+matmul_experiments.cpp:310:25: note:   ==> examining statement: k_88 = k_177 + 1;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: ivtmp_285 = ivtmp_286 - 1;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: if (ivtmp_285 != 0)
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining phi: _288 = PHI <_44(13)>
+matmul_experiments.cpp:310:25: note:   get vectype for scalar type:  float
+matmul_experiments.cpp:310:25: note:   vectype: vector(4) float
+matmul_experiments.cpp:310:25: note:   nunits = 4
+matmul_experiments.cpp:310:25: note:   ==> examining statement: *_30 = _288;
+matmul_experiments.cpp:310:25: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:310:25: note:   nunits = 4
+matmul_experiments.cpp:310:25: note:   ==> examining statement: j_86 = j_176 + 1;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: ivtmp_283 = ivtmp_284 - 1;
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: if (ivtmp_283 != 0)
+matmul_experiments.cpp:310:25: note:   skip.
+matmul_experiments.cpp:310:25: note:   vectorization factor = 4
+matmul_experiments.cpp:310:25: note:   === vect_compute_single_scalar_iteration_cost ===
+0x65b21f0 *_30 1 times scalar_load costs 12 in body
+0x65b21f0 *_35 50 times scalar_load costs 30000 in body
+0x65b21f0 *_41 50 times scalar_load costs 30000 in body
+0x65b21f0 _36 * _42 50 times scalar_stmt costs 40000 in body
+0x65b21f0 _43 + D__lsm.58_163 50 times scalar_stmt costs 30000 in body
+0x65b21f0 _288 1 times scalar_store costs 12 in body
+matmul_experiments.cpp:310:25: note:   === vect_analyze_slp ===
+matmul_experiments.cpp:310:25: note:   === vect_make_slp_decision ===
+matmul_experiments.cpp:310:25: note:  vectorization_factor = 4, niters = 2000
+matmul_experiments.cpp:310:25: note:   === vect_analyze_data_refs_alignment ===
+matmul_experiments.cpp:310:25: note:   recording new base alignment for _73 + (sizetype) i_175 * 8000
+  alignment:    4
+  misalignment: 0
+  based on:     D__lsm.58_164 = *_30;
+matmul_experiments.cpp:310:25: note:   recording new base alignment for _68 + (sizetype) i_175 * 8000
+  alignment:    4
+  misalignment: 0
+  based on:     _36 = *_35;
+matmul_experiments.cpp:310:25: note:   recording new base alignment for _70 + (sizetype) j_176 * 4
+  alignment:    4
+  misalignment: 0
+  based on:     _42 = *_41;
+matmul_experiments.cpp:310:25: note:   recording new base alignment for _70
+  alignment:    4
+  misalignment: 0
+  based on:     _42 = *_41;
+matmul_experiments.cpp:310:25: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:310:25: note:   can't force alignment of ref: *_30
+matmul_experiments.cpp:310:25: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:310:25: missed:   inner step doesn't divide the vector alignment.
+matmul_experiments.cpp:310:25: missed:   Unknown alignment for access: *_35
+matmul_experiments.cpp:310:25: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:310:25: note:   inner step divides the vector alignment.
+matmul_experiments.cpp:310:25: note:   can't force alignment of ref: *_41
+matmul_experiments.cpp:310:25: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:310:25: note:   can't force alignment of ref: *_30
+matmul_experiments.cpp:310:25: note:   === vect_prune_runtime_alias_test_list ===
+matmul_experiments.cpp:310:25: note:   === vect_enhance_data_refs_alignment ===
+matmul_experiments.cpp:310:25: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:310:25: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:310:25: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:310:25: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:310:25: note:   vect_can_advance_ivs_p:
+matmul_experiments.cpp:310:25: note:   Analyze phi: j_176 = PHI <j_86(30), 0(17)>
+matmul_experiments.cpp:310:25: note:   Analyze phi: .MEM_185 = PHI <.MEM_80(30), .MEM_186(17)>
+matmul_experiments.cpp:310:25: note:   reduc or virtual phi. skip.
+matmul_experiments.cpp:310:25: note:   Analyze phi: ivtmp_284 = PHI <ivtmp_283(30), 2000(17)>
+matmul_experiments.cpp:310:25: note:   === vect_dissolve_slp_only_groups ===
+matmul_experiments.cpp:310:25: note:   === vect_analyze_loop_operations ===
+matmul_experiments.cpp:310:25: note:   examining phi: j_176 = PHI <j_86(30), 0(17)>
+matmul_experiments.cpp:310:25: note:   examining phi: .MEM_185 = PHI <.MEM_80(30), .MEM_186(17)>
+matmul_experiments.cpp:310:25: note:   examining phi: ivtmp_284 = PHI <ivtmp_283(30), 2000(17)>
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _27 = _26 + j_176;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _28 = (long unsigned int) _27;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _29 = _28 * 4;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _30 = _73 + _29;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: D__lsm.58_164 = *_30;
+matmul_experiments.cpp:310:25: missed:   can't operate on partial vectors because the target doesn't have the appropriate partial vectorization load or store.
+matmul_experiments.cpp:310:25: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:310:25: note:   vect_model_load_cost: unaligned supported by hardware.
+matmul_experiments.cpp:310:25: note:   vect_model_load_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:310:25: note:   examining phi: k_177 = PHI <k_88(31), 0(15)>
+matmul_experiments.cpp:310:25: note:   examining phi: .MEM_184 = PHI <.MEM_184(31), .MEM_185(15)>
+matmul_experiments.cpp:310:25: note:   examining phi: D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+matmul_experiments.cpp:310:25: note:   examining phi: ivtmp_286 = PHI <ivtmp_285(31), 2000(15)>
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _32 = _26 + k_177;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _33 = (long unsigned int) _32;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _34 = _33 * 4;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _35 = _68 + _34;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _36 = *_35;
+matmul_experiments.cpp:310:25: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:310:25: note:   vect_model_load_cost: unaligned supported by hardware.
+matmul_experiments.cpp:310:25: note:   vect_model_load_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _37 = k_177 * 2000;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _38 = _37 + j_176;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _39 = (long unsigned int) _38;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _40 = _39 * 4;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _41 = _70 + _40;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _42 = *_41;
+matmul_experiments.cpp:310:25: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:310:25: note:   vect_model_load_cost: unaligned supported by hardware.
+matmul_experiments.cpp:310:25: note:   vect_model_load_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _43 = _36 * _42;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand *_35, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand *_41, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:    === vectorizable_operation ===
+matmul_experiments.cpp:310:25: note:    vect_model_simple_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:310:25: note:   ==> examining statement: _44 = _43 + D__lsm.58_163;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _36 * _42, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>, type of def: nested cycle
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:    === vectorizable_operation ===
+matmul_experiments.cpp:310:25: note:    vect_model_simple_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:310:25: note:   ==> examining statement: k_88 = k_177 + 1;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: ivtmp_285 = ivtmp_286 - 1;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: if (ivtmp_285 != 0)
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   examining phi: _288 = PHI <_44(13)>
+matmul_experiments.cpp:310:25: note:   ==> examining statement: *_30 = _288;
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: operand _288 = PHI <_44(13)>, type of def: internal
+matmul_experiments.cpp:310:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:310:25: note:   vect_model_store_cost: unaligned supported by hardware.
+matmul_experiments.cpp:310:25: note:   vect_model_store_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:310:25: note:   ==> examining statement: j_86 = j_176 + 1;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: ivtmp_283 = ivtmp_284 - 1;
+matmul_experiments.cpp:310:25: note:   irrelevant.
+matmul_experiments.cpp:310:25: note:   ==> examining statement: if (ivtmp_283 != 0)
+matmul_experiments.cpp:310:25: note:   irrelevant.
+0x65a1f00 *_30 1 times unaligned_load (misalign -1) costs 12 in body
+0x65a1f00 *_35 1 times unaligned_load (misalign -1) costs 600 in body
+0x65a1f00 *_41 1 times unaligned_load (misalign -1) costs 600 in body
+0x65a1f00 _36 * _42 1 times vector_stmt costs 800 in body
+0x65a1f00 _43 + D__lsm.58_163 1 times vector_stmt costs 600 in body
+0x65a1f00 _288 1 times unaligned_store (misalign -1) costs 12 in body
+matmul_experiments.cpp:310:25: note:  operating only on full vectors.
+matmul_experiments.cpp:310:25: note:  Cost model analysis: 
+  Vector inside of loop cost: 2624
+  Vector prologue cost: 0
+  Vector epilogue cost: 0
+  Scalar iteration cost: 130024
+  Scalar outside cost: 0
+  Vector outside cost: 0
+  prologue iterations: 0
+  epilogue iterations: 0
+  Calculated minimum iters for profitability: 0
+matmul_experiments.cpp:310:25: note:    Runtime profitability threshold = 4
+matmul_experiments.cpp:310:25: note:    Static estimate profitability threshold = 4
+Analyzing # of iterations of loop 6
+  exit condition [1999, + , 4294967295] != 0
+  bounds on difference of bases: -1999 ... -1999
+  result:
+    # of iterations 1999, bounded by 1999
+Statement (exit)if (ivtmp_283 != 0)
+ is executed at most 1999 (bounded by 1999) + 1 times in loop 6.
+Induction variable (int) _26 + 1 * iteration does not wrap in statement _27 = _26 + j_176;
+ in loop 6.
+Statement _27 = _26 + j_176;
+ is executed at most 3999999 (bounded by 3999999) + 1 times in loop 6.
+Induction variable (float *) _73 + (long unsigned int) _26 * 4 + 4 * iteration does not wrap in statement _30 = _73 + _29;
+ in loop 6.
+Statement _30 = _73 + _29;
+ is executed at most 4611686018427387902 (bounded by 4611686018427387902) + 1 times in loop 6.
+Induction variable (int) 1 + 1 * iteration does not wrap in statement j_86 = j_176 + 1;
+ in loop 6.
+Statement j_86 = j_176 + 1;
+ is executed at most 1999 (bounded by 1999) + 1 times in loop 6.
+Induction variable (int) 3998000 + 1 * iteration does not wrap in statement _38 = _37 + j_176;
+ in loop 6.
+Statement _38 = _37 + j_176;
+ is executed at most 1999 (bounded by 1999) + 1 times in loop 6.
+Induction variable (float *) _70 + 4 * iteration does not wrap in statement _41 = _70 + _40;
+ in loop 6.
+Statement _41 = _70 + _40;
+ is executed at most 4611686018427387902 (bounded by 4611686018427387902) + 1 times in loop 6.
+matmul_experiments.cpp:310:25: note:  ***** Analysis succeeded with vector mode V4SF
+matmul_experiments.cpp:310:25: note:  ***** The result for vector mode V16QI would be the same
+matmul_experiments.cpp:310:25: note:  ***** Choosing vector mode V4SF
+matmul_experiments.cpp:310:25: optimized: loop vectorized using 16 byte vectors
+matmul_experiments.cpp:310:25: note:  === vec_transform_loop ===
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: j_176 = PHI <j_86(30), 0(38)>
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: .MEM_185 = PHI <.MEM_80(30), .MEM_186(38)>
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: ivtmp_284 = PHI <ivtmp_283(30), 2000(38)>
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _27 = _26 + j_176;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _28 = (long unsigned int) _27;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: patt_251 = (unsigned int) _27;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: patt_250 = patt_251 * 4;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: patt_249 = (long unsigned int) patt_250;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _30 = _73 + _29;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: D__lsm.58_164 = *_30;
+matmul_experiments.cpp:310:25: note:  transform statement.
+matmul_experiments.cpp:310:25: note:  transform load. ncopies = 1
+matmul_experiments.cpp:310:25: note:  create vector_type-pointer variable to type: vector(4) float  vectorizing a pointer ref: *_73 + (sizetype) i_175 * 8000
+matmul_experiments.cpp:310:25: note:  created vectp.62_227
+matmul_experiments.cpp:310:25: note:  add new stmt: vect_D__lsm.58_164.63_222 = MEM <vector(4) float> [(float *)vectp.61_224];
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: k_177 = PHI <k_88(31), 0(15)>
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: .MEM_184 = PHI <.MEM_184(31), .MEM_185(15)>
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+matmul_experiments.cpp:310:25: note:  transform phi.
+matmul_experiments.cpp:310:25: note:  vect_get_vec_defs_for_operand: D__lsm.58_164
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand *_30, type of def: internal
+matmul_experiments.cpp:310:25: note:    def_stmt =  D__lsm.58_164 = *_30;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: ivtmp_286 = PHI <ivtmp_285(31), 2000(15)>
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: vect_D__lsm.58_163.64_221 = PHI <(31), vect_D__lsm.58_164.63_222(15)>
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _32 = _26 + k_177;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _33 = (long unsigned int) _32;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: patt_248 = (unsigned int) _32;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: patt_247 = patt_248 * 4;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: patt_231 = (long unsigned int) patt_247;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _35 = _68 + _34;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _36 = *_35;
+matmul_experiments.cpp:310:25: note:  transform statement.
+matmul_experiments.cpp:310:25: note:  transform load. ncopies = 1
+matmul_experiments.cpp:310:25: note:  add new stmt: vect_cst__220 = {_36, _36, _36, _36};
+matmul_experiments.cpp:310:25: note:  created new init_stmt: vect_cst__220 = {_36, _36, _36, _36};
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _37 = k_177 * 2000;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _38 = _37 + j_176;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _39 = (long unsigned int) _38;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: patt_230 = (unsigned int) _38;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: patt_229 = patt_230 * 4;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: patt_228 = (long unsigned int) patt_229;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _41 = _70 + _40;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _42 = *_41;
+matmul_experiments.cpp:310:25: note:  transform statement.
+matmul_experiments.cpp:310:25: note:  transform load. ncopies = 1
+matmul_experiments.cpp:310:25: note:  create vector_type-pointer variable to type: vector(4) float  vectorizing a pointer ref: *_70
+matmul_experiments.cpp:310:25: note:  created _70
+matmul_experiments.cpp:310:25: note:  add new stmt: vect__42.67_215 = MEM <vector(4) float> [(float *)vectp.65_217];
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _43 = _36 * _42;
+matmul_experiments.cpp:310:25: note:  transform statement.
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand *_35, type of def: internal
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand *_41, type of def: internal
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:  transform binary/unary operation.
+matmul_experiments.cpp:310:25: note:  vect_get_vec_defs_for_operand: _36
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand *_35, type of def: internal
+matmul_experiments.cpp:310:25: note:    def_stmt =  _36 = *_35;
+matmul_experiments.cpp:310:25: note:  vect_get_vec_defs_for_operand: _42
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand *_41, type of def: internal
+matmul_experiments.cpp:310:25: note:    def_stmt =  _42 = *_41;
+matmul_experiments.cpp:310:25: note:  add new stmt: vect__43.68_214 = vect_cst__220 * vect__42.67_215;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: _44 = _43 + D__lsm.58_163;
+matmul_experiments.cpp:310:25: note:  transform statement.
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand _36 * _42, type of def: internal
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>, type of def: nested cycle
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:  transform binary/unary operation.
+matmul_experiments.cpp:310:25: note:  vect_get_vec_defs_for_operand: _43
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand _36 * _42, type of def: internal
+matmul_experiments.cpp:310:25: note:    def_stmt =  _43 = _36 * _42;
+matmul_experiments.cpp:310:25: note:  vect_get_vec_defs_for_operand: D__lsm.58_163
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>, type of def: nested cycle
+matmul_experiments.cpp:310:25: note:    def_stmt =  D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+matmul_experiments.cpp:310:25: note:  add new stmt: vect__44.69_213 = vect__43.68_214 + vect_D__lsm.58_163.64_221;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: k_88 = k_177 + 1;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: ivtmp_285 = ivtmp_286 - 1;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: if (ivtmp_285 != 0)
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: _288 = PHI <_44(13)>
+matmul_experiments.cpp:310:25: note:  transform phi.
+matmul_experiments.cpp:310:25: note:  vect_get_vec_defs_for_operand: _44
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand _43 + D__lsm.58_163, type of def: internal
+matmul_experiments.cpp:310:25: note:    def_stmt =  _44 = _43 + D__lsm.58_163;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing phi: vect__288.70_212 = PHI <vect__44.69_213(13)>
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: *_30 = _288;
+matmul_experiments.cpp:310:25: note:  transform statement.
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand _288 = PHI <_44(13)>, type of def: internal
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:310:25: note:  transform store. ncopies = 1
+matmul_experiments.cpp:310:25: note:  vect_get_vec_defs_for_operand: _288
+matmul_experiments.cpp:310:25: note:  vect_is_simple_use: operand _288 = PHI <_44(13)>, type of def: internal
+matmul_experiments.cpp:310:25: note:    def_stmt =  _288 = PHI <_44(13)>
+matmul_experiments.cpp:310:25: note:  create vector_type-pointer variable to type: vector(4) float  vectorizing a pointer ref: *_73 + (sizetype) i_175 * 8000
+matmul_experiments.cpp:310:25: note:  created vectp.72_211
+matmul_experiments.cpp:310:25: note:  add new stmt: MEM <vector(4) float> [(float *)vectp.71_208] = vect__288.70_212;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: j_86 = j_176 + 1;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: ivtmp_283 = ivtmp_284 - 1;
+matmul_experiments.cpp:310:25: note:  ------>vectorizing statement: if (ivtmp_283 != 0)
+matmul_experiments.cpp:310:25: note:  New loop exit condition: if (ivtmp_204 < 500)
+matmul_experiments.cpp:310:25: note:  LOOP VECTORIZED
+matmul_experiments.cpp:310:25: note:  OUTER LOOP VECTORIZED
+
+
+Analyzing loop at matmul_experiments.cpp:313
+matmul_experiments.cpp:313:27: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:313:27: missed:  outer-loop already vectorized.
+matmul_experiments.cpp:313:27: missed: couldn't vectorize loop
+
+Analyzing loop at matmul_experiments.cpp:272
+matmul_experiments.cpp:272:25: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:272:25: note:   === vect_analyze_loop_form ===
+matmul_experiments.cpp:272:25: missed:   not vectorized: multiple nested loops.
+matmul_experiments.cpp:272:25: missed:  bad loop form.
+matmul_experiments.cpp:272:25: missed: couldn't vectorize loop
+
+Analyzing loop at matmul_experiments.cpp:276
+matmul_experiments.cpp:276:23: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:276:23: note:   === vect_analyze_loop_form ===
+matmul_experiments.cpp:276:23: missed:   not vectorized: multiple nested loops.
+matmul_experiments.cpp:276:23: missed:  bad loop form.
+matmul_experiments.cpp:276:23: missed: couldn't vectorize loop
+
+Analyzing loop at matmul_experiments.cpp:279
+matmul_experiments.cpp:279:25: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:279:25: note:   === vect_analyze_loop_form ===
+matmul_experiments.cpp:279:25: note:    === vect_analyze_loop_form ===
+matmul_experiments.cpp:279:25: note:     === get_loop_niters ===
+Analyzing # of iterations of loop 10
+  exit condition [1999, + , 4294967295] != 0
+  bounds on difference of bases: -1999 ... -1999
+  result:
+    # of iterations 1999, bounded by 1999
+matmul_experiments.cpp:279:25: note:   Considering outer-loop vectorization.
+matmul_experiments.cpp:279:25: note:    === get_loop_niters ===
+Analyzing # of iterations of loop 9
+  exit condition [1999, + , 4294967295] != 0
+  bounds on difference of bases: -1999 ... -1999
+  result:
+    # of iterations 1999, bounded by 1999
+Creating dr for *_11
+analyze_innermost: success.
+	base_address: _73 + (sizetype) i_171 * 8000
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_73 + (sizetype) i_171 * 8000
+	Access function 0: {0B, +, 4}_9
+Creating dr for *_16
+analyze_innermost: success.
+	base_address: _68 + (sizetype) i_171 * 8000
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_68 + (sizetype) i_171 * 8000
+	Access function 0: {0B, +, 4}_10
+Creating dr for *_22
+analyze_innermost: success.
+	base_address: _70 + (sizetype) j_172 * 4
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 8000
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 64
+	base_object: *_70
+	Access function 0: {{0B, +, 4}_9, +, 8000}_10
+Creating dr for *_11
+analyze_innermost: success.
+	base_address: _73 + (sizetype) i_171 * 8000
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_73 + (sizetype) i_171 * 8000
+	Access function 0: {0B, +, 4}_9
+matmul_experiments.cpp:279:25: note:   === vect_analyze_data_refs ===
+matmul_experiments.cpp:279:25: note:   got vectype for stmt: D__lsm.59_152 = *_11;
+vector(4) float
+matmul_experiments.cpp:279:25: note:   analyze in outer loop: *(_68 + (sizetype) i_171 * 8000)
+analyze_innermost: success.
+matmul_experiments.cpp:279:25: note:   	outer base_address: _68 + (sizetype) i_171 * 8000
+	outer offset from base address: 0
+	outer constant offset from base address: 0
+	outer step: 0
+	outer base alignment: 4
+
+	outer base misalignment: 0
+	outer offset alignment: 128
+	outer step alignment: 128
+matmul_experiments.cpp:279:25: note:   got vectype for stmt: _17 = *_16;
+vector(4) float
+matmul_experiments.cpp:279:25: note:   analyze in outer loop: *(_70 + (sizetype) j_172 * 4)
+analyze_innermost: success.
+matmul_experiments.cpp:279:25: note:   	outer base_address: _70
+	outer offset from base address: 0
+	outer constant offset from base address: 0
+	outer step: 4
+	outer base alignment: 4
+
+	outer base misalignment: 0
+	outer offset alignment: 128
+	outer step alignment: 4
+matmul_experiments.cpp:279:25: note:   got vectype for stmt: _23 = *_22;
+vector(4) float
+matmul_experiments.cpp:279:25: note:   got vectype for stmt: *_11 = _289;
+vector(4) float
+matmul_experiments.cpp:279:25: note:   === vect_analyze_scalar_cycles ===
+matmul_experiments.cpp:279:25: note:   Analyze phi: j_172 = PHI <j_91(34), 0(10)>
+matmul_experiments.cpp:279:25: note:   Access function of PHI: {0, +, 1}_9
+matmul_experiments.cpp:279:25: note:   step: 1,  init: 0
+matmul_experiments.cpp:279:25: note:   Detected induction.
+matmul_experiments.cpp:279:25: note:   Analyze phi: .MEM_181 = PHI <.MEM_71(34), .MEM_182(10)>
+matmul_experiments.cpp:279:25: note:   Analyze phi: ivtmp_276 = PHI <ivtmp_260(34), 2000(10)>
+matmul_experiments.cpp:279:25: note:   Access function of PHI: {2000, +, 4294967295}_9
+matmul_experiments.cpp:279:25: note:   step: 4294967295,  init: 2000
+matmul_experiments.cpp:279:25: note:   Detected induction.
+matmul_experiments.cpp:279:25: note:   === vect_analyze_scalar_cycles ===
+matmul_experiments.cpp:279:25: note:   Analyze phi: k_173 = PHI <k_93(35), 0(8)>
+matmul_experiments.cpp:279:25: note:   Access function of PHI: {0, +, 1}_10
+matmul_experiments.cpp:279:25: note:   step: 1,  init: 0
+matmul_experiments.cpp:279:25: note:   Detected induction.
+matmul_experiments.cpp:279:25: note:   Analyze phi: .MEM_180 = PHI <.MEM_180(35), .MEM_181(8)>
+matmul_experiments.cpp:279:25: note:   Analyze phi: D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+matmul_experiments.cpp:279:25: note:   Access function of PHI: {D__lsm.59_152, +, _24}_10
+matmul_experiments.cpp:279:25: note:   step: _24,  init: D__lsm.59_152
+matmul_experiments.cpp:279:25: missed:   step unknown.
+matmul_experiments.cpp:279:25: note:   Analyze phi: ivtmp_278 = PHI <ivtmp_277(35), 2000(8)>
+matmul_experiments.cpp:279:25: note:   Access function of PHI: {2000, +, 4294967295}_10
+matmul_experiments.cpp:279:25: note:   step: 4294967295,  init: 2000
+matmul_experiments.cpp:279:25: note:   Detected induction.
+matmul_experiments.cpp:279:25: note:   Analyze phi: D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+matmul_experiments.cpp:279:25: note:   detected nested cycle: _25 = _24 + D__lsm.59_161;
+matmul_experiments.cpp:279:25: note:   Detected vectorizable nested cycle.
+matmul_experiments.cpp:279:25: note:   === vect_determine_precisions ===
+matmul_experiments.cpp:279:25: note:   ivtmp_260 has no range info
+matmul_experiments.cpp:279:25: note:   j_91 has range [0x1, 0x7d0]
+matmul_experiments.cpp:279:25: note:   can narrow to unsigned:11 without loss of precision: j_91 = j_172 + 1;
+matmul_experiments.cpp:279:25: note:   ivtmp_277 has no range info
+matmul_experiments.cpp:279:25: note:   k_93 has range [0x1, 0x7d0]
+matmul_experiments.cpp:279:25: note:   can narrow to unsigned:11 without loss of precision: k_93 = k_173 + 1;
+matmul_experiments.cpp:279:25: note:   _21 has range [0x0, 0xf423fc]
+matmul_experiments.cpp:279:25: note:   can narrow to unsigned:24 without loss of precision: _21 = _20 * 4;
+matmul_experiments.cpp:279:25: note:   _20 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:279:25: note:   _19 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:279:25: note:   can narrow to unsigned:22 without loss of precision: _19 = _18 + j_172;
+matmul_experiments.cpp:279:25: note:   _18 has range [0x0, 0x3d0130]
+matmul_experiments.cpp:279:25: note:   can narrow to unsigned:22 without loss of precision: _18 = k_173 * 2000;
+matmul_experiments.cpp:279:25: note:   _15 has range [0x0, 0xf423fc]
+matmul_experiments.cpp:279:25: note:   can narrow to unsigned:24 without loss of precision: _15 = _14 * 4;
+matmul_experiments.cpp:279:25: note:   _14 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:279:25: note:   _13 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:279:25: note:   can narrow to unsigned:22 without loss of precision: _13 = _7 + k_173;
+matmul_experiments.cpp:279:25: note:   _10 has range [0x0, 0xf423fc]
+matmul_experiments.cpp:279:25: note:   can narrow to unsigned:24 without loss of precision: _10 = _9 * 4;
+matmul_experiments.cpp:279:25: note:   _9 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:279:25: note:   _8 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:279:25: note:   can narrow to unsigned:22 without loss of precision: _8 = _7 + j_172;
+matmul_experiments.cpp:279:25: note:   === vect_pattern_recog ===
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand i_171 * 2000, type of def: external
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand (long unsigned int) _8, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _7 + j_172, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_recog_over_widening_pattern: detected: _10 = _9 * 4;
+matmul_experiments.cpp:279:25: note:   demoting long unsigned int to unsigned int
+matmul_experiments.cpp:279:25: note:   created pattern stmt: patt_202 = patt_203 * 4;
+matmul_experiments.cpp:279:25: note:   over_widening pattern recognized: patt_201 = (long unsigned int) patt_202;
+matmul_experiments.cpp:279:25: note:   extra pattern stmt: patt_203 = (unsigned int) _8;
+matmul_experiments.cpp:279:25: note:   extra pattern stmt: patt_202 = patt_203 * 4;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand (unsigned int) _8, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _7 + j_172, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand i_171 * 2000, type of def: external
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand (long unsigned int) _13, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _7 + k_173, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_recog_over_widening_pattern: detected: _15 = _14 * 4;
+matmul_experiments.cpp:279:25: note:   demoting long unsigned int to unsigned int
+matmul_experiments.cpp:279:25: note:   created pattern stmt: patt_199 = patt_200 * 4;
+matmul_experiments.cpp:279:25: note:   over_widening pattern recognized: patt_198 = (long unsigned int) patt_199;
+matmul_experiments.cpp:279:25: note:   extra pattern stmt: patt_200 = (unsigned int) _13;
+matmul_experiments.cpp:279:25: note:   extra pattern stmt: patt_199 = patt_200 * 4;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand (unsigned int) _13, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _7 + k_173, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand k_173 = PHI <k_93(35), 0(8)>, type of def: induction
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand k_173 * 2000, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand (long unsigned int) _19, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _18 + j_172, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_recog_over_widening_pattern: detected: _21 = _20 * 4;
+matmul_experiments.cpp:279:25: note:   demoting long unsigned int to unsigned int
+matmul_experiments.cpp:279:25: note:   created pattern stmt: patt_196 = patt_197 * 4;
+matmul_experiments.cpp:279:25: note:   over_widening pattern recognized: patt_195 = (long unsigned int) patt_196;
+matmul_experiments.cpp:279:25: note:   extra pattern stmt: patt_197 = (unsigned int) _19;
+matmul_experiments.cpp:279:25: note:   extra pattern stmt: patt_196 = patt_197 * 4;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand (unsigned int) _19, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _18 + j_172, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand k_173 = PHI <k_93(35), 0(8)>, type of def: induction
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand k_173 = PHI <k_93(35), 0(8)>, type of def: induction
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand ivtmp_278 = PHI <ivtmp_277(35), 2000(8)>, type of def: induction
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand j_172 = PHI <j_91(34), 0(10)>, type of def: induction
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand j_172 = PHI <j_91(34), 0(10)>, type of def: induction
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand ivtmp_276 = PHI <ivtmp_260(34), 2000(10)>, type of def: induction
+matmul_experiments.cpp:279:25: note:   === vect_analyze_data_ref_accesses ===
+matmul_experiments.cpp:279:25: note:   zero step in outer loop.
+matmul_experiments.cpp:279:25: note:   === vect_mark_stmts_to_be_vectorized ===
+matmul_experiments.cpp:279:25: note:   init: phi relevant? j_172 = PHI <j_91(34), 0(10)>
+matmul_experiments.cpp:279:25: note:   init: phi relevant? .MEM_181 = PHI <.MEM_71(34), .MEM_182(10)>
+matmul_experiments.cpp:279:25: note:   init: phi relevant? ivtmp_276 = PHI <ivtmp_260(34), 2000(10)>
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _8 = _7 + j_172;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _9 = (long unsigned int) _8;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _10 = _9 * 4;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _11 = _73 + _10;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? D__lsm.59_152 = *_11;
+matmul_experiments.cpp:279:25: note:   init: phi relevant? k_173 = PHI <k_93(35), 0(8)>
+matmul_experiments.cpp:279:25: note:   init: phi relevant? .MEM_180 = PHI <.MEM_180(35), .MEM_181(8)>
+matmul_experiments.cpp:279:25: note:   init: phi relevant? D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+matmul_experiments.cpp:279:25: note:   init: phi relevant? ivtmp_278 = PHI <ivtmp_277(35), 2000(8)>
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _13 = _7 + k_173;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _14 = (long unsigned int) _13;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _15 = _14 * 4;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _16 = _68 + _15;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _17 = *_16;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _18 = k_173 * 2000;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _19 = _18 + j_172;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _20 = (long unsigned int) _19;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _21 = _20 * 4;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _22 = _70 + _21;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _23 = *_22;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _24 = _17 * _23;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? _25 = _24 + D__lsm.59_161;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? k_93 = k_173 + 1;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? ivtmp_277 = ivtmp_278 - 1;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? if (ivtmp_277 != 0)
+matmul_experiments.cpp:279:25: note:   init: phi relevant? _289 = PHI <_25(6)>
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? *_11 = _289;
+matmul_experiments.cpp:279:25: note:   vec_stmt_relevant_p: stmt has vdefs.
+matmul_experiments.cpp:279:25: note:   mark relevant 5, live 0: *_11 = _289;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? j_91 = j_172 + 1;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? ivtmp_260 = ivtmp_276 - 1;
+matmul_experiments.cpp:279:25: note:   init: stmt relevant? if (ivtmp_260 != 0)
+matmul_experiments.cpp:279:25: note:   worklist: examine stmt: *_11 = _289;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _289 = PHI <_25(6)>, type of def: internal
+matmul_experiments.cpp:279:25: note:   mark relevant 5, live 0: _289 = PHI <_25(6)>
+matmul_experiments.cpp:279:25: note:   worklist: examine stmt: _289 = PHI <_25(6)>
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _24 + D__lsm.59_161, type of def: internal
+matmul_experiments.cpp:279:25: note:   inner-loop def-stmt defining outer-loop stmt.
+matmul_experiments.cpp:279:25: note:   mark relevant 3, live 0: _25 = _24 + D__lsm.59_161;
+matmul_experiments.cpp:279:25: note:   worklist: examine stmt: _25 = _24 + D__lsm.59_161;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _17 * _23, type of def: internal
+matmul_experiments.cpp:279:25: note:   mark relevant 3, live 0: _24 = _17 * _23;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>, type of def: nested cycle
+matmul_experiments.cpp:279:25: note:   mark relevant 3, live 0: D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+matmul_experiments.cpp:279:25: note:   worklist: examine stmt: D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _24 + D__lsm.59_161, type of def: internal
+matmul_experiments.cpp:279:25: note:   mark relevant 3, live 0: _25 = _24 + D__lsm.59_161;
+matmul_experiments.cpp:279:25: note:   already marked relevant/live.
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand *_11, type of def: internal
+matmul_experiments.cpp:279:25: note:   outer-loop def-stmt defining inner-loop stmt.
+matmul_experiments.cpp:279:25: note:   mark relevant 5, live 0: D__lsm.59_152 = *_11;
+matmul_experiments.cpp:279:25: note:   worklist: examine stmt: D__lsm.59_152 = *_11;
+matmul_experiments.cpp:279:25: note:   worklist: examine stmt: _24 = _17 * _23;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand *_16, type of def: internal
+matmul_experiments.cpp:279:25: note:   mark relevant 3, live 0: _17 = *_16;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand *_22, type of def: internal
+matmul_experiments.cpp:279:25: note:   mark relevant 3, live 0: _23 = *_22;
+matmul_experiments.cpp:279:25: note:   worklist: examine stmt: _23 = *_22;
+matmul_experiments.cpp:279:25: note:   worklist: examine stmt: _17 = *_16;
+matmul_experiments.cpp:279:25: note:   === vect_analyze_data_ref_dependences ===
+(compute_affine_dependence
+  ref_a: *_11, stmt_a: D__lsm.59_152 = *_11;
+  ref_b: *_11, stmt_b: *_11 = _289;
+(analyze_overlapping_iterations 
+  (chrec_a = {0B, +, 4}_9)
+  (chrec_b = {0B, +, 4}_9)
+  (overlap_iterations_a = [0])
+  (overlap_iterations_b = [0]))
+)
+(compute_affine_dependence
+  ref_a: *_16, stmt_a: _17 = *_16;
+  ref_b: *_11, stmt_b: *_11 = _289;
+) -> no dependence
+(compute_affine_dependence
+  ref_a: *_22, stmt_a: _23 = *_22;
+  ref_b: *_11, stmt_b: *_11 = _289;
+) -> no dependence
+matmul_experiments.cpp:279:25: note:   dependence distance  = 0.
+matmul_experiments.cpp:279:25: note:   dependence distance == 0 between *_11 and *_11
+matmul_experiments.cpp:279:25: note:   === vect_determine_vectorization_factor ===
+matmul_experiments.cpp:279:25: note:   ==> examining phi: j_172 = PHI <j_91(34), 0(10)>
+matmul_experiments.cpp:279:25: note:   ==> examining phi: .MEM_181 = PHI <.MEM_71(34), .MEM_182(10)>
+matmul_experiments.cpp:279:25: note:   ==> examining phi: ivtmp_276 = PHI <ivtmp_260(34), 2000(10)>
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _8 = _7 + j_172;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _9 = (long unsigned int) _8;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _10 = _9 * 4;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining pattern def stmt: patt_203 = (unsigned int) _8;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining pattern def stmt: patt_202 = patt_203 * 4;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining pattern statement: patt_201 = (long unsigned int) patt_202;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _11 = _73 + _10;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: D__lsm.59_152 = *_11;
+matmul_experiments.cpp:279:25: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:279:25: note:   nunits = 4
+matmul_experiments.cpp:279:25: note:   ==> examining phi: k_173 = PHI <k_93(35), 0(8)>
+matmul_experiments.cpp:279:25: note:   ==> examining phi: .MEM_180 = PHI <.MEM_180(35), .MEM_181(8)>
+matmul_experiments.cpp:279:25: note:   ==> examining phi: D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+matmul_experiments.cpp:279:25: note:   get vectype for scalar type:  float
+matmul_experiments.cpp:279:25: note:   vectype: vector(4) float
+matmul_experiments.cpp:279:25: note:   nunits = 4
+matmul_experiments.cpp:279:25: note:   ==> examining phi: ivtmp_278 = PHI <ivtmp_277(35), 2000(8)>
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _13 = _7 + k_173;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _14 = (long unsigned int) _13;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _15 = _14 * 4;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining pattern def stmt: patt_200 = (unsigned int) _13;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining pattern def stmt: patt_199 = patt_200 * 4;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining pattern statement: patt_198 = (long unsigned int) patt_199;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _16 = _68 + _15;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _17 = *_16;
+matmul_experiments.cpp:279:25: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:279:25: note:   nunits = 4
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _18 = k_173 * 2000;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _19 = _18 + j_172;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _20 = (long unsigned int) _19;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _21 = _20 * 4;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining pattern def stmt: patt_197 = (unsigned int) _19;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining pattern def stmt: patt_196 = patt_197 * 4;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining pattern statement: patt_195 = (long unsigned int) patt_196;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _22 = _70 + _21;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _23 = *_22;
+matmul_experiments.cpp:279:25: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:279:25: note:   nunits = 4
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _24 = _17 * _23;
+matmul_experiments.cpp:279:25: note:   get vectype for scalar type: float
+matmul_experiments.cpp:279:25: note:   vectype: vector(4) float
+matmul_experiments.cpp:279:25: note:   nunits = 4
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _25 = _24 + D__lsm.59_161;
+matmul_experiments.cpp:279:25: note:   get vectype for scalar type: float
+matmul_experiments.cpp:279:25: note:   vectype: vector(4) float
+matmul_experiments.cpp:279:25: note:   nunits = 4
+matmul_experiments.cpp:279:25: note:   ==> examining statement: k_93 = k_173 + 1;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: ivtmp_277 = ivtmp_278 - 1;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: if (ivtmp_277 != 0)
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining phi: _289 = PHI <_25(6)>
+matmul_experiments.cpp:279:25: note:   get vectype for scalar type:  float
+matmul_experiments.cpp:279:25: note:   vectype: vector(4) float
+matmul_experiments.cpp:279:25: note:   nunits = 4
+matmul_experiments.cpp:279:25: note:   ==> examining statement: *_11 = _289;
+matmul_experiments.cpp:279:25: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:279:25: note:   nunits = 4
+matmul_experiments.cpp:279:25: note:   ==> examining statement: j_91 = j_172 + 1;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: ivtmp_260 = ivtmp_276 - 1;
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: if (ivtmp_260 != 0)
+matmul_experiments.cpp:279:25: note:   skip.
+matmul_experiments.cpp:279:25: note:   vectorization factor = 4
+matmul_experiments.cpp:279:25: note:   === vect_compute_single_scalar_iteration_cost ===
+0x6583880 *_11 1 times scalar_load costs 12 in body
+0x6583880 *_16 50 times scalar_load costs 30000 in body
+0x6583880 *_22 50 times scalar_load costs 30000 in body
+0x6583880 _17 * _23 50 times scalar_stmt costs 40000 in body
+0x6583880 _24 + D__lsm.59_161 50 times scalar_stmt costs 30000 in body
+0x6583880 _289 1 times scalar_store costs 12 in body
+matmul_experiments.cpp:279:25: note:   === vect_analyze_slp ===
+matmul_experiments.cpp:279:25: note:   === vect_make_slp_decision ===
+matmul_experiments.cpp:279:25: note:  vectorization_factor = 4, niters = 2000
+matmul_experiments.cpp:279:25: note:   === vect_analyze_data_refs_alignment ===
+matmul_experiments.cpp:279:25: note:   recording new base alignment for _73 + (sizetype) i_171 * 8000
+  alignment:    4
+  misalignment: 0
+  based on:     D__lsm.59_152 = *_11;
+matmul_experiments.cpp:279:25: note:   recording new base alignment for _68 + (sizetype) i_171 * 8000
+  alignment:    4
+  misalignment: 0
+  based on:     _17 = *_16;
+matmul_experiments.cpp:279:25: note:   recording new base alignment for _70 + (sizetype) j_172 * 4
+  alignment:    4
+  misalignment: 0
+  based on:     _23 = *_22;
+matmul_experiments.cpp:279:25: note:   recording new base alignment for _70
+  alignment:    4
+  misalignment: 0
+  based on:     _23 = *_22;
+matmul_experiments.cpp:279:25: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:279:25: note:   can't force alignment of ref: *_11
+matmul_experiments.cpp:279:25: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:279:25: missed:   inner step doesn't divide the vector alignment.
+matmul_experiments.cpp:279:25: missed:   Unknown alignment for access: *_16
+matmul_experiments.cpp:279:25: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:279:25: note:   inner step divides the vector alignment.
+matmul_experiments.cpp:279:25: note:   can't force alignment of ref: *_22
+matmul_experiments.cpp:279:25: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:279:25: note:   can't force alignment of ref: *_11
+matmul_experiments.cpp:279:25: note:   === vect_prune_runtime_alias_test_list ===
+matmul_experiments.cpp:279:25: note:   === vect_enhance_data_refs_alignment ===
+matmul_experiments.cpp:279:25: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:279:25: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:279:25: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:279:25: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:279:25: note:   vect_can_advance_ivs_p:
+matmul_experiments.cpp:279:25: note:   Analyze phi: j_172 = PHI <j_91(34), 0(10)>
+matmul_experiments.cpp:279:25: note:   Analyze phi: .MEM_181 = PHI <.MEM_71(34), .MEM_182(10)>
+matmul_experiments.cpp:279:25: note:   reduc or virtual phi. skip.
+matmul_experiments.cpp:279:25: note:   Analyze phi: ivtmp_276 = PHI <ivtmp_260(34), 2000(10)>
+matmul_experiments.cpp:279:25: note:   === vect_dissolve_slp_only_groups ===
+matmul_experiments.cpp:279:25: note:   === vect_analyze_loop_operations ===
+matmul_experiments.cpp:279:25: note:   examining phi: j_172 = PHI <j_91(34), 0(10)>
+matmul_experiments.cpp:279:25: note:   examining phi: .MEM_181 = PHI <.MEM_71(34), .MEM_182(10)>
+matmul_experiments.cpp:279:25: note:   examining phi: ivtmp_276 = PHI <ivtmp_260(34), 2000(10)>
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _8 = _7 + j_172;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _9 = (long unsigned int) _8;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _10 = _9 * 4;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _11 = _73 + _10;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: D__lsm.59_152 = *_11;
+matmul_experiments.cpp:279:25: missed:   can't operate on partial vectors because the target doesn't have the appropriate partial vectorization load or store.
+matmul_experiments.cpp:279:25: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:279:25: note:   vect_model_load_cost: unaligned supported by hardware.
+matmul_experiments.cpp:279:25: note:   vect_model_load_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:279:25: note:   examining phi: k_173 = PHI <k_93(35), 0(8)>
+matmul_experiments.cpp:279:25: note:   examining phi: .MEM_180 = PHI <.MEM_180(35), .MEM_181(8)>
+matmul_experiments.cpp:279:25: note:   examining phi: D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+matmul_experiments.cpp:279:25: note:   examining phi: ivtmp_278 = PHI <ivtmp_277(35), 2000(8)>
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _13 = _7 + k_173;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _14 = (long unsigned int) _13;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _15 = _14 * 4;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _16 = _68 + _15;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _17 = *_16;
+matmul_experiments.cpp:279:25: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:279:25: note:   vect_model_load_cost: unaligned supported by hardware.
+matmul_experiments.cpp:279:25: note:   vect_model_load_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _18 = k_173 * 2000;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _19 = _18 + j_172;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _20 = (long unsigned int) _19;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _21 = _20 * 4;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _22 = _70 + _21;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _23 = *_22;
+matmul_experiments.cpp:279:25: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:279:25: note:   vect_model_load_cost: unaligned supported by hardware.
+matmul_experiments.cpp:279:25: note:   vect_model_load_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _24 = _17 * _23;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand *_16, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand *_22, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:    === vectorizable_operation ===
+matmul_experiments.cpp:279:25: note:    vect_model_simple_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:279:25: note:   ==> examining statement: _25 = _24 + D__lsm.59_161;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _17 * _23, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>, type of def: nested cycle
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:    === vectorizable_operation ===
+matmul_experiments.cpp:279:25: note:    vect_model_simple_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:279:25: note:   ==> examining statement: k_93 = k_173 + 1;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: ivtmp_277 = ivtmp_278 - 1;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: if (ivtmp_277 != 0)
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   examining phi: _289 = PHI <_25(6)>
+matmul_experiments.cpp:279:25: note:   ==> examining statement: *_11 = _289;
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: operand _289 = PHI <_25(6)>, type of def: internal
+matmul_experiments.cpp:279:25: note:   vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:279:25: note:   vect_model_store_cost: unaligned supported by hardware.
+matmul_experiments.cpp:279:25: note:   vect_model_store_cost: inside_cost = 12, prologue_cost = 0 .
+matmul_experiments.cpp:279:25: note:   ==> examining statement: j_91 = j_172 + 1;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: ivtmp_260 = ivtmp_276 - 1;
+matmul_experiments.cpp:279:25: note:   irrelevant.
+matmul_experiments.cpp:279:25: note:   ==> examining statement: if (ivtmp_260 != 0)
+matmul_experiments.cpp:279:25: note:   irrelevant.
+0x659e290 *_11 1 times unaligned_load (misalign -1) costs 12 in body
+0x659e290 *_16 1 times unaligned_load (misalign -1) costs 600 in body
+0x659e290 *_22 1 times unaligned_load (misalign -1) costs 600 in body
+0x659e290 _17 * _23 1 times vector_stmt costs 800 in body
+0x659e290 _24 + D__lsm.59_161 1 times vector_stmt costs 600 in body
+0x659e290 _289 1 times unaligned_store (misalign -1) costs 12 in body
+matmul_experiments.cpp:279:25: note:  operating only on full vectors.
+matmul_experiments.cpp:279:25: note:  Cost model analysis: 
+  Vector inside of loop cost: 2624
+  Vector prologue cost: 0
+  Vector epilogue cost: 0
+  Scalar iteration cost: 130024
+  Scalar outside cost: 0
+  Vector outside cost: 0
+  prologue iterations: 0
+  epilogue iterations: 0
+  Calculated minimum iters for profitability: 0
+matmul_experiments.cpp:279:25: note:    Runtime profitability threshold = 4
+matmul_experiments.cpp:279:25: note:    Static estimate profitability threshold = 4
+Analyzing # of iterations of loop 9
+  exit condition [1999, + , 4294967295] != 0
+  bounds on difference of bases: -1999 ... -1999
+  result:
+    # of iterations 1999, bounded by 1999
+Statement (exit)if (ivtmp_260 != 0)
+ is executed at most 1999 (bounded by 1999) + 1 times in loop 9.
+Induction variable (int) _7 + 1 * iteration does not wrap in statement _8 = _7 + j_172;
+ in loop 9.
+Statement _8 = _7 + j_172;
+ is executed at most 3999999 (bounded by 3999999) + 1 times in loop 9.
+Induction variable (float *) _73 + (long unsigned int) _7 * 4 + 4 * iteration does not wrap in statement _11 = _73 + _10;
+ in loop 9.
+Statement _11 = _73 + _10;
+ is executed at most 4611686018427387902 (bounded by 4611686018427387902) + 1 times in loop 9.
+Induction variable (int) 1 + 1 * iteration does not wrap in statement j_91 = j_172 + 1;
+ in loop 9.
+Statement j_91 = j_172 + 1;
+ is executed at most 1999 (bounded by 1999) + 1 times in loop 9.
+Induction variable (int) 3998000 + 1 * iteration does not wrap in statement _19 = _18 + j_172;
+ in loop 9.
+Statement _19 = _18 + j_172;
+ is executed at most 1999 (bounded by 1999) + 1 times in loop 9.
+Induction variable (float *) _70 + 4 * iteration does not wrap in statement _22 = _70 + _21;
+ in loop 9.
+Statement _22 = _70 + _21;
+ is executed at most 4611686018427387902 (bounded by 4611686018427387902) + 1 times in loop 9.
+matmul_experiments.cpp:279:25: note:  ***** Analysis succeeded with vector mode V4SF
+matmul_experiments.cpp:279:25: note:  ***** The result for vector mode V16QI would be the same
+matmul_experiments.cpp:279:25: note:  ***** Choosing vector mode V4SF
+matmul_experiments.cpp:279:25: optimized: loop vectorized using 16 byte vectors
+matmul_experiments.cpp:279:25: note:  === vec_transform_loop ===
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: j_172 = PHI <j_91(34), 0(39)>
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: .MEM_181 = PHI <.MEM_71(34), .MEM_182(39)>
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: ivtmp_276 = PHI <ivtmp_260(34), 2000(39)>
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _8 = _7 + j_172;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _9 = (long unsigned int) _8;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: patt_203 = (unsigned int) _8;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: patt_202 = patt_203 * 4;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: patt_201 = (long unsigned int) patt_202;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _11 = _73 + _10;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: D__lsm.59_152 = *_11;
+matmul_experiments.cpp:279:25: note:  transform statement.
+matmul_experiments.cpp:279:25: note:  transform load. ncopies = 1
+matmul_experiments.cpp:279:25: note:  create vector_type-pointer variable to type: vector(4) float  vectorizing a pointer ref: *_73 + (sizetype) i_171 * 8000
+matmul_experiments.cpp:279:25: note:  created vectp.74_194
+matmul_experiments.cpp:279:25: note:  add new stmt: vect_D__lsm.59_152.75_189 = MEM <vector(4) float> [(float *)vectp.73_191];
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: k_173 = PHI <k_93(35), 0(8)>
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: .MEM_180 = PHI <.MEM_180(35), .MEM_181(8)>
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+matmul_experiments.cpp:279:25: note:  transform phi.
+matmul_experiments.cpp:279:25: note:  vect_get_vec_defs_for_operand: D__lsm.59_152
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand *_11, type of def: internal
+matmul_experiments.cpp:279:25: note:    def_stmt =  D__lsm.59_152 = *_11;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: ivtmp_278 = PHI <ivtmp_277(35), 2000(8)>
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: vect_D__lsm.59_161.76_188 = PHI <(35), vect_D__lsm.59_152.75_189(8)>
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _13 = _7 + k_173;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _14 = (long unsigned int) _13;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: patt_200 = (unsigned int) _13;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: patt_199 = patt_200 * 4;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: patt_198 = (long unsigned int) patt_199;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _16 = _68 + _15;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _17 = *_16;
+matmul_experiments.cpp:279:25: note:  transform statement.
+matmul_experiments.cpp:279:25: note:  transform load. ncopies = 1
+matmul_experiments.cpp:279:25: note:  add new stmt: vect_cst__166 = {_17, _17, _17, _17};
+matmul_experiments.cpp:279:25: note:  created new init_stmt: vect_cst__166 = {_17, _17, _17, _17};
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _18 = k_173 * 2000;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _19 = _18 + j_172;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _20 = (long unsigned int) _19;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: patt_197 = (unsigned int) _19;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: patt_196 = patt_197 * 4;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: patt_195 = (long unsigned int) patt_196;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _22 = _70 + _21;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _23 = *_22;
+matmul_experiments.cpp:279:25: note:  transform statement.
+matmul_experiments.cpp:279:25: note:  transform load. ncopies = 1
+matmul_experiments.cpp:279:25: note:  create vector_type-pointer variable to type: vector(4) float  vectorizing a pointer ref: *_70
+matmul_experiments.cpp:279:25: note:  created _70
+matmul_experiments.cpp:279:25: note:  add new stmt: vect__23.79_157 = MEM <vector(4) float> [(float *)vectp.77_159];
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _24 = _17 * _23;
+matmul_experiments.cpp:279:25: note:  transform statement.
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand *_16, type of def: internal
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand *_22, type of def: internal
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:  transform binary/unary operation.
+matmul_experiments.cpp:279:25: note:  vect_get_vec_defs_for_operand: _17
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand *_16, type of def: internal
+matmul_experiments.cpp:279:25: note:    def_stmt =  _17 = *_16;
+matmul_experiments.cpp:279:25: note:  vect_get_vec_defs_for_operand: _23
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand *_22, type of def: internal
+matmul_experiments.cpp:279:25: note:    def_stmt =  _23 = *_22;
+matmul_experiments.cpp:279:25: note:  add new stmt: vect__24.80_156 = vect_cst__166 * vect__23.79_157;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: _25 = _24 + D__lsm.59_161;
+matmul_experiments.cpp:279:25: note:  transform statement.
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand _17 * _23, type of def: internal
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>, type of def: nested cycle
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:  transform binary/unary operation.
+matmul_experiments.cpp:279:25: note:  vect_get_vec_defs_for_operand: _24
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand _17 * _23, type of def: internal
+matmul_experiments.cpp:279:25: note:    def_stmt =  _24 = _17 * _23;
+matmul_experiments.cpp:279:25: note:  vect_get_vec_defs_for_operand: D__lsm.59_161
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>, type of def: nested cycle
+matmul_experiments.cpp:279:25: note:    def_stmt =  D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+matmul_experiments.cpp:279:25: note:  add new stmt: vect__25.81_155 = vect__24.80_156 + vect_D__lsm.59_161.76_188;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: k_93 = k_173 + 1;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: ivtmp_277 = ivtmp_278 - 1;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: if (ivtmp_277 != 0)
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: _289 = PHI <_25(6)>
+matmul_experiments.cpp:279:25: note:  transform phi.
+matmul_experiments.cpp:279:25: note:  vect_get_vec_defs_for_operand: _25
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand _24 + D__lsm.59_161, type of def: internal
+matmul_experiments.cpp:279:25: note:    def_stmt =  _25 = _24 + D__lsm.59_161;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing phi: vect__289.82_151 = PHI <vect__25.81_155(6)>
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: *_11 = _289;
+matmul_experiments.cpp:279:25: note:  transform statement.
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand _289 = PHI <_25(6)>, type of def: internal
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: vectype vector(4) float
+matmul_experiments.cpp:279:25: note:  transform store. ncopies = 1
+matmul_experiments.cpp:279:25: note:  vect_get_vec_defs_for_operand: _289
+matmul_experiments.cpp:279:25: note:  vect_is_simple_use: operand _289 = PHI <_25(6)>, type of def: internal
+matmul_experiments.cpp:279:25: note:    def_stmt =  _289 = PHI <_25(6)>
+matmul_experiments.cpp:279:25: note:  create vector_type-pointer variable to type: vector(4) float  vectorizing a pointer ref: *_73 + (sizetype) i_171 * 8000
+matmul_experiments.cpp:279:25: note:  created vectp.84_150
+matmul_experiments.cpp:279:25: note:  add new stmt: MEM <vector(4) float> [(float *)vectp.83_147] = vect__289.82_151;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: j_91 = j_172 + 1;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: ivtmp_260 = ivtmp_276 - 1;
+matmul_experiments.cpp:279:25: note:  ------>vectorizing statement: if (ivtmp_260 != 0)
+matmul_experiments.cpp:279:25: note:  New loop exit condition: if (ivtmp_143 < 500)
+matmul_experiments.cpp:279:25: note:  LOOP VECTORIZED
+matmul_experiments.cpp:279:25: note:  OUTER LOOP VECTORIZED
+
+
+Analyzing loop at matmul_experiments.cpp:282
+matmul_experiments.cpp:282:27: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:282:27: missed:  outer-loop already vectorized.
+matmul_experiments.cpp:282:27: missed: couldn't vectorize loop
+
+Analyzing loop at matmul_experiments.cpp:129
+matmul_experiments.cpp:129:21: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:129:21: note:   === vect_analyze_loop_form ===
+matmul_experiments.cpp:129:21: note:    === get_loop_niters ===
+Analyzing # of iterations of loop 2
+  exit condition [3999999, + , 4294967295] != 0
+  bounds on difference of bases: -3999999 ... -3999999
+  result:
+    # of iterations 3999999, bounded by 3999999
+Creating dr for *_6
+analyze_innermost: success.
+	base_address: _70
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_70
+	Access function 0: {0B, +, 4}_2
+matmul_experiments.cpp:129:21: note:   === vect_analyze_data_refs ===
+matmul_experiments.cpp:129:21: note:   got vectype for stmt: *_6 = 1.0e+0;
+vector(4) float
+matmul_experiments.cpp:129:21: note:   === vect_analyze_scalar_cycles ===
+matmul_experiments.cpp:129:21: note:   Analyze phi: i_168 = PHI <i_95(36), 0(27)>
+matmul_experiments.cpp:129:21: note:   Access function of PHI: {0, +, 1}_2
+matmul_experiments.cpp:129:21: note:   step: 1,  init: 0
+matmul_experiments.cpp:129:21: note:   Detected induction.
+matmul_experiments.cpp:129:21: note:   Analyze phi: .MEM_179 = PHI <.MEM_94(36), .MEM_96(27)>
+matmul_experiments.cpp:129:21: note:   Analyze phi: ivtmp_255 = PHI <ivtmp_254(36), 4000000(27)>
+matmul_experiments.cpp:129:21: note:   Access function of PHI: {4000000, +, 4294967295}_2
+matmul_experiments.cpp:129:21: note:   step: 4294967295,  init: 4000000
+matmul_experiments.cpp:129:21: note:   Detected induction.
+matmul_experiments.cpp:129:21: note:   === vect_determine_precisions ===
+matmul_experiments.cpp:129:21: note:   ivtmp_254 has no range info
+matmul_experiments.cpp:129:21: note:   i_95 has range [0x1, 0x3d0900]
+matmul_experiments.cpp:129:21: note:   can narrow to unsigned:22 without loss of precision: i_95 = i_168 + 1;
+matmul_experiments.cpp:129:21: note:   _5 has range [0x0, 0xf423fc]
+matmul_experiments.cpp:129:21: note:   can narrow to unsigned:24 without loss of precision: _5 = _4 * 4;
+matmul_experiments.cpp:129:21: note:   _4 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:129:21: note:   === vect_pattern_recog ===
+matmul_experiments.cpp:129:21: note:   vect_is_simple_use: operand (long unsigned int) i_168, type of def: internal
+matmul_experiments.cpp:129:21: note:   vect_is_simple_use: operand i_168 = PHI <i_95(36), 0(27)>, type of def: induction
+matmul_experiments.cpp:129:21: note:   vect_is_simple_use: operand (long unsigned int) i_168, type of def: internal
+matmul_experiments.cpp:129:21: note:   vect_is_simple_use: operand i_168 = PHI <i_95(36), 0(27)>, type of def: induction
+matmul_experiments.cpp:129:21: note:   vect_recog_widen_mult_pattern: detected: _5 = _4 * 4;
+matmul_experiments.cpp:129:21: note:   widen_mult pattern recognized: patt_138 = (long unsigned int) patt_142;
+matmul_experiments.cpp:129:21: note:   extra pattern stmt: patt_142 = i_168 w* 4;
+matmul_experiments.cpp:129:21: note:   vect_is_simple_use: operand i_168 = PHI <i_95(36), 0(27)>, type of def: induction
+matmul_experiments.cpp:129:21: note:   vect_is_simple_use: operand ivtmp_255 = PHI <ivtmp_254(36), 4000000(27)>, type of def: induction
+matmul_experiments.cpp:129:21: note:   === vect_analyze_data_ref_accesses ===
+matmul_experiments.cpp:129:21: note:   === vect_mark_stmts_to_be_vectorized ===
+matmul_experiments.cpp:129:21: note:   init: phi relevant? i_168 = PHI <i_95(36), 0(27)>
+matmul_experiments.cpp:129:21: note:   init: phi relevant? .MEM_179 = PHI <.MEM_94(36), .MEM_96(27)>
+matmul_experiments.cpp:129:21: note:   init: phi relevant? ivtmp_255 = PHI <ivtmp_254(36), 4000000(27)>
+matmul_experiments.cpp:129:21: note:   init: stmt relevant? _4 = (long unsigned int) i_168;
+matmul_experiments.cpp:129:21: note:   init: stmt relevant? _5 = _4 * 4;
+matmul_experiments.cpp:129:21: note:   init: stmt relevant? _6 = _70 + _5;
+matmul_experiments.cpp:129:21: note:   init: stmt relevant? *_6 = 1.0e+0;
+matmul_experiments.cpp:129:21: note:   vec_stmt_relevant_p: stmt has vdefs.
+matmul_experiments.cpp:129:21: note:   mark relevant 5, live 0: *_6 = 1.0e+0;
+matmul_experiments.cpp:129:21: note:   init: stmt relevant? i_95 = i_168 + 1;
+matmul_experiments.cpp:129:21: note:   init: stmt relevant? ivtmp_254 = ivtmp_255 - 1;
+matmul_experiments.cpp:129:21: note:   init: stmt relevant? if (ivtmp_254 != 0)
+matmul_experiments.cpp:129:21: note:   worklist: examine stmt: *_6 = 1.0e+0;
+matmul_experiments.cpp:129:21: note:   === vect_analyze_data_ref_dependences ===
+matmul_experiments.cpp:129:21: note:   === vect_determine_vectorization_factor ===
+matmul_experiments.cpp:129:21: note:   ==> examining phi: i_168 = PHI <i_95(36), 0(27)>
+matmul_experiments.cpp:129:21: note:   ==> examining phi: .MEM_179 = PHI <.MEM_94(36), .MEM_96(27)>
+matmul_experiments.cpp:129:21: note:   ==> examining phi: ivtmp_255 = PHI <ivtmp_254(36), 4000000(27)>
+matmul_experiments.cpp:129:21: note:   ==> examining statement: _4 = (long unsigned int) i_168;
+matmul_experiments.cpp:129:21: note:   skip.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: _5 = _4 * 4;
+matmul_experiments.cpp:129:21: note:   skip.
+matmul_experiments.cpp:129:21: note:   ==> examining pattern def stmt: patt_142 = i_168 w* 4;
+matmul_experiments.cpp:129:21: note:   skip.
+matmul_experiments.cpp:129:21: note:   ==> examining pattern statement: patt_138 = (long unsigned int) patt_142;
+matmul_experiments.cpp:129:21: note:   skip.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: _6 = _70 + _5;
+matmul_experiments.cpp:129:21: note:   skip.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: *_6 = 1.0e+0;
+matmul_experiments.cpp:129:21: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:129:21: note:   nunits = 4
+matmul_experiments.cpp:129:21: note:   ==> examining statement: i_95 = i_168 + 1;
+matmul_experiments.cpp:129:21: note:   skip.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: ivtmp_254 = ivtmp_255 - 1;
+matmul_experiments.cpp:129:21: note:   skip.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: if (ivtmp_254 != 0)
+matmul_experiments.cpp:129:21: note:   skip.
+matmul_experiments.cpp:129:21: note:   vectorization factor = 4
+matmul_experiments.cpp:129:21: note:   === vect_compute_single_scalar_iteration_cost ===
+0x64dff90 1.0e+0 1 times scalar_store costs 12 in body
+matmul_experiments.cpp:129:21: note:   === vect_analyze_slp ===
+matmul_experiments.cpp:129:21: note:   === vect_make_slp_decision ===
+matmul_experiments.cpp:129:21: note:  vectorization_factor = 4, niters = 4000000
+matmul_experiments.cpp:129:21: note:   === vect_analyze_data_refs_alignment ===
+matmul_experiments.cpp:129:21: note:   recording new base alignment for _70
+  alignment:    4
+  misalignment: 0
+  based on:     *_6 = 1.0e+0;
+matmul_experiments.cpp:129:21: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:129:21: note:   can't force alignment of ref: *_6
+matmul_experiments.cpp:129:21: note:   === vect_prune_runtime_alias_test_list ===
+matmul_experiments.cpp:129:21: note:   === vect_enhance_data_refs_alignment ===
+matmul_experiments.cpp:129:21: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:129:21: note:   vect_can_advance_ivs_p:
+matmul_experiments.cpp:129:21: note:   Analyze phi: i_168 = PHI <i_95(36), 0(27)>
+matmul_experiments.cpp:129:21: note:   Analyze phi: .MEM_179 = PHI <.MEM_94(36), .MEM_96(27)>
+matmul_experiments.cpp:129:21: note:   reduc or virtual phi. skip.
+matmul_experiments.cpp:129:21: note:   Analyze phi: ivtmp_255 = PHI <ivtmp_254(36), 4000000(27)>
+matmul_experiments.cpp:129:21: note:   vect_model_store_cost: aligned.
+matmul_experiments.cpp:129:21: note:   vect_get_data_access_cost: inside_cost = 12, outside_cost = 0.
+matmul_experiments.cpp:129:21: note:   vect_model_store_cost: aligned.
+matmul_experiments.cpp:129:21: note:   vect_get_data_access_cost: inside_cost = 12, outside_cost = 0.
+matmul_experiments.cpp:129:21: note:   vect_model_store_cost: unaligned supported by hardware.
+matmul_experiments.cpp:129:21: note:   vect_get_data_access_cost: inside_cost = 12, outside_cost = 0.
+matmul_experiments.cpp:129:21: note:   === vect_dissolve_slp_only_groups ===
+matmul_experiments.cpp:129:21: note:   === vect_analyze_loop_operations ===
+matmul_experiments.cpp:129:21: note:   examining phi: i_168 = PHI <i_95(36), 0(27)>
+matmul_experiments.cpp:129:21: note:   examining phi: .MEM_179 = PHI <.MEM_94(36), .MEM_96(27)>
+matmul_experiments.cpp:129:21: note:   examining phi: ivtmp_255 = PHI <ivtmp_254(36), 4000000(27)>
+matmul_experiments.cpp:129:21: note:   ==> examining statement: _4 = (long unsigned int) i_168;
+matmul_experiments.cpp:129:21: note:   irrelevant.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: _5 = _4 * 4;
+matmul_experiments.cpp:129:21: note:   irrelevant.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: _6 = _70 + _5;
+matmul_experiments.cpp:129:21: note:   irrelevant.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: *_6 = 1.0e+0;
+matmul_experiments.cpp:129:21: note:   vect_is_simple_use: operand 1.0e+0, type of def: constant
+matmul_experiments.cpp:129:21: missed:   can't operate on partial vectors because the target doesn't have the appropriate partial vectorization load or store.
+matmul_experiments.cpp:129:21: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:129:21: note:   vect_model_store_cost: unaligned supported by hardware.
+matmul_experiments.cpp:129:21: note:   vect_model_store_cost: inside_cost = 12, prologue_cost = 4 .
+matmul_experiments.cpp:129:21: note:   ==> examining statement: i_95 = i_168 + 1;
+matmul_experiments.cpp:129:21: note:   irrelevant.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: ivtmp_254 = ivtmp_255 - 1;
+matmul_experiments.cpp:129:21: note:   irrelevant.
+matmul_experiments.cpp:129:21: note:   ==> examining statement: if (ivtmp_254 != 0)
+matmul_experiments.cpp:129:21: note:   irrelevant.
+0x6631bc0 1.0e+0 1 times scalar_to_vec costs 4 in prologue
+0x6631bc0 1.0e+0 1 times unaligned_store (misalign -1) costs 12 in body
+matmul_experiments.cpp:129:21: note:  operating only on full vectors.
+matmul_experiments.cpp:129:21: note:  Cost model analysis: 
+  Vector inside of loop cost: 12
+  Vector prologue cost: 4
+  Vector epilogue cost: 0
+  Scalar iteration cost: 12
+  Scalar outside cost: 0
+  Vector outside cost: 4
+  prologue iterations: 0
+  epilogue iterations: 0
+  Calculated minimum iters for profitability: 1
+matmul_experiments.cpp:129:21: note:    Runtime profitability threshold = 4
+matmul_experiments.cpp:129:21: note:    Static estimate profitability threshold = 4
+Analyzing # of iterations of loop 2
+  exit condition [3999999, + , 4294967295] != 0
+  bounds on difference of bases: -3999999 ... -3999999
+  result:
+    # of iterations 3999999, bounded by 3999999
+Statement (exit)if (ivtmp_254 != 0)
+ is executed at most 3999999 (bounded by 3999999) + 1 times in loop 2.
+Induction variable (float *) _70 + 4 * iteration does not wrap in statement _6 = _70 + _5;
+ in loop 2.
+Statement _6 = _70 + _5;
+ is executed at most 4611686018427387902 (bounded by 4611686018427387902) + 1 times in loop 2.
+Induction variable (int) 1 + 1 * iteration does not wrap in statement i_95 = i_168 + 1;
+ in loop 2.
+Statement i_95 = i_168 + 1;
+ is executed at most 3999999 (bounded by 3999999) + 1 times in loop 2.
+matmul_experiments.cpp:129:21: note:  ***** Analysis succeeded with vector mode V4SF
+matmul_experiments.cpp:129:21: note:  ***** The result for vector mode V16QI would be the same
+matmul_experiments.cpp:129:21: note:  ***** Choosing vector mode V4SF
+matmul_experiments.cpp:129:21: optimized: loop vectorized using 16 byte vectors
+matmul_experiments.cpp:129:21: note:  === vec_transform_loop ===
+matmul_experiments.cpp:129:21: note:  ------>vectorizing phi: i_168 = PHI <i_95(36), 0(40)>
+matmul_experiments.cpp:129:21: note:  ------>vectorizing phi: .MEM_179 = PHI <.MEM_94(36), .MEM_96(40)>
+matmul_experiments.cpp:129:21: note:  ------>vectorizing phi: ivtmp_255 = PHI <ivtmp_254(36), 4000000(40)>
+matmul_experiments.cpp:129:21: note:  ------>vectorizing statement: _4 = (long unsigned int) i_168;
+matmul_experiments.cpp:129:21: note:  ------>vectorizing statement: patt_142 = i_168 w* 4;
+matmul_experiments.cpp:129:21: note:  ------>vectorizing statement: patt_138 = (long unsigned int) patt_142;
+matmul_experiments.cpp:129:21: note:  ------>vectorizing statement: _6 = _70 + _5;
+matmul_experiments.cpp:129:21: note:  ------>vectorizing statement: *_6 = 1.0e+0;
+matmul_experiments.cpp:129:21: note:  transform statement.
+matmul_experiments.cpp:129:21: note:  vect_is_simple_use: operand 1.0e+0, type of def: constant
+matmul_experiments.cpp:129:21: note:  transform store. ncopies = 1
+matmul_experiments.cpp:129:21: note:  vect_get_vec_defs_for_operand: 1.0e+0
+matmul_experiments.cpp:129:21: note:  vect_is_simple_use: operand 1.0e+0, type of def: constant
+matmul_experiments.cpp:129:21: note:  created new init_stmt: vect_cst__137 = { 1.0e+0, 1.0e+0, 1.0e+0, 1.0e+0 };
+matmul_experiments.cpp:129:21: note:  create vector_type-pointer variable to type: vector(4) float  vectorizing a pointer ref: *_70
+matmul_experiments.cpp:129:21: note:  created _70
+matmul_experiments.cpp:129:21: note:  add new stmt: MEM <vector(4) float> [(float *)vectp.85_133] = vect_cst__137;
+matmul_experiments.cpp:129:21: note:  ------>vectorizing statement: i_95 = i_168 + 1;
+matmul_experiments.cpp:129:21: note:  ------>vectorizing statement: ivtmp_254 = ivtmp_255 - 1;
+matmul_experiments.cpp:129:21: note:  ------>vectorizing statement: if (ivtmp_254 != 0)
+matmul_experiments.cpp:129:21: note:  New loop exit condition: if (ivtmp_124 < 1000000)
+matmul_experiments.cpp:129:21: note:  LOOP VECTORIZED
+
+
+Analyzing loop at matmul_experiments.cpp:126
+matmul_experiments.cpp:126:21: note:  === analyze_loop_nest ===
+matmul_experiments.cpp:126:21: note:   === vect_analyze_loop_form ===
+matmul_experiments.cpp:126:21: note:    === get_loop_niters ===
+Analyzing # of iterations of loop 1
+  exit condition [3999999, + , 4294967295] != 0
+  bounds on difference of bases: -3999999 ... -3999999
+  result:
+    # of iterations 3999999, bounded by 3999999
+Creating dr for *_3
+analyze_innermost: success.
+	base_address: _68
+	offset from base address: 0
+	constant offset from base address: 0
+	step: 4
+	base alignment: 4
+	base misalignment: 0
+	offset alignment: 128
+	step alignment: 4
+	base_object: *_68
+	Access function 0: {0B, +, 4}_1
+matmul_experiments.cpp:126:21: note:   === vect_analyze_data_refs ===
+matmul_experiments.cpp:126:21: note:   got vectype for stmt: *_3 = 1.0e+0;
+vector(4) float
+matmul_experiments.cpp:126:21: note:   === vect_analyze_scalar_cycles ===
+matmul_experiments.cpp:126:21: note:   Analyze phi: i_167 = PHI <i_97(37), 0(2)>
+matmul_experiments.cpp:126:21: note:   Access function of PHI: {0, +, 1}_1
+matmul_experiments.cpp:126:21: note:   step: 1,  init: 0
+matmul_experiments.cpp:126:21: note:   Detected induction.
+matmul_experiments.cpp:126:21: note:   Analyze phi: .MEM_178 = PHI <.MEM_96(37), .MEM_72(2)>
+matmul_experiments.cpp:126:21: note:   Analyze phi: ivtmp_253 = PHI <ivtmp_252(37), 4000000(2)>
+matmul_experiments.cpp:126:21: note:   Access function of PHI: {4000000, +, 4294967295}_1
+matmul_experiments.cpp:126:21: note:   step: 4294967295,  init: 4000000
+matmul_experiments.cpp:126:21: note:   Detected induction.
+matmul_experiments.cpp:126:21: note:   === vect_determine_precisions ===
+matmul_experiments.cpp:126:21: note:   ivtmp_252 has no range info
+matmul_experiments.cpp:126:21: note:   i_97 has range [0x1, 0x3d0900]
+matmul_experiments.cpp:126:21: note:   can narrow to unsigned:22 without loss of precision: i_97 = i_167 + 1;
+matmul_experiments.cpp:126:21: note:   _2 has range [0x0, 0xf423fc]
+matmul_experiments.cpp:126:21: note:   can narrow to unsigned:24 without loss of precision: _2 = _1 * 4;
+matmul_experiments.cpp:126:21: note:   _1 has range [0x0, 0x3d08ff]
+matmul_experiments.cpp:126:21: note:   === vect_pattern_recog ===
+matmul_experiments.cpp:126:21: note:   vect_is_simple_use: operand (long unsigned int) i_167, type of def: internal
+matmul_experiments.cpp:126:21: note:   vect_is_simple_use: operand i_167 = PHI <i_97(37), 0(2)>, type of def: induction
+matmul_experiments.cpp:126:21: note:   vect_is_simple_use: operand (long unsigned int) i_167, type of def: internal
+matmul_experiments.cpp:126:21: note:   vect_is_simple_use: operand i_167 = PHI <i_97(37), 0(2)>, type of def: induction
+matmul_experiments.cpp:126:21: note:   vect_recog_widen_mult_pattern: detected: _2 = _1 * 4;
+matmul_experiments.cpp:126:21: note:   widen_mult pattern recognized: patt_121 = (long unsigned int) patt_123;
+matmul_experiments.cpp:126:21: note:   extra pattern stmt: patt_123 = i_167 w* 4;
+matmul_experiments.cpp:126:21: note:   vect_is_simple_use: operand i_167 = PHI <i_97(37), 0(2)>, type of def: induction
+matmul_experiments.cpp:126:21: note:   vect_is_simple_use: operand ivtmp_253 = PHI <ivtmp_252(37), 4000000(2)>, type of def: induction
+matmul_experiments.cpp:126:21: note:   === vect_analyze_data_ref_accesses ===
+matmul_experiments.cpp:126:21: note:   === vect_mark_stmts_to_be_vectorized ===
+matmul_experiments.cpp:126:21: note:   init: phi relevant? i_167 = PHI <i_97(37), 0(2)>
+matmul_experiments.cpp:126:21: note:   init: phi relevant? .MEM_178 = PHI <.MEM_96(37), .MEM_72(2)>
+matmul_experiments.cpp:126:21: note:   init: phi relevant? ivtmp_253 = PHI <ivtmp_252(37), 4000000(2)>
+matmul_experiments.cpp:126:21: note:   init: stmt relevant? _1 = (long unsigned int) i_167;
+matmul_experiments.cpp:126:21: note:   init: stmt relevant? _2 = _1 * 4;
+matmul_experiments.cpp:126:21: note:   init: stmt relevant? _3 = _68 + _2;
+matmul_experiments.cpp:126:21: note:   init: stmt relevant? *_3 = 1.0e+0;
+matmul_experiments.cpp:126:21: note:   vec_stmt_relevant_p: stmt has vdefs.
+matmul_experiments.cpp:126:21: note:   mark relevant 5, live 0: *_3 = 1.0e+0;
+matmul_experiments.cpp:126:21: note:   init: stmt relevant? i_97 = i_167 + 1;
+matmul_experiments.cpp:126:21: note:   init: stmt relevant? ivtmp_252 = ivtmp_253 - 1;
+matmul_experiments.cpp:126:21: note:   init: stmt relevant? if (ivtmp_252 != 0)
+matmul_experiments.cpp:126:21: note:   worklist: examine stmt: *_3 = 1.0e+0;
+matmul_experiments.cpp:126:21: note:   === vect_analyze_data_ref_dependences ===
+matmul_experiments.cpp:126:21: note:   === vect_determine_vectorization_factor ===
+matmul_experiments.cpp:126:21: note:   ==> examining phi: i_167 = PHI <i_97(37), 0(2)>
+matmul_experiments.cpp:126:21: note:   ==> examining phi: .MEM_178 = PHI <.MEM_96(37), .MEM_72(2)>
+matmul_experiments.cpp:126:21: note:   ==> examining phi: ivtmp_253 = PHI <ivtmp_252(37), 4000000(2)>
+matmul_experiments.cpp:126:21: note:   ==> examining statement: _1 = (long unsigned int) i_167;
+matmul_experiments.cpp:126:21: note:   skip.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: _2 = _1 * 4;
+matmul_experiments.cpp:126:21: note:   skip.
+matmul_experiments.cpp:126:21: note:   ==> examining pattern def stmt: patt_123 = i_167 w* 4;
+matmul_experiments.cpp:126:21: note:   skip.
+matmul_experiments.cpp:126:21: note:   ==> examining pattern statement: patt_121 = (long unsigned int) patt_123;
+matmul_experiments.cpp:126:21: note:   skip.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: _3 = _68 + _2;
+matmul_experiments.cpp:126:21: note:   skip.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: *_3 = 1.0e+0;
+matmul_experiments.cpp:126:21: note:   precomputed vectype: vector(4) float
+matmul_experiments.cpp:126:21: note:   nunits = 4
+matmul_experiments.cpp:126:21: note:   ==> examining statement: i_97 = i_167 + 1;
+matmul_experiments.cpp:126:21: note:   skip.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: ivtmp_252 = ivtmp_253 - 1;
+matmul_experiments.cpp:126:21: note:   skip.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: if (ivtmp_252 != 0)
+matmul_experiments.cpp:126:21: note:   skip.
+matmul_experiments.cpp:126:21: note:   vectorization factor = 4
+matmul_experiments.cpp:126:21: note:   === vect_compute_single_scalar_iteration_cost ===
+0x653a540 1.0e+0 1 times scalar_store costs 12 in body
+matmul_experiments.cpp:126:21: note:   === vect_analyze_slp ===
+matmul_experiments.cpp:126:21: note:   === vect_make_slp_decision ===
+matmul_experiments.cpp:126:21: note:  vectorization_factor = 4, niters = 4000000
+matmul_experiments.cpp:126:21: note:   === vect_analyze_data_refs_alignment ===
+matmul_experiments.cpp:126:21: note:   recording new base alignment for _68
+  alignment:    4
+  misalignment: 0
+  based on:     *_3 = 1.0e+0;
+matmul_experiments.cpp:126:21: note:   vect_compute_data_ref_alignment:
+matmul_experiments.cpp:126:21: note:   can't force alignment of ref: *_3
+matmul_experiments.cpp:126:21: note:   === vect_prune_runtime_alias_test_list ===
+matmul_experiments.cpp:126:21: note:   === vect_enhance_data_refs_alignment ===
+matmul_experiments.cpp:126:21: missed:   Unknown misalignment, naturally aligned
+matmul_experiments.cpp:126:21: note:   vect_can_advance_ivs_p:
+matmul_experiments.cpp:126:21: note:   Analyze phi: i_167 = PHI <i_97(37), 0(2)>
+matmul_experiments.cpp:126:21: note:   Analyze phi: .MEM_178 = PHI <.MEM_96(37), .MEM_72(2)>
+matmul_experiments.cpp:126:21: note:   reduc or virtual phi. skip.
+matmul_experiments.cpp:126:21: note:   Analyze phi: ivtmp_253 = PHI <ivtmp_252(37), 4000000(2)>
+matmul_experiments.cpp:126:21: note:   vect_model_store_cost: aligned.
+matmul_experiments.cpp:126:21: note:   vect_get_data_access_cost: inside_cost = 12, outside_cost = 0.
+matmul_experiments.cpp:126:21: note:   vect_model_store_cost: aligned.
+matmul_experiments.cpp:126:21: note:   vect_get_data_access_cost: inside_cost = 12, outside_cost = 0.
+matmul_experiments.cpp:126:21: note:   vect_model_store_cost: unaligned supported by hardware.
+matmul_experiments.cpp:126:21: note:   vect_get_data_access_cost: inside_cost = 12, outside_cost = 0.
+matmul_experiments.cpp:126:21: note:   === vect_dissolve_slp_only_groups ===
+matmul_experiments.cpp:126:21: note:   === vect_analyze_loop_operations ===
+matmul_experiments.cpp:126:21: note:   examining phi: i_167 = PHI <i_97(37), 0(2)>
+matmul_experiments.cpp:126:21: note:   examining phi: .MEM_178 = PHI <.MEM_96(37), .MEM_72(2)>
+matmul_experiments.cpp:126:21: note:   examining phi: ivtmp_253 = PHI <ivtmp_252(37), 4000000(2)>
+matmul_experiments.cpp:126:21: note:   ==> examining statement: _1 = (long unsigned int) i_167;
+matmul_experiments.cpp:126:21: note:   irrelevant.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: _2 = _1 * 4;
+matmul_experiments.cpp:126:21: note:   irrelevant.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: _3 = _68 + _2;
+matmul_experiments.cpp:126:21: note:   irrelevant.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: *_3 = 1.0e+0;
+matmul_experiments.cpp:126:21: note:   vect_is_simple_use: operand 1.0e+0, type of def: constant
+matmul_experiments.cpp:126:21: missed:   can't operate on partial vectors because the target doesn't have the appropriate partial vectorization load or store.
+matmul_experiments.cpp:126:21: note:   Vectorizing an unaligned access.
+matmul_experiments.cpp:126:21: note:   vect_model_store_cost: unaligned supported by hardware.
+matmul_experiments.cpp:126:21: note:   vect_model_store_cost: inside_cost = 12, prologue_cost = 4 .
+matmul_experiments.cpp:126:21: note:   ==> examining statement: i_97 = i_167 + 1;
+matmul_experiments.cpp:126:21: note:   irrelevant.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: ivtmp_252 = ivtmp_253 - 1;
+matmul_experiments.cpp:126:21: note:   irrelevant.
+matmul_experiments.cpp:126:21: note:   ==> examining statement: if (ivtmp_252 != 0)
+matmul_experiments.cpp:126:21: note:   irrelevant.
+0x651e1e0 1.0e+0 1 times scalar_to_vec costs 4 in prologue
+0x651e1e0 1.0e+0 1 times unaligned_store (misalign -1) costs 12 in body
+matmul_experiments.cpp:126:21: note:  operating only on full vectors.
+matmul_experiments.cpp:126:21: note:  Cost model analysis: 
+  Vector inside of loop cost: 12
+  Vector prologue cost: 4
+  Vector epilogue cost: 0
+  Scalar iteration cost: 12
+  Scalar outside cost: 0
+  Vector outside cost: 4
+  prologue iterations: 0
+  epilogue iterations: 0
+  Calculated minimum iters for profitability: 1
+matmul_experiments.cpp:126:21: note:    Runtime profitability threshold = 4
+matmul_experiments.cpp:126:21: note:    Static estimate profitability threshold = 4
+Analyzing # of iterations of loop 1
+  exit condition [3999999, + , 4294967295] != 0
+  bounds on difference of bases: -3999999 ... -3999999
+  result:
+    # of iterations 3999999, bounded by 3999999
+Statement (exit)if (ivtmp_252 != 0)
+ is executed at most 3999999 (bounded by 3999999) + 1 times in loop 1.
+Induction variable (float *) _68 + 4 * iteration does not wrap in statement _3 = _68 + _2;
+ in loop 1.
+Statement _3 = _68 + _2;
+ is executed at most 4611686018427387902 (bounded by 4611686018427387902) + 1 times in loop 1.
+Induction variable (int) 1 + 1 * iteration does not wrap in statement i_97 = i_167 + 1;
+ in loop 1.
+Statement i_97 = i_167 + 1;
+ is executed at most 3999999 (bounded by 3999999) + 1 times in loop 1.
+matmul_experiments.cpp:126:21: note:  ***** Analysis succeeded with vector mode V4SF
+matmul_experiments.cpp:126:21: note:  ***** The result for vector mode V16QI would be the same
+matmul_experiments.cpp:126:21: note:  ***** Choosing vector mode V4SF
+matmul_experiments.cpp:126:21: optimized: loop vectorized using 16 byte vectors
+matmul_experiments.cpp:126:21: note:  === vec_transform_loop ===
+matmul_experiments.cpp:126:21: note:  ------>vectorizing phi: i_167 = PHI <i_97(37), 0(41)>
+matmul_experiments.cpp:126:21: note:  ------>vectorizing phi: .MEM_178 = PHI <.MEM_96(37), .MEM_72(41)>
+matmul_experiments.cpp:126:21: note:  ------>vectorizing phi: ivtmp_253 = PHI <ivtmp_252(37), 4000000(41)>
+matmul_experiments.cpp:126:21: note:  ------>vectorizing statement: _1 = (long unsigned int) i_167;
+matmul_experiments.cpp:126:21: note:  ------>vectorizing statement: patt_123 = i_167 w* 4;
+matmul_experiments.cpp:126:21: note:  ------>vectorizing statement: patt_121 = (long unsigned int) patt_123;
+matmul_experiments.cpp:126:21: note:  ------>vectorizing statement: _3 = _68 + _2;
+matmul_experiments.cpp:126:21: note:  ------>vectorizing statement: *_3 = 1.0e+0;
+matmul_experiments.cpp:126:21: note:  transform statement.
+matmul_experiments.cpp:126:21: note:  vect_is_simple_use: operand 1.0e+0, type of def: constant
+matmul_experiments.cpp:126:21: note:  transform store. ncopies = 1
+matmul_experiments.cpp:126:21: note:  vect_get_vec_defs_for_operand: 1.0e+0
+matmul_experiments.cpp:126:21: note:  vect_is_simple_use: operand 1.0e+0, type of def: constant
+matmul_experiments.cpp:126:21: note:  created new init_stmt: vect_cst__120 = { 1.0e+0, 1.0e+0, 1.0e+0, 1.0e+0 };
+matmul_experiments.cpp:126:21: note:  create vector_type-pointer variable to type: vector(4) float  vectorizing a pointer ref: *_68
+matmul_experiments.cpp:126:21: note:  created _68
+matmul_experiments.cpp:126:21: note:  add new stmt: MEM <vector(4) float> [(float *)vectp.87_115] = vect_cst__120;
+matmul_experiments.cpp:126:21: note:  ------>vectorizing statement: i_97 = i_167 + 1;
+matmul_experiments.cpp:126:21: note:  ------>vectorizing statement: ivtmp_252 = ivtmp_253 - 1;
+matmul_experiments.cpp:126:21: note:  ------>vectorizing statement: if (ivtmp_252 != 0)
+matmul_experiments.cpp:126:21: note:  New loop exit condition: if (ivtmp_65 < 1000000)
+matmul_experiments.cpp:126:21: note:  LOOP VECTORIZED
+
+matmul_experiments.cpp:6:5: note: vectorized 4 loops in function.
+Merging blocks 2 and 41
+Merging blocks 10 and 39
+Merging blocks 17 and 38
+Removing basic block 27
+;; basic block 27, loop depth 0
+;;  pred:      
+;;  succ:       40
+
+
+fix_loop_structure: fixing up loops for function
+int main ()
+{
+  vector(4) float * vectp.88;
+  vector(4) float * vectp.87;
+  vector(4) float * vectp.86;
+  vector(4) float * vectp.85;
+  vector(4) float * vectp.84;
+  vector(4) float * vectp.83;
+  vector(4) float vect__289.82;
+  vector(4) float vect__25.81;
+  vector(4) float vect__24.80;
+  vector(4) float vect__23.79;
+  vector(4) float * vectp.78;
+  vector(4) float * vectp.77;
+  vector(4) float vect_D__lsm.59_161.76;
+  vector(4) float vect_D__lsm.59_152.75;
+  vector(4) float * vectp.74;
+  vector(4) float * vectp.73;
+  vector(4) float * vectp.72;
+  vector(4) float * vectp.71;
+  vector(4) float vect__288.70;
+  vector(4) float vect__44.69;
+  vector(4) float vect__43.68;
+  vector(4) float vect__42.67;
+  vector(4) float * vectp.66;
+  vector(4) float * vectp.65;
+  vector(4) float vect_D__lsm.58_163.64;
+  vector(4) float vect_D__lsm.58_164.63;
+  vector(4) float * vectp.62;
+  vector(4) float * vectp.61;
+  float D__lsm.59;
+  float D__lsm.58;
+  char_type D.57922;
+  char __c;
+  char_type D.57919;
+  long int SR.34;
+  long int SR.36;
+  int k;
+  int j;
+  int i;
+  struct time_point end;
+  struct time_point start;
+  int run;
+  int k;
+  int j;
+  int i;
+  int run;
+  int i;
+  int i;
+  double avg_time;
+  long unsigned int _1;
+  long unsigned int _2;
+  float * _3;
+  long unsigned int _4;
+  long unsigned int _5;
+  float * _6;
+  int _7;
+  int _8;
+  long unsigned int _9;
+  long unsigned int _10;
+  float * _11;
+  int _13;
+  long unsigned int _14;
+  long unsigned int _15;
+  float * _16;
+  float _17;
+  int _18;
+  int _19;
+  long unsigned int _20;
+  long unsigned int _21;
+  float * _22;
+  float _23;
+  float _24;
+  float _25;
+  int _26;
+  int _27;
+  long unsigned int _28;
+  long unsigned int _29;
+  float * _30;
+  int _32;
+  long unsigned int _33;
+  long unsigned int _34;
+  float * _35;
+  float _36;
+  int _37;
+  int _38;
+  long unsigned int _39;
+  long unsigned int _40;
+  float * _41;
+  float _42;
+  float _43;
+  float _44;
+  unsigned int ivtmp_65;
+  float * _68;
+  float * _70;
+  float * _73;
+  unsigned int ivtmp_87;
+  double _99;
+  double _100;
+  long int _103;
+  struct __ostream_type & _104;
+  int (*) () * _111;
+  long int _112;
+  sizetype _113;
+  struct basic_ios * _114;
+  int _116;
+  struct basic_ostream & _117;
+  const struct __ctype_type * _119;
+  vector(4) float vect_cst__120;
+  char _122;
+  unsigned int ivtmp_124;
+  char _125;
+  unsigned int ivtmp_126;
+  char _127;
+  int (*) () * _129;
+  int (*) () _130;
+  char _132;
+  vector(4) float vect_cst__137;
+  unsigned int ivtmp_143;
+  unsigned int ivtmp_144;
+  sizetype _148;
+  sizetype _149;
+  vector(4) float vect_cst__166;
+  sizetype _192;
+  sizetype _193;
+  unsigned int ivtmp_204;
+  unsigned int ivtmp_205;
+  sizetype _209;
+  sizetype _210;
+  vector(4) float vect_cst__220;
+  sizetype _225;
+  sizetype _226;
+  unsigned int ivtmp_252;
+  unsigned int ivtmp_253;
+  unsigned int ivtmp_254;
+  unsigned int ivtmp_255;
+  unsigned int ivtmp_256;
+  unsigned int ivtmp_257;
+  unsigned int ivtmp_258;
+  unsigned int ivtmp_259;
+  unsigned int ivtmp_260;
+  unsigned int ivtmp_276;
+  unsigned int ivtmp_277;
+  unsigned int ivtmp_278;
+  unsigned int ivtmp_279;
+  unsigned int ivtmp_280;
+  unsigned int ivtmp_281;
+  unsigned int ivtmp_282;
+  unsigned int ivtmp_283;
+  unsigned int ivtmp_284;
+  unsigned int ivtmp_285;
+  unsigned int ivtmp_286;
+  float _288;
+  float _289;
+
+  <bb 2> [local count: 110]:
+  _68 = operator new [] (16000000);
+  _70 = operator new [] (16000000);
+  _73 = operator new [] (16000000);
+  vect_cst__120 = { 1.0e+0, 1.0e+0, 1.0e+0, 1.0e+0 };
+
+  <bb 3> [local count: 2750]:
+  # i_167 = PHI <i_97(37), 0(2)>
+  # ivtmp_253 = PHI <ivtmp_252(37), 4000000(2)>
+  # vectp.87_115 = PHI <vectp.87_108(37), _68(2)>
+  # ivtmp_87 = PHI <ivtmp_65(37), 0(2)>
+  _1 = (long unsigned int) i_167;
+  _2 = _1 * 4;
+  _3 = _68 + _2;
+  MEM <vector(4) float> [(float *)vectp.87_115] = vect_cst__120;
+  i_97 = i_167 + 1;
+  ivtmp_252 = ivtmp_253 - 1;
+  vectp.87_108 = vectp.87_115 + 16;
+  ivtmp_65 = ivtmp_87 + 1;
+  if (ivtmp_65 < 1000000)
+    goto <bb 37>; [96.00%]
+  else
+    goto <bb 40>; [4.00%]
+
+  <bb 37> [local count: 2640]:
+  goto <bb 3>; [100.00%]
+
+  <bb 40> [local count: 110]:
+  vect_cst__137 = { 1.0e+0, 1.0e+0, 1.0e+0, 1.0e+0 };
+
+  <bb 4> [local count: 2750]:
+  # i_168 = PHI <i_95(36), 0(40)>
+  # ivtmp_255 = PHI <ivtmp_254(36), 4000000(40)>
+  # vectp.85_133 = PHI <vectp.85_131(36), _70(40)>
+  # ivtmp_126 = PHI <ivtmp_124(36), 0(40)>
+  _4 = (long unsigned int) i_168;
+  _5 = _4 * 4;
+  _6 = _70 + _5;
+  MEM <vector(4) float> [(float *)vectp.85_133] = vect_cst__137;
+  i_95 = i_168 + 1;
+  ivtmp_254 = ivtmp_255 - 1;
+  vectp.85_131 = vectp.85_133 + 16;
+  ivtmp_124 = ivtmp_126 + 1;
+  if (ivtmp_124 < 1000000)
+    goto <bb 36>; [96.00%]
+  else
+    goto <bb 26>; [4.00%]
+
+  <bb 36> [local count: 2640]:
+  goto <bb 4>; [100.00%]
+
+  <bb 26> [local count: 110]:
+
+  <bb 5> [local count: 329]:
+  # run_170 = PHI <run_89(32), 0(26)>
+  # ivtmp_257 = PHI <ivtmp_256(32), 3(26)>
+  __builtin_memset (_73, 0, 16000000);
+  goto <bb 10>; [100.00%]
+
+  <bb 35> [local count: 79708326]:
+
+  <bb 6> [local count: 80521676]:
+  # k_173 = PHI <k_93(35), 0(8)>
+  # D__lsm.59_161 = PHI <_25(35), D__lsm.59_152(8)>
+  # ivtmp_278 = PHI <ivtmp_277(35), 2000(8)>
+  # vect_D__lsm.59_161.76_188 = PHI <vect__25.81_155(35), vect_D__lsm.59_152.75_189(8)>
+  # vectp.77_159 = PHI <vectp.77_158(35), vectp.77_165(8)>
+  _13 = _7 + k_173;
+  _14 = (long unsigned int) _13;
+  _15 = _14 * 4;
+  _16 = _68 + _15;
+  _17 = *_16;
+  vect_cst__166 = {_17, _17, _17, _17};
+  _18 = k_173 * 2000;
+  _19 = _18 + j_172;
+  _20 = (long unsigned int) _19;
+  _21 = _20 * 4;
+  _22 = _70 + _21;
+  vect__23.79_157 = MEM <vector(4) float> [(float *)vectp.77_159];
+  _23 = *_22;
+  vect__24.80_156 = vect_cst__166 * vect__23.79_157;
+  _24 = _17 * _23;
+  vect__25.81_155 = vect__24.80_156 + vect_D__lsm.59_161.76_188;
+  _25 = _24 + D__lsm.59_161;
+  k_93 = k_173 + 1;
+  ivtmp_277 = ivtmp_278 - 1;
+  vectp.77_158 = vectp.77_159 + 8000;
+  if (ivtmp_277 != 0)
+    goto <bb 35>; [98.99%]
+  else
+    goto <bb 7>; [1.01%]
+
+  <bb 7> [local count: 813350]:
+  # _289 = PHI <_25(6)>
+  # vect__289.82_151 = PHI <vect__25.81_155(6)>
+  MEM <vector(4) float> [(float *)vectp.83_147] = vect__289.82_151;
+  j_91 = j_172 + 1;
+  ivtmp_260 = ivtmp_276 - 1;
+  vectp.73_190 = vectp.73_191 + 16;
+  vectp.77_160 = vectp.77_165 + 16;
+  vectp.83_146 = vectp.83_147 + 16;
+  ivtmp_143 = ivtmp_144 + 1;
+  if (ivtmp_143 < 500)
+    goto <bb 34>; [96.00%]
+  else
+    goto <bb 9>; [4.00%]
+
+  <bb 34> [local count: 780816]:
+
+  <bb 8> [local count: 813350]:
+  # j_172 = PHI <j_91(34), 0(10)>
+  # ivtmp_276 = PHI <ivtmp_260(34), 2000(10)>
+  # vectp.73_191 = PHI <vectp.73_190(34), vectp.74_194(10)>
+  # vectp.77_165 = PHI <vectp.77_160(34), _70(10)>
+  # vectp.83_147 = PHI <vectp.83_146(34), vectp.84_150(10)>
+  # ivtmp_144 = PHI <ivtmp_143(34), 0(10)>
+  _8 = _7 + j_172;
+  _9 = (long unsigned int) _8;
+  _10 = _9 * 4;
+  _11 = _73 + _10;
+  vect_D__lsm.59_152.75_189 = MEM <vector(4) float> [(float *)vectp.73_191];
+  D__lsm.59_152 = *_11;
+  goto <bb 6>; [100.00%]
+
+  <bb 9> [local count: 32534]:
+  i_90 = i_171 + 1;
+  ivtmp_258 = ivtmp_259 - 1;
+  if (ivtmp_258 != 0)
+    goto <bb 33>; [98.99%]
+  else
+    goto <bb 11>; [1.01%]
+
+  <bb 33> [local count: 32205]:
+
+  <bb 10> [local count: 32534]:
+  # i_171 = PHI <i_90(33), 0(5)>
+  # ivtmp_259 = PHI <ivtmp_258(33), 2000(5)>
+  _7 = i_171 * 2000;
+  _193 = (sizetype) i_171;
+  _192 = _193 * 8000;
+  vectp.74_194 = _73 + _192;
+  _149 = (sizetype) i_171;
+  _148 = _149 * 8000;
+  vectp.84_150 = _73 + _148;
+  goto <bb 8>; [100.00%]
+
+  <bb 11> [local count: 329]:
+  run_89 = run_170 + 1;
+  ivtmp_256 = ivtmp_257 - 1;
+  if (ivtmp_256 != 0)
+    goto <bb 32>; [66.77%]
+  else
+    goto <bb 25>; [33.23%]
+
+  <bb 32> [local count: 220]:
+  goto <bb 5>; [100.00%]
+
+  <bb 25> [local count: 109]:
+
+  <bb 12> [local count: 1096]:
+  # avg_time_169 = PHI <avg_time_81(28), 0.0(25)>
+  # run_174 = PHI <run_84(28), 0(25)>
+  # ivtmp_280 = PHI <ivtmp_279(28), 10(25)>
+  __builtin_memset (_73, 0, 16000000);
+  start = std::chrono::_V2::system_clock::now ();
+  goto <bb 17>; [100.00%]
+
+  <bb 31> [local count: 265722157]:
+
+  <bb 13> [local count: 268433606]:
+  # k_177 = PHI <k_88(31), 0(15)>
+  # D__lsm.58_163 = PHI <_44(31), D__lsm.58_164(15)>
+  # ivtmp_286 = PHI <ivtmp_285(31), 2000(15)>
+  # vect_D__lsm.58_163.64_221 = PHI <vect__44.69_213(31), vect_D__lsm.58_164.63_222(15)>
+  # vectp.65_217 = PHI <vectp.65_216(31), vectp.65_219(15)>
+  _32 = _26 + k_177;
+  _33 = (long unsigned int) _32;
+  _34 = _33 * 4;
+  _35 = _68 + _34;
+  _36 = *_35;
+  vect_cst__220 = {_36, _36, _36, _36};
+  _37 = k_177 * 2000;
+  _38 = _37 + j_176;
+  _39 = (long unsigned int) _38;
+  _40 = _39 * 4;
+  _41 = _70 + _40;
+  vect__42.67_215 = MEM <vector(4) float> [(float *)vectp.65_217];
+  _42 = *_41;
+  vect__43.68_214 = vect_cst__220 * vect__42.67_215;
+  _43 = _36 * _42;
+  vect__44.69_213 = vect__43.68_214 + vect_D__lsm.58_163.64_221;
+  _44 = _43 + D__lsm.58_163;
+  k_88 = k_177 + 1;
+  ivtmp_285 = ivtmp_286 - 1;
+  vectp.65_216 = vectp.65_217 + 8000;
+  if (ivtmp_285 != 0)
+    goto <bb 31>; [98.99%]
+  else
+    goto <bb 14>; [1.01%]
+
+  <bb 14> [local count: 2711450]:
+  # _288 = PHI <_44(13)>
+  # vect__288.70_212 = PHI <vect__44.69_213(13)>
+  MEM <vector(4) float> [(float *)vectp.71_208] = vect__288.70_212;
+  j_86 = j_176 + 1;
+  ivtmp_283 = ivtmp_284 - 1;
+  vectp.61_223 = vectp.61_224 + 16;
+  vectp.65_218 = vectp.65_219 + 16;
+  vectp.71_207 = vectp.71_208 + 16;
+  ivtmp_204 = ivtmp_205 + 1;
+  if (ivtmp_204 < 500)
+    goto <bb 30>; [96.00%]
+  else
+    goto <bb 16>; [4.00%]
+
+  <bb 30> [local count: 2602992]:
+
+  <bb 15> [local count: 2711450]:
+  # j_176 = PHI <j_86(30), 0(17)>
+  # ivtmp_284 = PHI <ivtmp_283(30), 2000(17)>
+  # vectp.61_224 = PHI <vectp.61_223(30), vectp.62_227(17)>
+  # vectp.65_219 = PHI <vectp.65_218(30), _70(17)>
+  # vectp.71_208 = PHI <vectp.71_207(30), vectp.72_211(17)>
+  # ivtmp_205 = PHI <ivtmp_204(30), 0(17)>
+  _27 = _26 + j_176;
+  _28 = (long unsigned int) _27;
+  _29 = _28 * 4;
+  _30 = _73 + _29;
+  vect_D__lsm.58_164.63_222 = MEM <vector(4) float> [(float *)vectp.61_224];
+  D__lsm.58_164 = *_30;
+  goto <bb 13>; [100.00%]
+
+  <bb 16> [local count: 108459]:
+  i_85 = i_175 + 1;
+  ivtmp_281 = ivtmp_282 - 1;
+  if (ivtmp_281 != 0)
+    goto <bb 29>; [98.99%]
+  else
+    goto <bb 18>; [1.01%]
+
+  <bb 29> [local count: 107363]:
+
+  <bb 17> [local count: 108458]:
+  # i_175 = PHI <i_85(29), 0(12)>
+  # ivtmp_282 = PHI <ivtmp_281(29), 2000(12)>
+  _26 = i_175 * 2000;
+  _226 = (sizetype) i_175;
+  _225 = _226 * 8000;
+  vectp.62_227 = _73 + _225;
+  _210 = (sizetype) i_175;
+  _209 = _210 * 8000;
+  vectp.72_211 = _73 + _209;
+  goto <bb 15>; [100.00%]
+
+  <bb 18> [local count: 1096]:
+  end = std::chrono::_V2::system_clock::now ();
+  SR.36_101 = start.__d.__r;
+  SR.34_102 = end.__d.__r;
+  _103 = SR.34_102 - SR.36_101;
+  _99 = (double) _103;
+  _100 = _99 / 1.0e+9;
+  avg_time_81 = _100 + avg_time_169;
+  start ={v} {CLOBBER};
+  end ={v} {CLOBBER};
+  run_84 = run_174 + 1;
+  ivtmp_279 = ivtmp_280 - 1;
+  if (ivtmp_279 != 0)
+    goto <bb 28>; [89.95%]
+  else
+    goto <bb 19>; [10.05%]
+
+  <bb 28> [local count: 986]:
+  goto <bb 12>; [100.00%]
+
+  <bb 19> [local count: 110]:
+  # avg_time_287 = PHI <avg_time_81(18)>
+  avg_time_74 = avg_time_287 / 1.0e+1;
+  std::__ostream_insert<char, std::char_traits<char> > (&cout, "Time taken(naive-ijk loop with  -O3 optimization flag in compilation flag) for the config  (M=2000,N=2000,K=2000) and without temporary sum_variable(to avoid global ram writes for every accumulation) for accumulations   : ", 222);
+  _104 = std::basic_ostream<char>::_M_insert<double> (&cout, avg_time_74);
+  std::__ostream_insert<char, std::char_traits<char> > (_104, "secs", 4);
+  _111 = MEM[(struct basic_ostream *)_104]._vptr.basic_ostream;
+  _112 = MEM[(long int *)_111 + -24B];
+  _113 = (sizetype) _112;
+  _114 = _104 + _113;
+  _119 = MEM[(const struct __ctype_type * *)_114 + 240B];
+  if (_119 == 0B)
+    goto <bb 20>; [0.04%]
+  else
+    goto <bb 21>; [99.96%]
+
+  <bb 20> [local count: 0]:
+  std::__throw_bad_cast ();
+
+  <bb 21> [local count: 109]:
+  _122 = MEM[(const struct ctype *)_119]._M_widen_ok;
+  if (_122 != 0)
+    goto <bb 22>; [51.12%]
+  else
+    goto <bb 23>; [48.88%]
+
+  <bb 22> [local count: 56]:
+  _125 = MEM[(const struct ctype *)_119]._M_widen[10];
+  goto <bb 24>; [100.00%]
+
+  <bb 23> [local count: 54]:
+  std::ctype<char>::_M_widen_init (_119);
+  _129 = MEM[(const struct ctype *)_119].D.45028._vptr.facet;
+  _130 = MEM[(int (*) () *)_129 + 48B];
+  _132 = OBJ_TYPE_REF(_130;(const struct ctype)_119->6) (_119, 10);
+
+  <bb 24> [local count: 109]:
+  # _127 = PHI <_125(22), _132(23)>
+  _116 = (int) _127;
+  _117 = std::basic_ostream<char>::put (_104, _116);
+  std::basic_ostream<char>::flush (_117);
+  operator delete [] (_68);
+  operator delete [] (_70);
+  operator delete [] (_73);
+  return 0;
+
+}
+
+

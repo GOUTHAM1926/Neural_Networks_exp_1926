@@ -1015,16 +1015,19 @@ While `-O1` gave us a huge 5-second speedup, it still processes math one float a
 While testing the `-O1` flag, we made a shocking discovery: our `ijk` loop executed in **7.0s** both *with* the manual `float sum` temporary variable and *without* it. The compiler seemingly invented a temporary variable for us! To prove exactly how and why this happened, we generated the raw assembly code.
 
 ### 1. Pointer Aliasing and `-ftree-pta`
+
 Normally, if you write `C[i * N + j] += A[...] * B[...]` in a generic function, the compiler panics. It fears **Pointer Aliasing** — the possibility that the memory pointers for `C` and `A` secretly overlap. If they overlap, keeping `C` in a register (and not writing it to RAM on every loop) would result in `A` reading corrupt, stale data. Because of this paranoia, the compiler is legally forced to write to RAM on every iteration, slowing the code down.
 
 So why did it successfully optimize our code without the `float sum` variable?
 Because our entire matrix multiplication was inside `main()`.
-*   `-O1` enables **`-ftree-pta` (Pointer-To-Alias Analysis)**.
-*   This "detective" algorithm traced `A`, `B`, and `C` back to their `new float[...]` allocations within the same scope.
-*   Because `new` guarantees strictly separated memory blocks, `-ftree-pta` mathematically proved the pointers do not overlap. 
-*   Once proven safe, **`-fmove-loop-invariants`** safely hoisted the memory load/store completely out of the inner loop, perfectly replicating our manual `float sum` logic.
+
+- `-O1` enables **`-ftree-pta` (Pointer-To-Alias Analysis)**.
+- This "detective" algorithm traced `A`, `B`, and `C` back to their `new float[...]` allocations within the same scope.
+- Because `new` guarantees strictly separated memory blocks, `-ftree-pta` mathematically proved the pointers do not overlap.
+- Once proven safe, **`-fmove-loop-invariants`** safely hoisted the memory load/store completely out of the inner loop, perfectly replicating our manual `float sum` logic.
 
 ### 2. The Assembly Proof (`g++ -S`)
+
 We proved this by asking GCC to output human-readable Assembly instead of an executable binary:
 `g++ -O1 -S matmul_experiments.cpp -o matmul_experiments.s -masm=intel`
 
@@ -1042,20 +1045,25 @@ In the generated `.s` file, we searched for the float multiplication instruction
     
     movss   DWORD PTR [r9+rsi*4], xmm1 ; MEMORY WRITE TO MATRIX C IS OUTSIDE THE LOOP!
 ```
+
 When compiled *without* `-O1` (using `-O0`), the final `movss` (memory write) instruction is wedged inside the `.L5` loop, resulting in 4 billion slow memory writes and a 17.0s execution time.
 
 ### 3. CPU Architecture: `rax` vs `xmm`
+
 The assembly reveals the architectural divide between General Purpose Registers (GPRs) and Vector Registers (SIMD):
-*   **`rax`, `rcx`, `rdx` (GPRs):** These are 64-bit integer registers. They do not do floating-point math. Instead, they act as **Pointers**. Because memory addresses on a 64-bit OS are 64 bits long (e.g., `0x00007FFE4B3A1234`), the 64-bit `rax` register is the exact perfect size to hold a memory location. 
-*   **`xmm`, `ymm`, `zmm` (SIMD):** These are massive floating-point math registers (128-bit, 256-bit, and 512-bit). `rax` tells the CPU *where* to look in memory, and the CPU scoops up the floats from that address and dumps them into an `xmm` register to do the actual `mulss` math.
+
+- **`rax`, `rcx`, `rdx` (GPRs):** These are 64-bit integer registers. They do not do floating-point math. Instead, they act as **Pointers**. Because memory addresses on a 64-bit OS are 64 bits long (e.g., `0x00007FFE4B3A1234`), the 64-bit `rax` register is the exact perfect size to hold a memory location.
+- **`xmm`, `ymm`, `zmm` (SIMD):** These are massive floating-point math registers (128-bit, 256-bit, and 512-bit). `rax` tells the CPU *where* to look in memory, and the CPU scoops up the floats from that address and dumps them into an `xmm` register to do the actual `mulss` math.
 
 ### 4. Compilation Flags Clarification
+
 During this deep dive, we clarified several critical compiler flags to avoid "naming illusions":
-*   **`-masm=intel` vs AT&T:** By default, GCC outputs AT&T syntax (cluttered with `%` and `$`, and reading backwards: `addq $4, %rax`). We use `-masm=intel` to force standard, highly readable Intel syntax (`add rax, 4`).
-*   **`-c` (Lowercase) vs `-C` (Uppercase):**
-    *   **`-c` (Object Code):** Stops the compilation pipeline right before the Linker. Outputs raw, unlinked binary Machine Code (`.o` file).
-    *   **`-C` (Keep Comments):** Instructs the Preprocessor not to strip out `//` and `/* */` comments. It does *not* stop the pipeline. 
-    *   *Warning:* The `-o` flag only changes the output filename, not the file type. Running `g++ matmul.cpp -o obj.o` (without `-c`) creates a fully executable program disguised with a `.o` extension!
+
+- **`-masm=intel` vs AT&T:** By default, GCC outputs AT&T syntax (cluttered with `%` and `$`, and reading backwards: `addq $4, %rax`). We use `-masm=intel` to force standard, highly readable Intel syntax (`add rax, 4`).
+- **`-c` (Lowercase) vs `-C` (Uppercase):**
+  - **`-c` (Object Code):** Stops the compilation pipeline right before the Linker. Outputs raw, unlinked binary Machine Code (`.o` file).
+  - **`-C` (Keep Comments):** Instructs the Preprocessor not to strip out `//` and `/* */` comments. It does *not* stop the pipeline.
+  - *Warning:* The `-o` flag only changes the output filename, not the file type. Running `g++ matmul.cpp -o obj.o` (without `-c`) creates a fully executable program disguised with a `.o` extension!
 
 ---
 
@@ -1064,15 +1072,219 @@ During this deep dive, we clarified several critical compiler flags to avoid "na
 Here is the master list of all benchmark timings recorded on the i7-14700K for the `2000 x 2000 x 2000` matrix multiplication (8 billion operations) leading up to the `-O1` discoveries:
 
 ### 1. The Zero-Optimization Baselines (`-O0`)
-*   **`ijk` Loop (The Absolute Worst):** **~17.0 seconds**
-    *   *Why so slow?* Massive L1 Cache Misses (fetching a new cache line for every single read of Matrix B) + writing to RAM 4 billion times.
-*   **`ijk` Loop + `float sum` (The Register Accumulator Win):** **~12.7 seconds**
-    *   *Why the speedup?* Even though Cache Misses were still terrible, we successfully deleted 3.996 billion RAM writes by forcing the CPU to accumulate the result in a hardware register before finally writing it to memory once.
-*   **`ikj` Loop (Spatial Locality Win):** **~12.2 seconds**
-    *   *Why the speedup?* Swapping the loops to traverse Matrix B sequentially reduced the cache miss rate from 100% to ~6% (1 miss per 16 floats). 
+
+- **`ijk` Loop (The Absolute Worst):** **~17.0 seconds**
+  - *Why so slow?* Massive L1 Cache Misses (fetching a new cache line for every single read of Matrix B) + writing to RAM 4 billion times.
+
+- **`ijk` Loop + `float sum` (The Register Accumulator Win):** **~12.7 seconds**
+  - *Why the speedup?* Even though Cache Misses were still terrible, we successfully deleted 3.996 billion RAM writes by forcing the CPU to accumulate the result in a hardware register before finally writing it to memory once.
+- **`ikj` Loop (Spatial Locality Win):** **~12.2 seconds**
+  - *Why the speedup?* Swapping the loops to traverse Matrix B sequentially reduced the cache miss rate from 100% to ~6% (1 miss per 16 floats).
 
 ### 2. The First Optimization Gear (`-O1`)
-*   **`ijk` Loop + `float sum` (Manual Register Accumulator):** **~7.0 seconds**
-    *   *Why the speedup?* `-O1` turns on 39 optimizations, including `-fmove-loop-invariants` (stops recalculating `i*K` 8 billion times) and `-ftree-slsr` (turns expensive multiplication into cheap addition for `B`'s index).
-*   **`ijk` Loop WITHOUT `float sum` (Automatic Register Accumulator):** **~7.0 seconds**
-    *   *Why is it identical?* This was the ultimate realization. `-O1` turns on `-ftree-pta` (Pointer-To-Alias Analysis), which proved the `new float[]` matrices didn't overlap. This allowed the compiler to automatically pull the memory write out of the inner loop, perfectly replicating the manual `float sum` logic without us having to write it!
+
+- **`ijk` Loop + `float sum` (Manual Register Accumulator):** **~7.0 seconds**
+  - *Why the speedup?* `-O1` turns on 39 optimizations, including `-fmove-loop-invariants` (stops recalculating `i*K` 8 billion times) and `-ftree-slsr` (turns expensive multiplication into cheap addition for `B`'s index).
+
+- **`ijk` Loop WITHOUT `float sum` (Automatic Register Accumulator):** **~7.0 seconds**
+  - *Why is it identical?* This was the ultimate realization. `-O1` turns on `-ftree-pta` (Pointer-To-Alias Analysis), which proved the `new float[]` matrices didn't overlap. This allowed the compiler to automatically pull the memory write out of the inner loop, perfectly replicating the manual `float sum` logic without us having to write it!
+
+---
+
+## Part 14 — Compiler Flags Deep Dive: What `-O2` Actually Does
+
+After understanding `-O1`, we tested `-O2` on the naive `ijk` loop without a temporary variable.
+**The result:** The execution time remained essentially unchanged at **~6.91s to 7.5s**.
+
+### Why didn't `-O2` make it faster?
+
+We queried GCC directly to see exactly what `-O2` enables over `-O1` using the following command:
+`diff <(g++ -Q -O1 --help=optimizers) <(g++ -Q -O2 --help=optimizers) | grep "\[enabled\]"`
+
+This revealed exactly **43 new optimization algorithms** enabled by `-O2`. (This perfectly matches the official [GNU GCC Compiler Manual for Optimize Options](https://gcc.gnu.org/onlinedocs/gcc/Optimize-Options.html#index-O2), which states `-O2` turns on all `-O1` flags plus this specific list of additional flags).
+
+<details>
+<summary><b>Click here to see the full list of 43 optimizations enabled by -O2</b></summary>
+
+```text
+  -falign-functions                     [enabled]
+  -falign-jumps                         [enabled]
+  -falign-labels                        [enabled]
+  -falign-loops                         [enabled]
+  -fcaller-saves                        [enabled]
+  -fcode-hoisting                       [enabled]
+  -fcrossjumping                        [enabled]
+  -fcse-follow-jumps                    [enabled]
+  -fdevirtualize                        [enabled]
+  -fdevirtualize-speculatively          [enabled]
+  -fexpensive-optimizations             [enabled]
+  -fgcse                                [enabled]
+  -fhoist-adjacent-loads                [enabled]
+  -findirect-inlining                   [enabled]
+  -finline-functions                    [enabled]
+  -finline-small-functions              [enabled]
+  -fipa-bit-cp                          [enabled]
+  -fipa-cp                              [enabled]
+  -fipa-icf                             [enabled]
+  -fipa-icf-functions                   [enabled]
+  -fipa-icf-variables                   [enabled]
+  -fipa-ra                              [enabled]
+  -fipa-sra                             [enabled]
+  -fipa-vrp                             [enabled]
+  -fisolate-erroneous-paths-dereference [enabled]
+  -flra-remat                           [enabled]
+  -foptimize-sibling-calls              [enabled]
+  -foptimize-strlen                     [enabled]
+  -fpartial-inlining                    [enabled]
+  -fpeephole2                           [enabled]
+  -free                                 [enabled]
+  -freorder-blocks-and-partition        [enabled]
+  -freorder-functions                   [enabled]
+  -frerun-cse-after-loop                [enabled]
+  -fschedule-insns2                     [enabled]
+  -fstore-merging                       [enabled]
+  -fstrict-aliasing                     [enabled]
+  -fthread-jumps                        [enabled]
+  -ftree-loop-distribute-patterns       [enabled]
+  -ftree-pre                            [enabled]
+  -ftree-switch-conversion              [enabled]
+  -ftree-tail-merge                     [enabled]
+  -ftree-vrp                            [enabled]
+```
+
+</details>
+
+Some notable ones include:
+
+- **`-fschedule-insns2`** (Instruction Scheduling Pass 2): Rearranges instructions after register allocation to hide FPU (Floating Point Unit) pipeline latency.
+- **`-fstrict-aliasing`**: Enforces strict pointer aliasing rules, making pointer analysis even more aggressive.
+- **`-finline-small-functions`**: Automatically replaces function calls with the actual function code to avoid function-call overhead.
+- **`-falign-loops` / `-falign-functions`**: Aligns memory boundaries to make instructions load faster into the CPU instruction cache.
+- **`-ftree-vrp`** (Value Range Propagation): Tracks the range of values variables can take to eliminate unnecessary checks.
+
+**The catch:** None of these 43 algorithms fundamentally change the math of a tight, triple-nested matrix multiplication loop! The missing puzzle piece for a massive speedup is **SIMD Vectorization**, which requires the `-ftree-loop-vectorize` flag. As proven by our compiler query, `-ftree-loop-vectorize` is NOT in the list of the 43 optimizations turned on by `-O2`. Vectorization is strictly reserved for `-O3`.
+
+### The Assembly Proof (`-O2` vs `-O1`)
+
+To confirm that `-O2` did not drastically alter our math loop, we generated the raw assembly code for `-O2`:
+`g++ -O2 -S -masm=intel matmul_experiments.cpp -o matmul_O2.s`
+
+Looking at the innermost loop (`.L13` in the generated file), we see:
+
+```nasm
+.L13:
+ movss xmm0, DWORD PTR [rdx]    ; Read from A
+ mulss xmm0, DWORD PTR [rax]    ; Multiply with B
+ add rax, 8000                ; Advance A pointer
+ add rdx, 4                   ; Advance B pointer
+ addss xmm1, xmm0               ; Accumulate into xmm1 register!
+ cmp rcx, rax                 ; Check loop bound
+ jne .L13                     ; Jump back to loop start
+```
+
+#### Assembly Glossary: What are `rax`, `DWORD PTR`, and `.L13`?
+
+- **`.L13`, `.L5`, etc. (Assembly Labels):** Machine code does not have `for` or `while` loops. Instead, the compiler generates "Labels" (like bookmarks in the code). The instruction `jne .L13` means "Jump if Not Equal to `.L13`". If the loop isn't finished, the CPU jumps back up to the `.L13` label to execute the next iteration.
+
+- **`rax`, `rdx`, `rcx` (General Purpose Registers):** These are 64-bit hardware registers built into the CPU. Since RAM addresses on your 64-bit OS are 64 bits long (e.g., `0x00007FFE4B3A1234`), these registers are perfectly sized to hold memory pointers. In this loop, `rax` is storing the exact memory address for a cell in Matrix B, and `rdx` is holding the address for Matrix A.
+- **`DWORD PTR` (Double Word Pointer):** In CPU terminology, a "Word" is historically 16 bits (2 bytes). A "Double Word" (DWORD) is 32 bits (4 bytes). A standard C++ `float` is exactly 32 bits. The command `DWORD PTR [rax]` tells the CPU: *"Look at the memory address stored in `rax`, and fetch exactly 32 bits (one float) from that location."*
+
+This is virtually **byte-for-byte identical** to the assembly generated by `-O1`. The math operations (`movss`, `mulss`, `addss`) are the exact same scalar (single float) instructions. The only difference is that `-O2` very slightly shuffled the order of the pointer additions (`add rax`, `add rdx`) to sit between the multiplication and the accumulation, which is an instruction scheduling trick to try to hide latency, but it doesn't change the underlying execution speed significantly.
+
+#### My Insight: Breaking Down "Instruction Scheduling" and "Latency"
+
+I made a critical observation during my analysis: *"Isn't this latency hiding inefficient here since Matmul is compute-bound, not memory-bound?"*
+
+To validate this, I broke down exactly what the compiler did, what that sentence means, and why my intuition is entirely correct from a hardware perspective.
+
+**1. What did the "-fschedule-insns" (pass-1) and "-fschedule-insns2" (pass-2) do? (Instruction Scheduling - latency hiding(FPU pipe-line latency))**
+The CPU has distinct hardware execution units: the Floating Point Unit (FPU) executes the `mulss` and `addss` instructions, while the Integer Arithmetic Logic Unit (ALU) handles pointer arithmetic like `add rax, 8000`.
+
+When the FPU begins a `mulss` (multiply scalar single) instruction, it requires approximately 4 to 5 clock cycles to complete. If the immediate next instruction demands that multiplication result (`addss`), the CPU must stall the pipeline for those 4-5 cycles.
+
+To prevent these stalls, the `-O2` compiler applies instruction scheduling. Interestingly, there are two passes, but only one is used here:
+*   **Pass 1 (`-fschedule-insns`):** Runs *before* the compiler decides which physical hardware registers (like `rax` or `xmm0`) to use. It logically rearranges the code at a high level to minimize data dependency stalls. (Note: On x86_64 architectures like mine, GCC actually disables Pass 1 by default because x86 has too few registers, and early scheduling causes excessive memory swapping known as register spilling).
+*   **Pass 2 (`-fschedule-insns2`):** Runs *after* the hardware registers are strictly allocated. This pass looks at the final physical machine code and performs the exact, cycle-accurate shuffling of instructions. 
+
+In my compiled code, **Pass 2** deliberately interleaves independent integer instructions (`add rax, 8000`) precisely between the `mulss` and `addss`. **This technique is explicitly designed to hide FPU (Floating Point Unit) Pipeline Latency.** By shoving independent integer instructions between the multiply and the add, the compiler lets the CPU's Integer ALU do the pointer math at the exact same time the FPU is busy multiplying the floats!
+
+**2. Why my intuition was 100% right (The Memory Bound Reality)**
+My intuition that this is inefficient is 100% correct because of the loop I am testing! I ran `-O2` on the naive `ijk` loop. In the `ijk` loop, Matrix B is jumping by N (8,000 bytes) every single `k` iteration.
+
+This means I have a **100% L1 Cache Miss rate**. I am spending literally hundreds of clock cycles stalling while I wait for main DRAM to fetch the next float. The compiler's "clever" trick to save 2-3 clock cycles of FPU stall time is completely and utterly dwarfed by the massive DRAM memory bottleneck. **It's like trying to save 3 seconds on a cross-country road trip.**
+
+**Matrix multiplication should be compute-bound. But because I am running `ijk`, I made it artificially memory-bound!**
+
+**3. What does "doing math one single float at a time" mean?**
+The generated assembly instructions possess the suffix **`ss`** (Scalar Single): `movss`, `mulss`, `addss`. In hardware architecture, "Scalar" dictates that the execution unit operates on a single discrete data element. Even with the FPU and ALU operating in perfect parallel harmony, the FPU hardware is constrained to multiplying one float by one float.
+
+Modern CPU architectures feature SIMD (Single Instruction, Multiple Data) vector registers. If the compiler were permitted to utilize instructions with the **`ps`** (Packed Single) suffix, the CPU hardware could physically multiply **eight** floats simultaneously within the same clock cycle latency.
+
+The `-O2` flag strictly restricts the compiler from auto-vectorizing, forcing the hardware to remain in scalar mode. **To finally make it compute-bound and shatter the ~7-second barrier, I need to run my cache-friendly `ikj` loop combined with `-O3` (which unlocks SIMD Vectorization).**
+
+## Stage 4: The `-O3` Vectorization Breakthrough (Breaking the 7-Second Barrier)
+
+When compiling the same naive `ijk` loop with `-O3`, the execution time plummeted from **~7.1 seconds to ~1.9 seconds**. 
+
+To understand exactly what the compiler changed to achieve this 3.5x speedup, I executed a differential analysis between the optimizations enabled by `-O2` and `-O3` using the command:
+`diff <(g++ -Q -O2 --help=optimizers) <(g++ -Q -O3 --help=optimizers)`
+
+This revealed exactly 15 new compiler algorithms that `-O3` unlocks:
+1. `-fgcse-after-reload`
+2. `-fipa-cp-clone`
+3. `-floop-interchange`
+4. `-floop-unroll-and-jam`
+5. `-fpeel-loops`
+6. `-fpredictive-commoning`
+7. `-fsplit-loops`
+8. `-fsplit-paths`
+9. `-ftree-loop-distribution`
+10. **`-ftree-loop-vectorize`**
+11. `-ftree-partial-pre`
+12. **`-ftree-slp-vectorize`**
+13. `-funroll-completely-grow-size`
+14. `-funswitch-loops`
+15. `-fversion-loops-for-strides`
+
+### The Hardware Reality: Vectorization without `-march=native`
+A critical systems-engineering question arose during my analysis: *"How did vectorization occur if I did not pass the `-march=native` flag to target my specific i7-14700K hardware architecture?"*
+
+The answer lies in the baseline x86_64 architecture specification. By default, any 64-bit x86 compiler assumes the hardware supports **SSE2 (Streaming SIMD Extensions 2)**. SSE2 provides 128-bit vector registers (`xmm0` through `xmm15`). Because a standard `float` is 32 bits, a 128-bit `xmm` register can hold exactly 4 floats. 
+
+Therefore, without `-march=native`, `-O3` legally leverages the baseline SSE2 instructions to process 4 floats simultaneously. If `-march=native` were provided, the compiler would detect the AVX2/AVX-512 support on the i7-14700K and utilize 256-bit (`ymm`) or 512-bit (`zmm`) registers to process 8 or 16 floats simultaneously.
+
+### The `-O3` Assembly Analysis (Vectorization in Action)
+Looking at the generated assembly for the `-O3` inner loop (`.L11`), the scalar `ss` instructions have been replaced by packed `ps` instructions.
+
+```assembly
+.L11:
+	movss	xmm0, DWORD PTR [rdx]    # Load 1 float from Matrix A
+	movups	xmm2, XMMWORD PTR [rax]  # Load 4 floats (128-bits) from Matrix B
+	add	rax, 8000                    # Pointer math: Jump B by N (8000 bytes)
+	add	rdx, 4                       # Pointer math: Jump A by 1 float
+	shufps	xmm0, xmm0, 0            # Shuffle: Broadcast A's float into 4 slots of xmm0
+	mulps	xmm0, xmm2               # Multiply 4 floats simultaneously
+	addps	xmm1, xmm0               # Accumulate 4 floats simultaneously
+	cmp	rax, rcx
+	jne	.L11
+```
+
+### The Compiler's "Mini-ikj" Hybrid Loop
+While the macro structure remains an `ijk` loop (as evidenced by the `add rax, 8000` instruction in the inner loop), the auto-vectorizer intelligently created a hybrid execution model. 
+
+The GCC auto-vectorizer uses a dynamic cost model (which we verified in the diff output as `-fvect-cost-model=dynamic`) to evaluate which loop dimension is mathematically cheapest to vectorize. It realized that vectorizing the inner `k` loop would require an expensive hardware "Gather" operation to fetch non-contiguous rows from Matrix B. 
+
+Instead, it automatically elected to vectorize across the middle `j` loop. By grabbing 4 horizontal elements from Matrix B, and accumulating into 4 horizontal elements of Matrix C, the compiler is essentially executing a "mini `ikj` loop" of size 4 *inside* the `k` loop! 
+
+### Assembly Instruction Dictionary (The Mechanics of SIMD)
+The scalar `ss` (Scalar Single) instructions have been entirely replaced by `ps` (Packed Single) instructions:
+*   **`movss` (Move Scalar Single):** Loads 1 single float from Matrix A.
+*   **`movups` (Move Unaligned Packed Single):** Loads 4 contiguous floats (128-bits) from Matrix B simultaneously. "Unaligned" allows the CPU to fetch data without crashing if the memory address isn't perfectly 16-byte aligned.
+*   **`shufps` (Shuffle Packed Single):** A specialized hardware trick that instantly broadcasts (clones) the 1 float from Matrix A into all 4 slots of the `xmm0` vector register. *(Note: Vectorizing Matrix A is undesirable here, as a single scalar from A must be multiplied against an entire row of B).*
+*   **`mulps` (Multiply Packed Single):** Multiplies the 4 floats of A by the 4 floats of B in a single clock cycle.
+*   **`addps` (Add Packed Single):** Adds the 4 multiplied results into the `xmm1` running total register simultaneously.
+
+### The Unresolved Memory Bottleneck
+Despite this 3.5x speedup, the L1 Cache Miss bottleneck has not been resolved. Line 4 of the assembly confirms `add rax, 8000` is still executing. The CPU is still forced to jump 8,000 bytes for every loop iteration, guaranteeing a 100% cache miss rate. 
+
+The execution time dropped from 7.1s to 1.9s entirely because the CPU is now processing 4 `j` columns per loop, which mathematically reduces the total number of expensive memory-fetch iterations by 4x. To eliminate the 300-cycle memory stall penalty entirely, the C++ architecture must be structurally modified from the `ijk` layout to the cache-coherent `ikj` layout.

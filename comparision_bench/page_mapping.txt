@@ -1,0 +1,59 @@
+Page 1: Index
+Page 2: Kernel Benchmarking Methodology | This document presents performance benchmarks for custom GPU kerne
+Page 3: Attention forward
+Page 8: Attention backward
+Page 13: Gelu forward
+Page 16: Gelu backward
+Page 19: LayerNorm forward
+Page 23: LayerNorm backward
+Page 27: Loss forward
+Page 32: Loss backward
+Page 37: Reduce kernel
+Page 41: Adam Kernel
+Page 49: BLUBLAS
+Page 50: BluBridge-BLAS library is a high-performance, GPU-accelerated linear algebra library | specialized f
+Page 51: Key observations: | Structure of the Matmul Implementation : | Multi-Stage Asynchronous Pipelining
+Page 52: - The epilogue resolves the accumulation across partitions using global `atomicAdd` | instructions. 
+Page 53: MxKxN config | BluBLAS | 1024x1024x1024
+Page 55: Kernel Profile Results
+Page 56: Technical Report: GPT 2 | Config: | context_length = 1024;
+Page 57: Forward:
+Page 58: Backward:
+Page 59: Kernels: | 1.​ Embedding: | Forward:
+Page 60: ●​ Reinterpret-cast vectorization - reinterpret_cast<float4*> on output and weight | pointers lets t
+Page 61: for other concurrent workloads (relevant when this kernel runs alongside | others in a stream). | ●​
+Page 62: ●​ __launch_bounds__(256) - register-allocation hint matching the 256-thread | block, ensuring high 
+Page 63: ●​ LSU pipe dominates as expected - for a memory-bound atomic accumulation, | the load/store unit is
+Page 64: loss_i = log(S_i) + m_i − z_{i, t_i} | (per-sample loss) | loss = (1/B) · Σ_i loss_i
+Page 65: ​ | BACKWARD: | 1. Purpose
+Page 66: ●​ Memory-bound by construction - arithmetic intensity of ~0.3 FLOP/byte | matches the operation's s
+Page 67: writes per-row max and sumexp so the backward never recomputes the softmax; | numerically stable (su
+Page 68: ●​ #pragma unroll 8 - exposes 8-way instruction-level parallelism, letting the | scheduler overlap m
+Page 69: Computes the gradient of GELU with respect to its input for backpropagation. Given | the upstream gr
+Page 70: ●​ DRAM throughput at 92.26% of peak - combined read+write bandwidth of | ~841 GB/s (read 595 GB/s +
+Page 71: Computes per-row layer normalization on a 2D tensor x of shape [rows, cols], | producing the normali
+Page 72: L2 or DRAM. The small γ/β tensors and re-read of x benefit from cache | residency. | ●​ Moderate DRA
+Page 73: 3. Implementation | ●​ Launch config: 2D grid (bx, by) × 2D block (32, 8) = 256 threads per block. |
+Page 74: ●​ High average thread participation (31.94 of 32 threads active per warp) minimal warp divergence; 
+Page 75: ●​ __launch_bounds__(512) - register-allocation hint to fit 512-thread blocks at | high occupancy on
+Page 76: ●​ Excellent ILP - Issued IPC of 0.57 per scheduler combined with Executed IPC | of 2.24 reflects ef
+Page 77: The kernel performs two tensor-core GEMMs per inner iteration - the score GEMM S | = Q·K^T and the o
+Page 78: computes and consumes it entirely in shared memory, avoiding this traffic | entirely. | ●​ TF32 prec
+Page 79: dV_acc += P_ij^T @ dO_i | dP_ij = dO_i @ V_j^T | dS_ij = P_ij ⊙ (dP_ij − D_i) · scale
+Page 80: ●​ Very low DRAM utilization (12.06%) - the defining strength of the | FlashAttention algorithm. The
+Page 81: ●​ Templated dispatch - HeadDim and Causal resolved at compile time with zero | runtime overhead. | 
+Page 82: ●​ Chunked tensor processing — CHUNK_SIZE = 32,768 floats per block (= 128 | KB per block per chunk)
+Page 83: ●​ Massively parallel launch geometry — 320 blocks per launch fully saturate the | device's 142 SMs,
+Page 84: Memory Management
+Page 85: Memory Management | Allocation and Deallocation Timings Between | CUDA API and BluBridge:
+Page 86: Full GPT 2 (With Attention) - 44M Model: | PyTorch: | Memory Foot print: 9050 MB (9.05 GB)
+Page 87: BluBridge: | Memory Foot print: 7196 MB (7.19 GB)
+Page 88: SERVER: ADA 6000 LOVELACE - 124 Million | 124M FUSED TRIL SOFTMAX: | PYTORCH:
+Page 89: 124M FUSED MULTI HEAD ATTENTION: | PYTORCH: | BLUBRIDGE:
+Page 90: LOCAL: RTX 3060 | 44M FUSED TRIL SOFTMAX: | PYTORCH:
+Page 91: 44M FUSED MULTI HEAD ATTENTION: | PYTORCH: | BLUBRIDGE:
+Page 92: MEMORY OPTIMIZATIONS FINAL: | Model | Device
+Page 93: DDP
+Page 94: COMPARISION: | Pytorch: | Single GPU RUN:
+Page 95: Average: 52K tok/sec | Multi GPU RUN: | Starting: 428K tok/sec.
+Page 96: Time taken to communicate [ALL REDUCE] the buckets of different sizes on a 124 Million | GPT2 model.

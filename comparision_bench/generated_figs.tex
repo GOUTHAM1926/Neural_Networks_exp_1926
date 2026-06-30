@@ -1,0 +1,207 @@
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.35\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=18pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.4,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={Median Latency (ms)},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x12x64},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=3]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=512, Causal=0},
+                title style={font=\bfseries},
+                ymin=0, ymax=0.08,
+                ytick={0,0.02,0.04,0.06,0.08,0.10,0.12,0.14}, yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=2, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x12x64,0.046) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x12x64,0.062) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}\hfill
+    \begin{subfigure}{0.62\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=14pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.15,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={Median Latency (ms)},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x12x64, 4x12x64, 8x16x64, 16x12x64},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=3]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=1024, Causal=0},
+                title style={font=\bfseries},
+                ymin=0, ymax=3.70,
+                ytick={0,0.5,1.0,1.5,2.0,2.5,3.0,3.5,4.0}, yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=1, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x12x64,0.148) (4x12x64,0.430) (8x16x64,1.112) (16x12x64,1.642) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x12x64,0.172) (4x12x64,0.579) (8x16x64,1.870) (16x12x64,2.846) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}
+    \caption{Forward Attention median latency: Causal=0}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.35\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=18pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.4,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={Median Latency (ms)},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x12x64},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=3]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=512, Causal=1},
+                title style={font=\bfseries},
+                ymin=0, ymax=0.08,
+                ytick={0,0.02,0.04,0.06,0.08,0.10,0.12,0.14}, yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=2, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x12x64,0.045) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x12x64,0.065) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}\hfill
+    \begin{subfigure}{0.62\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=14pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.15,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={Median Latency (ms)},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x12x64, 4x12x64, 8x16x64, 16x12x64},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=3]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=1024, Causal=1},
+                title style={font=\bfseries},
+                ymin=0, ymax=2.06,
+                ytick={0,0.5,1.0,1.5,2.0,2.5,3.0,3.5,4.0}, yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=1, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x12x64,0.100) (4x12x64,0.269) (8x16x64,0.626) (16x12x64,0.934) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x12x64,0.143) (4x12x64,0.357) (8x16x64,1.021) (16x12x64,1.585) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}
+    \caption{Forward Attention median latency: Causal=1}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=14pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.2,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={Median Latency (ms)},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x16x64, 1x32x128, 4x32x128},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=3]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=2048, Causal=0},
+                title style={font=\bfseries},
+                ymin=0, ymax=12.32,
+                ytick={0,2,4,6,8,10,12,14}, yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=0, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x16x64,0.611) (1x32x128,2.402) (4x32x128,9.366) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x16x64,0.708) (1x32x128,2.295) (4x32x128,9.480) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}\hfill
+    \begin{subfigure}{0.48\textwidth}
+        \centering
+        \begin{tikzpicture}
+            \begin{axis}[
+                ybar=0pt,
+                bar width=14pt,
+                width=\textwidth,
+                height=6cm,
+                enlarge x limits=0.2,
+                legend style={at={(0.5,-0.3)}, anchor=north, legend columns=-1, font=\scriptsize, draw=black},
+                area legend,
+                ylabel={Median Latency (ms)},
+                xlabel={Config (B $\times$ NH $\times$ HD)},
+                symbolic x coords={1x16x64, 1x32x128, 4x32x128},
+                xtick=data,
+                nodes near coords={\pgfmathprintnumber[fixed,precision=3]{\pgfplotspointmeta}},
+                every node near coord/.append style={rotate=90, anchor=west, font=\tiny, color=black},
+                title={\small T=2048, Causal=1},
+                title style={font=\bfseries},
+                ymin=0, ymax=6.97,
+                ytick={0,2,4,6,8,10,12,14}, yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=0, font=\scriptsize},
+                scaled y ticks=false,
+                xticklabel style={font=\scriptsize},
+                xlabel style={font=\scriptsize},
+                ylabel style={font=\scriptsize}
+            ]
+            \addplot[fill=bluteal, draw=none] coordinates {(1x16x64,0.365) (1x32x128,1.295) (4x32x128,4.961) };
+            \addplot[fill=ptrose, draw=none] coordinates {(1x16x64,0.496) (1x32x128,1.294) (4x32x128,5.362) };
+            \legend{BluBridge, PyTorch}
+            \end{axis}
+        \end{tikzpicture}
+    \end{subfigure}
+    \caption{Forward Attention median latency: T=2048}
+    \label{fig:attn_fwd_latency}
+\end{figure}

@@ -277,13 +277,13 @@ int main() {
 
       // #pragma omp parallel for
       for (int j = 0; j < N; ++j) {
-        // float sum = 0.0f;
-        //  #pragma omp parallel for
+        float sum = 0.0f;
+        //   #pragma omp parallel for
         for (int k = 0; k < K; ++k) {
-          // sum += A[i * K + k] * B[k * N + j];
-          C[i * N + j] += A[i * K + k] * B[k * N + j];
+          sum += A[i * K + k] * B[k * N + j];
+          //  C[i * N + j] += A[i * K + k] * B[k * N + j];
         }
-        // C[i * N + j] = sum;
+        C[i * N + j] = sum;
       }
     }
   }
@@ -308,13 +308,13 @@ int main() {
     for (int i = 0; i < M; ++i) {
       // #pragma omp parallel for
       for (int j = 0; j < N; ++j) {
-        // float sum = 0.0f;
-        //  #pragma omp parallel for
+        float sum = 0.0f;
+        //   #pragma omp parallel for
         for (int k = 0; k < K; ++k) {
-          //  sum += A[i * K + k] * B[k * N + j];
-          C[i * N + j] += A[i * K + k] * B[k * N + j];
+          sum += A[i * K + k] * B[k * N + j];
+          //  C[i * N + j] += A[i * K + k] * B[k * N + j];
         }
-        // C[i * N + j] = sum;
+        C[i * N + j] = sum;
       }
     }
 
@@ -334,9 +334,9 @@ int main() {
     avg_time += diff.count();
   }
   avg_time /= num_runs;
-  std::cout << "Time taken(naive-ijk loop with  -O1 optimization flag in "
+  std::cout << "Time taken(naive-ijk loop with  -O3 optimization flag in "
                "compilation flag) for the "
-               "config  (M=2000,N=2000,K=2000) and with  no temporary "
+               "config  (M=2000,N=2000,K=2000) and with temporary "
                "sum_variable(to avoid global ram writes for every "
                "accumulation) for accumulations   : "
             << avg_time << "secs" << std::endl;
