@@ -141,10 +141,10 @@ __device__ __forceinline__ constexpr uint64_t desc_encode(uint64_t x) {
 
 // PTX ISA 9.3 §9.7.17.4.1 (Table 45) — 64-bit smem descriptor layout:
 //   bits  0-13 : matrix start address  (desc_encode)
-//   bits 16-29 : Leading Dim Byte Offset (LBO)   — used when operand spans
-//                multiple m-stripes in the leading dim
-//   bits 32-45 : Stride Dim Byte Offset (SBO)   — byte stride between
-//                consecutive 8-element groups in the strided dim
+//   bits 16-29 : Leading Dim Byte Offset (LBO)  — stride per m-block jump
+//                in the leading dim (used when the operand spans > 1 m-block)
+//   bits 32-45 : Stride Dim Byte Offset (SBO)   — stride per +8 in the
+//                strided dim (always used)
 //   bits 46-48 : fixed 0b001
 //   bits 61-63 : swizzle mode (2 = 128-Byte swizzling)
 __device__ __forceinline__ uint64_t make_smem_desc(int addr, int lbo_bytes,
@@ -489,7 +489,13 @@ __global__ __cluster_dims__(2, 1, 1) void bgemm_sm103_bf16_tn_cluster_kernel(
       block_col = (new_tile_idx % total_mn_tiles) % grid_n;
       block_row = ((new_tile_idx % total_mn_tiles) / grid_n) * CTA_GROUP_SIZE +
                   (int)cta_rank;
-      issued = 0;
+      // DO NOT reset `issued` here. Letting it grow monotonically across tiles
+      // makes the `if (issued >= QUEUE_SIZE) wait()` check fire correctly on
+      // tile-N+1's first issue, forcing the producer to wait for the consumer's
+      // empty_mbar before reusing stages. Resetting it caused a race when
+      // k_iters == QUEUE_SIZE (K=512 on this config) AND grid > 1 wave of
+      // clusters — producer would overwrite stages still in-flight on the
+      // consumer side.
     }
   }
   // ── consumer warp ─────────────────────────────────────────────────────────
@@ -519,40 +525,43 @@ __global__ __cluster_dims__(2, 1, 1) void bgemm_sm103_bf16_tn_cluster_kernel(
             for (int k2 = 0; k2 < SWIZZLE_W / MMA_K_STEP; ++k2) {
               const int use_accum = (k == 0 && k1 == 0 && k2 == 0) ? 0 : 1;
 
-              // TN a_off: A smem [BK × BM], step along K rows (trans_a=1)
+              // TN smem layout after TMA + 128B swizzle is CHUNK-MAJOR (NOT raw
+              // row-major):
+              //   A smem = [BM/64 chunks][BK rows][64-element swizzled atoms ×
+              //   128 B each] B smem = [BN/CTA/64 chunks][BK rows][64-element
+              //   atoms × 128 B each]
+              // Within a chunk: +1 K-row = +128 B (atom row width), not +BM*2
+              // B. Reference: ThunderKittens descriptor.cuh + DeepGEMM
+              // mma/sm100.cuh (both agree).
+              //
+              // a_off / b_off advance through K dimension within a CHUNK:
+              //   per +16 K (one MMA_K_STEP) = +16 * SWIZZLE_W * sizeof(bf16) =
+              //   +2048 B
+              // (NOT +16 * BM * sizeof(bf16) — that's the raw-row-major
+              // mistake)
               const int a_off =
-                  k1 * SWIZZLE_W * BM * (int)sizeof(__nv_bfloat16) +
-                  k2 * MMA_K_STEP * BM * (int)sizeof(__nv_bfloat16);
+                  k1 * SWIZZLE_W * SWIZZLE_W * (int)sizeof(__nv_bfloat16) +
+                  k2 * MMA_K_STEP * SWIZZLE_W * (int)sizeof(__nv_bfloat16);
 
-              // TN b_off: B smem [BK × BN/2], step along K rows (trans_b=1)
-              const int b_off = k1 * SWIZZLE_W * (BN / CTA_GROUP_SIZE) *
-                                    (int)sizeof(__nv_bfloat16) +
-                                k2 * MMA_K_STEP * (BN / CTA_GROUP_SIZE) *
-                                    (int)sizeof(__nv_bfloat16);
+              const int b_off =
+                  k1 * SWIZZLE_W * SWIZZLE_W * (int)sizeof(__nv_bfloat16) +
+                  k2 * MMA_K_STEP * SWIZZLE_W * (int)sizeof(__nv_bfloat16);
 
-              // PTX 9.3 MN-Major 128B-swizzle canonical layout
-              //   ((T,8,m),(8,k)) : ((1,T,LBO),(8T,SBO))  with T = 8 (bf16).
-              // TN: A is M-major in [BK × BM] smem (trans_a=1);
-              //     B is N-major in [BK × BN/CTA] smem (trans_b=1).
-              //   LBO = byte stride per +64 in leading dim
-              //       = 64 * sizeof(bf16) = 128 bytes (constant for bf16).
-              //   SBO = byte stride per +8  in strided dim (K)
-              //       = 8 * leading_dim_elements * sizeof(bf16).
-              // For A: leading_dim_elements = BM   → SBO scales with BM
-              //        (this is the bit that the old fixed-1024 stride got
-              //        wrong).
-              // For B: leading_dim_elements = BN / CTA_GROUP_SIZE.
-              constexpr int A_LBO = 64 * (int)sizeof(__nv_bfloat16);
-              constexpr int A_SBO = 8 * BM * (int)sizeof(__nv_bfloat16);
-              constexpr int B_LBO = 64 * (int)sizeof(__nv_bfloat16);
-              constexpr int B_SBO =
-                  8 * (BN / CTA_GROUP_SIZE) * (int)sizeof(__nv_bfloat16);
-
+              // make_smem_desc LBO/SBO for MN-major 128B swizzle bf16:
+              //   LBO = BK * SWIZZLE_W * sizeof(bf16) = 8192 B for BK=64
+              //         (byte stride to next M-chunk of 64 elements; needed
+              //         because BM>64)
+              //   SBO = 8 * SWIZZLE_W * sizeof(bf16) = 1024 B  (constant)
+              //         (byte stride per +8 K-rows within a chunk)
               tcgen05_mma_bf16<CTA_GROUP_SIZE>(
                   tmem_addr + wave_stage * BN,
-                  make_smem_desc(A_smem + a_off, A_LBO, A_SBO),
-                  make_smem_desc(B_smem + b_off, B_LBO, B_SBO), i_desc,
-                  use_accum);
+                  make_smem_desc(A_smem + a_off,
+                                 BK * SWIZZLE_W * (int)sizeof(__nv_bfloat16),
+                                 8 * SWIZZLE_W * (int)sizeof(__nv_bfloat16)),
+                  make_smem_desc(B_smem + b_off,
+                                 BK * SWIZZLE_W * (int)sizeof(__nv_bfloat16),
+                                 8 * SWIZZLE_W * (int)sizeof(__nv_bfloat16)),
+                  i_desc, use_accum);
             }
           }
 
@@ -792,8 +801,13 @@ launch_bgemm_tn_cluster(const __nv_bfloat16 *A, const __nv_bfloat16 *B,
   init_2d_tma_C(&C_tmap, C, (uint64_t)batchCount * M, (uint64_t)N, (uint32_t)BM,
                 (uint32_t)STORE_N, CU_TENSOR_MAP_SWIZZLE_128B);
 
-  const int grid_m = M / (CTA_GROUP_SIZE * BM);
-  const int grid_n = N / BN;
+  // Ceil-div so shapes smaller than one tile still get grid >= 1.
+  // TMA's OOB-fill handles partial tiles cleanly; 2D TMA store clips writes
+  // to the actual matrix bounds. Without ceil-div, M=128 (smaller than the
+  // 2*BM=256 cluster tile) gives grid_m=0 → CUDA rejects launch with
+  // "invalid argument".
+  const int grid_m = (M + CTA_GROUP_SIZE * BM - 1) / (CTA_GROUP_SIZE * BM);
+  const int grid_n = (N + BN - 1) / BN;
   const int total_mn_tiles = grid_m * grid_n;
 
   auto kernel = bgemm_sm103_bf16_tn_cluster_kernel<BM, BN, BK, QUEUE_SIZE>;
@@ -841,10 +855,13 @@ extern "C" void mycublasBgemmSM103_bf16_tn_cluster_256x256x64(
     const __nv_bfloat16 *A, const __nv_bfloat16 *B, float beta,
     __nv_bfloat16 *C, int batchCount) {
   cudaStream_t stream = handle ? handle->stream : 0;
-  if (M % (CTA_GROUP_SIZE * 256) == 0)
-    launch_bgemm_tn_cluster<256, 256, 64>(A, B, C, M, N, K, batchCount, alpha,
-                                          beta, stream);
-  else
-    dispatch_bgemm_tn_cluster(A, B, C, M, N, K, batchCount, alpha, beta,
-                              stream);
+  // Per PTX 9.3 Table 44, tcgen05.mma.kind::f16 with cta_group::2 only
+  // supports M ∈ {128, 256}. So BM=256 (which needs M=512 per MMA) is
+  // architecturally invalid on this instruction path.
+  // The 128x128x64 cluster kernel already produces a 256-row output tile per
+  // cluster (2 CTAs × BM=128) via the M=256 shape, so it IS the real
+  // production kernel for this API. This entry is kept as a placeholder for
+  // a future higher-throughput implementation (cta_group::1 with BM=256, OR
+  // BM=128 + BN=256, OR a macro-tile variant), routed by the dispatcher.
+  dispatch_bgemm_tn_cluster(A, B, C, M, N, K, batchCount, alpha, beta, stream);
 }

@@ -1,0 +1,21 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+67.4,48781797,100,487818.0,371985.0,63841,1106916,427591.9,nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_NNT
+9.9,7138229,400,17845.6,6528.0,4000,86400,25398.8,"void bgemm_sm103_bf16_nn_cluster_kernel<(int)128, (int)128, (int)64, (int)8>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, float, float, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, int)"
+7.1,5142578,104,49447.9,49584.0,12960,86432,34716.8,nvjet_sm103_tst_128x256_64x6_2x2f_2cta_h_bz_NNT
+5.3,3840556,129,29771.8,14624.0,4256,117472,41801.9,nvjet_sm103_tst_128x256_64x6_2x2_2cta_h_bz_NNT
+3.1,2222887,50,44457.7,42912.5,14112,75840,29041.4,nvjet_sm103_tst_128x192_64x7_2x2f_2cta_h_bz_NNT
+1.4,1030817,25,41232.7,41376.0,40320,42144,562.2,nvjet_sm103_tst_128x8_64x12_2x1_v_bz_splitK_NNT
+1.1,791777,25,31671.1,31680.0,28096,33856,1570.2,nvjet_sm103_tst_256x128_64x5_2x2_2cta_h_bz_NNT
+0.8,610306,25,24412.2,24480.0,22176,26048,708.1,nvjet_sm103_tst_160x192_64x5_1x2_2cta_h_bz_NNN
+0.8,589953,25,23598.1,23520.0,21216,25440,757.3,nvjet_sm103_tst_128x192_64x7_2x1_2cta_v_bz_NNT
+0.8,566401,153,3702.0,3104.0,2304,6944,1400.4,nvjet_sm103_tst_128x64_64x10_2x2_2cta_h_bz_NNT
+0.4,315041,100,3150.4,3024.0,1920,4768,745.0,"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, __nv_bfloat16, float, __nv_bfloat16, (bool)0, float, __nv_bfloat16, __nv_bfloat16, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)"
+0.4,259007,77,3363.7,2016.0,1888,7168,1966.2,nvjet_sm103_tst_64x32_64x16_2x2_2cta_h_bz_NNT
+0.4,255136,25,10205.4,10240.0,9056,10880,423.3,nvjet_sm103_tst_32x64_64x16_4x1_v_bz_NNN
+0.3,248577,50,4971.5,5632.0,4032,6816,832.9,nvjet_sm103_tst_64x8_64x16_4x1_v_bz_splitK_NNT
+0.3,197216,25,7888.6,7904.0,7328,8416,212.9,nvjet_sm103_tst_160x192_64x5_2x2_2cta_h_bz_NNN
+0.1,98336,52,1891.1,1856.0,1760,2560,134.0,nvjet_sm103_tst_64x8_64x16_1x4_h_bz_NNT
+0.1,89472,25,3578.9,3584.0,3360,4064,142.1,void cutlass::Kernel2<cutlass_75_wmma_tensorop_bf16_s161616gemm_bf16_32x32_32x1_nn_align1>(T1::Params)
+0.1,83104,25,3324.2,3296.0,3232,3936,129.8,nvjet_sm103_tst_64x64_64x16_2x2_2cta_h_bz_NNT
+0.1,75713,25,3028.5,3008.0,2944,3648,139.4,nvjet_sm103_tst_64x32_64x16_1x2_h_bz_splitK_NNT
+0.1,48001,26,1846.2,1840.0,1728,2368,118.6,nvjet_sm103_tst_64x8_64x16_2x4_h_bz_NNT

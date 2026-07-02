@@ -1,0 +1,15 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+43.4,7115172,400,17787.9,6496.0,4096,85280,25234.2,"void bgemm_sm103_bf16_nt_cluster_kernel<(int)128, (int)128, (int)64, (int)8>(const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, float, float, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, int)"
+31.4,5148218,104,49502.1,48448.0,14272,85985,34025.9,nvjet_sm103_tst_128x256_64x6_2x2f_2cta_h_bz_TNT
+6.8,1120585,104,10774.9,10544.0,5376,15681,4055.3,nvjet_sm103_tst_128x256_64x6_2x2_2cta_h_bz_TNT
+6.7,1103205,25,44128.2,43392.0,42336,53153,2752.3,nvjet_sm103_tst_128x8_64x12_2x1_v_bz_splitK_TNT
+2.3,384064,103,3728.8,3232.0,2944,5760,883.3,nvjet_sm103_tst_128x64_64x10_2x2_2cta_h_bz_TNT
+1.9,304865,77,3959.3,2528.0,2304,11136,2220.1,nvjet_sm103_tst_64x32_64x16_2x2_2cta_h_bz_TNT
+1.6,262177,75,3495.7,3584.0,2560,4545,574.1,"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, __nv_bfloat16, float, __nv_bfloat16, (bool)0, float, __nv_bfloat16, __nv_bfloat16, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)"
+1.6,256545,25,10261.8,10113.0,9888,10880,300.7,nvjet_sm103_tst_32x64_64x16_4x1_v_bz_TNN
+1.1,174337,25,6973.5,6592.0,6400,11616,1167.4,nvjet_sm103_tst_64x16_64x16_4x1_2cta_h_bz_TNT
+0.8,137600,25,5504.0,4992.0,4896,9536,1414.9,nvjet_sm103_tst_64x8_64x16_4x1_v_bz_splitK_TNT
+0.7,120896,52,2324.9,2272.0,2112,2880,196.2,nvjet_sm103_tst_64x8_64x16_1x4_h_bz_TNT
+0.7,120705,25,4828.2,4864.0,4192,4928,163.0,nvjet_sm103_tst_64x32_64x16_1x2_h_bz_splitK_TNT
+0.6,90529,25,3621.2,3648.0,3456,4128,161.2,void cutlass::Kernel2<cutlass_75_wmma_tensorop_bf16_s161616gemm_bf16_32x32_32x1_tn_align1>(T1::Params)
+0.3,56032,26,2155.1,2112.0,1888,2880,203.2,nvjet_sm103_tst_64x8_64x16_2x4_h_bz_TNT

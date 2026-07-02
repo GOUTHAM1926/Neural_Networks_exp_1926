@@ -187,3 +187,20 @@ Blu_Train_submitted-version/
 # Local-only reference; don't bloat the repo.
 # =========================
 ptx_docs/
+
+# =========================
+# BluBLAS cuBLAS reverse-engineering (2026-07)
+# Keep analyzations.md + profile script + small kernel-summary CSVs.
+# Ignore: colleague snapshot (169MB), local zip backups, huge symbol dumps,
+# per-launch trace CSVs. (.sqlite/.nsys-rep already ignored globally above.)
+# =========================
+BluBridge-BLAS_01_07_2026_/
+/backups/
+cublas_rev_eng_binary/all_symbols.txt
+cublas_rev_eng_binary/catalog_bf16.txt
+cublas_rev_eng_binary/sm_100_symbols.txt
+cublas_rev_eng_binary/sm_100_bf16_demangled.txt
+cublas_rev_eng_binary/sm_103_symbols.txt
+cublas_rev_eng_binary/catalog_blackwell*.txt
+cublas_rev_eng_binary/**/*_trace.csv
+cublas_rev_eng_binary/**/*_trace_demangled.csv

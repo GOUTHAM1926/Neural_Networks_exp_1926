@@ -1,0 +1,27 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+91.2,774277292,325,2382391.7,1089285.0,63809,8256323,2392616.3,nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_TNT
+2.0,16721925,25,668877.0,340962.0,330721,3080397,906454.1,nvjet_sm103_tst_320x192_64x4_2x2f_2cta_h_bz_TNT
+1.3,11376048,25,455041.9,235873.0,229729,2983180,759811.1,nvjet_sm103_tst_256x256_64x4_2x2_2cta_h_bz_TNT
+1.3,10763918,304,35407.6,14816.0,5248,2861164,165166.4,nvjet_sm103_tst_128x256_64x6_2x2_2cta_h_bz_TNT
+1.3,10672973,204,52318.5,59616.5,14080,84704,29069.4,nvjet_sm103_tst_128x256_64x6_2x2f_2cta_h_bz_TNT
+0.9,7681120,75,102414.9,50560.0,22880,2854764,324844.4,nvjet_sm103_tst_128x192_64x7_2x1_2cta_v_bz_TNT
+0.8,7101023,400,17752.6,6464.0,4032,85857,25130.8,"void bgemm_sm103_bf16_nt_cluster_kernel<(int)128, (int)128, (int)64, (int)8>(const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, float, float, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, int)"
+0.2,1806599,25,72264.0,72545.0,69088,76001,1921.0,nvjet_sm103_tst_128x192_64x7_2x2f_2cta_h_bz_TNT
+0.2,1570918,75,20945.6,23488.0,14432,27328,4398.9,nvjet_sm103_tst_160x192_64x6_1x2_2cta_h_bz_TNN
+0.2,1568262,25,62730.5,62496.0,59521,65952,2071.4,nvjet_sm103_tst_128x160_64x8_2x1_2cta_v_bz_TNT
+0.1,1117029,25,44681.2,43809.0,42944,55136,3043.4,nvjet_sm103_tst_128x8_64x12_2x1_v_bz_splitK_TNT
+0.1,792003,25,31680.1,31520.0,28448,35840,2215.0,nvjet_sm103_tst_256x128_64x5_2x2_2cta_h_bz_TNT
+0.1,714115,153,4667.4,3488.0,3040,8640,1568.2,nvjet_sm103_tst_128x64_64x10_2x2_2cta_h_bz_TNT
+0.0,377058,25,15082.3,15040.0,14528,16128,337.9,nvjet_sm103_tst_176x128_64x8_1x2_2cta_h_bz_TNN
+0.0,312641,25,12505.6,12320.0,12064,14880,630.8,nvjet_sm103_tst_128x128_64x8_2x2_2cta_h_bz_TNT
+0.0,304641,77,3956.4,2528.0,2304,10592,2164.5,nvjet_sm103_tst_64x32_64x16_2x2_2cta_h_bz_TNT
+0.0,262849,75,3504.7,3584.0,2560,4672,572.2,"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, __nv_bfloat16, float, __nv_bfloat16, (bool)0, float, __nv_bfloat16, __nv_bfloat16, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)"
+0.0,257921,25,10316.8,10080.0,9792,11808,505.9,nvjet_sm103_tst_32x64_64x16_4x1_v_bz_TNN
+0.0,215777,25,8631.1,8608.0,8384,9536,259.7,nvjet_sm103_tst_160x192_64x6_2x2_2cta_h_bz_TNN
+0.0,173793,25,6951.7,6560.0,6464,11072,1132.8,nvjet_sm103_tst_64x16_64x16_4x1_2cta_h_bz_TNT
+0.0,137408,25,5496.3,4960.0,4800,10144,1447.5,nvjet_sm103_tst_64x8_64x16_4x1_v_bz_splitK_TNT
+0.0,121217,25,4848.7,4864.0,4384,4928,100.8,nvjet_sm103_tst_64x32_64x16_1x2_h_bz_splitK_TNT
+0.0,119936,52,2306.5,2272.0,2016,3040,196.0,nvjet_sm103_tst_64x8_64x16_1x4_h_bz_TNT
+0.0,100416,25,4016.6,3808.0,3744,5184,472.7,nvjet_sm103_tst_64x64_64x16_2x2_2cta_h_bz_TNT
+0.0,91873,25,3674.9,3680.0,3520,4224,153.9,void cutlass::Kernel2<cutlass_75_wmma_tensorop_bf16_s161616gemm_bf16_32x32_32x1_tn_align1>(T1::Params)
+0.0,55776,26,2145.2,2112.0,1920,2784,187.1,nvjet_sm103_tst_64x8_64x16_2x4_h_bz_TNT
