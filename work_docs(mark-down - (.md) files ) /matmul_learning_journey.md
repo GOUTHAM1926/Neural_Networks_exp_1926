@@ -924,6 +924,72 @@ After optimizing our `ijk` loop with a manual `float sum` register accumulator (
 But how did a "basic" flag nearly halve the execution time? To understand exactly what the compiler did, we queried GCC directly using:
 `diff <(g++ -Q -O0 --help=optimizers) <(g++ -Q -O1 --help=optimizers) | grep "\[enabled\]"`
 
+#### Deconstructing the `diff` Command (How This Forensic Technique Works)
+
+This single command line is composed of **four distinct Unix/Bash mechanisms** chained together. Here is exactly what each piece does:
+
+**1. `--help=optimizers` (GCC's Optimizer Catalog)**
+
+GCC internally has hundreds of individual optimization algorithms (called "passes"). The `--help=optimizers` flag asks GCC to print a complete catalog of **every single optimization pass** it knows about, along with a brief description of what each one does. Running `g++ --help=optimizers` alone would output something like:
+
+```text
+  -faggressive-loop-optimizations   [enabled]
+  -falign-functions                 [disabled]
+  -falign-jumps                     [disabled]
+  -fbranch-count-reg                [disabled]
+  ...hundreds more...
+```
+
+Each line shows one optimization flag and whether it is currently `[enabled]` or `[disabled]`.
+
+**2. `-Q` (Show the Actual Status, Not Just the Description)**
+
+Without `-Q`, the `--help=optimizers` flag would only show you a generic text description of what each optimization does (e.g., `"-fbranch-count-reg — Replace a branch with a count register"`). It does NOT tell you whether that optimization is actually turned on or off at your current `-O` level.
+
+Adding `-Q` forces GCC to output the real, live **status** — printing `[enabled]` or `[disabled]` next to each optimization based on the specific `-O` level you passed. So:
+
+- `g++ -Q -O0 --help=optimizers` → shows all optimizers with their status **at `-O0`** (most will say `[disabled]`)
+- `g++ -Q -O1 --help=optimizers` → shows all optimizers with their status **at `-O1`** (39 more will say `[enabled]`)
+
+**3. `<(...)` — Process Substitution (A Bash-Only Feature)**
+
+This is NOT a regular file redirect. The `<(command)` syntax is a **Bash shell feature** called **Process Substitution**. It runs the command inside the parentheses, captures its entire output, and presents it to the outer command (`diff`) as if it were a temporary file.
+
+Normally, `diff` compares **two files**: `diff file1.txt file2.txt`. But we don't have files — we have two commands. Process substitution solves this by creating two invisible temporary "pipes" (technically `/dev/fd/63` and `/dev/fd/62` on Linux):
+
+```bash
+diff <(g++ -Q -O0 --help=optimizers) <(g++ -Q -O1 --help=optimizers)
+#    ↑                               ↑
+#    "file 1" = output of -O0        "file 2" = output of -O1
+```
+
+Bash runs both `g++` commands, feeds their outputs into two temporary file descriptors, and `diff` compares them line-by-line — exactly as if they were two text files on disk.
+
+**Important:** Process substitution `<(...)` only works in **Bash** (and Zsh). It does NOT work in `sh`, `dash`, or other minimal POSIX shells. If you get `"syntax error near unexpected token`('"`, you are running`sh` instead of `bash`.
+
+**4. `diff` (The Line-by-Line Comparator)**
+
+`diff` is the standard Unix utility that compares two inputs line-by-line and outputs **only the lines that differ** between them. Since both `-O0` and `-O1` print the same list of optimizers (just with different `[enabled]`/`[disabled]` tags), `diff` will output only the lines where the status **changed** from `[disabled]` to `[enabled]` (or vice versa).
+
+**5. `| grep "\[enabled\]"` (The Final Filter)**
+
+The `diff` output contains lines that changed in BOTH directions — flags that went from `[disabled]` → `[enabled]` AND potentially flags that went from `[enabled]` → `[disabled]`. Piping through `grep "\[enabled\]"` filters to show **only the newly enabled flags** — the ones that `-O1` turns ON compared to `-O0`.
+
+The backslashes `\[` and `\]` are necessary because `[` and `]` are special characters in `grep`'s regex syntax (they define character classes). The backslash escapes them to match the literal bracket characters in the text `[enabled]`.
+
+**The Complete Pipeline Visualized:**
+
+```
+g++ -Q -O0 --help=optimizers  ──┐
+                                 ├──→  diff  ──→  grep "[enabled]"  ──→  OUTPUT
+g++ -Q -O1 --help=optimizers  ──┘        │              │
+                                         │              └─ keeps only newly
+                                    finds lines             enabled flags
+                                    that changed
+```
+
+This same forensic technique is reused throughout this document to compare `-O1` vs `-O2` (Part 14) and `-O2` vs `-O3` (Stage 4). It is the definitive way to know **exactly** what optimizations a GCC flag level enables, directly from the compiler itself — no guessing, no reading blog posts.
+
 This revealed exactly 39 optimization algorithms that `-O1` turns on which `-O0` leaves off.
 
 <details>
@@ -1203,8 +1269,9 @@ The CPU has distinct hardware execution units: the Floating Point Unit (FPU) exe
 When the FPU begins a `mulss` (multiply scalar single) instruction, it requires approximately 4 to 5 clock cycles to complete. If the immediate next instruction demands that multiplication result (`addss`), the CPU must stall the pipeline for those 4-5 cycles.
 
 To prevent these stalls, the `-O2` compiler applies instruction scheduling. Interestingly, there are two passes, but only one is used here:
-*   **Pass 1 (`-fschedule-insns`):** Runs *before* the compiler decides which physical hardware registers (like `rax` or `xmm0`) to use. It logically rearranges the code at a high level to minimize data dependency stalls. (Note: On x86_64 architectures like mine, GCC actually disables Pass 1 by default because x86 has too few registers, and early scheduling causes excessive memory swapping known as register spilling).
-*   **Pass 2 (`-fschedule-insns2`):** Runs *after* the hardware registers are strictly allocated. This pass looks at the final physical machine code and performs the exact, cycle-accurate shuffling of instructions. 
+
+- **Pass 1 (`-fschedule-insns`):** Runs *before* the compiler decides which physical hardware registers (like `rax` or `xmm0`) to use. It logically rearranges the code at a high level to minimize data dependency stalls. (Note: On x86_64 architectures like mine, GCC actually disables Pass 1 by default because x86 has too few registers, and early scheduling causes excessive memory swapping known as register spilling).
+- **Pass 2 (`-fschedule-insns2`):** Runs *after* the hardware registers are strictly allocated. This pass looks at the final physical machine code and performs the exact, cycle-accurate shuffling of instructions.
 
 In my compiled code, **Pass 2** deliberately interleaves independent integer instructions (`add rax, 8000`) precisely between the `mulss` and `addss`. **This technique is explicitly designed to hide FPU (Floating Point Unit) Pipeline Latency.** By shoving independent integer instructions between the multiply and the add, the compiler lets the CPU's Integer ALU do the pointer math at the exact same time the FPU is busy multiplying the floats!
 
@@ -1224,12 +1291,13 @@ The `-O2` flag strictly restricts the compiler from auto-vectorizing, forcing th
 
 ## Stage 4: The `-O3` Vectorization Breakthrough (Breaking the 7-Second Barrier)
 
-When compiling the same naive `ijk` loop with `-O3`, the execution time plummeted from **~7.1 seconds to ~1.9 seconds**. 
+When compiling the same naive `ijk` loop with `-O3`, the execution time plummeted from **~7.1 seconds to ~1.9 seconds**.
 
 To understand exactly what the compiler changed to achieve this 3.5x speedup, I executed a differential analysis between the optimizations enabled by `-O2` and `-O3` using the command:
 `diff <(g++ -Q -O2 --help=optimizers) <(g++ -Q -O3 --help=optimizers)`
 
 This revealed exactly 15 new compiler algorithms that `-O3` unlocks:
+
 1. `-fgcse-after-reload`
 2. `-fipa-cp-clone`
 3. `-floop-interchange`
@@ -1247,44 +1315,135 @@ This revealed exactly 15 new compiler algorithms that `-O3` unlocks:
 15. `-fversion-loops-for-strides`
 
 ### The Hardware Reality: Vectorization without `-march=native`
+
 A critical systems-engineering question arose during my analysis: *"How did vectorization occur if I did not pass the `-march=native` flag to target my specific i7-14700K hardware architecture?"*
 
-The answer lies in the baseline x86_64 architecture specification. By default, any 64-bit x86 compiler assumes the hardware supports **SSE2 (Streaming SIMD Extensions 2)**. SSE2 provides 128-bit vector registers (`xmm0` through `xmm15`). Because a standard `float` is 32 bits, a 128-bit `xmm` register can hold exactly 4 floats. 
+The answer lies in the baseline x86_64 architecture specification. By default, any 64-bit x86 compiler assumes the hardware supports **SSE2 (Streaming SIMD Extensions 2)**. SSE2 provides 128-bit vector registers (`xmm0` through `xmm15`). Because a standard `float` is 32 bits, a 128-bit `xmm` register can hold exactly 4 floats.
 
 Therefore, without `-march=native`, `-O3` legally leverages the baseline SSE2 instructions to process 4 floats simultaneously. If `-march=native` were provided, the compiler would detect the AVX2/AVX-512 support on the i7-14700K and utilize 256-bit (`ymm`) or 512-bit (`zmm`) registers to process 8 or 16 floats simultaneously.
 
 ### The `-O3` Assembly Analysis (Vectorization in Action)
+
 Looking at the generated assembly for the `-O3` inner loop (`.L11`), the scalar `ss` instructions have been replaced by packed `ps` instructions.
 
 ```assembly
 .L11:
-	movss	xmm0, DWORD PTR [rdx]    # Load 1 float from Matrix A
-	movups	xmm2, XMMWORD PTR [rax]  # Load 4 floats (128-bits) from Matrix B
-	add	rax, 8000                    # Pointer math: Jump B by N (8000 bytes)
-	add	rdx, 4                       # Pointer math: Jump A by 1 float
-	shufps	xmm0, xmm0, 0            # Shuffle: Broadcast A's float into 4 slots of xmm0
-	mulps	xmm0, xmm2               # Multiply 4 floats simultaneously
-	addps	xmm1, xmm0               # Accumulate 4 floats simultaneously
-	cmp	rax, rcx
-	jne	.L11
+ movss xmm0, DWORD PTR [rdx]    # Load 1 float from Matrix A
+ movups xmm2, XMMWORD PTR [rax]  # Load 4 floats (128-bits) from Matrix B
+ add rax, 8000                    # Pointer math: Jump B by N (8000 bytes)
+ add rdx, 4                       # Pointer math: Jump A by 1 float
+ shufps xmm0, xmm0, 0            # Shuffle: Broadcast A's float into 4 slots of xmm0
+ mulps xmm0, xmm2               # Multiply 4 floats simultaneously
+ addps xmm1, xmm0               # Accumulate 4 floats simultaneously
+ cmp rax, rcx
+ jne .L11
 ```
 
 ### The Compiler's "Mini-ikj" Hybrid Loop
-While the macro structure remains an `ijk` loop (as evidenced by the `add rax, 8000` instruction in the inner loop), the auto-vectorizer intelligently created a hybrid execution model. 
 
-The GCC auto-vectorizer uses a dynamic cost model (which we verified in the diff output as `-fvect-cost-model=dynamic`) to evaluate which loop dimension is mathematically cheapest to vectorize. It realized that vectorizing the inner `k` loop would require an expensive hardware "Gather" operation to fetch non-contiguous rows from Matrix B. 
+While the macro structure remains an `ijk` loop (as evidenced by the `add rax, 8000` instruction in the inner loop), the auto-vectorizer intelligently created a hybrid execution model.
 
-Instead, it automatically elected to vectorize across the middle `j` loop. By grabbing 4 horizontal elements from Matrix B, and accumulating into 4 horizontal elements of Matrix C, the compiler is essentially executing a "mini `ikj` loop" of size 4 *inside* the `k` loop! 
+The GCC auto-vectorizer uses a dynamic cost model (which we verified in the diff output as `-fvect-cost-model=dynamic`) to evaluate which loop dimension is mathematically cheapest to vectorize. It realized that vectorizing the inner `k` loop would require an expensive hardware "Gather" operation to fetch non-contiguous rows from Matrix B.
+
+Instead, it automatically elected to vectorize across the middle `j` loop. By grabbing 4 horizontal elements from Matrix B, and accumulating into 4 horizontal elements of Matrix C, the compiler is essentially executing a "mini `ikj` loop" of size 4 *inside* the `k` loop!
 
 ### Assembly Instruction Dictionary (The Mechanics of SIMD)
+
 The scalar `ss` (Scalar Single) instructions have been entirely replaced by `ps` (Packed Single) instructions:
-*   **`movss` (Move Scalar Single):** Loads 1 single float from Matrix A.
-*   **`movups` (Move Unaligned Packed Single):** Loads 4 contiguous floats (128-bits) from Matrix B simultaneously. "Unaligned" allows the CPU to fetch data without crashing if the memory address isn't perfectly 16-byte aligned.
-*   **`shufps` (Shuffle Packed Single):** A specialized hardware trick that instantly broadcasts (clones) the 1 float from Matrix A into all 4 slots of the `xmm0` vector register. *(Note: Vectorizing Matrix A is undesirable here, as a single scalar from A must be multiplied against an entire row of B).*
-*   **`mulps` (Multiply Packed Single):** Multiplies the 4 floats of A by the 4 floats of B in a single clock cycle.
-*   **`addps` (Add Packed Single):** Adds the 4 multiplied results into the `xmm1` running total register simultaneously.
+
+- **`movss` (Move Scalar Single):** Loads 1 single float from Matrix A.
+- **`movups` (Move Unaligned Packed Single):** Loads 4 contiguous floats (128-bits) from Matrix B simultaneously. "Unaligned" allows the CPU to fetch data without crashing if the memory address isn't perfectly 16-byte aligned.
+- **`shufps` (Shuffle Packed Single):** A specialized hardware trick that instantly broadcasts (clones) the 1 float from Matrix A into all 4 slots of the `xmm0` vector register. *(Note: Vectorizing Matrix A is undesirable here, as a single scalar from A must be multiplied against an entire row of B).*
+- **`mulps` (Multiply Packed Single):** Multiplies the 4 floats of A by the 4 floats of B in a single clock cycle.
+- **`addps` (Add Packed Single):** Adds the 4 multiplied results into the `xmm1` running total register simultaneously.
 
 ### The Unresolved Memory Bottleneck
-Despite this 3.5x speedup, the L1 Cache Miss bottleneck has not been resolved. Line 4 of the assembly confirms `add rax, 8000` is still executing. The CPU is still forced to jump 8,000 bytes for every loop iteration, guaranteeing a 100% cache miss rate. 
+
+Despite this 3.5x speedup, the L1 Cache Miss bottleneck has not been resolved. Line 4 of the assembly confirms `add rax, 8000` is still executing. The CPU is still forced to jump 8,000 bytes for every loop iteration, guaranteeing a 100% cache miss rate.
 
 The execution time dropped from 7.1s to 1.9s entirely because the CPU is now processing 4 `j` columns per loop, which mathematically reduces the total number of expensive memory-fetch iterations by 4x. To eliminate the 300-cycle memory stall penalty entirely, the C++ architecture must be structurally modified from the `ijk` layout to the cache-coherent `ikj` layout.
+
+---
+
+## Part 13: Unleashing the Hardware Payload (-march=native)
+
+### Experiment 47: `ijk` Loop with `-O3 -march=native` (With Temporary Variable)
+
+**Execution Time:** ~1.1s (down from 1.9s with `-O3` alone)
+
+First, to understand what extra optimizations were applied by adding `-march=native` on top of `-O3`, I used the exact same forensic `diff` command as before:
+
+```bash
+diff <(g++ -Q -O3 --help=optimizers) <(g++ -Q -O3 -march=native --help=optimizers)
+```
+
+I expected that `-march=native` would trigger AVX intrinsics based on what the hardware is capable of (e.g., the Intel i7-14700K supports AVX2/AVX256, which can load 256 bits, or 8 floats, into registers at a time).
+
+**The Result:** The terminal output was completely empty. I ran it 3-4 times to be sure. This proves that **`-march=native` does NOT turn on a single new software optimization algorithm.** `-O3` already enabled them all.
+
+Without `-march=native`, `-O3` vectorizes the loop using advanced algorithms, but because it doesn't know the specific CPU capabilities, it plays it safe and uses the naive 128-bit SSE instructions that every 64-bit CPU supports. With `-march=native`, `-O3` gets to know the physical vectorization capabilities of the CPU. It upgrades that vectorization algorithm to use the massive 256-bit `ymm` registers and perform multiply-and-add in a single hardware cycle using FMA (Fused-Multiply-Add) support. The vectorization *algorithm* didn't change; the hardware *payload* it delivered did (loading 8 floats at a time instead of 4).
+
+#### Difference Between Algorithms and Hardware
+
+- **`-O3` controls ALGORITHMS (`--help=optimizers`):** It turns on high-level software passes like `-ftree-loop-vectorize`. That list of algorithms is exactly the same whether compiling for an ancient Pentium 4 or the latest i7-14700K.
+- **`-march=native` controls INSTRUCTION SETS (`--help=target`):** It doesn't add new optimization passes. Instead, it tells the already-running passes (like the vectorizer) what physical hardware weapons they are allowed to use. Since the auto-vectorizer algorithm is already enabled by `-O3`, the `--help=optimizers` diff is perfectly identical. The difference happens strictly in the backend code generation.
+
+To actually see what `-march=native` did, I queried the "target" flags instead:
+
+```bash
+diff <(g++ -Q -O3 --help=target) <(g++ -Q -O3 -march=native --help=target) | grep "\[enabled\]"
+```
+
+This revealed a massive list of hardware features handed to the compiler, including `-mavx`, `-mavx2`, and `-mfma`.
+
+### Assembly Comparison 1: Impact of the Temporary Variable
+
+**`[-O3]` (Without Temp) vs `[-O3]` (With Temp)**
+
+Both of these were compiled with just `-O3` (no `-march=native`). Because there is no native flag, GCC defaults to the old x86_64 standard: SSE2 hardware (128-bit `xmm` registers = 4 floats at a time).
+
+- **Similarity:** The inner loop math is 100% identical. In both cases, the compiler successfully pulled the memory write out of the loop (loop invariant motion).
+- **Difference:** The only difference is step 1 (initialization). Without the temp variable, the compiler doesn't know `C` is zero initially (because of the `+=` operation), so it wastes time fetching `C` from RAM before the loop starts. The temporary variable avoids this RAM fetch and replaces it with an instant zero (`pxor`).
+
+### Assembly Comparison 2: Impact of the Native Hardware Flag
+
+**`[-O3]` (With Temp) vs `[-O3 -march=native]` (With Temp)**
+
+Keeping the C++ code exactly the same (using the temp variable), but adding `-march=native` allows the compiler to detect the i7-14700K AVX2 hardware (256-bit `ymm` registers = 8 floats) and FMA hardware.
+
+- **Difference 1 (Width):** `-O3` uses `xmm` (4 floats) while `-march=native` enables `ymm` (8 floats) getting twice as much work done per loop iteration.
+- **Difference 2 (Broadcast):** `-O3` uses two instructions (`movss` then `shufps`) to load A and spread it across the vector lanes. The native flag uses a single hardware instruction (`vbroadcastss`) to do it instantly across 8 lanes.
+- **Difference 3 (FMA):** `-O3` takes three separate instructions to load B, multiply, and add (`movups`, `mulps`, `addps`). The native flag fuses all three of these physical steps into a single instruction: `vfmadd231ps`.
+
+---
+
+### Experiment 48: `ijk` Loop with `-O3 -march=native` (Without Temporary Variable)
+
+**Execution Time:** ~1.07s
+
+To confirm the behavior, I ran the exact same code *without* the temporary variable, but with `-O3 -march=native`. The timing was ~1.07s - 1.21s, virtually identical to the version with the temporary variable (~1.11s).
+
+I compared the assembly code to see the differences and how the compiler changed inside:
+
+- **Math is Unchanged:** In both cases, the compiler brilliantly utilized the `vfmadd231ps` Fused Multiply-Add instruction, processing 8 floats per cycle.
+- **The Overhead:** The only difference is a single instruction before `.L11`. Because I didn't use `float sum = 0.0f`, the compiler could not prove that `C` was initialized to zero. Therefore, it was forced to issue a `vmovups` (vectorized-read) to read 8 floats from RAM into `ymm0` before it could start the `k`-loop.
+
+#### Deep Mathematical Analysis of the Overhead
+
+Why is the version without the temp variable only a microscopic fraction of a second slower on average? Because the inner loop (which runs 8 billion times) is exactly the same. The penalty is just one extra `vmovups` memory read per `j`-iteration.
+
+Let's break down how many times this overhead instruction runs for an $M, N, K = 2000$ configuration:
+
+1. **Outer Loop (`i` loop):** Runs 2,000 times ($i < M$).
+2. **Middle Loop (`j` loop):** Because it processes 8 floats per vector load, it steps by 8. So it runs $2000 / 8 = 250$ times per `i` iteration.
+3. **Inner Loop (`k` loop):** Runs 2,000 times per `j` iteration.
+
+**Where is the penalty?**
+The `vmovups` memory read (the penalty) is inside the `j` loop, but outside the `k` loop.
+
+- **Penalty executions:** `i-loop (2,000)` × `j-loop (250)` = **500,000 times.**
+- **FMA Math executions (`vfmadd231ps`):** `i-loop (2,000)` × `j-loop (250)` × `k-loop (2,000)` = **1,000,000,000 times (1-billion times).**
+
+That means for every 1 time the compiler pays the memory penalty, it executes 2,000 cycles of pure, uninterrupted FMA hardware math. 500,000 memory reads take less than a millisecond for a modern CPU, completely dwarfed by the 1-billion inner loop iterations. This perfectly explains why the timing results for both versions were virtually identical!
+
+*Next steps: We will run experiments with OpenMP for the same configuration, and then continue with the cache-optimized `ikj` loop.*

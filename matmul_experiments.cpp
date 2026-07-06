@@ -1,7 +1,8 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
-// #include <omp.h> //enable when using omp functions  ,
+// #include <omp.h> //enable when using omp functions , ex:-
+// "omp_set_num_threads()" ,   ,
 using namespace std;
 int main() {
   int M = 2000;
@@ -271,17 +272,17 @@ int main() {
   ////  ijk loop (looping order)and global accumulation
   for (int run = 0; run < warmup_runs; ++run) {
     std::memset(C, 0, size_C);
-    // #pragma omp parallel for // openmp multiple threads parallelization ,
+#pragma omp parallel for // openmp multiple threads parallelization ,
 
     for (int i = 0; i < M; ++i) {
 
       // #pragma omp parallel for
       for (int j = 0; j < N; ++j) {
         float sum = 0.0f;
-        //   #pragma omp parallel for
+        //    #pragma omp parallel for
         for (int k = 0; k < K; ++k) {
           sum += A[i * K + k] * B[k * N + j];
-          //  C[i * N + j] += A[i * K + k] * B[k * N + j];
+          // C[i * N + j] += A[i * K + k] * B[k * N + j];
         }
         C[i * N + j] = sum;
       }
@@ -291,6 +292,7 @@ int main() {
   //   // ikj loop  (looping-order)and global accumulation ,
 
   //   for (int i = 0; i < M; ++i) {
+
   //     for (int k = 0; k < K; ++k) {
   //       for (int j = 0; j < N; ++j) {
   //         C[i * N + j] += A[i * K + k] * B[k * N + j];
@@ -303,7 +305,7 @@ int main() {
   for (int run = 0; run < num_runs; ++run) {
     std::memset(C, 0, size_C);
     auto start = std::chrono::high_resolution_clock::now();
-    // #pragma omp parallel for // openmp multiple threads parallelization ,
+#pragma omp parallel for // openmp multiple threads parallelization ,
 
     for (int i = 0; i < M; ++i) {
       // #pragma omp parallel for
@@ -312,7 +314,7 @@ int main() {
         //   #pragma omp parallel for
         for (int k = 0; k < K; ++k) {
           sum += A[i * K + k] * B[k * N + j];
-          //  C[i * N + j] += A[i * K + k] * B[k * N + j];
+          //   C[i * N + j] += A[i * K + k] * B[k * N + j];
         }
         C[i * N + j] = sum;
       }

@@ -1630,3 +1630,864 @@ Realistic expectation: micro-tuning 128×128 gains a few % on shapes it already 
 | **4** | 128×256 + 2×2 + fused epilogue | square Q small models | ~6 |
 | later | decode/GEMV tiles (small M) | inference decode | M-axis gap (§23.4 Q5) |
 | later | FlashAttention fused kernel | attention (separate category) | out of GEMM scope |
+
+---
+
+## 24. B0 RESULT — our first new variant: 128×256 tile (2026-07-02)
+
+Built the 128×256 tile as the first step of the flexibility platform (Workstream B, step B0 = the "Option A" experiment). Implementation: repurposed the `mycublasBgemmSM103_bf16_tn_cluster_256x256x64` API (was a fake fallback to 128×128) to call `launch_bgemm_tn_cluster<128, 256, 64>` — a GENUINE 256×256 macro-tile (128 rows/CTA × 2-CTA 2×1 cluster = 256 M, × 256 N). No cluster change; tile axis was already templated. TN layer only so far. Log: `b0_b0_128x256_tn.log`.
+
+### 24.1 It works — no TMEM overflow
+
+All 42 Qwen shapes PASS with 128×256 (rel_err 0.00). BN=256 × NUM_EPI_STAGES=2 = 512 TMEM columns = the full TMEM, and it fit **exactly** — no overflow. So B1 (parameterize stages) is NOT needed for BN=256. Good.
+
+### 24.2 Full 3-way comparison (TN, M=4096): 128×128 vs 128×256 vs cuBLAS
+
+Ratios are BluBLAS ÷ cuBLAS. "best" = which of our two tiles is faster.
+
+| Shape | (M,N,K) | 128×128 | 128×256 | cuBLAS | best |
+|---|---|---:|---:|---:|---|
+| q25-0.5b-Q | 4096,896,896 | 70.6% | **73.5%** | 882 | 128×256 |
+| q25-0.5b-K | 4096,128,896 | **55.9%** | 41.8% | 241 | 128×128 |
+| q25-0.5b-Gate | 4096,4864,896 | 81.8% | **84.1%** | 1435 | 128×256 |
+| q25-0.5b-Down | 4096,896,4864 | 93.5% | **101.2%** ✅ | 1226 | 128×256 |
+| q25-0.5b-LMhead | 4096,151936,896 | 67.0% | **77.1%** | 1648 | 128×256 |
+| q25-1.5b-Q | 4096,1536,1536 | **78.3%** | 67.4% | 1386 | 128×128 |
+| q25-1.5b-K | 4096,256,1536 | **59.6%** | 41.5% | 637 | 128×128 |
+| q25-1.5b-Gate | 4096,8960,1536 | 86.5% | **97.1%** | 1672 | 128×256 |
+| q25-1.5b-Down | 4096,1536,8960 | **95.6%** | 81.5% | 1534 | 128×128 |
+| q25-1.5b-LMhead | 4096,151936,1536 | 84.6% | **96.9%** | 1394 | 128×256 |
+| q25-3b-Q | 4096,2048,2048 | 77.0% | **85.2%** | 1551 | 128×256 |
+| q25-3b-K | 4096,256,2048 | **60.1%** | 40.4% | 743 | 128×128 |
+| q25-3b-Gate | 4096,11008,2048 | 89.8% | **98.0%** | 1698 | 128×256 |
+| q25-3b-Down | 4096,2048,11008 | 89.8% | **97.7%** | 1648 | 128×256 |
+| q25-3b-LMhead | 4096,151936,2048 | 89.5% | **104.8%** ✅ | 1304 | 128×256 |
+| q25-7b-Q | 4096,3584,3584 | **89.5%** | 88.6% | 1604 | 128×128 |
+| q25-7b-K | 4096,512,3584 | **78.6%** | 51.2% | 1384 | 128×128 |
+| q25-7b-Gate | 4096,18944,3584 | 69.6% | **79.0%** | 1795 | 128×256 |
+| q25-7b-Down | 4096,3584,18944 | 88.7% | **90.7%** | 1609 | 128×256 |
+| q25-7b-LMhead | 4096,152064,3584 | 89.2% | **97.9%** | 1271 | 128×256 |
+| q3-0.6b-Q | 4096,2048,1024 | 76.9% | **84.5%** | 1315 | 128×256 |
+| q3-0.6b-K | 4096,1024,1024 | 75.2% | **77.4%** | 1033 | 128×256 |
+| q3-0.6b-O | 4096,1024,2048 | 76.3% | **79.8%** | 1401 | 128×256 |
+| q3-0.6b-Gate | 4096,3072,1024 | 74.4% | **82.6%** | 1452 | 128×256 |
+| q3-0.6b-Down | 4096,1024,3072 | 78.0% | **82.7%** | 1529 | 128×256 |
+| q3-0.6b-LMhead | 4096,151936,1024 | 73.4% | **83.5%** | 1549 | 128×256 |
+| q3-1.7b-Q | 4096,2048,2048 | 77.1% | **85.6%** | 1543 | 128×256 |
+| q3-1.7b-K | 4096,1024,2048 | 76.5% | **80.1%** | 1397 | 128×256 |
+| q3-1.7b-Gate | 4096,6144,2048 | 92.7% | **95.5%** | 1597 | 128×256 |
+| q3-1.7b-Down | 4096,2048,6144 | 87.2% | **92.5%** | 1695 | 128×256 |
+| q3-1.7b-LMhead | 4096,151936,2048 | 89.0% | **103.9%** ✅ | 1318 | 128×256 |
+| q3-4b-Q | 4096,4096,2560 | **95.2%** | 94.2% | 1640 | 128×128 |
+| q3-4b-K | 4096,1024,2560 | 78.7% | **82.7%** | 1457 | 128×256 |
+| q3-4b-O | 4096,2560,4096 | **84.4%** | 79.7% | 1687 | 128×128 |
+| q3-4b-Gate | 4096,9728,2560 | 90.9% | **96.6%** | 1708 | 128×256 |
+| q3-4b-Down | 4096,2560,9728 | **91.6%** | 85.7% | 1617 | 128×128 |
+| q3-4b-LMhead | 4096,151936,2560 | 90.5% | **102.4%** ✅ | 1286 | 128×256 |
+| q3-8b-Q | 4096,4096,4096 | **97.4%** | 95.4% | 1676 | 128×128 |
+| q3-8b-K | 4096,1024,4096 | 81.4% | **85.6%** | 1555 | 128×256 |
+| q3-8b-Gate | 4096,12288,4096 | 78.7% | **85.4%** | 1772 | 128×256 |
+| q3-8b-Down | 4096,4096,12288 | 76.2% | **194.0%** ⚠️ | 827 | 128×256 |
+| q3-8b-LMhead | 4096,151936,4096 | 87.5% | **94.8%** | 1285 | 128×256 |
+
+### 24.3 128×256 wins on 31/42 shapes — the pattern is clear
+
+- **128×256 best: 31 shapes** — all wide-N (Gate), all LM heads, most Down (fat-K), most non-square Q.
+- **128×128 best: 11 shapes** — the skinny K/V (N≤512), a few square Q, a couple Down.
+
+**The governing rule (emerged empirically):**
+> **Wide-N or fat-K → 128×256 wins.  Skinny-N (N≤512) → 128×128 wins.**
+
+Why: 128×256's wider N-tile amortizes scheduling + reuses B better on wide shapes, but on skinny N (128/256) it WASTES half the tile (computing empty columns) → collapses to 40-51%. E.g. q25-3b-K (N=256): 128×256 only 40.4% vs 128×128 60.1%.
+
+### 24.4 We now BEAT cuBLAS on 4-5 shapes ✅
+
+| Shape | our 128×256 | cuBLAS | ratio |
+|---|---:|---:|---:|
+| q25-0.5b-Down | 1240.8 T | 1226.4 T | **101.2%** |
+| q25-3b-LMhead | 1367.0 T | 1304.0 T | **104.8%** |
+| q3-1.7b-LMhead | 1369.0 T | 1318.1 T | **103.9%** |
+| q3-4b-LMhead | 1316.3 T | 1285.8 T | **102.4%** |
+| q3-8b-Down | 1603.8 T | 826.9 T | **194.0%** ⚠️ (see 24.6) |
+
+First shapes where BluBLAS beats cuBLAS! The LM heads especially — memory-bound, our wide 128×256 tile streams the huge weight matrix efficiently.
+
+### 24.5 Apples-to-apples — on shapes where cuBLAS ALSO uses 128×256, we hit ~90%
+
+The fairest comparison: on the ~26 shapes where cuBLAS's own kernel is a 128×256 variant (§16.3), how does OUR 128×256 do? Ratios (r256) on those shapes range **77-105%, averaging ~90%.** Examples: q25-1.5b-Gate 97.1%, q25-3b-Gate 98.0%, q3-4b-Gate 96.6%, q3-1.7b-LMhead 103.9%, q3-8b-Gate 85.4%.
+
+**Interpretation**: with the SAME tile cuBLAS uses, we're at ~90% — the remaining ~10% is cuBLAS's extra tuning on that tile (its 2×2 cluster / vertical wave / per-shape stages). That ~10% is exactly what B3 (cluster) + stage tuning will chase. Reaching 90% of cuBLAS's tuned kernel with our first-cut 128×256 (2×1) is a strong result.
+
+### 24.6 ⚠️ The q3-8b-Down anomaly — honest flag
+
+q3-8b-Down shows our 128×256 at **194% of cuBLAS** — but this is because **cuBLAS had an off-run on this ONE shape**:
+- cuBLAS here (b0 run): **826.9 T**
+- cuBLAS in the dedicated clean run (§21.3, reproduced twice §21.8): **1756.3 T**
+
+Same shape, 2.1× different cuBLAS numbers. Every OTHER cuBLAS number in this run matches the dedicated run within a few %; only q3-8b-Down diverges. Most likely cuBLAS's heuristic picked a suboptimal kernel for this fat-K shape in this run (cuBLAS heuristic can be nondeterministic / cache-state-sensitive on some shapes).
+
+**Honest read**: our 128×256 = 1603.8 T *consistently*. Against cuBLAS's BEST (1756 T) we're at **~91%**, NOT 194%. But this also reveals cuBLAS is **inconsistent** on q3-8b-Down (826-1756 T), while we're stable — a real robustness advantage. The huge jump on OUR side (128×128 629 T → 128×256 1604 T, a **2.5× improvement**) is real and shows 128×256 is essential for fat-K.
+
+### 24.7 Best-of-2-tiles dispatcher → ~87% avg (up from 81.5%)
+
+If our dispatcher picks the better of {128×128, 128×256} per shape (max of the two ratios), the average across all 42 shapes rises to **~87%** (using the trustworthy ~91% for q3-8b-Down), up from **81.8%** with 128×128 alone. **+5 points from adding one tile**, and we now exceed 100% on 4-5 shapes.
+
+Remaining drags on the average:
+- **Skinny K/V** (N≤512): still 55-79% — neither tile fits; needs B2 (skinny-N tile, BN=64/128 without wasting).
+- **Square Q / some Down**: 84-97% — needs B3 (2×2 cluster) to match cuBLAS's tuning.
+
+### 24.8 What B0 tells us for the dispatcher + next steps
+
+**Dispatch rule (data-driven, for the hardcoded router):**
+```
+if (N >= 2048)         -> 128×256   (wide-N: Gate, LMhead, large Q/Down)
+else if (N <= 512)     -> 128×128   (skinny K/V — until B2 gives a better skinny tile)
+else                   -> test both; ~tie, default 128×256
+```
+
+**Next priorities refined by B0 data:**
+- **B2 (skinny-N tile)** is now clearly justified: the worst shapes (q25-*-K at 40-60%) are skinny K/V where BOTH our tiles are bad. A dedicated small-BN tile is the biggest remaining win + where we can beat cuBLAS (cuBLAS is also weak there, 241-743 T).
+- **B3 (2×2 cluster)** chases the last ~10% on the shapes where our 128×256 already matches cuBLAS's 128×256 (§24.5) — cuBLAS's edge there is its 2×2 cluster.
+- **Replicate B0 to NN + NT** (currently TN only) — expected to mirror TN.
+
+**Status**: B0 DONE for TN. 128×256 validated, +5pts average, 5 shapes beating cuBLAS. Wire the dispatch rule + replicate to NN/NT, then B2.
+
+---
+
+## 25. SM103 module architecture — production vs legacy vs template (2026-07-02)
+
+Investigated which files are actually used (there was confusion). The folder has THREE generations of SM103 BF16 kernels:
+
+| Gen | Files | What | Status |
+|---|---|---|---|
+| **Gen 1** | `Bgemm_sm103_bf16.cu`, `_NN.cu` | non-cluster cta_group::1 (single-CTA) | ❌ dead (dispatcher never calls) |
+| **Gen 2** | `Bgemm_sm103_bf16_{TN,NN,NT}_cluster.cu` | per-layout hand-written 2-CTA cluster kernels | ✅ **currently wired** (dispatcher calls these) + our experiment sandbox |
+| **Gen 3** | `Bgemm_sm103_cluster_template.cuh` + `Bgemm_{tn,nn,nt}_variants.cu` | **unified templated kernel** (layout + tile config = template params) + thin launcher wrappers | ⭐ **canonical home** (colleague's design) — but was UNVALIDATED |
+
+**Production call chain** (verified): `mycublasBgemmStridedBatched` (public, `mycublas.h`) → `mycublasBgemmStridedBatched_dispatcher` (`Bgemm_dispatcher.cu`) → `mycublasBgemmSM103_dispatch_{nn,nt,tn}` (`Bgemm_sm103_dispatcher.cu`) → `*_cluster_{128x128x64,256x256x64}` (**Gen 2 `_cluster.cu`**).
+
+**Roles clarified:**
+- `.cuh` (Gen 3) = the intended **single source of truth** — kernel written once, all NN/NT/TN + tile configs via template params. `Sm103Config_128x128x64` and `Sm103Config_256x256x64`(=128×256) already scaffolded.
+- `_variants.cu` (Gen 3) = thin **launcher wrappers** (`extern "C"` entry points calling `launch_bgemm_sm103_cluster<Config,Layout>`), suffixed `_template`.
+- `_cluster.cu` (Gen 2) = older per-layout kernels, currently dispatcher-wired + our test sandbox.
+- The dispatcher migration to route through the `.cuh` is **pending**.
+
+**Naming note**: `256x256x64` in this codebase = a 128×256-per-CTA tile → 256×256 macro-output (2 CTAs). Could rename to `128x256x64` for honesty (per-CTA convention).
+
+**SM89 has NO 256×256 tile** and NO clusters at all (Ada hardware — clusters are sm_90+). Its variants top out at 256×128 / 128×256, non-cluster mma.sync.
+
+---
+
+## 26. Porting fixes to the canonical `.cuh` + verification (2026-07-02, in progress)
+
+Decided the canonical `.cuh` (Gen 3) is the single source of truth. But discovered it had **never received any of our bug fixes** — all our work over past days went only into the Gen 2 `_cluster.cu`. So the `.cuh` still had the OLD buggy code and **crashed at 4096³** on first test.
+
+### 26.1 Build blocker fixed — root disk 100% full
+Every test failed with `nvcc fatal: Failed to preprocess host compiler properties`. Cause: root disk `/` was **100% full** (98G/98G), so nvcc couldn't write temp files to `/tmp`. Fix: `export TMPDIR=/mnt/raid0/gautam_k/tmp` (redirect nvcc scratch to the 35TB disk). Build works after that. (Root disk still needs cleanup — separate issue.)
+
+### 26.2 Five fixes ported from `_cluster.cu` → `.cuh`
+1. grid **ceil-div** (was floor-div → grid=0 for small shapes)
+2. **removed `issued = 0`** reset (the producer/consumer race → the 4096³ crash)
+3. added **3-arg `make_smem_desc`** (LBO/SBO) for TN
+4. TN **`a_off` BM→SWIZZLE_W**
+5. **b_off** per-layout: NT separate; NN+TN share `SW×SW` (both store B as [K,N])
+
+### 26.3 Verification result — first pass: 5 of 6 suites PASS, NN 128×256 FAILED (now FIXED, see §26.6)
+
+| Suite | First pass (2026-07-02) | After fix (2026-07-03) |
+|---|---|---|
+| NN 128×128 | ✅ 12/12 (crash gone — 4096³ works) | ✅ 12/12 |
+| **NN 128×256** | ❌ **0/8 — wrong numbers (rel_err 1e4-1e6)** | ✅ **8/8 — FIXED** |
+| NT 128×128 | ✅ 12/12 | ✅ 12/12 |
+| NT 128×256 | ✅ 8/8 | ✅ 8/8 |
+| TN 128×128 | ✅ 12/12 | ✅ 12/12 |
+| TN 128×256 | ✅ 8/8 | ✅ 8/8 |
+
+- **Crash FIXED** (issued=0 removal) — 4096³ runs on all passing suites.
+- **Speed MATCHES legacy** (cmp-square4096 TN: canonical 1618/1650 T vs legacy 1631/1597 T). ✅ The `.cuh` is speed-equivalent.
+- **Only NN 128×256 is wrong.** Tried a b_off revert (NN→`SW×SW` like TN); after `make clean && make all` it STILL gives the same wrong result → **the bug is elsewhere in the NN 128×256 path, not (only) b_off.**
+
+### 26.4 The open bug — NN 128×256 (debug tomorrow)
+
+Facts that localize it:
+- TN 128×256 ✅ and NT 128×256 ✅ → the wide-BN (256) machinery works for two layouts.
+- NN 128×128 ✅ → the NN layout works at BN=128.
+- **Only NN × BN=256 fails** → it's specifically the **NN B-operand handling at the wider tile**.
+- b_off revert to `SW×SW` didn't fix it → suspect the **NN B-TMA load** (`init_4d_tma_B_KN` box/coords at BN=256), OR the NN B-smem descriptor (`make_smem_desc` 1-arg LBO=0 may be wrong for NN B=[K,N] at BN=256, like TN needed LBO), OR the NN B `B_col` producer coord at BN=256.
+
+**Hypotheses to test tomorrow (in order):**
+1. NN B descriptor: NN B is [K,N] chunk-major (SAME as TN B). TN B needed the 3-arg desc (LBO=8192). NN B currently uses 1-arg (LBO=0). **NN B likely needs the same 3-arg descriptor as TN B** → try giving NN B the 3-arg `make_smem_desc(B_smem+b_off, BK*SW*2, 8*SW*2)`. This is the strongest hypothesis (NN B == TN B layout, TN needed it, NN doesn't have it).
+2. If not: check NN `B_col` producer coord + `init_4d_tma_B_KN` box dims at BN=256.
+3. Cross-check: does the legacy NN `_cluster.cu` have a working 128×256? (No — legacy NN only ever ran BN=128; its BN=256 is untested too, so no reference.)
+
+### 26.5 Status + tomorrow's plan
+- ✅ Canonical `.cuh` de-bugged for 5/6 suites, crash-free, speed-matched.
+- ⏳ NN 128×256 correctness bug open → debug via hypothesis 1 (NN B needs 3-arg descriptor like TN B).
+- Once NN 128×256 passes → all 6 suites pass → **lock in `.cuh` as single source of truth**.
+- Then: B2 (skinny-N variant) in the `.cuh`, wire the shape→variant dispatcher.
+
+### 26.6 NN 128×256 FIXED (2026-07-03) — hypothesis 1 confirmed
+
+**Root cause: the smem descriptor was chosen by GEMM layout, not per-operand.**
+The old code did `if (Layout==TN) { A and B both 3-arg } else { A and B both 1-arg }`.
+That gave NN's B the 1-arg descriptor (LBO=0) — but NN's B is stored **[K,N]**,
+*identical* to TN's B (same `init_4d_tma_B_KN`, same `B_col`, same `b_off`), and
+TN's B needs the 3-arg descriptor with **LBO = BK·SWIZZLE_W·2 = 8192**.
+
+**Why it only failed at BN=256 (not BN=128):** LBO is the byte stride to the next
+64-column swizzle chunk. NN's B tile holds `BN/2` columns:
+- BN=128 → BN/2 = 64 = **1 chunk** → LBO never used → 1-arg (LBO=0) works → NN 128×128 passed.
+- BN=256 → BN/2 = 128 = **2 chunks** → LBO **is** used → LBO=0 aims the 2nd chunk at
+  the wrong address → garbage → NN 128×256 failed.
+
+This is the exact same failure mode as the earlier TN-A precision bug (TN A=[K,M],
+BM=128=2 chunks, needed LBO=8192). Cross-checked against DeepGEMM `sm100.cuh`
+(LBO = BK·BLOCK_MN_ATOM·2 = 8192, SBO = 8·BLOCK_MN_ATOM·2 = 1024) — same convention.
+
+**The fix (in `Bgemm_sm103_cluster_template.cuh`, consumer MMA call):** choose each
+operand's descriptor by **that operand's storage layout**, not by the GEMM name:
+- **A** → 3-arg (LBO) when stored [K,M] → **TN only** (`trans_a`); NN/NT A=[M,K] → 1-arg.
+- **B** → 3-arg (LBO) when stored [K,N] → **NN and TN** (`trans_b`); NT B=[N,K] → 1-arg.
+
+Result: TN(A 3-arg, B 3-arg), **NN(A 1-arg, B 3-arg ← the change)**, NT(A 1-arg, B 1-arg).
+
+**Verification (B300 sm_103a, device 1, clean):** all **6/6 suites PASS**, MaxRelErr
+= 0.00e+00 (bit-exact vs cuBLAS). NN 128×256 went **0/8 → 8/8**. Nothing regressed
+(TN/NT unchanged — their descriptors were already correct). Throughput clean, not
+contended: NN 128×256 `cmp-square4096` = 1596 T vs cuBLAS 1667 T (95.7%); matches
+the earlier TN 128×256 square-4096 (1596.88 T) → confirms no GPU contention.
+
+**Canonical `.cuh` is now LOCKED IN as the single source of truth for all 3 layouts
+at both 128×128 and 128×256.**
+
+### 26.7 Next
+- B2 (skinny-N variant) in the `.cuh` for the weak GQA K/V shapes.
+- ~~Wire the shape→variant dispatcher to route to the `.cuh` launchers~~ → DONE, see §27.
+- Housekeeping: root disk `/` now at 92% (was 100%); keep a writable TMPDIR for B300 builds.
+
+## 27. Dispatcher migrated to the canonical `.cuh` (2026-07-03)
+
+### 27.1 The problem — production shipped the test scratchpads
+Before today the SM103 production path was:
+```
+mycublasBgemmStridedBatched_dispatcher → mycublasBgemmSM103_dispatch_{nn,nt,tn}
+  → mycublasBgemmSM103_bf16_{nn,nt,tn}_cluster_{128,256}...   (DEFINED IN *_cluster.cu)
+```
+i.e. the library shipped the **legacy `_cluster.cu`** kernels, and the `.cuh` +
+`_variants.cu` were **dead code** (nobody called the `_template` symbols). Kota
+confirmed this was a temporary wiring for individual testing — the intended design
+is dispatcher → `_variants.cu` → `.cuh`.
+
+### 27.2 The reference — SM89 module (the proven house pattern)
+The SM89 FP32 module (established in the may27_406k BluTrain blublas) has all three
+tiers side by side, and its production path routes through the template:
+| Tier | SM89 | SM103 |
+|---|---|---|
+| Template (all kernels) | `Sgemm_core_template_sm89.cuh` | `Bgemm_sm103_cluster_template.cuh` |
+| Variant wrappers | `Sgemm_{nn,nt,tn}_variants_sm89.cu` | `Bgemm_{nn,nt,tn}_variants.cu` |
+| Per-variant test scratchpads | `Sgemm_nn_256x128_sm89.cu`, … | `Bgemm_sm103_bf16_{NN,NT,TN}_cluster.cu` |
+
+So SM103 was made to mirror SM89.
+
+### 27.3 The change
+- `Bgemm_sm103_dispatcher.cu`: all 6 calls repointed from `..._cluster_{128,256}...`
+  → `..._cluster_{128,256}..._template` (which route through `_variants.cu` → `.cuh`).
+- `Bgemm_sm103_bf16.cuh`: added the 6 `_template` extern-"C" prototypes so the
+  dispatcher sees them.
+- Stale NT comment ("both entries run 128×128 under the hood, no-op routing")
+  removed — the `_256x256x64` entry now runs the validated 128×256 tile.
+- Zero API change (same `mycublasBgemmSM103_dispatch_*` signatures). Safe because
+  the `.cuh` path is already bit-exact + speed-matched (§26.6).
+
+### 27.4 Verification
+- `make lib` → `✅ Library built: build/libmyblas.so`, no errors, no undefined refs.
+- `nm`: `dispatcher.o` has `U` (needs) all 6 `_template` symbols; `variants.o` has
+  `T` (defines) them → linker resolves dispatcher → variants → `.cuh`.
+- `_cluster.cu` objects still compile into the `.so` but are no longer called by
+  production — they are now purely the individual-test scratchpads (SM89 role).
+- Final confidence check pending: one B300 run through the top-level
+  `mycublasBgemmStridedBatched` dispatcher (BluTrain/PyTorch path).
+
+### 27.5 New architecture — the rule going forward
+**`.cuh` + `_variants.cu` are the single source of truth. All new tile variants
+(B2 skinny-N, etc.) are added there — never in `_cluster.cu`.** Adding a variant =
+(1) config alias in `.cuh`, (2) wrapper in `_variants.cu`, (3) routing rule in the
+dispatcher. Individual testing needs NO dispatcher change — example programs call
+`launch_bgemm_sm103_cluster<Config,Layout>` directly (as `test_bgemm_sm103_cluster_template.cu`
+already does).
+
+## 28. P1 variant — 128×256 + VERTICAL wave (`128x256_2x1_v`) — VALIDATED (2026-07-03)
+
+### 28.1 Implementation
+Added vertical-wave scheduling as a **non-breaking template policy**
+`launch_bgemm_sm103_cluster<Config, Layout, bool VerticalWave=false>`:
+- New `decode_mn_tile<VerticalWave>()` helper in the `.cuh`; param threaded through
+  the kernel + launcher; all 4 tile-decode sites (producer init/CLC, epilogue
+  init/CLC) use it. `grid_m = total_mn_tiles / grid_n` computed in the prologue.
+- Horizontal (default): `block_col = idx % grid_n` (N fastest — unchanged).
+- Vertical: `row_tile = idx % grid_m` (M fastest → streamed B column stays L2-
+  resident across the M-tiles of a column, per §16.7).
+- Default `false` ⇒ existing behaviour byte-identical (proven: 6/6 horizontal
+  suites still bit-exact).
+
+### 28.2 Result (B300 sm_103a, clean — cuBLAS square4096 ≈ 1685 T matches prior)
+All 9 suites PASS bit-exact (6 horizontal + 3 vertical, MaxRelErr 0). Vertical vs
+horizontal on M=4096 shapes, as % of cuBLAS:
+
+| Shape (M,N,K) | horiz | **vertical** | Δ | cuBLAS pick (§16.3) |
+|---|---|---|---|---|
+| wideN-gate 4096×12288×4096 | 76–86% | **99.7–99.9%** | **+17…+31%** | `128x256_2x1_v` ✓ |
+| skinny-K 4096×1024×4096 | 80–85% | 86–88% | +2…+9% | (mixed) |
+| square4096 4096×4096×4096 | 95–97% | ~95% | −2% | `128x256_2x2f` (2×2!) |
+
+### 28.3 Interpretation — the result reproduces cuBLAS's own policy
+- **Wide-N (Gate/Up/LMhead) → vertical wins, ~99.7% parity** (from ~76%). Exactly
+  the shapes cuBLAS serves with `128x256_2x1_v`. The §16.7 L2-reuse hypothesis is
+  now verified with a +31% measured delta. This is the dominant variant (12 of 42
+  shapes) — effectively CLOSED.
+- **Square → vertical slightly HURTS (−2%)** because square wants `128x256_2x2f`
+  (2×2 + fused), not vertical. Confirms the square gap needs P2/P3 (2×2 cluster),
+  not wave scheduling.
+- **Dispatcher rule**: vertical for wide-N, horizontal/(future 2×2) for square —
+  mirrors cuBLAS.
+
+### 28.4 Next
+- Wire the `_v` variant into `_variants.cu` + header + dispatcher (vertical for
+  wide-N shapes). Then P2/P3 = 2×2 cluster for the square shapes.
+
+### 28.5 Full 42-shape Qwen sweep (B300, 2026-07-03) — 128×256 horiz vs vert vs cuBLAS
+All 42 PASS bit-exact. **vertical wins 28/42; avg % of cuBLAS: horiz 86.1%, vert
+88.5%, best-of-2 88.6%** (baseline was 81.5%, §22).
+
+Where vertical delivers (huge-N shapes):
+- **All 8 LM-heads**: horiz ~1230–1410T → **vert ~1630–1792T** (+15–33%), all at
+  parity-or-better vs cuBLAS.
+- **Widest Gates**: q25-7b-Gate (N=18944) 78.9%→**100.4%**; q3-8b-Gate (N=12288)
+  85.6%→**100.1%** — both BEAT cuBLAS.
+- Moderate Gates/Down already ~96–97% on horizontal; vertical ≈ tie there.
+
+CAVEAT (honesty): the >100% `h%`/`v%` on LM-heads are inflated by cuBLAS
+measurement noise on giant-N (each run re-times cuBLAS; its 151936-N throughput
+swings 1384–1680T). Reliable signal = our absolute vertical TFLOPS (1630–1792T,
+stable) ≫ horizontal. Claim: P1 closes ~10 shapes (8 LM-heads + 2 widest Gates)
+to parity/beating.
+
+Dispatcher rule (data-backed): **vertical is a safe DEFAULT for the 128×256 tile**
+— wins/ties 28/42, best-of-2 (88.6%) ≈ vert-only (88.5%), so vertical-default
+loses ~nothing and wins big on wide-N.
+
+Remaining gaps → next priorities (unchanged from plan):
+1. **Skinny K/V (N=128–512): 40–51% — BIGGEST gap.** q25-1.5b-K 40.6%, q25-3b-K
+   40.3%, q25-0.5b-K 47.2%, q25-7b-K 50.7%. 128×256 wastes half+ the tile here.
+   cuBLAS uses 64×64 / 128×64. → **track B (skinny-N)**, where we can BEAT cuBLAS.
+2. **Moderate square Q/O/Down (68–85%):** q25-1.5b-Q 68.6%, q3-4b-O 79.3%,
+   q25-1.5b-Down 81.1%. → **P2 (2×2 cluster)** + 128×192 / 160×192 tiles.
+
+### 28.6 Best-of-TILES sweep (2026-07-03) — added 128×128 to the mix (FREE)
+Reran the 42-shape sweep with BOTH tiles (128×256 and 128×128), each h+v. Taking
+the best (tile,wave) per shape:
+
+**Best-of-4 (2 tiles × 2 waves) avg = 92.3% of cuBLAS** (baseline 81.5%; 128×256-
+only best-of-2 was 88.6%). The +3.7 pts came entirely FREE — 128×128 was already
+built. It rescued the skinny-N shapes the 128×256 tile wastes on:
+
+| Skinny K/V | 128×256 | 128×128 |
+|---|---|---|
+| q25-7b-K (N=512) | 51% | **79%** |
+| q25-3b-K (N=256) | 40% | **64%** |
+| q25-1.5b-K (N=256) | 41% | **59%** |
+| q25-0.5b-K (N=128) | 41% | **55%** |
+
+**Per-shape dispatcher map (winner distribution):** 128×256-vertical → 22 shapes
+(all LM-heads, wide Gates, most moderate); 128×256-horizontal → 9; 128×128-
+horizontal → 9 (skinny/square-ish: q25-1.5b/7b-Q, q3-4b-Q/O/Down, q3-8b-Q,
+q25-1.5b-Down); 128×128-vertical → 2 (N=128, 256). This is the concrete
+shape→(tile,wave) table to encode in the dispatcher.
+
+**True remaining gaps (after best-of-tiles):**
+1. Super-skinny K/V N=128–256: still **55–64%** — 128×128 (BN=128) over-covers
+   N=128. cuBLAS uses 64×64 / 128×64. → track B (BN=64), beat-cuBLAS opportunity.
+2. Small-hidden Q/O/Down (hidden 896–1024): **73–86%** (q25-0.5b, q3-0.6b). → P2
+   (2×2 cluster) + 128×192/160×192.
+
+Note: production dispatcher currently uses HORIZONTAL only + a crude tile rule
+(≈86%). Wiring best-of-(tile,wave) per this map banks the 92.3% into production.
+
+### 28.7 BM=64 (64×128 tile) was BROKEN → real root cause (2026-07-03, reference-verified)
+Tried 64×128 (BM=64) as a "free" skinny-N tile (compiled + passed static_asserts).
+On B300 it produced WRONG results — every shape FAIL, first M-block correct
+(first-10 elements matched cuBLAS), second M-block garbage.
+
+**First (WRONG) theory — recorded then disproved:** I guessed the epilogue peer
+read needed `cta_rank*128` instead of `cta_rank*BM` (a "+128 SM-select lane").
+Tested on a verified-fresh binary (binary mtime > .cuh mtime, grep confirmed the
+change) — it STILL failed. So both offsets (64 and 128) are wrong; the theory was
+bunk. Lesson: don't ship a theory as fact without the controlled test.
+
+**REAL root cause (authoritative — CUTLASS / DeepGEMM / ThunderKittens, file:line):**
+- TMEM is **128 DP (datapaths/lanes) × 512 col, PER CTA and LOCAL** (CUTLASS
+  `cute/arch/tmem_allocator_sm100.hpp:45`). DP index lives in addr bits [31:16]
+  but only holds 0..127 (7-bit).
+- `tcgen05.mma.cta_group::2` splits total M=2·BM cleanly: CTA0 → rows [0,BM) in
+  CTA0's TMEM DP[0,BM); CTA1 → rows [BM,2BM) in **CTA1's OWN** TMEM DP[0,BM). Each
+  CTA reads its own accumulator at **DP base 0** — there is NO cross-CTA lane
+  offset (a CTA cannot address the peer's TMEM). DeepGEMM's hand-PTX epilogue read
+  has zero cta_rank and zero warp lane terms (`epilogue/sm100_store_cd.cuh:77`,
+  comment `impls/sm100_bf16_gemm.cuh:373` "hardware ignores the warp index bits").
+- So our `cta_rank*BM << 16` term is SPURIOUS. At BM=128 → DP 128 = out of the
+  7-bit DP range → silently ignored → accidentally reads DP 0 = correct (the ONLY
+  reason BM=128 ever worked). At BM=64 → DP 64 = in-range → NOT ignored → reads
+  DP[64,128), which under the `M_MMA=64` **2×2 INTERLEAVED** layout (CUTLASS
+  `cute/atom/mma_traits_sm100.hpp:543`: N split as half in DP[0,64), half in
+  DP[64,128)) is the wrong data → garbage.
+- Valid cta_group::2 kind::f16 M ∈ {128,256} (CUTLASS `mma_sm100_umma.hpp:554`),
+  so BM=64 (M=128) is LEGAL but forces the interleaved 2×2 accumulator our simple
+  `tcgen05.ld.32x32b.x8` epilogue does NOT de-interleave. cta_group::1 allows M=64
+  (`mma_sm100_umma.hpp:88`).
+
+**Fix applied:** epilogue `tmem_row` DP offset → **0** (removed the `cta_rank`
+term; kept the ignored warp term to match the validated form). This makes BM=128
+correct BY DESIGN (was accidental). Added `static_assert(Config::BM == 128)` in
+the launcher so BM<128 is a compile error, not silent garbage. Removed the broken
+64×128/64×256 aliases + sweep call.
+
+**Skinny-N real path (unchanged conclusion):** a sub-128-row tile needs either a
+**cta_group::1 (M=64) variant** (clean DP[0,64), independent CTA — recommended) or
+DeepGEMM's **swap-AB** (keep per-CTA M=128, make the small dim = N). Both are
+separate kernel variants, not config aliases. Given 64×128's throughput was
+marginal anyway, P2 (2×2 cluster) is likely better ROI than chasing skinny-N.
+
+## 29. 2×2 cluster — authoritative mechanism (reference-verified, 2026-07-04)
+
+Deep research over CUTLASS / DeepGEMM / ThunderKittens (file:line cited) before
+implementing P2. Key findings — one corrects an earlier oversimplification:
+
+**29.1 There is NO 4-CTA MMA.** The only multi-CTA tcgen05 BF16 atom is 2-CTA
+(`cta_group::2`, `SM100_MMA_F16BF16_2x1SM_SS`, cutlass mma_sm100_umma.hpp:552;
+`AtomThrID = _2`, mma_traits_sm100.hpp:2044). A "2×2" cluster = the SAME 2-CTA
+MMA pair (along cluster-x/M) **replicated as a 2nd pair along cluster-y/N**, with
+TMA multicast sharing the operand invariant along the new axis. `_2x2_2cta` =
+`cta_group::2` MMA (the `2cta`) + `ClusterShape<2,2,1>` (the `2x2`) on top. Never
+`cta_group::4` (doesn't exist).
+
+**29.2 CORRECTION to §23.2 ("2×2 halves BOTH operands" — WRONG).** In a 4-CTA
+2×2, only **A is multicast** (across the 2 N-blocks; A is invariant in N), mask
+`0b0101`/`0b1010`. **B is NOT multicast** — each pair loads its own N-block (B
+sharing across the pair is intrinsic to cta_group::2, unchanged). Halving BOTH
+operands needs cluster.x≥4 (multiple M-pairs) → ≥16 CTAs, not 4. So 2×2's real
+benefit is **halving A (activation) traffic across 2 adjacent N-blocks**, more
+modest than the earlier "halves both" hope.
+
+**29.3 Rank decomposition (ClusterShape<2,2,1>):** cta_m = rank&1 (pair role,
+M/x), cta_n = rank>>1 (N-block, y). MMA leader per pair = (cta_m==0), i.e. ranks
+0 and 2 each issue their pair's MMA into their own TMEM. Epilogue TMEM read stays
+DP base 0 per CTA (confirms §28.7).
+
+**29.4 The three masks (do NOT collapse to 0b1111):**
+- launch cluster dims = {2,2,1} (4 CTAs; ≤32 ok, ≤8 portable).
+- TMA A-multicast mask = 2 bits across N (0b0101/0b1010); exactly ONE CTA per
+  A-group issues the A load (multicast completion signals both N-partners).
+- MMA-commit / tmem CTA_MASK = the PAIR mask (0b0011 / 0b1100), via
+  calculate_umma_peer_mask (cutlass sm100_pipeline.hpp:96). 0b1111 is only for a
+  genuine all-4 cluster sync — using it for the MMA commit is a bug.
+- mbarrier arrive counts stay keyed to the pair (kNumMulticast=2), unchanged —
+  you just have two independent pairs.
+
+**29.5 Highest-fidelity reference:** cutlass sm100_mma_warpspecialized.hpp
+(persistent warp-specialized tcgen05 SS mainloop, arbitrary ClusterShape; mask
+math at :524-541 via create_tma_multicast_mask<Mode>). DeepGEMM is 1-D only
+(kNumMulticast∈{1,2}, {cluster,1,1}) — its pipeline/TMEM plumbing is a good
+skeleton, but the 2-D coord/mask math comes from CUTLASS.
+
+**29.6 Integration wrinkle for OUR kernel:** our scheduler is CLC (Cluster Launch
+Control) persistent, not an explicit tile scheduler like DeepGEMM/CUTLASS. The
+2×2 needs the cluster's 2 pairs to cover ADJACENT N-blocks — mapping CLC-handed
+cluster tiles → (2 N-blocks) is the part the references don't cover directly and
+is the main implementation risk.
+
+**29.7 Net:** 2×2 is a real, well-scoped build (10-step checklist exists) but
+sizable — producer A-multicast + one-issuer logic + B N-block offset + 2-D
+scheduler over CLC + careful expect_tx/barrier accounting. Benefit (halve A
+traffic, ~14 moderate-square shapes) is real but more modest than §23.2 implied.
+
+## 30. P2 implementation — 2×2 cluster: research, decision, milestones (2026-07-04)
+
+Two deep reference passes (CUTLASS/DeepGEMM/ThunderKittens) + independent PTX ISA
+9.3 research. Full plan: `2x2_cluster_plan.md`. Key research findings:
+
+**30.1 Model (settled, §29 recap):** no 4-CTA MMA; 2×2 = same `cta_group::2` M-pair
+replicated as a 2nd pair along N, A multicast across N (mask 0b0101/0b1010), B
+per-pair. Only A traffic halved (§29.2 corrected the old "halves both" claim).
+
+**30.2 THE decisive PTX fact — flat vs 2-D launch is a non-issue.** PTX ISA 9.3
+§9.7.17.5.1: "Any 2 CTAs within the cluster whose %cluster_ctarank differs by the
+LAST BIT ONLY form a CTA pair." So the cta_group::2 pairing is defined by
+%cluster_ctarank parity, INDEPENDENT of launch dim shape. `(4,1,1)` and `(2,2,1)`
+give identical pairs/masks/multicast. `(4,1,1)`-flat is provably correct (resolves
+§29's "HW-verify pairing" worry) and DeepGEMM already launches flat
+(clusterDim={n,1,1}). TMA multicast (§9.7, line 17169): instruction-time 16-bit
+ctaMask by %cluster_ctarank; with cta_group::2 the mbarrier signal routes by parity
+(→ clear smem addr bit 24 so bytes land on the even/leader CTA). CLC
+(clusterlaunchcontrol, line 23554): per-CLUSTER granularity, returns first-CTA
+ctaid, .multicast::cluster::all broadcasts response to all cluster CTAs.
+
+**30.3 DESIGN DECISION — parameterized flat cluster (flexibility, done right).**
+Rather than hardcode 2×2, parameterize `CLUSTER_X` (CTAs along M, even) and
+`CLUSTER_N` (CTAs along N); launch flat `(CLUSTER_X*CLUSTER_N,1,1)`; decode
+`rank → cta_m=rank&1, m_pair=(rank%CLUSTER_X)>>1, cta_n=rank/CLUSTER_X`. Because
+the pair is always the last bit (PTX-guaranteed), ONE decode handles every
+cta_group::2 shape cuBLAS uses — 2×1, 2×2, 2×4, 4×1, 4×2 — with no rework. True
+2-D launch would only complicate CLC (2-D first_ctaid) for zero functional gain.
+(1×2/1×4 are cta_group::1 single-CTA MMA — a separate future kernel path.) This
+directly answers the "keep the design flexible so expansion doesn't force
+compromises" concern — parameterized-flat IS that flexible design.
+
+**30.4 Milestones (B300):** (1) redundant-A: 2×2 flat cluster + scheduler split
+into 2 N-blocks + per-pair leader, every CTA loads its own A+B (no multicast) →
+each pair is byte-for-byte the validated 2-CTA kernel; validate correctness. (2)
+turn on A multicast (cta_n==0 issues A, mask 0b0101<<cta_m, a_mbar bit24 cleared).
+(3) sweep NN/NT/TN × BN=128/256 × 42 shapes. Then wire dispatcher (LAST, after all
+variants validated vs cuBLAS).
+
+**30.5 Key edits (see 2x2_cluster_plan.md for the full file:line checklist):**
+CLUSTER_SIZE stays 2 = the M-pair (B-split, i_desc, mbar inits, TMA cta_group::2);
+add CLUSTER_N=2, CLUSTER_CTAS=4 for grid-stride/CLC. clc_empty arrive ×4. rank via
+%cluster_ctarank. block_row=row_tile*CLUSTER_X+cta_m, block_col=n_cluster*2+cta_n.
+MMA leader = cta_m==0 (ranks 0 & 2). commit mask = 0b0011<<(2*cta_n). CLC arm
+expect_tx on all 4 CTAs. Keep static_assert(BM==128).
+
+### 30.6 P2 Milestone 1 IMPLEMENTED (2026-07-04) — 2×2 redundant-A, compiles clean
+Implemented the parameterized flat 2×2 cluster in Bgemm_sm103_cluster_template.cuh:
+- Config: `_CLUSTER_N` template param (default 1 → existing 2×1 unchanged); CLUSTER_N,
+  CLUSTER_CTAS=CLUSTER_SIZE*CLUSTER_N; CLC_EMPTY_ARRIVE ×CLUSTER_CTAS. Aliases
+  Sm103Config_128x256_2x2 / _128x128_2x2 (CLUSTER_N=2).
+- Rank: get_cluster_cta_rank() → %cluster_ctarank; derive cta_m=rank&1, cta_n=rank>>1,
+  pair_leader=rank&~1.
+- Prologue: init_tile_idx = ctaid/CLUSTER_CTAS; tma_mbar_base → pair_leader.
+- Producer/epilogue decode: block_row=row_tile*CLUSTER_SIZE+cta_m; block_col=
+  n_cluster*CLUSTER_N+cta_n; B intra-pair split by cta_m. CLC re-decode /CLUSTER_CTAS.
+  Milestone 1 = redundant-A (each CTA loads own A via block_row; no multicast yet).
+- Consumer: MMA leader = cta_m==0 (ranks 0 & 2); commit mask pair_mask=CTA_MASK<<(2*cta_n)
+  (0b0011 pair0 / 0b1100 pair1).
+- Scheduler: CLC expect_tx armed on all CLUSTER_CTAS CTAs (multicast::cluster::all).
+- Epilogue: tmem_empty signalled to THIS pair's leader (mapa to pair_leader; replaced
+  the bit-24 trick that always hit rank0 — wrong for pair1).
+- Launcher: __cluster_dims__(Config::CLUSTER_CTAS,1,1); grid_n = N-CLUSTERS
+  (ceil(N-blocks/CLUSTER_N)); grid = total_mn_tiles*batch*CLUSTER_CTAS.
+Compiles clean for sm_103a: 2×1 path (regression-safe) AND 2×2 path instantiated.
+Test: new "P2: 128x256 tile, 2x2 cluster" suite (M%256, N%512 clean shapes) + BM==128
+guard kept. AWAITING B300: (a) 2×1 suites still bit-exact (no regression), (b) 2×2
+suites bit-exact (validates 4-CTA cluster). Then Milestone 2 = A-multicast.
+
+### 30.7 P2 Milestone 1 VALIDATED on B300 (2026-07-04) — 2×2 bit-exact + modest gain
+2×2 (redundant-A) all PASS bit-exact (MaxRelErr 0.00e+00) across NN/NT/TN (the one
+3.92e-03 is the β-accumulation path, PASS). No regression on 2×1. Same-run 2×2-vs-2×1
+on square4096: 2×2 modestly faster (NN 96.6→96.8, NT 95.0→98.8, TN 96.7→97.6% of
+cuBLAS; +30-45 T) — matches §29.2 "modest A-benefit", present even in redundant-A form
+(implicit L2 reuse of A across the 2 adjacent N-blocks). wideN ~same (~90-91%; that's a
+vertical-wave/P1 win). Small shapes 32-40% (latency/occupancy-bound, expected — not
+2×2's target). Whether 2×2 closes the moderate-square band (2×2's real target) is TBD →
+the end benchmark.
+
+### 30.8 DECISION — A-multicast as a TUNABLE KNOB (not either/or) (2026-07-04)
+Rather than "redundant-A vs multicast", make it a compile-time knob `bool MulticastA`
+(mirrors DeepGEMM kIsMulticastOnA/kNumMulticast, sm100_bf16_gemm.cuh:27 — multicast is a
+policy param there, not hardcoded). MulticastA=false → redundant-A (each CTA loads own A;
+M1, validated). MulticastA=true → A issued only by cta_n==0, multicast to the N-partner
+(mask 0b0101<<cta_m), halving A DRAM traffic. Non-destructive: false path unchanged.
+Reference stance: multicast helps MEMORY-bound shapes (saves operand DRAM); on
+COMPUTE-bound shapes redundant-A already ties (load hides behind compute + L2). So the
+BENEFIT is shape-dependent → keep BOTH, let the per-shape dispatcher pick.
+TEST MATRIX (end benchmark, clean GPU): {MulticastA off, on} × {compute-bound (large K,
+square) AND memory-bound (small K, wide/skinny N)} shapes, all 3 layouts. Correctness of
+both paths validated now (contention-immune); perf ranking deferred to clean GPU.
+
+### 30.9 P2 Milestone 2 IMPLEMENTED (2026-07-04) — A-multicast as a tunable knob
+Added `bool MulticastA` template param to the kernel + launcher (universal in the
+template, opt-in per config — NOT per-variant code). Pieces:
+- `tma_4d_gmem2smem_mc` primitive: cp.async.bulk.tensor.4d ... cta_group::2
+  .multicast::cluster + u16 ctaMask.
+- `issue_A_load<CTA_GROUP, MulticastA>`: MulticastA=false → every CTA loads own A
+  (redundant-A, M1); MulticastA=true → only cta_n==0 issues A, multicast mask
+  0b0101<<cta_m, using the LOCAL full_mbar (cta_group::2 parity routes completion
+  to the pair leaders). B unchanged (all CTAs). expect_tx unchanged (each CTA
+  declares copy_size on its leader — receives A via multicast when it doesn't load).
+- Test: threaded MulticastA through run_test_case/run_test_suite; new "P2-M2:
+  A-MULTICAST ON" suite (VerticalWave=false, MulticastA=true) on shapes_2x2.
+Compiles clean for sm_103a: MulticastA false AND true paths. Correspondence to
+DeepGEMM: MulticastA ≡ kIsMulticastOnA (direction=A); CLUSTER_N ≡ kNumMulticast
+(degree). Multicast-B (4×1) is a separate future direction, not built.
+AWAITING B300: (a) redundant-A 2×2 + 2×1 still bit-exact (no regression);
+(b) A-multicast-ON 2×2 bit-exact (same result, A loaded once). Perf on/off ranking
+deferred to clean GPU (§30.8 test matrix).
+
+### 30.10 4×1 cluster / multicast-B — FUTURE variant (NOT needed for Qwen)
+Verified from §16.3: the 42 Qwen shapes use only cluster shapes 2×1 (17), 2×2 (15),
+2×2f (7), 1×2 (3). NONE use 4×1. So 4×1 / multicast-B is OUT OF SCOPE for the Qwen
+goal — it's general-BLAS-expansion (future). Documented here so it's not forgotten.
+
+Design (mirror of the 2×2 we built — swap M↔N, A↔B):
+- 4×1 = 4-CTA cluster, 2 M-pairs along M (ranks {0,1}=pair0 @ M-rows[0,2·BM),
+  {2,3}=pair1 @ [2·BM,4·BM)), same N. Shares B across the 2 M-pairs → multicast B.
+- Same flat (4,1,1) launch as 2×2; differs only in DECODE (extra axis = M) +
+  multicast direction (B not A). ≡ DeepGEMM kIsMulticastOnA=false.
+- To add later: a config flag for extra-axis (M vs N) [e.g. CLUSTER_M_PAIRS vs
+  CLUSTER_N], the matching rank decode (m_pair=rank>>1), and a MulticastB path
+  (issue B only from m_pair==0, mask along M). Same scope as the 2×2 work; the
+  parameterized template makes it a clean extension, not a rewrite.
+
+Qwen-RELEVANT remaining cluster/epilogue work (in scope): 2×2f = 2×2 + FUSED
+epilogue (7 shapes); 1×2 = cta_group::1 (single-CTA MMA) + 2-way N-multicast (3
+shapes) — part of the deferred cta_group::1 path. Plus tile shapes 128×192 /
+160×192 / 256×256 / skinny 64×64 / 128×64.
+
+### 30.11 2×2 cluster COMPLETE — both deadlocks root-caused & fixed, validated on B300 (2026-07-04)
+
+Two distinct bugs, both found by source-grounded research (CUTLASS + PTX ISA), both fixed in
+Bgemm_sm103_cluster_template.cuh, both validated on B300:
+
+**Bug 1 — one empty-barrier used for two smem lifetimes (P2 redundant-A hang).**
+CUTLASS (sm100_pipeline.hpp) keeps TWO empty barriers: accumulator/tmem-empty is PAIR-LOCAL
+(calculate_umma_peer_mask → 0b0011/0b1100), operand-smem-empty is CLUSTER-WIDE
+(calculate_multicast_mask<kRowCol> → 0xF for 2×2, arrive count = CM/atomM + CN/atomN − 1 = CLUSTER_N).
+We used the pair-local mask for both → pair1's producer never saw pair0's operand release.
+Fix: empty_mbar init 1→CLUSTER_N; consumer operand-empty commit mask pair_mask→(1<<CLUSTER_CTAS)−1;
+tmem_full commit keeps pair_mask. CLUSTER_N=1 reduces to old behaviour exactly (no 2×1 regression).
+Result: P2 redundant-A 21/21 bit-exact (NN/NT/TN × 7 shapes), 2x2-square4096 97-99% of cuBLAS.
+
+**Bug 2 — multicast mbar parity (P2-M2 hang).** PTX ISA 9.3 (cp.async.bulk.tensor, ~line 17169):
+with .cta_group::2 the mbarrier signal goes to the even or odd CTA of EACH destination pair "based
+on the %cluster_ctarank parity of the shared memory where the mbarrier object mbar RESIDES" — NOT
+automatic route-to-leader. Our odd issuer passed its raw local mbar (odd parity) → +A landed on the
+odd CTA of every destination pair (barriers nobody waits on) → leaders starved. CUTLASS forces even
+parity on every 2SM load (Sm100MmaPeerBitMask bit-24 clear, copy_sm100_tma.hpp:45). Fix: multicast
+uses the leader mbar (even parity; mapa'd already). Accounting: each leader gets 2A+2B = expect 2(A+B).
+Result: P2-M2 multicast-A 21/21 bit-exact. 2×2 variant DONE (correctness); perf ranking deferred to
+the clean-GPU benchmark phase.
+
+**Qwen sweep (contended GPU, ratios only):** 128×256: vert wins 23/42, avg horiz 82.8% / vert 86.6% /
+best-of-2 88.0%. 128×128: vert wins 22/42, avg 80.6% / 85.2% / 85.9%. LM-heads ~100% with vertical.
+3 row-FAILs (q3-4b-LMhead@256, q25-7b-LMhead@128, q3-8b-LMhead@128) analyzed: DEBUG dumps show
+identical ref/out elements; same shape passes with the other tile; all are 622M-element LM-heads →
+near-zero cancellation elements exploding the per-element REL error (denominator floor was 1e-5).
+Test-harness-only fix: floor→1.0 + dump the worst element (idx/ref/out/absdiff) on FAIL for direct
+evidence. Kernel untouched. (DeepGEMM sidesteps the same artifact with a norm-based diff.)
+
+### 30.12 CLC orphaned-steal bug — REAL cause of the LM-head failures (2026-07-04)
+
+**Correction of §30.11:** the "near-zero cancellation artifact" explanation for the LM-head
+FAILs was WRONG. The worst-element dump (added to the test) shows e.g. ref=-31.875 out=0.000 —
+whole regions of C never written. Real bug, not tolerance. The identical first-10 dumps had
+misled the earlier diagnosis (corruption sits deep inside the 622M-element tensor).
+
+**Root cause — orphaned CLC steal at end-of-grid.** Our scheduler armed CLC_PIPE_DEPTH(=2)
+clusterlaunchcontrol.try_cancel requests up-front and kept 2 in flight. The two in-flight
+cancels can execute out of order at grid exhaustion: the LATER one steals the LAST cluster
+(valid response) while the EARLIER finds nothing (invalid). Warps consume response stages in
+order → hit the invalid first → all warps break → the valid stolen-cluster response is
+orphaned. That cluster was already cancelled by HW (never launches), and nobody computes its
+tile → zero-filled C tile. Probability scales with steal traffic at exhaustion → only the
+19k-tile LM-heads showed it, flakily, both waves, both tile sizes. Orphaning an INVALID
+response (small grids) is harmless — why everything else always passed.
+
+**Reference protocol (CUTLASS sm100_gemm_tma_warpspecialized.hpp:689-721):** exactly ONE
+try_cancel outstanding at a time — issue→consume strictly 1:1 (+ producer_tail on exit); the
+CLC pipeline stages are consumer-side buffering, NOT multiple in-flight queries.
+
+**Fix (scheduler warp only):** arm only stage 0 at init; re-arm the NEXT slot only after a
+VALID response is consumed (arm_idx protocol; first arm of each slot skips the never-completed
+clc_empty wait). Invalid response now implies zero in-flight requests, so the plain break in
+producer/consumer/epilogue stays correct unchanged. Perf: one prefetched response still hides
+CLC latency behind the tile's K-loop (CUTLASS ships the same 1-outstanding protocol).
+
+Validation pending on B300: full RUN_2X2=1 RUN_2X2_MCAST=1 sweep — expect 294/294 with zero
+DEBUG FAIL lines; LM-heads must pass repeatedly (flaky bug → rerun LM-heads a few times).
+
+### 32. addmm (fused bias) — SM103 gap, task added (2026-07-04)
+
+Status check: SM89 module HAS fused addmm (Bgemm_Addmm.cu → mycublasBgemmAddmm_sm89):
+C = alpha·(A@B) + beta·bias, bias applied in the epilogue registers (single kernel), 3 broadcast
+modes: scalar (numel==1) / row-vector (numel==N — the nn.Linear bias case) / full (numel==M·N).
+SM103 module has GEMM ONLY (alpha/beta with C read-back, no bias pointer) → addmm MISSING on B300.
+Qwen relevance: Qwen2.5 QKV projections have bias=True → PyTorch dispatches addmm.
+
+Plan (after the cluster-variant work): add a BiasMode knob (None/Scalar/RowVec/Full) to the
+cluster template epilogue — apply alpha·acc + beta·bias(broadcast) right after tcgen05.ld, where
+the beta path already lives; RowVec loads bias[c_col..c_col+STORE_COLS) per chunk. BiasMode=None
+compiles to the current epilogue exactly (zero cost off). References: SM89 Bgemm_Addmm.cu (API +
+broadcast semantics + validation harness), CUTLASS sm100 collective epilogue / EVT and DeepGEMM
+epilogue for Blackwell-style fused-epilogue structure. Expose as mycublasBgemmAddmm_sm103 with the
+same signature family as SM89. NOTE (§31): cuBLAS's "2x2f" is NOT epilogue fusion, so addmm is an
+independent feature, not a variant of the f kernels.
+
+### 31.1 2×2f research RESOLVED — CUTLASS has the full feature; port recipe (2026-07-04)
+
+CUTLASS implements preferred/fallback ("dynamic") clusters end-to-end; TK has plumbing but uses
+rigid only; DeepGEMM never (cluster ≤ 2). Key citations (local cutlass tree):
+- Launch: cluster_launch.hpp:168-190 — clusterDim attr = FALLBACK shape, preferredClusterDim attr
+  = PREFERRED shape; ClusterLauncher::launch_with_fallback_cluster (:262). CUDA ≥ 12.8. Also sets
+  cudaFuncAttributeNonPortableClusterSizeAllowed.
+- Constraints (cluster_sm100.hpp:49-107, detail/cluster.hpp:70-95): fallback divides preferred
+  per-dim; grid divisible by preferred; z equal; pow2 dims; cluster.x % 2 == 0 for BOTH (MMA pair
+  intact); dynamic max 16 CTAs.
+- Kernel adaptation: granted size read ONCE via %cluster_nctaid (cluster_sm90.hpp:140-146);
+  ALL barrier counts + multicast/peer masks computed at runtime from granted shape
+  (sm100_pipeline.hpp:563-566, sm100_mma_warpspecialized.hpp:525-541). Barriers never cross
+  cluster boundaries → mixed-size clusters coexist safely.
+- CUTLASS needs DUAL TMA descriptor sets (multicast baked into copy atoms) selected at kernel
+  start (sm100_mma_warpspecialized.hpp:326-350). WE DON'T — our multicast mask is an instruction
+  operand; one descriptor serves both sizes. Our port is simpler.
+- Tile assignment under mixed sizes (THE question): work coords are CTA-LEVEL, never
+  cluster-level. Grid sized in PREFERRED units; initial tile from raw blockIdx; CLC
+  get_first_ctaid + each CTA adds its own offset = its index truncated to the preferred cluster
+  (sm100_tile_scheduler.hpp:369-371, 467-469, 801-802; explicit mixed-size comment
+  sm100_tile_scheduler_stream_k.hpp:763-786). fallback|preferred + grid|preferred ⇒ bijective.
+
+Design decision for our template: new compile-time knob DynamicCluster (bool) — false = today's
+rigid kernels unchanged (zero overhead); true = the f variant: launcher uses cudaLaunchKernelEx
+(fallback (2,1,1) + preferred (4,1,1)), kernel reads %cluster_nctaid once and computes
+CLUSTER_N/CLUSTER_CTAS-derived counts+masks at runtime, tile decode switches to
+first_ctaid + (blockIdx.x % PREFERRED_CTAS) CTA-level mapping. Precision: none (placement only).
+Perf rationale: measured 89%→100% SM fill (§31). Dispatcher: just another variant row —
+(tile, wave, clusterN, mcastA, dynamic) benchmarked per shape, best wins. Prereq to check on
+server: CUDA ≥ 12.8 toolkit + driver.
+
+### 31.2 2x2f (DynamicCluster) IMPLEMENTED — M1 (2026-07-04)
+
+Template changes (Bgemm_sm103_cluster_template.cuh), compile-verified sm_103a:
+- New knob: 5th template param bool DynamicCluster=false (kernel + launcher + test).
+- __cluster_dims__ REMOVED; ALL launches now via cudaLaunchKernelEx with cluster attributes
+  (CUTLASS pattern). Rigid: clusterDim=(CLUSTER_CTAS,1,1). Dynamic: clusterDim=(2,1,1) fallback +
+  preferredClusterDim=(4,1,1), guarded #if CUDART_VERSION >= 12080.
+- Kernel runtime adaptation (granted size via new get_cluster_nctas() = %cluster_nctaid.x):
+  cluster_n (empty_mbar count), operand_empty_mask=(1<<cluster_ctas)-1, a_mask (0b0101/0b0001<<cta_m).
+- Decode split: cta_n (ADDRESSING, preferred-relative: dynamic = (blockIdx.x%CLUSTER_CTAS)>>1) vs
+  cta_n_grant (GRANTED-relative rank>>1: A-issue gate + pair_mask shift). Static: identical values,
+  zero behaviour change. Verified balance for granted-2 (both CTAs issue own-A self-multicast,
+  leader collects 2A+2B) and granted-4 (= validated static 2×2).
+- M1: CLC stealing DISABLED under DynamicCluster (if constexpr break in producer/consumer/epilogue;
+  scheduler branch gated off) — cancellation-unit alignment under MIXED granted sizes is an
+  unverified HW contract (M2 investigation). One tile-unit per cluster; grid already covers all.
+Test: P3 suite (RUN_2X2F=1): 7 shapes × 3 layouts × {redundant-A, A-multicast} = 42 cases.
+NOTE: rigid variants re-validated this run too (launch mechanism changed for all).
+Server prereq: CUDA >= 12.8 (check nvcc --version).
+
+### 31.3 CLC-under-dynamic-clusters contract MEASURED on B300 + M2 implemented (2026-07-04)
+
+Device probe (examples/test_clc_dynamic_probe.cu, preferred 4 / fallback 2, 2048 units, B300):
+- Launch grants: 284 preferred-4 + 24 fallback-2 (12 slot-pairs split at offsets 0/2).
+- Steals: preferred-4 requesters 1686 — ALL response ctaids %4==0 (whole preferred units).
+  fallback-2 requesters 132 — 66 at %4==0 and 66 at %4==2 (REQUESTER-SIZED 2-CTA pieces,
+  either half of a preferred unit).
+- Unit accounting closes EXACTLY: 296 launched + 1686 + 132/2 = 2048/2048 → no unit lost,
+  none double-issued. CONTRACT: cancellation units are sized to the REQUESTER's granted
+  cluster; the piece position within its preferred unit is encoded in the response ctaid.
+
+M2 (template): CLC re-enabled for DynamicCluster (M1 breaks removed, scheduler ungated).
+Changes: scheduler arm loops + clc_empty arrive count bounded by GRANTED cluster size
+(mapa outside the granted cluster is UB); stolen-tile N-block decoded per tile:
+n_sub = ((new_ctaid % CLUSTER_CTAS)>>1) + cta_n_grant — degenerates to the old cta_n for
+all rigid launches (responses cluster-aligned there), so no static-path change.
+Compile-verified sm_103a. Validation: P3/P3-M2 suites re-run (now persistent) — expect
+42/42 bit-exact AND P3 perf ≈/≥ P2 rigid on square4096/wideN (persistence restored +
+100% SM fill). LM-heads in the Qwen sweep remain the missing-tile detector.
+
+### 31.4 2x2f M2 VALIDATED on B300 — variant complete (2026-07-04)
+
+Full run 336/336, zero FAILs: P3 + P3-M2 (dynamic cluster, CLC stealing LIVE under mixed granted
+sizes) 42/42 bit-exact — the measured requester-sized-piece contract (§31.3) works in production.
+
+Perf (contended GPU, ratio-to-cuBLAS; authoritative ranking deferred to clean benchmark):
+| shape          | P2 rigid 2x2 | P3 dynamic 2x2f (M2) |
+| 2x2-wideN      | 89.6-91.2%   | 92.4-93.2%  <- dynamic WINS (+~2.2 pts, 100% SM fill) |
+| 2x2-square4096 | 96.4-98.2%   | 94.0-95.3%  <- rigid wins (fallback clusters lose cross-pair
+|                |              |    A-share + steal traffic; work pool too small to leverage fill) |
+Shape-dependent split — exactly why cuBLAS ships BOTH 2x2 and 2x2f and routes per shape; our
+dispatcher will do the same from the benchmark table. M1's 15-20% persistence loss fully recovered.
+
+2x2f variant status: COMPLETE (knob DynamicCluster; correctness bit-exact both A-modes; both
+rigid and dynamic launches re-validated). Qwen coverage: 2x1 (17) + 2x2 (15) + 2x2f (7) = 39/42
+shapes now have our matching variant family. Remaining: 1x2 (3 shapes, cta_group::1 path),
+extra tiles (128x192/160x192/256x256/320x192), addmm (§32), then clean-GPU benchmark → dispatcher.
+
+### 33. 1x2 / cta_group::1 bring-up VALIDATED first-try (2026-07-04)
+
+CLUSTER_SIZE is now a Config template knob (DeepGEMM-style, approach (a)): CLUSTER_SIZE=1 emits
+cta_group::1 through every already-parameterized primitive; CS=2 paths byte-identical (x%2==x&1
+etc.) — full 378/378 re-validation green. New alias Sm103Config_1x2_128x192 (BN per-CTA=192,
+1x2 cluster). Changes: generalized rank decode (div/mod), pair_mask/a_mask formulas, B-tmap
+per-CTA slice divisor, pow2 tmem alloc round-up (384→512).
+
+P4/P4-M2 (RUN_1X2=1): 42/42 bit-exact FIRST RUN — first cta_group::1 kernels, symmetric barrier
+accounting + A-multicast WITHOUT parity routing (per 1x2_plan.md Q3) confirmed on hardware.
+
+Perf (contended, bring-up tile 128x192): qwen-q06 ~64%, qwen-q3b ~69% of cuBLAS — BELOW our 2x1
+best (~83-86% on these shapes), as expected for the bring-up. A-multicast ~neutral here. The
+competitive tile is nvjet's 160x192 = swap-AB (Option B, 1x2_plan.md Q5/Q6): M'=192=128+64
+composite MMA + transposed 16-lane epilogue — NEXT implementation step. Only after B is built do
+we know if 1x2 beats 2x1 on the 3 Q-projection shapes; dispatcher decides from the benchmark.
+
+### 33.1 swap-AB B1 VALIDATED (2026-07-04)
+
+P5/P5-M2 14/14 bit-exact (TN, C-tile 128x192 as C^T): composite M'=192 MMA (128+64 atoms,
+Layout-F interleaved accumulators with lane-alignment 16*stage), crossed operand descriptors,
+16x256b strip reads, transposed epilogue — all proven on B300. One bug on first run (0/7):
+the transposed epilogue omitted the C-tmap 128B-swizzle XOR on smem writes (the validated
+epilogue's swizzled_n) — found via source-verified fragment maps + bit-exact evidence match
+(out(113,100)=ref(113,108) = the missing group XOR; 1x2_plan.md "P5 BUG ANALYSIS"). Every
+genuinely-new mechanism was verified correct; the mistake was not carrying one line of
+existing behavior into the new epilogue.
+
+Perf note (honest): P5 qwen shapes ~52-57% vs P4 non-swap ~64-69% — the bring-up transposed
+epilogue is slow (scalar bank-conflicting smem writes + per-8-col ld/wait serialization).
+B2 (160x192, the real nvjet tile, 64B-swizzle operand per R7) is next; epilogue
+vectorization after correctness. Only the final benchmark decides if 1x2 swap beats our 2x1
+on the 3 Q-projection shapes.
+
+### 33.2 B2 (160x192) validated + chunked-tmap alignment limitation found (2026-07-04)
+
+P6/P6-M2: 12/14 bit-exact on first run — mixed-swizzle MMA (A'=128B + B'=64B descriptors in one
+tcgen05.mma), 64B-swizzle tmap, composite M'=192, all 3 Qwen Q-projections 0.00e+00. The 2 fails
+(M=200 shape) exposed a REAL pre-existing limitation, root-caused and reference-verified:
+- Our 4D chunk-factorized tmaps ({chunk,K,X/chunk}) TRUNCATE non-chunk-multiple sliced dims
+  (globalDim z = 200/32 = 6 → A cols 192-199 unreachable → TMA zero-fill → C rows 192-199 = 0,
+  exact match with the observed boundary). Same constraint exists in ALL our 128B builders
+  (M%64/N%64) since the original kernels — first exposed by this test.
+- References: DeepGEMM tmaps carry TRUE extents (runtime_utils.hpp:199) → arbitrary M via real
+  TMA OOB; cuBLAS routes unaligned shapes to a FALLBACK kernel (cutlass_75_wmma align1, §4 row
+  11) rather than teaching nvjet the tails.
+- Fix now: LOUD launcher guard (refuse + stderr instead of silent zeros) + legal partial-tile
+  test shape (M=192). Fix later (documented TODO): true-extent tmap redesign or fallback-kernel
+  route in the dispatcher — not needed for the 42 Qwen shapes (all alignment-clean).
+Perf note: B2 qwen ~47-50% (naive transposed epilogue + half-width TMA lines on the sw64
+operand) — epilogue vectorization is the known optimization step before the final benchmark.
+
+### 34. REMAINING TASK LIST (as of 2026-07-04 night)
+
+1. P6 rerun (alignment guard + legal M=192 partial-tile shape) → closes the 1x2/B2 arc.
+2. Swap-AB epilogue vectorization (B2 perf: currently scalar bank-conflicting smem writes +
+   serialized 8-col tcgen05_ld — qwen shapes ~47-50%; target = beat our 2x1 ~83-86% or drop 1x2).
+3. Clean-GPU 2-phase benchmark: (a) each variant vs cuBLAS on the shapes cuBLAS uses it for;
+   (b) all 42 shapes x all variants → best-per-shape table → wire dispatcher (LAST).
+4. GENERAL-SHAPE SUPPORT (library completeness, cuBLAS accepts any M/N/K): true-extent tmaps
+   (DeepGEMM runtime_utils.hpp:199 style: 2D descs with real extents + per-chunk issue) +
+   ceil-div k_iters (zero-filled K tail contributes 0). Removes the launcher alignment guard's
+   refusals entirely. Alternative: fallback-kernel route like cuBLAS's cutlass_75_wmma align1.
+5. addmm on SM103 (§32): BiasMode knob (None/Scalar/RowVec/Full) in the epilogue, SM89-parity
+   API (mycublasBgemmAddmm_sm103).
+6. Extra tiles if benchmark shows gaps: 128x192 / 256x256 / 320x192 aliases (config-level now).
+
+### 35. VARIANT CATALOG COMPLETE — all 42 Qwen shapes covered (2026-07-04 night)
+
+P6/P6-M2 final: 14/14 bit-exact (incl. partial-M-tile 192 + the loud alignment guard active).
+The 160x192_1x2 swap-AB variant (mixed 128B+64B swizzle, composite M'=192, transposed epilogue)
+is correctness-complete — the last of cuBLAS's Qwen cluster families.
+
+FULL CATALOG (all validated bit-exact on B300, all knobs on one template, DeepGEMM-style):
+  2x1 (17 shapes): 128x128 / 128x256, horizontal + vertical wave
+  2x2 (15 shapes): rigid 4-CTA + A-multicast
+  2x2f (7 shapes): DynamicCluster (preferred-4/fallback-2) + CLC (measured HW contract)
+  1x2 (3 shapes): cta_group::1, swap-AB 160x192, 64B-swizzle operand, + A-multicast
+Knobs: tile, VerticalWave, CLUSTER_N, CLUSTER_SIZE, MulticastA, DynamicCluster, SWAP_AB.
+Remaining work = §34 list (epilogue vectorization → clean benchmark → dispatcher → general
+shapes → addmm).

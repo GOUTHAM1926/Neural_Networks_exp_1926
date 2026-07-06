@@ -850,18 +850,21 @@ extern "C" void mycublasBgemmSM103_bf16_tn_cluster_128x128x64(
   dispatch_bgemm_tn_cluster(A, B, C, M, N, K, batchCount, alpha, beta, stream);
 }
 
+// B0 (2026-07-02): This API now builds a GENUINE 256×256 macro-tile — NOT a
+// fallback to 128×128. It uses BN=256 with the existing 2×1 cluster:
+//   per-CTA tile = 128(BM) × 256(BN);  2 CTAs (cluster 2×1) stack in M
+//   => cluster-level output = 256(M) × 256(N) per cluster.
+// This is the correct way to get a 256×256 output on this HW (per-CTA BM>128
+// is impossible: TMEM has only 128 lanes). A true 4-CTA 2×2 cluster variant
+// (512×256 macro) is future work (B3 — cluster templatization).
+// NOTE: BN=256 with NUM_EPI_STAGES=2 allocates 256×2 = 512 TMEM columns = the
+// full TMEM. If this overflows at runtime, B1 (parameterize NUM_EPI_STAGES→1
+// for this tile) is the fix.
 extern "C" void mycublasBgemmSM103_bf16_tn_cluster_256x256x64(
     mycublasHandle_t handle, int M, int N, int K, float alpha,
     const __nv_bfloat16 *A, const __nv_bfloat16 *B, float beta,
     __nv_bfloat16 *C, int batchCount) {
   cudaStream_t stream = handle ? handle->stream : 0;
-  // Per PTX 9.3 Table 44, tcgen05.mma.kind::f16 with cta_group::2 only
-  // supports M ∈ {128, 256}. So BM=256 (which needs M=512 per MMA) is
-  // architecturally invalid on this instruction path.
-  // The 128x128x64 cluster kernel already produces a 256-row output tile per
-  // cluster (2 CTAs × BM=128) via the M=256 shape, so it IS the real
-  // production kernel for this API. This entry is kept as a placeholder for
-  // a future higher-throughput implementation (cta_group::1 with BM=256, OR
-  // BM=128 + BN=256, OR a macro-tile variant), routed by the dispatcher.
-  dispatch_bgemm_tn_cluster(A, B, C, M, N, K, batchCount, alpha, beta, stream);
+  launch_bgemm_tn_cluster<128, 256, 64>(A, B, C, M, N, K, batchCount, alpha,
+                                        beta, stream);
 }

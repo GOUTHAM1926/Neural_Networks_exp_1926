@@ -432,21 +432,28 @@ int main() {
       {4096, 4096, 12288, 1, "q3-8b-Down"},
       {4096, 151936, 4096, 1, "q3-8b-LMhead"},
   };
-  printf(
-      "=== BluBLAS vs cuBLAS Qwen Sweep TN (M=4096, 8 models × ~5 ops) ===\n");
-  printf("%-20s %6s %6s %6s %5s  %-8s  %-8s  %-10s  %-6s  %s\n", "Shape", "M",
-         "N", "K", "Batch", "BluBLAS", "cuBLAS", "MaxRelErr", "Ratio",
-         "Status");
-  printf("%s\n", std::string(95, '-').c_str());
+  printf("=== Qwen Sweep TN: 128x128 vs 128x256 vs cuBLAS (M=4096) ===\n");
+  printf("%-18s %6s %6s %6s  %-9s %-6s  %-9s %-6s  %-8s  %s\n", "Shape", "M",
+         "N", "K", "128x128", "r128", "128x256", "r256", "cuBLAS", "best");
+  printf("%s\n", std::string(100, '-').c_str());
   int qwen_pass = 0, qwen_total = (int)shapes_qwen.size();
   for (const auto &s : shapes_qwen) {
-    Result r =
+    // 128x128 tile (2x1 cluster) — use_256_tile=false
+    Result r128 =
         run_test(s.M, s.N, s.K, s.batch, 1.0f, 0.0f, false, cublas, stream);
-    double ratio = r.cublas_tflops > 0 ? r.blublas_tflops / r.cublas_tflops : 0;
-    printf("%-20s %6d %6d %6d %5d  %7.2f T  %7.2f T  %9.2e  %5.1f%%  %s\n",
-           s.label, s.M, s.N, s.K, s.batch, r.blublas_tflops, r.cublas_tflops,
-           r.rel_err, ratio * 100.0, r.pass ? "PASS" : "FAIL");
-    if (r.pass)
+    // 128x256 tile (2x1 cluster, 256x256 macro-output) — use_256_tile=true
+    Result r256 =
+        run_test(s.M, s.N, s.K, s.batch, 1.0f, 0.0f, true, cublas, stream);
+    double cub = r128.cublas_tflops; // same cuBLAS ref both runs
+    double rat128 = cub > 0 ? r128.blublas_tflops / cub : 0;
+    double rat256 = cub > 0 ? r256.blublas_tflops / cub : 0;
+    const char *best =
+        (r256.blublas_tflops > r128.blublas_tflops) ? "128x256" : "128x128";
+    bool ok = r128.pass && r256.pass;
+    printf("%-18s %6d %6d %6d  %7.1fT %5.1f%%  %7.1fT %5.1f%%  %7.1fT  %s%s\n",
+           s.label, s.M, s.N, s.K, r128.blublas_tflops, rat128 * 100.0,
+           r256.blublas_tflops, rat256 * 100.0, cub, best, ok ? "" : " [FAIL]");
+    if (ok)
       ++qwen_pass;
   }
   printf("Qwen Sweep TN Results: %d / %d PASSED\n\n", qwen_pass, qwen_total);
