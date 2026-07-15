@@ -1447,3 +1447,721 @@ The `vmovups` memory read (the penalty) is inside the `j` loop, but outside the 
 That means for every 1 time the compiler pays the memory penalty, it executes 2,000 cycles of pure, uninterrupted FMA hardware math. 500,000 memory reads take less than a millisecond for a modern CPU, completely dwarfed by the 1-billion inner loop iterations. This perfectly explains why the timing results for both versions were virtually identical!
 
 *Next steps: We will run experiments with OpenMP for the same configuration, and then continue with the cache-optimized `ikj` loop.*
+
+---
+
+# EXPERIMENT-WISE CATALOG — "1000 Ways of Writing Matmul"
+
+> **Purpose:** A sequential, blog-ready index of every single experiment performed, with dates, exact commands, timings, assembly evidence, and key learnings. All experiments use flat 1D heap arrays (`float* A = new float[M*K]`) with `A[i*K+k]` indexing. Benchmark harness: 3 warmup + 10 timed runs, `std::memset(C, 0, size_C)` before every run. Hardware: Intel i7-14700K (8P+12E = 20 physical / 28 logical cores), 32GB RAM.
+
+---
+
+## Experiment 1 — Baseline: Naive `ijk`, No Flags, Small Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 200
+- **Command:** `g++ matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.1348 secs**
+- **Notes:** Single-threaded. Linux system monitor showed only 1 thread at 100%. OS scheduler hopped the workload between threads to spread heat, but only one thread was doing math at any moment.
+
+---
+
+## Experiment 2 — Baseline: Naive `ijk`, No Flags, GPT-2 MLP Shape
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M=1024, K=768, N=3072 (GPT-2 MLP expansion layer)
+- **Command:** `g++ matmul_experiments.cpp && ./a.out`
+- **Result:** **~6.32 secs**
+
+---
+
+## Experiment 3 — Baseline: Naive `ijk`, No Flags, Large Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 2000
+- **Command:** `g++ matmul_experiments.cpp && ./a.out`
+- **Result:** **~17.0 secs**
+- **Notes:** This is the absolute baseline — zero compiler help, single thread.
+
+---
+
+## Experiment 4 — `-O2` Flag, Small Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 200
+- **Command:** `g++ -O2 matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.00235 secs**
+- **Notes:** Massive drop from 0.1348s. `-O2` enables instruction scheduling, common subexpression elimination, loop optimizations, dead code elimination, strict function inlining.
+
+---
+
+## Experiment 5 — `-O2` Flag, Large Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O2 matmul_experiments.cpp && ./a.out`
+- **Result:** **~7.0 secs**
+
+---
+
+## Experiment 6 — `-O2` Flag, GPT-2 Shape
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M=1024, K=768, N=3072
+- **Command:** `g++ -O2 matmul_experiments.cpp && ./a.out`
+- **Result:** **~3.8 secs**
+
+---
+
+## Experiment 7 — `-O3` Flag, Small Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 200
+- **Command:** `g++ -O3 matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.00065 secs**
+
+---
+
+## Experiment 8 — `-O3` Flag, Large Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 matmul_experiments.cpp && ./a.out`
+- **Result:** **~1.8 secs**
+
+---
+
+## Experiment 9 — `-O3` Flag, GPT-2 Shape
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M=1024, K=768, N=3072
+- **Command:** `g++ -O3 matmul_experiments.cpp && ./a.out`
+- **Result:** **~1.04 secs**
+
+---
+
+## Experiment 10 — `-O3 -march=native`, Small Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 200
+- **Command:** `g++ -O3 -march=native matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.00048 secs**
+- **Key Learning:** `-march=native` alone (~17.6s) is same as `-O0`. `-O2 -march=native` (~7.4s) doesn't vectorize because `-ftree-loop-vectorize` is disabled at `-O2`. Only `-O3 -march=native` together unlock full AVX2.
+
+---
+
+## Experiment 11 — `-O3 -march=native`, GPT-2 Shape
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M=1024, K=768, N=3072
+- **Command:** `g++ -O3 -march=native matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.555 secs**
+
+---
+
+## Experiment 12 — `-O3 -march=native`, Large Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native matmul_experiments.cpp && ./a.out`
+- **Result:** **~1.10 secs**
+
+---
+
+## Experiment 13 — OpenMP Only (No Optimization Flags), Large Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~1.35 secs**
+
+---
+
+## Experiment 14 — OpenMP + `-O3 -march=native`, Large Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.92 secs**
+
+---
+
+## Experiment 15 — OpenMP + `-O3 -march=native`, GPT-2 Shape
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M=1024, K=768, N=3072
+- **Command:** `g++ -O3 -march=native -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.283 secs**
+
+---
+
+## Experiment 16 — OpenMP Only, GPT-2 Shape
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M=1024, K=768, N=3072
+- **Command:** `g++ -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.448 secs**
+
+---
+
+## Experiment 17 — OpenMP Only, Small Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M, N, K = 200
+- **Command:** `g++ -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.001243 secs**
+- **Key Learning:** Small shape saturation — OpenMP overhead dominates at microscopic timescales.
+
+---
+
+## Experiment 18 — OpenMP + `-O3 -march=native`, Small Square
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M, N, K = 200
+- **Command:** `g++ -O3 -march=native -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.00045 secs**
+- **Key Learning:** For small shapes, compiler flags alone already saturate the computation. Adding OpenMP provides almost zero benefit.
+
+---
+
+## Experiment 19 — OpenMP + All Flags, 1 Thread (OpenMP Overhead Isolation)
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop, `omp_set_num_threads(1)`
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~6.63 secs**
+- **Key Learning:** Same code, same flags, same single thread — but 6× slower than without OpenMP (1.10s). Proved OpenMP runtime overhead (`GOMP_parallel` calls, data struct packing, chunk calculation) is the sole cause. Assembly proof showed byte-for-byte identical inner loop math.
+
+---
+
+## Experiments 20–27 — OpenMP Thread Scaling (Finding the Sweet Spot)
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native -fopenmp matmul_experiments.cpp && ./a.out`
+- **Results:**
+
+| Exp # | Threads | Time |
+|---|---|---|
+| 20 | 2 | ~3.43s |
+| 21 | 3 | ~2.64s |
+| 22 | 4 | ~1.92s |
+| 23 | 5 | ~1.59s |
+| 24 | 7 | ~1.033s |
+| 25 | 9 | ~1.19s |
+| 26 | 15 | ~0.84s |
+| 27 | 20 | **~0.74s** ← Sweet Spot! |
+| (14) | 28 (all) | ~0.92s |
+
+- **Key Learning:** 20 threads = 20 physical cores (8P + 12E) is the sweet spot. Going to 28 threads (adding 8 Hyper-Threaded logical cores) actually slows down to 0.91s because HT shares existing execution units, adding switching overhead.
+
+---
+
+## Experiment 28 — OpenMP Only (No Flags), Thread Scaling Validation
+
+- **Date:** June 15, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop, various thread counts
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -fopenmp matmul_experiments.cpp && ./a.out`
+- **Results:** 7 threads → ~1.17s; 10 threads → same optimal; 20 threads → same optimal
+- **Key Learning:** Even without `-O3 -march=native`, the sweet spot behavior holds.
+
+## Experiments 29–31 — OpenMP Loop Placement Analysis (i vs j vs k depth analysis)
+
+- **Date:** June 16, 2026
+- **Loops Tested:** `ijk` with `#pragma omp parallel for` placed explicitly on `i` (outer), `j` (middle), and `k` (inner) loops to visualize parallel execution at different dimensions.
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native -fopenmp matmul_experiments.cpp && ./a.out`
+
+### Experiment 29: OpenMP on the `i-loop` (The Outer Loop) — The Best Approach
+
+- **Result:** **~0.92 secs**
+- **How it works:** OpenMP divides the `M` rows among the threads (e.g., with 28 threads, each thread gets ~71 complete rows).
+- **Software Overhead (MINIMAL):** Threads are woken up, do their work, and hit a synchronization barrier exactly **1 time**.
+- **Hardware Memory Traffic (NONE):** Thread 0 writes to rows 0-70, Thread 1 writes to rows 71-141. Because they write to completely different, far-apart memory locations, there is **no memory write contention** (no false sharing). Reading from Matrix B simultaneously also causes no issues because hardware MESI protocol allows "Shared" (S-state) parallel reads.
+
+### Experiment 30: OpenMP on the `j-loop` (The Middle Loop) — The Double Halt
+
+- **Result:** **~2.5 secs**
+- **How it works:** The Master Thread owns the `i-loop`. For *every single row*, it wakes up all 28 threads and splits the columns (`j`) among them.
+- **The Software Halt:** At the end of every parallel block, OpenMP enforces an implicit barrier. The Master Thread increments `i` and wakes them all up again. This wakes/halts 28 threads **M times (2000 times)**.
+- **The Hardware Halt (False Sharing):** When threads write to different columns in the *same row*, they write to the **same 64-byte Cache Line**. The MESI protocol requires a core to obtain the "Modified" (M) state via a "Read-For-Ownership" (RFO) hardware signal before writing, causing the cache line to violently bounce between cores (False Sharing).
+- **Ablation Study Findings:**
+  - In default OpenMP (`schedule(static)`), columns are chunked (~71 columns each). Because the threads' boundaries are 71 floats apart, False Sharing is mostly avoided. The ~2.5s time is almost entirely from the 2000 Software Halts.
+  - In `schedule(static, 1)`, adjacent columns are given to different threads, triggering massive False Sharing. This caused **both halts** (Software + Hardware), adding another ~0.18s of pure hardware stall.
+
+### Experiment 31: OpenMP on the `k-loop` (The Inner Loop) — Apocalyptic Performance
+
+- **Result:** **~75.0 secs + WRONG OUTPUT**
+- **How it works:** The Master Thread controls rows and columns. It wakes up 28 threads to calculate the dot product for a **single output cell**.
+- **Software Halt (CATASTROPHIC):** The thread pool is created, halted, and destroyed **M × N times (4,000,000 times)**!
+- **Fatal Thread Race Condition (Data Race):** All threads are trying to write to the exact same cell (`C[i * N + j]`) simultaneously. Since `+=` is three instructions (LOAD, ADD, STORE), multiple threads read `0`, add their partial sum, and overwrite each other's results. The final matrix contained completely wrong, garbage mathematical answers.
+
+- **Assembly Evidence for OpenMP Internals:**
+  - To prove exactly how many times threads were spawned, we used the `-fdump-tree-ompexp` flag (`g++ -O3 -fopenmp -fdump-tree-ompexp file.cpp -c`).
+  - This generated `test_iloop.cpp.017t.ompexp`, `test_jloop.cpp.017t.ompexp`, and `test_kloop.cpp.017t.ompexp` which showed the internal compiler IR.
+  - We looked for the placement of the `__builtin_GOMP_parallel` function call, which tells exactly where threads are spawned, mathematically proving the wake/sleep cycles mentioned above.
+
+#### Solutions to the `k-loop` Data Race
+
+To mathematically fix the Data Race in the `k-loop` while keeping the parallelization, there are a few mechanisms, each with deep architectural implications:
+
+**1) `#pragma omp atomic` (Hardware Lock)**
+
+- **How it works:** By placing `#pragma omp atomic` directly above the `C[i*N+j] += ...` line, we instruct the hardware to lock that specific memory address.
+- **The Catch:** It forces the `LOAD-ADD-STORE` sequence to become an atomic, uninterruptible transaction. While it perfectly fixes the math, it **serializes** the threads. Instead of 28 threads adding simultaneously, they form a queue and write one by one. This completely destroys the benefit of parallelism and causes massive hardware pipeline stalling.
+
+**2) OpenMP Reduction (`#pragma omp parallel for reduction(+:C[i*N+j])`)**
+
+- **How it works:** When you declare a reduction, OpenMP secretly creates a **thread-local private copy** of the accumulation variable (initialized to 0) for *every single thread* in its own registers or private cache.
+- **The Execution:** All 28 threads furiously calculate their chunks of the dot product entirely independently, writing only to their private, isolated slot. There is zero lock contention and zero False Sharing.
+- **The Aggregation (Pairwise Summation):** Once the parallel block ends, OpenMP automatically collects those 28 private partial sums and safely adds them all together into the single global `C[i*N+j]` memory address. It often does this via an optimized "pairwise tree summation" (Thread 1 adds with 2, 3 with 4, etc.) to minimize the aggregation bottleneck.
+
+**3) The Manual Temporary Variable Relationship**
+
+- **How it works:** If you manually write `float temp_sum = 0.0f;` inside the loop, you are forcing the compiler to give each thread its own private register (just like OpenMP's reduction does under the hood).
+- **The Catch:** Each thread calculates its own partial sum flawlessly. However, at the end of the `k-loop`, you still have 28 threads holding 28 `temp_sum` variables that need to be safely accumulated into `C[i*N+j]`. You would still need an `atomic` block to write the final sums, or you'd have to rely on OpenMP's native `reduction` mechanism to aggregate them. This proves that a manual temporary variable is only *half* the solution in a multi-threaded inner-loop scenario—the aggregation phase still requires synchronization!
+
+---
+
+## Experiment 32 — OpenMP on i-loop + `-O2`, Large Square
+
+- **Date:** June 16, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O2 -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.905 secs**
+
+---
+
+## Experiment 33 — OpenMP on i-loop + `-O3`, Large Square
+
+- **Date:** June 16, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.882 secs**
+
+---
+
+## Experiment 34 — OpenMP on i-loop + `-O3 -march=native`, Large Square
+
+- **Date:** June 16, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on i-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.905 secs**
+
+---
+
+## Experiment 35 — OpenMP on j-loop + `-O2`, Large Square
+
+- **Date:** June 16, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on j-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O2 -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~1.47 secs**
+
+---
+
+## Experiment 36 — OpenMP on j-loop + `-O3`, Large Square
+
+- **Date:** June 16, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on j-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~1.47 secs**
+
+---
+
+## Experiment 37 — OpenMP on j-loop + `-O3 -march=native`, Large Square
+
+- **Date:** June 16, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on j-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native -fopenmp matmul_experiments.cpp && ./a.out`
+- **Result:** **~0.515 secs**
+
+---
+
+## Experiment 38 — OpenMP on k-loop + `-O3 -march=native`, Large Square (CATASTROPHIC)
+
+- **Date:** June 16, 2026
+- **Loop:** `ijk` with `#pragma omp parallel for` on k-loop
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native -fopenmp matmul_exp- **Bug caught:** Initially had`A[i*K+k] + B[k*N+j]` (addition instead of multiplication) in warmup loop — fixed during code review.
+
+---
+
+## Experiment 40 — `ijk` Loop with Manual Temporary Variable (`float sum`), No Flags
+
+- **Date:** June 26–27, 2026
+- **Loop:** `ijk` with `float sum = 0.0f` register accumulator
+- **Config:** M, N, K = 2000
+- **Code:**
+
+  ```cpp
+  for (int i = 0; i < M; ++i) {
+      for (int j = 0; j < N; ++j) {
+          float sum = 0.0f;  // Lives in CPU register (~0.3ns)
+          for (int k = 0; k < K; ++k) {
+              sum += A[i * K + k] * B[k * N + j];
+          }
+          C[i * N + j] = sum;  // Write to memory ONCE
+      }
+  }
+  ```
+
+- **Command:** `g++ matmul_experiments.cpp && ./a.out`
+- **Result:** **~12.7 secs**
+- **Key Learning:** Dropped 17.0s → 12.7s by eliminating 3.996 billion RAM writes. Without temp: `C[i*N+j] += ...` does LOAD+ADD+STORE per iteration (4000 memory ops per cell). With temp: inner loop only touches `sum` register, memory STORE happens once at the end.
+
+---
+
+## Experiment 41 — `ijk` Loop with Temporary Variable + `-O1` Flag
+
+- **Date:** June 27, 2026
+- **Loop:** `ijk` with `float sum` temporary variable
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O1 matmul_experiments.cpp && ./a.out`
+- **Result:** **~7.0 secs**
+
+### 🔍 Deep Dive: The Compiler Pipeline & Assembly Generation
+
+To truly understand what `-O1` did, we had to break down the GCC compilation pipeline using specific flags:
+
+**1. Stage 1: Preprocessor (`-E`)**
+
+- **Command:** `g++ -E matmul_experiments.cpp -o matmul_experiments.i`
+- **What it does:** Replaces all macros, expands `#include` directives.
+- **Finding:** Because we included `<chrono>`, `<cstring>`, and `<iostream>`, the preprocessor output (`.i` file) exploded to **36,140 lines of code**! Our original 82 lines were buried at the very bottom.
+
+**2. Stage 2: Compiler to Assembly (`-S`)**
+
+- **Command:** `g++ -O1 -S -masm=intel matmul_experiments.cpp -o matmul_experiments.s`
+- **Dialect Difference (AT&T vs Intel):**
+  - If you omit `-masm=intel`, GCC defaults to AT&T syntax (e.g., `addss %xmm0, %xmm1`). AT&T is right-to-left (source, destination), uses `%` for registers, `$` for hardcoded numbers, and weird memory brackets like `(%r9,%rsi,4)`.
+  - We used `-masm=intel` to force Intel syntax (e.g., `addss xmm1, xmm0`). Intel is left-to-right (`dest = source`), maps perfectly to C++, and uses standard brackets `[r9 + rsi*4]`.
+
+**3. Stage 3: Assembler to Object Code (`-c`)**
+
+- **Command:** `g++ -c matmul_experiments.cpp` (generates `.o` binary file).
+- **Warning:** A lowercase `-c` stops compilation at the object file. An uppercase `-C` tells the preprocessor not to discard comments. They are completely different!
+
+### 🔍 Deep Dive: Assembly Analysis & The "Big 3" Optimizations
+
+- **Assembly evidence (`.L5` inner loop):**
+
+  ```asm
+  .L5:
+      movss   xmm0, DWORD PTR [rdx]      ; Read from Matrix A
+      mulss   xmm0, DWORD PTR [rax]      ; Multiply with Matrix B
+      addss   xmm1, xmm0                 ; ADD TO CPU REGISTER (xmm1)!
+      add     rdx, 4                     ; k++
+      add     rax, 8000                  ; jump B by N (stride 8000 bytes)
+      cmp     rax, rcx
+      jne     .L5
+      movss   DWORD PTR [r9+rsi*4], xmm1 ; WRITE TO C OUTSIDE THE LOOP!
+  ```
+
+- **Key Learning:** `-O1` enables 39 optimization passes. We identified the 3 most critical ones applied to this math loop:
+  1. **`-fmove-loop-invariants` (Loop Invariant Motion):** The compiler analyzed `A[i*K + k]` and realized `i*K` never changes inside the `k-loop`. It pulled that multiplication out of the loop, stopping the CPU from recalculating it 8 billion times.
+  2. **`-fomit-frame-pointer`:** Normally, the `rbp` (Base Pointer) register is reserved for stack frames so debuggers can trace function calls. This flag strips the debugger safety net and gives `rbp` back to the CPU as an extra scratchpad for math.
+  3. **`-ftree-slsr` (Straight-Line Strength Reduction):** When calculating `B[k * N + j]`, `k * N` is a multiplication. But because it's inside a sequential `for` loop, it's an arithmetic progression. The compiler replaces the expensive multiplication operation with a cheap addition (`+= N`, which is `add rax, 8000` in assembly, where 2000 floats * 4 bytes = 8000).
+
+---
+
+## Experiment 42 — `ijk` Loop WITHOUT Temporary Variable + `-O1` Flag (Compiler Auto-Promotion)
+
+- **Date:** June 27, 2026
+- **Loop:** `ijk` (NO `float sum`, raw `C[i*N+j] += ...`)
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O1 matmul_experiments.cpp && ./a.out`
+- **Result:** **~7.0 secs** (identical to Experiment 41!)
+
+### 🔍 Deep Dive: Pointer Aliasing & `-ftree-pta`
+
+- **The Pointer Aliasing Problem:** In C++, `A`, `B`, and `C` are just memory pointers (`float*`). The compiler looks at `C[i*N+j] += A[...] * B[...]` and panics: *"What if C and A point to the exact same block of memory? If I keep C in a CPU register and don't write it to RAM, A will read stale data!"* Because it can't guarantee they don't overlap, an unoptimized compiler is forced to read and write to RAM 8 billion times.
+- **The Fix:** This was the **ultimate realization**. `-O1` enables `-ftree-pta` (Pointer-To-Alias Analysis). Because all matrices were allocated with `new float[]` explicitly inside `main()`, the compiler mathematically proved the `A`, `B`, and `C` pointers do not overlap.
+- **Result:** It safely promoted `C[i*N+j]` to a CPU register (`xmm1`), completely removing the memory fetch/write from the inner loop, and perfectly replicating our manual `float sum` logic automatically!
+- **Assembly proof:** Generated `matmul_experiments1.s` (without `-O1`) — Line 391 shows `movss` (memory write) **inside** the `.L29` loop. With `-O1`, the same write is moved entirely **outside** the loop.&& ./a.out`
+- **Result:** **~7.0 secs** (identical to Experiment 41!)
+- **Key Learning:** This was the **ultimate realization**. `-O1` enables `-ftree-pta` (Pointer-To-Alias Analysis). Because all matrices were allocated with `new float[]` inside `main()`, the compiler mathematically proved `A`, `B`, `C` pointers don't overlap → safely promoted `C[i*N+j]` to a register → perfectly replicated the manual `float sum` logic automatically.
+- **Assembly proof:** Generated `matmul_experiments1.s` (without `-O1`) — Line 391 shows `movss` (memory write) **inside** `.L29` loop. With `-O1`, same write is **outside** the loop.
+- **Compiler pipeline learned:**
+  - Stage 1: `.cpp` → Preprocessor → `.i`/`.ii` (flag: `-E`)
+  - Stage 2: `.i` → Compiler → `.s` assembly (flag: `-S`)
+  - Stage 3: `.s` → Assembler → `.o` object code (flag: `-c` lowercase)
+  - Stage 4: `.o` → Linker → `a.out` executable
+  - **Warning:** `-c` (lowercase) stops at object code; `-C` (uppercase) keeps comments — completely different!
+
+---
+
+## Experiment 43 — `ijk` WITHOUT Temporary Variable + `-O2` Flag
+
+- **Date:** June 29, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O2 matmul_experiments.cpp && ./a.out`
+- **Assembly command:** `g++ -O2 -S -masm=intel matmul_experiments.cpp -o matmul_experiments_O2_without_temp.s`
+- **Result:** **~6.91–7.5 secs**
+- **Assembly evidence (`.L13` inner loop):**
+
+  ```asm
+  .L13:
+      movss xmm0, DWORD PTR [rdx]    ; Read A
+      mulss xmm0, DWORD PTR [rax]    ; Multiply with B
+      add rax, 8000                   ; Jump B by stride N
+      add rdx, 4                      ; Advance A pointer
+      addss xmm1, xmm0               ; Accumulate in register
+      cmp rcx, rax
+      jne .L13
+  ```
+
+- **Key Learning:** `-O2` adds 43 passes over `-O1` (verified via `diff <(g++ -Q -O1 --help=optimizers) <(g++ -Q -O2 --help=optimizers)`). Assembly is **virtually identical** to `-O1`. Only change: `-fschedule-insns2` reordered `add rax` between `mulss` and `addss` to hide FPU pipeline latency. **Your insight:** "This latency hiding is irrelevant here because `ijk` is artificially memory-bound (100% cache misses on B), so saving 2-3 FPU stall cycles is dwarfed by 300-cycle DRAM stalls."
+- **Attachments:** `matmul_experiments_O2_without_temp.s`
+
+---
+
+## Experiment 44 — `ijk` WITH Temporary Variable + `-O2` Flag
+
+- **Date:** June 29, 2026
+- **Loop:** `ijk` with `float sum` temporary variable
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O2 matmul_experiments.cpp && ./a.out`
+- **Assembly command:** `g++ -O2 -S -masm=intel matmul_experiments.cpp -o matmul_experiments_O2_with_temp.s`
+- **Result:** **~7.0 secs** (same as Experiment 43)
+- **Key Learning:** Assembly exactly same as without temp — compiler's `-fmove-loop-invariants` already auto-promoted `C[i*N+j]` to register at `-O1` level, so manual temp variable adds nothing.
+- **Attachments:** `matmul_experiments_O2_with_temp.s`
+
+---
+
+## Experiment 45 — `ijk` WITHOUT Temporary Variable + `-O3` Flag (Vectorization Breakthrough)
+
+- **Date:** June 29, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 matmul_experiments.cpp && ./a.out`
+- **Result:** **~1.9 secs** (3.5× speedup from ~7.0s!)
+
+### 🔍 Deep Dive: The 15 New Passes of `-O3`
+
+- **Forensic Command:** `diff <(g++ -Q -O2 --help=optimizers) <(g++ -Q -O3 --help=optimizers) | grep "\[enabled\]"`
+- **Finding:** We discovered `-O3` enables exactly 15 additional optimization algorithms over `-O2`. The absolute most important ones for Matrix Multiplication are:
+  1. **`-ftree-loop-vectorize`**: The Auto-Vectorizer (SIMD).
+  2. **`-floop-interchange`**: Allows the compiler to flip loops (e.g., automatically converting `ijk` to `ikj` if it deems it profitable, though it didn't do it perfectly here).
+  3. **`-ftree-slp-vectorize`**: Superword-Level Parallelism.
+
+### 🔍 Deep Dive: Assembly Analysis (SSE2 SIMD)
+
+- **Assembly command:** `g++ -O3 -S -masm=intel matmul_experiments.cpp -o matmul_experiments_O3_without_temp.s`
+- **Vectorization report:** `g++ -O3 -fopt-info-vec-all matmul_experiments.cpp -S -o /dev/null 2>&1`
+- **Assembly evidence (`.L11` inner loop — SIMD!):**
+
+  ```asm
+  .L11:
+      movss xmm0, DWORD PTR [rdx]    ; Load 1 float from A
+      movups xmm2, XMMWORD PTR [rax] ; Load 4 floats from B (128-bit)
+      add rax, 8000                   ; B stride jump
+      add rdx, 4                      ; A pointer advance
+      shufps xmm0, xmm0, 0           ; Broadcast A across 4 lanes
+      mulps xmm0, xmm2               ; Multiply 4 floats simultaneously
+      addps xmm1, xmm0               ; Accumulate 4 floats simultaneously
+      cmp rax, rcx
+      jne .L11
+  ```
+
+- **How it works:** Without `-march=native`, GCC defaults to the ancient Intel SSE2 instruction set to guarantee the code runs on any x86_64 CPU. SSE2 uses 128-bit `xmm` registers, which can hold exactly four 32-bit `float`s. Scalar `ss` (Single Scalar) instructions were replaced by packed `ps` (Packed Scalar) instructions.
+
+### 🔍 Deep Dive: The Vectorizer's Cost Model & Rejecting the `k-loop`
+
+- **The Mystery:** In an `ijk` loop, the inner loop iterates over `k`. So why did the compiler vectorize across `j` (loading 4 horizontal B elements) instead of `k`?
+- **The Answer:** The vectorizer's cost model (`-fvect-cost-model=dynamic`). If the compiler tries to vectorize `k`, it looks at `B[k * N + j]`. Because `N=2000`, reading `k=0`, `k=1`, `k=2`, `k=3` means jumping 8000 bytes in memory between each float!
+- Loading 4 completely scattered floats into a single SIMD register requires a hardware operation called a **"Gather"**. Gathers are astronomically expensive in CPU cycles. The compiler's cost model saw this, flagged the `k-loop` as having a "bad memory stride", rejected it, and instead built a **"mini-ikj" hybrid loop**, vectorizing across `j` instead!
+- **Your manual vectorization idea:** *"Why not load 4 floats of A and 16 floats of B (4 from each row)?"* → Mathematical analysis proved this is exactly what `-floop-unroll-and-jam` does. It still requires 4 `movups` for B, 4 `shufps` for A. You fetch the exact same amount of memory and do the exact same math, you just save a few CPU clock cycles by omitting 3 `cmp/jne` branching instructions.
+- **Attachments:** `matmul_experiments_O3_without_temp.s`, `a-matmul_experiments.cpp.166t.vect` (132K vectorizer dump)
+
+---
+
+## Experiment 46 — `ijk` WITH Temporary Variable + `-O3` Flag
+
+- **Date:** June 29, 2026
+- **Loop:** `ijk` with `float sum` temporary variable
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 matmul_experiments.cpp && ./a.out`
+- **Assembly command:** `g++ -O3 -S -masm=intel matmul_experiments.cpp -o matmul_experiments_O3_with_temp.s`
+- **Result:** **~1.77 secs**
+- **Key Learning:** Same SIMD math as Experiment 45. Only difference: without temp, compiler issues `movups` (RAM fetch of C) before the loop; with temp, it uses `pxor` (instant zero, zero clock cycles). The temp variable deleted a memory fetch instruction from the assembly.
+- **Attachments:** `matmul_experiments_O3_with_temp.s`
+
+---
+
+## Experiment 47 — `ijk` WITH Temporary Variable + `-O3 -march=native` (Hardware Payload Unlocked)
+
+- **Date:** July 6, 2026
+- **Loop:** `ijk` with `float sum` temporary variable
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native matmul_experiments.cpp && ./a.out`
+- **Result:** **~1.1 secs**
+
+### 🔍 Deep Dive: The Magic of `-march=native`
+
+We ran two forensic commands to prove what `-march=native` actually does under the hood:
+
+**1. Does it add new optimization algorithms?**
+
+```bash
+diff <(g++ -Q -O3 --help=optimizers) <(g++ -Q -O3 -march=native --help=optimizers)
+```
+
+- **Output:** *EMPTY!* (We ran this 3-4 times to be sure). It adds **zero** new optimization algorithms.
+
+**2. Does it unlock hardware features?**
+
+```bash
+diff <(g++ -Q -O3 --help=target) <(g++ -Q -O3 -march=native --help=target) | grep "\[enabled\]"
+```
+
+- **Output:** A massive list of hardware flags unlocked specifically for the local CPU architecture (i7-14700K), including: `-mavx`, `-mavx2`, `-mfma`, `-mbmi2`, `-msse4.1`, `-msse4.2`, `-mlzcnt`.
+
+### 🔍 Deep Dive: AVX2 and FMA Assembly Analysis
+
+Because the compiler was allowed to use `-mavx2` and `-mfma`, the assembly changed dramatically:
+
+| Feature | `-O3` only (SSE2 limits) | `-O3 -march=native` (AVX2 + FMA unlocked) |
+|---|---|---|
+| **Register Width** | `xmm` (128-bit = 4 floats) | `ymm` (256-bit = 8 floats per cycle!) |
+| **A Broadcast** | `movss` + `shufps` (2 instructions) | `vbroadcastss` (1 instruction, instantly floods 8 lanes) |
+| **The Math** | `movups` + `mulps` + `addps` (3 instructions) | `vfmadd231ps` (Fused Multiply-Add, 1 instruction) |
+| **Initialization** | `pxor xmm1, xmm1` (zeroing 4 lanes) | `vpxor ymm0, ymm0, ymm0` (zeroing 8 lanes) |
+
+- **Key Learning:** The vectorizer algorithm is identical to Experiment 45. The compiler just swapped out the backend code generation to use wider registers (`ymm`) and the fused `vfmadd231ps` instruction (which multiplies and adds in a single hardware step without losing intermediate precision).
+- **Attachments:** `matmul_exp_with_temp_O3_march=native.s`
+
+---
+
+## Experiment 48 — `ijk` WITHOUT Temporary Variable + `-O3 -march=native`
+
+- **Date:** July 6, 2026
+- **Loop:** `ijk` (no temporary variable)
+- **Config:** M, N, K = 2000
+- **Command:** `g++ -O3 -march=native matmul_experiments.cpp && ./a.out`
+- **Result:** **~1.07–1.21 secs** (virtually identical to with-temp)
+
+### 🔍 Deep Dive: The Mathematical Overhead Analysis
+
+- **The difference:** The math in the inner loop is entirely unchanged — it still uses the exact same `vfmadd231ps` FMA instruction. The only difference is that without a temporary variable, the compiler can't guarantee `C[i*N+j]` is initially zero. So, right before the `k-loop` starts, it issues one extra `vmovups` (vectorized RAM read) to load the current value of `C` into the `ymm` accumulator register.
+- **Why it doesn't affect speed:** We mathematically proved why this extra memory read is irrelevant:
+  - The penalty read (`vmovups`) executes before the `k-loop`: `i(2000) × j(250 SIMD loops) = 500,000 times`
+  - The FMA math (`vfmadd231ps`) executes inside the `k-loop`: `i(2000) × j(250) × k(2000) = 1,000,000,000 times`
+  - **The Ratio:** There is exactly **1 penalty read for every 2,000 FMA math cycles**. The CPU effortlessly hides this microscopic 1/2000th penalty through pipelining and Out-Of-Order execution.
+- **Attachments:** `matmul_exp_without_temp_O3_march_native.s`
+
+---
+
+## Master Experiment Summary Table
+
+| Exp # | Date | Loop | Temp Var | Flags | OpenMP | Threads | Config | Time |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Jun 15 | ijk | No | None | No | 1 | 200³ | ~0.1348s |
+| 2 | Jun 15 | ijk | No | None | No | 1 | GPT-2 | ~6.32s |
+| 3 | Jun 15 | ijk | No | None | No | 1 | 2000³ | **~17.0s** |
+| 4 | Jun 15 | ijk | No | -O2 | No | 1 | 200³ | ~0.00235s |
+| 5 | Jun 15 | ijk | No | -O2 | No | 1 | 2000³ | ~7.0s |
+| 6 | Jun 15 | ijk | No | -O2 | No | 1 | GPT-2 | ~3.8s |
+| 7 | Jun 15 | ijk | No | -O3 | No | 1 | 200³ | ~0.00065s |
+| 8 | Jun 15 | ijk | No | -O3 | No | 1 | 2000³ | ~1.8s |
+| 9 | Jun 15 | ijk | No | -O3 | No | 1 | GPT-2 | ~1.04s |
+| 10 | Jun 15 | ijk | No | -O3 -march=native | No | 1 | 200³ | ~0.00048s |
+| 11 | Jun 15 | ijk | No | -O3 -march=native | No | 1 | GPT-2 | ~0.555s |
+| 12 | Jun 15 | ijk | No | -O3 -march=native | No | 1 | 2000³ | ~1.10s |
+| 13 | Jun 15 | ijk | No | None | i-loop | All(28) | 2000³ | ~1.35s |
+| 14 | Jun 15 | ijk | No | -O3 -march=native | i-loop | All(28) | 2000³ | ~0.92s |
+| 15 | Jun 15 | ijk | No | -O3 -march=native | i-loop | All(28) | GPT-2 | ~0.283s |
+| 16 | Jun 15 | ijk | No | None | i-loop | All(28) | GPT-2 | ~0.448s |
+| 17 | Jun 15 | ijk | No | None | i-loop | All(28) | 200³ | ~0.001243s |
+| 18 | Jun 15 | ijk | No | -O3 -march=native | i-loop | All(28) | 200³ | ~0.00045s |
+| 19 | Jun 15 | ijk | No | -O3 -march=native | i-loop | 1 | 2000³ | ~6.63s |
+| 20 | Jun 15 | ijk | No | -O3 -march=native | i-loop | 2 | 2000³ | ~3.43s |
+| 21 | Jun 15 | ijk | No | -O3 -march=native | i-loop | 3 | 2000³ | ~2.64s |
+| 22 | Jun 15 | ijk | No | -O3 -march=native | i-loop | 4 | 2000³ | ~1.92s |
+| 23 | Jun 15 | ijk | No | -O3 -march=native | i-loop | 5 | 2000³ | ~1.59s |
+| 24 | Jun 15 | ijk | No | -O3 -march=native | i-loop | 7 | 2000³ | ~1.033s |
+| 25 | Jun 15 | ijk | No | -O3 -march=native | i-loop | 9 | 2000³ | ~1.19s |
+| 26 | Jun 15 | ijk | No | -O3 -march=native | i-loop | 15 | 2000³ | ~0.84s |
+| 27 | Jun 15 | ijk | No | -O3 -march=native | i-loop | 20 | 2000³ | **~0.74s** 🏆 |
+| 28 | Jun 15 | ijk | No | None | i-loop | 7/10/20 | 2000³ | ~1.17s |
+| 29 | Jun 16 | ijk | No | -O3 -march=native | i-loop | All(28) | 2000³ | ~0.92s |
+| 30 | Jun 16 | ijk | No | -O3 -march=native | j-loop | All(28) | 2000³ | ~2.5s |
+| 31 | Jun 16 | ijk | No | -O3 -march=native | k-loop | All(28) | 2000³ | ~75s ❌ |
+| 32 | Jun 16 | ijk | No | -O2 | i-loop | All(28) | 2000³ | ~0.905s |
+| 33 | Jun 16 | ijk | No | -O3 | i-loop | All(28) | 2000³ | ~0.882s |
+| 34 | Jun 16 | ijk | No | -O3 -march=native | i-loop | All(28) | 2000³ | ~0.905s |
+| 35 | Jun 16 | ijk | No | -O2 | j-loop | All(28) | 2000³ | ~1.47s |
+| 36 | Jun 16 | ijk | No | -O3 | j-loop | All(28) | 2000³ | ~1.47s |
+| 37 | Jun 16 | ijk | No | -O3 -march=native | j-loop | All(28) | 2000³ | ~0.515s |
+| 38 | Jun 16 | ijk | No | -O3 -march=native | k-loop | All(28) | 2000³ | ~71.17s ❌ |
+| 39 | Jun 26 | **ikj** | No | None | No | 1 | 2000³ | ~12.24s |
+| 40 | Jun 26 | ijk | **Yes** | None | No | 1 | 2000³ | ~12.7s |
+| 41 | Jun 27 | ijk | Yes | -O1 | No | 1 | 2000³ | ~7.0s |
+| 42 | Jun 27 | ijk | No | -O1 | No | 1 | 2000³ | ~7.0s |
+| 43 | Jun 29 | ijk | No | -O2 | No | 1 | 2000³ | ~6.91–7.5s |
+| 44 | Jun 29 | ijk | Yes | -O2 | No | 1 | 2000³ | ~7.0s |
+| 45 | Jun 29 | ijk | No | -O3 | No | 1 | 2000³ | ~1.9s |
+| 46 | Jun 29 | ijk | Yes | -O3 | No | 1 | 2000³ | ~1.77s |
+| 47 | Jul 6 | ijk | Yes | -O3 -march=native | No | 1 | 2000³ | ~1.1s |
+| 48 | Jul 6 | ijk | No | -O3 -march=native | No | 1 | 2000³ | ~1.07–1.21s |
+
+---
+
+## Assembly Files Generated (Chronological Record)
+
+| File | Experiment | Flags | Date |
+|---|---|---|---|
+| `default_dialect.s` | 41 | -O1 (AT&T syntax, no `-masm=intel`) | Jun 27 |
+| `matmul_experiments.s` | 41 | -O1 -masm=intel | Jun 27 |
+| `matmul_experiments1.s` | 42 | -O0 (no flags) -masm=intel | Jun 27 |
+| `matmul_experiments.i` / `.ii` | 42 | -E (preprocessor output, 36140 lines) | Jun 27 |
+| `matmul_experiments_O2_without_temp.s` | 43 | -O2 -masm=intel | Jun 29 |
+| `matmul_experiments_O2_with_temp.s` | 44 | -O2 -masm=intel | Jun 29 |
+| `matmul_experiments_O3_without_temp.s` | 45 | -O3 -masm=intel | Jun 29 |
+| `matmul_experiments_O3_with_temp.s` | 46 | -O3 -masm=intel | Jun 29 |
+| `a-matmul_experiments.cpp.166t.vect` | 45 | -O3 (vectorizer cost-model dump, 132K) | Jun 29 |
+| `matmul_exp_with_temp_O3_march=native.s` | 47 | -O3 -march=native -masm=intel | Jul 6 |
+| `matmul_exp_without_temp_O3_march_native.s` | 48 | -O3 -march=native -masm=intel | Jul 6 |
+
+---
+
+## Experiments Not Yet Done (Planned Next Steps)
+
+These experiments were mentioned in EOD reports but never completed:
+
+1. **`ikj` + `-O1`** — Apply first optimization level to the cache-friendly loop
+2. **`ikj` + `-O2`** — Check if instruction scheduling matters when memory is no longer the bottleneck
+3. **`ikj` + `-O3`** — Vectorization on a cache-friendly loop (should be devastating)
+4. **`ikj` + `-O3 -march=native`** — Full AVX2+FMA on cache-friendly loop (expected to be the ultimate single-threaded king)
+5. **`ikj` + OpenMP + all flags** — Multi-threaded cache-friendly loop (expected to be the absolute CPU champion)
+6. **`ikj` assembly comparison** — Should show NO `add rax, 8000` column-stride jumps
+7. **`ijk` + OpenMP + temporary variable + `-O3 -march=native`** — Mentioned at end of Jul 6 EOD as next step
+8. **Loop unrolling experiments** — Writing explicit unrolled assembly to understand how compilers implement `-floop-unroll-and-jam`
+9. **GPU tiled CUDA kernel** — Moving from CPU to GPU matmul
