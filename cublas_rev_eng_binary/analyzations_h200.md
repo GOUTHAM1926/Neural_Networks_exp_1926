@@ -5362,3 +5362,93 @@ So expect roughly 53% -> ~72-80%, and size-4 clusters to remain STRUCTURALLY inf
 size-2 on a 132-SM H200. That is a legitimate hardware fact, not a remaining defect, and
 it is exactly the kind of thing the Phase-5 dispatcher should encode: prefer size-2
 clusters on this GPU. Size-8 would be worse still (CUTLASS heuristic: 112 CTAs).
+
+### H16.13-VERIFIED the grid-sizing fix recovered the size-4 cliff (H200 re-run)
+
+Same cluster_grid_gate, after the cudaOccupancyMaxActiveClusters fix. Size-4 recovered
+~20-26 points everywhere; size-2 unchanged (no regression); correctness unchanged.
+
+  NT 4096^3   before -> after      NN            TN
+  256x128_2x2  53.5 -> 73.2       73.4          73.8
+  256x128_1x4  53.0 -> 73.9       74.0          74.3
+  256x128_4x1  52.7 -> 73.6       73.4          73.5
+  128x256_2x2  53.1 -> 73.7       73.5          74.6
+  128x128_2x2  44.4 -> 70.4       69.6          68.7
+  256x128_1x2  90.5 -> 90.4  (control, unchanged)
+  residue-shape NT 2x2  54.3 -> 67.7
+Landed inside the 72-80% band predicted before the run. Remaining gap to size-2 is now
+PHYSICS, not a defect: at cluster size 4 only 120/132 SMs are usable (90.9% ceiling,
+18 % 4 = 2 stranded per GPC) and wave quantization is worse (128 mega-tiles / 30 clusters
+= 4.27 -> 5 iterations, 0.855). 0.909 * 0.855 * 90% ~= 70%, and we measure 73-74% -- i.e.
+slightly BETTER than the crude model, so size-4 is now at its hardware limit on this GPU.
+
+DISPATCHER RULE (for Phase 5, now evidence-backed): on a 132-SM H200 prefer CLUSTER SIZE 2.
+Size-4 is correct and now efficient-for-what-it-is, but structurally ~16 points behind
+size-2 because of GPC granularity. Best points overall: 128x256_1x2 (90.5-91.2% aligned,
+95.3% NT tall-narrow) and 256x128_1x2. 128x128 remains the weakest tile (~76-79% at size-2).
+
+LESSON (generalizes beyond SM90): for a PERSISTENT clustered kernel, grid size must come
+from real cluster co-residency, never from sm_count/cluster_size. Over-sizing costs a whole
+extra wave (not a rounding error) because a stranded cluster cannot start until a resident
+CTA finishes its entire grid-stride loop. Under-sizing is safe. Same rule will apply to the
+SM103/B300 module if it ever uses clusters with a persistent grid -- check it there too.
+
+### H16.14 GUARD (shipped): refuse MN-major launches that would silently corrupt
+
+Added to launch_bgemm_sm90, before any launch. NN requires N%64==0; TN requires M%64==0 and
+N%64==0; both require K%8==0; NT unconstrained. On violation it prints which constraint
+failed and RETURNS WITHOUT LAUNCHING. Rationale: the truncating descriptor returns wrong
+results with cudaSuccess, and silently-wrong output is the worst thing we can ship. This is
+explicitly a stopgap, labelled as such in the code, not the fix. Compiles clean, 64 entry
+points intact.
+
+### H16.15 the REAL MN-major fix (researched, not yet implemented)
+
+CUTLASS research pass (local checkout, cited, and the agent COMPILED AND RAN CuTe's real
+make_tma_copy path to dump the descriptor CuTe actually computes):
+
+  CuTe NEVER splits the MN axis in the GMEM descriptor. For an MN-major bf16 operand with
+  M=3000, K=2048 it emits, verbatim:
+      rank           = 2   (3 with batch)
+      globalDim      = { 3000, 2048 }          <- 3000 AS-IS, no /64, no ceil
+      globalStrides  = { 6000 }                 bytes, dim-1 only; dim-0 stride is an
+                                                implicit 1 element and is NOT passed
+                                                (CuTe asserts gmem_prob_stride[0]==1,
+                                                copy_traits_sm90_tma.hpp:969)
+      boxDim         = { 64, BK }
+      swizzle        = 128B, oobFill = FILL_NONE
+  Descriptor rank is the number of participating GMEM modes (capped at 5 by grouping
+  trailing modes, copy_traits_sm90_tma.hpp:838-840) -- it is NEVER used to express a
+  swizzle atom. gmem_prob_shape[i] is filled with the raw gmem extent
+  (fill_tma_gmem_shape_stride, :873-879) while the box comes from a separate quantity
+  derived from the SMEM layout (:993-995). That decoupling IS the residue mechanism: with
+  globalDim[0]=3000 the per-dimension bounds check zero-fills the tail correctly. Our bug
+  is precisely that globalDim[0]=64 makes every index look in-bounds.
+
+  Real constraint is MN % 8 == 0, NOT % 64 -- 128-bit TMA alignment,
+  sm90_mma_tma_gmma_ss_warpspecialized.hpp:246-255 + detail/layout.hpp:404-410. The agent
+  ran CUTLASS's can_implement: M=3000 -> 1, M=3001 -> 0, M=3004 -> 0, M=3008 -> 1. So our
+  H16.14 guard is ~8x stricter than necessary and must be relaxed to %8 after the rewrite.
+
+  SECOND finding, a perf one: the smem tile ordering changes the TMA box size 8x. CUTLASS
+  deliberately uses Step<_2,_1,_3> for MN-major "to maximize the TMA box size"
+  (sm90_mma_tma_gmma_ss_warpspecialized.hpp:127-131). Measured for a 128x64 tile:
+      default Step<_1,_2> -> boxDim {64, 8}  -> 16 TMA instructions/tile
+      CUTLASS Step<_2,_1> -> boxDim {64,64}  ->  2 TMA instructions/tile
+
+IMPLICATION FOR US. Our current 5D box lands the DEFAULT ordering in ONE instruction
+(mn_atom stride 512 elements, k_atom stride 8*BMN) -- which is why make_gmma_desc_mn_major
+stores leading=64, stride=MN_WIDTH today. Moving to rank-3 means adopting CUTLASS's
+K-innermost ordering (mn_atom stride 64*BK = 4096 elements, k_atom stride 512) and issuing
+BMN/64 instructions per operand per stage (4 for BM=256). So the rewrite touches three
+coupled things:
+   1. init_5d_tma_MN_sm90 -> rank-3 {MN, K, batch}, box {64, BK, 1}
+   2. producer: loop BMN/64 TMA issues at coords (mn0 + 64*i, k0, batch) into smem offset
+      i*64*BK; multicast keeps partitioning along K (box {64, BK/CLUSTER, 1})
+   3. make_gmma_desc_mn_major: leading/stride fields change because the smem ordering
+      changes. These MUST BE RE-PROBED with the H11.3 method (dump
+      cute::GMMA::make_gmma_desc<Major::MN> for the CUTLASS layout), NOT inferred -- the
+      current values are probe output and the new ones have to be too.
+Net effect: removes the MN%64 limit entirely (down to %8), and costs 1 -> 4 TMA
+instructions per operand per stage, which is still 4x fewer than CuTe's default ordering.
+NEXT ACTION: step 3's probe first, since it is the only unknown; steps 1-2 are mechanical.
