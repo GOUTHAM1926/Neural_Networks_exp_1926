@@ -5276,3 +5276,46 @@ B. size-4 perf: NT 4096^3, each size-4 variant against its REDUNDANT twin (clust
    scaffolding ON, multicast OFF) -- red* also ~53% => cost is the size-4 scaffolding/
    occupancy; red* back to ~90% => cost is the size-4 multicast itself. Uses the
    bisection twins built for exactly this purpose (H13.4 milestone process).
+
+### H16.12-result BOTH bisections confirmed; root causes proven
+
+A. RESIDUE -- MN%64 descriptor truncation, cluster grid EXONERATED.
+   A1 (single-CTA, zero clusters, M=4000 N=3000 K=2048):
+       nn 256x128 single-CTA  FAIL  wrong=1.81%
+       tn 256x128 single-CTA  FAIL  wrong=2.58%
+       nt 256x128 single-CTA  ok    wrong=0.00%
+   The truncation model predicts these QUANTITATIVELY, not just directionally:
+       N=3000 -> 46*64=2944 described, 56 cols lost = 1.87%   (NN: B is MN-major)  obs 1.81%
+       M=4000 -> 62*64=3968 described, 32 rows lost = 0.80%
+       TN (A and B both MN-major) 1-(1-.008)(1-.0187) = 2.65%                      obs 2.58%
+       NT (4D K-major path, no 64-split)                0.00%                      obs 0.00%
+   Match within 0.07 percentage points on both layouts -> mechanism identified exactly.
+   A2 (MN%64==0 but STILL tile-residue, 4032x3008: 4032/256=15.75, 3008/128=23.5):
+       nn/tn single-CTA + 1x2 + 2x2 -> ALL ok, wrong=0.00%
+   => clusters + tile-residue are fine; the ONLY constraint is MN % 64 == 0 on MN-major
+   operands. Since single-CTA fails identically, this has nothing to do with H16.11.
+
+B. SIZE-4 CLUSTER CLIFF -- it is NOT the multicast (NT 4096^3, cuBLAS 807.4T):
+       256x128_1x2 (size-2 ref) 730.0T  90.4%
+       256x128_1x4              429.3T  53.2%     1x4_redA  437.6T  54.2%
+       256x128_4x1              427.9T  53.0%     4x1_redB  438.8T  54.3%
+       256x128_2x2              431.5T  53.4%     2x2_red   439.1T  54.4%
+   Disabling multicast recovers only ~1 point; ~36 points are the size-4 cluster itself.
+   The bisection twins (H13.4 process) paid off exactly as designed.
+   PRIME SUSPECT (launcher line ~1478): max_clusters = s_sm_count / CLUSTER_SIZE, i.e.
+   132/4 = 33 -> grid 132. That assumes any SM can host any cluster CTA, but on Hopper all
+   CTAs of a cluster must be co-scheduled within ONE GPC, and at 212992 B smem we run 1
+   CTA/SM, so a GPC whose SM count is not a multiple of CLUSTER_SIZE strands the
+   remainder. In a PERSISTENT kernel a stranded cluster cannot start until a resident CTA
+   finishes its ENTIRE grid-stride loop -> tail wave with the machine idle, which is about
+   the observed 1.75x. We never call cudaOccupancyMaxActiveClusters, the API for this.
+   Note size-2 divides 132 evenly under every plausible GPC split, which is consistent
+   with 1x2/2x1 being unaffected at ~90%.
+
+### H16.13 cluster occupancy probe
+examples/test_bgemm_sm90_cluster_occupancy_probe.cu -- asks the HARDWARE via
+cudaOccupancyMaxActiveClusters (rather than guessing GPC topology) how many clusters of
+each size are truly co-resident, and prints it against the grid the launcher computes
+today, per tile and cluster size, with the stranded-CTA count. If size-2 strands 0 and
+size-4 strands a chunk, the cliff is a grid-sizing bug and the fix is to derive the grid
+from that API instead of sm_count/CLUSTER_SIZE. Compiles clean sm_90a. AWAITING H200.
