@@ -5452,3 +5452,25 @@ coupled things:
 Net effect: removes the MN%64 limit entirely (down to %8), and costs 1 -> 4 TMA
 instructions per operand per stage, which is still 4x fewer than CuTe's default ordering.
 NEXT ACTION: step 3's probe first, since it is the only unknown; steps 1-2 are mechanical.
+
+### H16.14-result guard VERIFIED on H200 (and does not over-fire)
+
+  A1 NN 4000x3000: "REFUSING launch: ... requires N % 64 == 0 for layout NN" -> no launch
+  A1 TN 4000x3000: "REFUSING launch: ... requires M % 64 == 0 N % 64 == 0 for layout TN"
+  A1 NT 4000x3000: ok, wrong=0.00%  -> guard correctly does NOT touch NT (K-major, 4D path)
+  A2 4032x3008 (MN%64==0, still tile-residue 15.75 x 23.5 tiles):
+       nn/tn single-CTA + 1x2 + 2x2 -> ALL ok, NO refusal lines
+The A2 result is the important one: the predicate is tight, it fires only on the genuine
+sub-64 MN case and leaves legitimate tile-residue shapes alone. wrong% on A1 now reads
+~97% instead of ~1.8-2.6% simply because nothing launches and C stays memset-zero -- i.e.
+the failure mode changed from "subtly wrong, silently" to "obviously wrong, loudly", which
+is the whole point of the guard.
+
+Also re-confirmed in the same run (B section, NT 4096^3, cuBLAS 808.4T): the grid-sizing
+fix holds -- 1x4 73.4 / 1x4_redA 75.1 / 4x1 73.5 / 4x1_redB 74.7 / 2x2 70.6 / 2x2_red 74.9,
+against the size-2 reference at 90.5. The multicast-vs-scaffolding delta stays ~1-4 points,
+consistent with H16.12: the multicast was never the problem.
+
+COSMETIC BUG FIXED: the refusal message printed "N %% 64 == 0" because the constraint
+fragments are %s ARGUMENTS, not format strings, so they must contain a literal '%'.
+Corrected; recompiles clean, 64 entry points intact.
