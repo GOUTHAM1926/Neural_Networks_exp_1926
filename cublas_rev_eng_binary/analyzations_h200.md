@@ -5227,3 +5227,52 @@ stride), 8192x2048x4096 (tall/narrow, where wide 1x4 vs deep 4x1 should separate
 Instantiation is free; the proof is not -- tile x cluster x layout still interacts through
 the smem footprint and the MN-major 5D TMA descriptor math, which is exactly what produced
 the 4D-box all-FAIL bug (H15.5). AWAITING H200.
+
+### H16.11-result cluster grid: 105/135 PASS, two findings (one exonerates the grid)
+
+H200 run of cluster_grid_gate. 45 entry points x 3 shapes = 135 points, 30 failures.
+
+FINDING 1 -- the 30 failures are a PRE-EXISTING MN-major limitation, NOT the cluster grid.
+All 30 are NN+TN (never NT), all 15 variants each, ONLY on M=4000 N=3000 K=2048. Cause is
+in init_5d_tma_MN_sm90: the MN-major 5D descriptor splits the MN axis into (64, MN/64)
+using TRUNCATING integer division --
+    globalDim[2] = MN / MN_ATOM;   // MN_ATOM = 64
+    globalDim[3] = K  / K_IN;      // K_IN = 8
+With N=3000, 3000/64 = 46, so the descriptor covers 46*64 = 2944 of 3000 columns and the
+56-column tail is silently never loaded. M=4000 -> 62*64 = 3968, drops 32 rows. No launch
+error, wrong tail values -> exactly the observed FAIL(numeric) with cudaSuccess. NT passes
+the SAME shape because both its operands are K-major (4D path, no 64-split); only NN's B
+and TN's A+B use the 5D path. Nothing cluster-specific: the descriptor code is untouched
+by H16.11 and single-CTA should fail identically (bisection A1 below).
+WHY WE NEVER CAUGHT IT: verified all 46 validated Qwen shapes have EVERY dim a multiple of
+64 (0 exceptions). Tile-level residue WAS covered (151936 % 256 != 0), but sub-64 MN
+residue was never exercised by any test we had. Matches the already-deferred
+"b1 sub-64 MN = optional fallback" item. The new gate is simply the first test to hit it.
+NOT a trivial ceil fix: with ceil, atom 47 of a 3000-wide row would overlap into the NEXT
+K row's data (k-row stride is MN*2 bytes), reading wrong values rather than OOB-zero. So
+the 5D box formulation itself is the constraint -> needs CUTLASS research. Interim: a
+GUARD, because silently-wrong output is the worst failure mode (same call as the reduction
+32-bit indexing guard). Constraint to enforce/document: MN-major operands need MN % 64 == 0
+(and K % 8 == 0); NT is unconstrained.
+
+FINDING 2 -- real uniform ~40% cliff on EVERY size-4 cluster. 1x2/2x1 run ~90%cuB, but
+every CLUSTER_SIZE=4 variant (2x2, 1x4, 4x1) runs ~53% -- the same ratio across all 3
+tiles, all 3 layouts, all 3 shapes (128x128 likewise: ~78% at size-2 vs ~44% at size-4).
+That uniformity says structural, not memory-bound. Not dismissed as "dispatcher will avoid
+it": per the standing rule each variant must be efficient on its own merits.
+
+Grid itself is otherwise clean: all 45 points correct on the aligned and tall-narrow
+shapes, and NT correct on the residue shape too. Best points: 128x256_1x2 hits 91.2-91.3%
+on NT/NN and 97.8% on TN tall-narrow; 128x128 size-2 is a genuine step down (~76-79%).
+
+### H16.12 diagnosis gate (predictions stated before the run)
+examples/test_bgemm_sm90_grid_diag_gate.cu, two bisections:
+A. residue: A1 NN/TN SINGLE-CTA on 4000x3000 -> predict FAIL (proves pre-existing, zero
+   clusters involved); A2 NN/TN single-CTA + 1x2 + 2x2 on 4032x3008 (MN%64==0 but still
+   tile-residue, 4032/256=15.75, 3008/128=23.5) -> predict PASS (proves clusters+residue
+   fine); A3 NT on 4000x3000 -> predict PASS (K-major control). Gate also prints wrong%
+   of C, since a small tail-only percentage is the MN%64 truncation signature.
+B. size-4 perf: NT 4096^3, each size-4 variant against its REDUNDANT twin (cluster
+   scaffolding ON, multicast OFF) -- red* also ~53% => cost is the size-4 scaffolding/
+   occupancy; red* back to ~90% => cost is the size-4 multicast itself. Uses the
+   bisection twins built for exactly this purpose (H13.4 milestone process).
