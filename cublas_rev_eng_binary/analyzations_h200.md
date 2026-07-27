@@ -5319,3 +5319,46 @@ each size are truly co-resident, and prints it against the grid the launcher com
 today, per tile and cluster size, with the stranded-CTA count. If size-2 strands 0 and
 size-4 strands a chunk, the cliff is a grid-sizing bug and the fix is to derive the grid
 from that API instead of sm_count/CLUSTER_SIZE. Compiles clean sm_90a. AWAITING H200.
+
+### H16.13-result + FIX: the size-4 cliff was a persistent-grid sizing bug
+
+PROBE (cudaOccupancyMaxActiveClusters on the real kernel, H200 132 SMs, 1 CTA/SM):
+    cluster 1 -> 132 CTAs resident, launcher launches 132  -> 0 stranded
+    cluster 2 ->  66 clusters = 132 resident, launches 132 -> 0 stranded
+    cluster 4 ->  30 clusters = 120 resident, launches 132 -> 12 STRANDED (3 clusters)
+Identical for every tile (256x128, 128x256, 128x128). Hypothesis confirmed on hardware.
+
+CUTLASS cross-check (research pass over the local checkout, cited): CUTLASS NEVER uses
+sm_count/cluster_size. tile_scheduler_params.h:256-293 uses raw sm_count ONLY when
+cluster_size==1; the moment a cluster exists it uses either cudaOccupancyMaxActiveClusters
+(kernel_hardware_info.h:96-110, guarded by max_active_clusters*cluster_size <= sm_count at
+tile_scheduler_params.h:268) or get_max_cta_occupancy (tile_scheduler_params.h:54-78),
+whose core line `max_sm_per_gpc - (max_sm_per_gpc % cluster_size)` IS the GPC rule. Their
+heuristic gives 116 CTAs (29 clusters) for cluster 4 on 132 SMs; the driver reports 120
+(30). So the heuristic is conservative vs reality -> we prefer the driver, heuristic is the
+portable backstop. Also confirmed: shrinking the grid never drops work, the persistent loop
+just takes more iterations (static_tile_scheduler.hpp:190-194) -- under-sizing is SAFE,
+over-sizing is what costs a whole wave. And cluster_launch.hpp:105-108 validates only
+grid % cluster == 0, no co-residency check, which is why our 132-CTA launch succeeded
+silently instead of erroring.
+
+FIX (permanent, in launch_bgemm_sm90): replaced
+    max_clusters = s_sm_count / CLUSTER_SIZE;
+with a driver query, cached per template instantiation (= per Config+Layout, i.e. per
+kernel pointer and cluster size, exactly the granularity the answer depends on):
+    cudaOccupancyMaxActiveClusters(&hw, kernel, &probe_cfg)   // real smem + cluster attr
+    accept if success && hw > 0 && hw*CLUSTER_SIZE <= sm_count   (CUTLASS's guard)
+    else fall back to sm90_max_cta_occupancy_gpc(18, CLUSTER_SIZE, sm_count)/CLUSTER_SIZE
+CLUSTER_SIZE==1 keeps raw sm_count. The MaxDynamicSharedMemorySize attribute is already set
+before the query, so it sees the true footprint. Compiles clean sm_90a, all 64 entry points
+intact (nt 23 / nn 20 / tn 21).
+
+HONEST EXPECTATION -- this will NOT take size-4 to 90%. Two separate effects:
+  1. the bug (fixed): 33 clusters launched vs 30 resident -> a full tail wave, ~1.6-1.75x.
+  2. a PHYSICAL limit that remains: at cluster size 4 only 120 of 132 SMs are usable
+     (18 % 4 = 2 stranded per GPC), a hard 90.9% occupancy ceiling, plus worse wave
+     quantization (128 mega-tiles / 30 clusters = 4.27 -> 5 iterations).
+So expect roughly 53% -> ~72-80%, and size-4 clusters to remain STRUCTURALLY inferior to
+size-2 on a 132-SM H200. That is a legitimate hardware fact, not a remaining defect, and
+it is exactly the kind of thing the Phase-5 dispatcher should encode: prefer size-2
+clusters on this GPU. Size-8 would be worse still (CUTLASS heuristic: 112 CTAs).
