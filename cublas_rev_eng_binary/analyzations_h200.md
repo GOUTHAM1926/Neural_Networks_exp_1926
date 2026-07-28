@@ -5587,3 +5587,587 @@ chased now.
 
 STATUS: the SM90 cluster axis and the MN-major residue hole are both CLOSED. Guard now
 enforces only MN%8 / K%8, matching CUTLASS's real constraint.
+
+### H17 Qwen catalog RE-SWEEP in per-pass layouts (correcting a methodology gap)
+
+GAP FOUND. The original 164-shape sweep derived the passes correctly (H3.3: 75 FWD + 18
+new-in-dX + 71 new-in-dW = 164) but then called cuBLAS in essentially ONE operand layout.
+Evidence: across the whole doc the captured nvjet names carry only _TNT (17), _TNN (10),
+_NTN (2), _TTT (1). TNT and TNN both mean A=T, B=N -- the same operand pair, differing
+only in C. So we measured "which tile does cuBLAS pick for this SHAPE", not "for this
+shape in the layout that pass actually uses".
+
+WHY IT MATTERS. We have direct nsys evidence (H16.8) that cuBLAS dispatches DIFFERENTLY
+per layout for the SAME shape: NT -> 128x256 2x1_v, NN/TN -> 256x128 1x2_h coopA. And
+tools/qwen_shapes.json carries pass_types per shape: expanding them gives 225 (shape,pass)
+pairs, exactly 75 NT + 75 NN + 75 TN. So TWO THIRDS of the real workload is backward-pass
+layouts that the old sweep never exercised. Building the 13 missing tiles against a
+catalog weighted by the wrong layout would aim the entire next phase at the wrong targets.
+
+Layout per pass (row-major, our NN/NT/TN naming):
+    FWD     Y  = X @ W^T   -> NT      BWD-dX  dX = dY @ W   -> NN
+    BWD-dW  dW = dY^T @ X  -> TN
+Generated tools/qwen_cases_by_pass.h (225 rows) from qwen_shapes.json.
+
+HARNESS: examples/test_qwen_cublas_catalog_by_pass.cu. One max-sized allocation reused
+(peak A 1.25 / B 2.49 / C 2.49 GB), each case wrapped in an NVTX range
+"<id>|<layout>|<MxNxK>|<pass>" so nsys can attribute kernels to individual cases -- the
+old sweep had no NVTX at all, which is why kernel names could only ever be counted in
+aggregate. Compiles clean.
+
+WHAT THIS RUN DECIDES: the true tile/schedule catalog and its per-layout weighting. The
+current (single-layout) catalog says 320x128 coopB is the most-used kernel (51/162) with
+192x192 coopB next (33/162), i.e. coopB gates ~55% of the catalog. If the per-pass sweep
+confirms that, coopB is unambiguously the next build item. If it shifts the weighting,
+we retarget BEFORE spending weeks on odd-tile warpgroup work.
+
+### H18 coopB DESIGN (scoped, not yet implemented)
+
+coopB is TWO independent pieces; splitting them keeps each validatable on its own.
+
+PIECE 1 -- UNEVEN WARPGROUP SPLIT. Today WG_M = BM/2 and both consumer warpgroups get the
+same ATOMS_PER_WG = WG_M/64, which requires BM/2 to be a multiple of 64 (the existing
+static_assert says so and explicitly defers the uneven case). Odd-atom tiles need a
+lopsided split: BM=192 -> 3 atoms -> 2+1; BM=320 -> 5 atoms -> 3+2.
+Unlocks 320x128 (51 catalog uses) + 192x128 (5).
+
+  Config:  TOTAL_ATOMS = BM/64;  ATOMS_WG0 = (TOTAL_ATOMS+1)/2;  ATOMS_WG1 = TOTAL_ATOMS/2;
+           MAX_ATOMS_PER_WG = ATOMS_WG0;  WG1_ROW0 = ATOMS_WG0*64;
+           static_assert(BM % 64 == 0)   [replaces (BM/NUM_CONSUMER_WARPGROUPS) % 64 == 0]
+  Sites (all confirmed by grep, real code only -- comments excluded):
+    87-98    static_assert
+    104-105  WG_M / ATOMS_PER_WG definitions
+    1213-15  acc[MAX_ATOMS_PER_WG][CREGS] + init loop
+    1271-74  atom loop: atom_row0 = (g ? WG1_ROW0 : 0) + a*64; atom_idx likewise
+    1323-33  epilogue smem base + global_row
+    1363-71  TMA store
+    1526     launcher C-store box
+  Per-warpgroup atom COUNT differs, so the loop bound is not uniform. Branch on g into two
+  compile-time loops (if (g==0) loop<ATOMS_WG0> else loop<ATOMS_WG1>) rather than a runtime
+  bound, so both stay fully unrolled; costs some code duplication, keeps the wgmma issue
+  sequence static.
+
+  DESIGN DECISION FORCED BY THIS -- the C-store TMA box. Line 1526 currently builds the C
+  descriptor with box (WG_M, BN), one box shared by both warpgroups. With an uneven split
+  the warpgroups own DIFFERENT row counts (192 -> 128 and 64) and a TMA descriptor has only
+  ONE box size, so that no longer works. Fix: make the C box 64 rows (ONE m64 atom) and have
+  each warpgroup issue its own atom count of stores. Uniform for even and uneven splits
+  alike, no second descriptor, and the epilogue store is not the bottleneck. This also
+  deletes the last real use of WG_M.
+
+PIECE 2 -- NEW wgmma N SHAPE (BN=192). 192x192 (33 uses) and 128x192 (1) need BN=192, but
+wgmma_m64nk16_bf16 implements only BN in {128,256} and there is a static_assert to match.
+Hopper's wgmma does have an m64n192k16 form; the PTX operand list/count must be transcribed
+from CUTLASS's mma_sm90_gmma.hpp the same way the 128/256 ones were (NOT hand-derived), and
+CREGS = BN/2 = 96 accumulators/thread/atom needs a register-pressure check against the
+384-thread launch bound.
+
+ORDER: piece 1 first (bigger payoff, 56 uses, no new PTX), validate, then piece 2 (34 uses).
+Together ~55% of the catalog. NOTE the odd non-coop tiles (176x128, 168x128, 144x128,
+112x128) have a first dimension that is NOT a multiple of 64, so they cannot be BM under a
+fixed m64 atom -- the nvjet name's first number may not be BM for those. Do NOT plan those
+until the H17 per-pass re-sweep clarifies the naming; piece 1 and 2 cover the coop* tiles,
+whose first number IS a multiple of 64 and is consistent with BM.
+
+### H17-RESULT the per-pass re-sweep CORRECTS the catalog (675 launches, 225 cases)
+
+Ran examples/test_qwen_cublas_catalog_by_pass on H200. 225 (shape,pass) pairs x 3 iters =
+675 kernel launches, matching cuLaunchKernelEx=675 exactly. The methodology fix WORKED:
+the old single-layout sweep produced only _TNT/_TNN suffixes; this run produced SIX
+(_TNT, _NNT, _NTN, _NTT, _NNN, _TNN), i.e. cuBLAS really does dispatch per layout and the
+old catalog was measuring one corner of the space.
+
+TILE DISTRIBUTION (share of the 675 real launches):
+    320x128   216  32.0%  MISSING  coopB     <-- the single most-used kernel
+    256x128   189  28.0%  have     coopA
+    192x192   129  19.1%  MISSING  coopB
+    128x256    51   7.6%  have     coopA
+    192x128    24   3.6%  MISSING  coopB
+    128x128    15   2.2%  have
+    64x64       9   1.3%  MISSING
+    112x128/128x192/448x64/128x64/64x128  6 each (0.9%)
+    176x128/320x64/128x160/32x64          3 each (0.4%)
+  Top 3 tiles = 79% of all launches. We currently hold 37.8% (256x128 + 128x256 + 128x128).
+
+SCHEDULE: coopB 381 (56.4%) | coopA 240 (35.6%) | none 54 (8.0%).
+  The coopB hypothesis is CONFIRMED and slightly stronger than the single-layout estimate
+  (~55%). coopB is the gate to the majority of the catalog, exactly as H18 assumed.
+
+CLUSTER SHAPE -- the biggest surprise, and it revises our priorities:
+    1x2  507  75.1%   have
+    2x1  141  20.9%   have
+    2x4    9   1.3%   MISSING (size 8)
+    1x4    6   0.9%   have
+    4x1    6   0.9%   have
+    4x2    6   0.9%   MISSING (size 8)
+    2x2    0   0.0%   have -- cuBLAS NEVER picks it on this workload
+  1x2 + 2x1 = 96% of all launches. Every size-4 cluster together is 1.8%, and 2x2 is never
+  chosen at all. This INDEPENDENTLY CORROBORATES H16.13: after fixing the grid-sizing bug
+  we concluded size-4 caps at 120/132 SMs and the dispatcher should prefer size-2 -- cuBLAS
+  reached the same conclusion. Our size-4/2x2 work was correct and completes the knob, but
+  it should NOT be a dispatcher default. Size-8 (2x4/4x2) is the only cluster gap and is
+  worth 2.2%, i.e. low priority.
+
+NAMING QUESTION RESOLVED (the H18 open item): every coop* tile has M % 64 == 0
+(256, 320, 192, 128, 448) -- consistent with the first number being BM under a fixed m64
+atom. Only 112x128, 176x128 and 32x64 have M % 64 != 0, they are all NON-coop, and together
+they are 12/675 = 1.8%. So the ambiguity is real but confined to negligible tiles; defer.
+
+splitK CONFIRMED REAL: 128x256_..._coopA_splitK_NNN and 32x64_..._splitK_NTN appear, with
+cublasLt::splitKreduce_kernel launched 6 times. Small share, but it exists in the catalog.
+
+COVERAGE ROADMAP (data-backed, replaces guesswork):
+    now                                    37.8%
+    + uneven split -> 320x128 + 192x128    73.4%
+    + BN=192       -> 192x192 + 128x192    93.4%
+  So H18 piece 1 alone nearly doubles coverage, and piece 1+2 gets us to ~93%.
+
+SEPARATE FINDING worth its own item -- PIPELINE DEPTH. cuBLAS runs 320x128 at 64x3 (3
+stages), 256x128 at 64x4, 192x128 at 64x5, 128x128 at 64x6. Our LOAD_PIPE_DEPTH auto-derives
+from (SMEM_BUDGET - STORE_BUF_BYTES)/STAGE_BYTES with STORE_BUF_BYTES = BM*BN*2 reserved for
+the epilogue. For 256x128 that yields 3 where cuBLAS uses 4; for 320x128 it would yield 2
+where cuBLAS uses 3. cuBLAS is evidently REUSING the mainloop smem for the epilogue (the
+standard CUTLASS union trick) instead of reserving a separate full BM*BN store buffer. We
+still hit ~90% at one stage less, but a 320x128 built on the current sizing would launch
+pipeline-starved from day one. Fix the smem union BEFORE or WITH the 320x128 work, not
+after -- otherwise the tile will look like a failure when the real cause is depth.
+
+### H19 STOP -- "coopB == uneven warpgroup split" is REFUTED by our own data
+
+H18 assumed cuBLAS's coopB token means the uneven m64-atom split across the two consumer
+warpgroups. Checking that against the H17 sweep kills it:
+
+    tile      atoms(BM/64)  split      cuBLAS tag
+    256x128        4        2+2 even   coopA
+    128x256        2        1+1 even   coopA
+    320x128        5        3+2 ODD    coopB
+    192x192        3        2+1 ODD    coopB
+    192x128        3        2+1 ODD    coopB
+    448x64         7        4+3 ODD    coopB
+    128x192        2        1+1 EVEN   coopB   <-- COUNTEREXAMPLE
+
+128x192_64x5_4x1_v_bz_coopB_NTN and 128x192_64x5_2x1_v_bz_coopB_NTN both have BM=128, i.e.
+two atoms and a perfectly even 1+1 split, yet are tagged coopB. So atom parity is NOT what
+coopA/coopB distinguishes, or not the whole of it. This is the SECOND wrong inference about
+this token (the first was "coopA/B is the multicast knob", retracted in H17-era notes) --
+so no further building on an unverified reading of it.
+
+WHAT REMAINS TRUE AND SELF-STANDING: our kernel could not express a tile with an odd number
+of m64 atoms at all, and 320x128 (5 atoms) and 192x192 (3 atoms) require exactly that. The
+uneven-split work is therefore necessary regardless of what coopB means. It has been
+implemented and compiles clean with every existing tile unchanged; the configs and comments
+are deliberately named "odd-atom / uneven split", NOT "coopB", and the source says so
+explicitly so nobody later reads the tiles as evidence that coopB is done.
+
+ALSO UNRESOLVED and folded into the same research: several tiles carry NO coop token at all
+(128x128, 112x128, 176x128, 128x64, 64x64, 64x128, 320x64, 128x160, 32x64), and three of
+them (112x128, 176x128, 32x64) have a first dimension that is NOT a multiple of 64 -- which
+is impossible for BM under a fixed wgmma m64 atom. So the two numbers in the tile token may
+not be (BM per CTA, BN per CTA) for every family. Open question, being researched with the
+coopA/B one.
+
+STATUS OF THE CODE RIGHT NOW: uneven split implemented (Config ATOMS_WG0/ATOMS_WG1/
+WG1_ROW0/MAX_ATOMS_PER_WG, per-warpgroup atom count and row0 in the consumer, per-ATOM
+C-store box replacing the per-warpgroup one), plus 320x128 and 192x128 configs with the
+full 5-cluster set. Compiles clean at sm_90a with all pre-existing entry points intact and
+unchanged. NOT yet wired into the grid macro and NOT yet hardware-validated -- deliberately
+paused pending the coopA/B research, because if coopB denotes an extra property we want to
+know before declaring the tile family done.
+
+### H19 RETRACTED -- my "coopB refutation" was itself wrong; H17's rule stands
+
+I claimed 128x192_coopB refuted "coopB == uneven split" because BM=128 is an EVEN 2x64.
+That was wrong: I checked only BM. H17 (line ~5037) already documented the rule as "A DIM
+is an odd multiple of 64", not "BM is". 128x192 has BN=192 = 3x64, ODD -> coopB, exactly as
+documented. Re-checked against ALL H17 sweep data, zero exceptions:
+    coopA  256x128 (4,2 even)   128x256 (2,4 even)
+    coopB  320x128 (5,2)  192x192 (3,3)  192x128 (3,2)  128x192 (2,3)  448x64 (7,1)
+So H19's refutation is withdrawn. Nothing about the plan changes.
+
+ALSO WITHDRAWN: I dragged "pingpong" into the coopA/B question. It does not belong there.
+Pingpong is a SEPARATE CUTLASS schedule, already listed in H17 (~line 5054) as its own
+missing item alongside odd tiles. coopA/coopB and cooperative/pingpong are different axes;
+conflating them was my error, not an open research question.
+
+WHAT OUR OWN DOCS ALREADY DECIDED (H12.5, adopted at the time): do NOT implement a
+coopA/coopB "axis". The token tracks TILE IDENTITY with zero exceptions -- unlike h/v raster
+or cluster shape, it is not an independent knob cuBLAS chooses per shape. The actionable
+consequence is simply: BUILD THE TILES. Nothing else about coopA/coopB needs implementing.
+
+=> NEXT STEP IS UNCHANGED AND NOW EVIDENCE-BACKED. To cover cuBLAS's coopB tiles we need
+exactly two capabilities, both plain tile-shape generalisations, no new schedule:
+   (a) ODD number of m64 atoms in M  -> uneven warpgroup split.  DONE, compiles clean,
+       existing tiles unchanged. Covers 320x128 (5 atoms) and 192x128 (3).
+   (b) BN = 192 (an odd 3x64 N)      -> a wgmma N-shape we do not implement (we have
+       BN in {128,256} only, with a static_assert). Covers 192x192 and 128x192.
+(b) is the only genuinely new mechanism left for this tile family: transcribe the
+m64n192k16 PTX operand list from CUTLASS's mma_sm90_gmma.hpp (NOT hand-derived, same rule
+as the 128/256 forms) and check CREGS = BN/2 = 96 accumulators/thread against the 384-thread
+launch bound. Pingpong, swizzle SW64/32 and splitK remain separate later items.
+
+### H20 CLUSTER AXIS COMPLETE -- 2x4/4x2 added, 189/189 PASS on H200
+
+Added the two cluster shapes cuBLAS uses that we lacked (2x4, 4x2), across all 3 tiles and
+all 3 layouts: 21 entries/layout, 63 grid entry points, 82 exported symbols total. NO new
+mechanism was required -- rank decode (rank % CLUSTER_M), strided ctaMask (bit m +
+n*CLUSTER_M) and EMPTY_MBAR_ARRIVE_COUNT = NUM_CONSUMER_WG*(SHARE_M+SHARE_N-1) were already
+generic in both cluster dims. For 2x4 that is arrive-count 10 and 8 mask bits, inside the
+uint16_t mask and the CLUSTER_SIZE<=16 assert.
+
+RESULT (H200, GPU1): 189/189 ok, 0 failures. Aligned 4096^3 NT, cuBLAS 821.9T:
+    size 2 : 256x128_1x2 90.2  2x1 88.9 | 128x256_1x2 90.1  2x1 90.0 | 128x128 76.5/77.8
+    size 4 : 256x128 2x2/1x4/4x1 72.0-72.6 | 128x256 72.4-72.5 | 128x128 68.6-68.9
+    size 8 : 256x128 2x4 72.6  4x2 72.3   | 128x256 71.8/72.2  | 128x128 68.3/67.9
+NOTE size 8 is NOT worse than size 4 (both ~72%). Expected size 8 to degrade further on
+occupancy grounds; it did not. The H16.13 grid sizing (cudaOccupancyMaxActiveClusters)
+absorbs the co-residency drop, so the remaining ~18pt gap vs size-2 is the shared
+size>2 penalty, not something that compounds with cluster size. Size-2 remains the
+dispatcher default (cuBLAS agrees: 1x2+2x1 = 96% of its real launches).
+NO REGRESSION from the uneven-split refactor: 256x128_1x2 90.2 here vs 90.4-90.6 before,
+i.e. within run-to-run noise, and every pre-existing variant still passes.
+
+REGRESSION FOUND AND FIXED IN THIS PASS (worth remembering as a pattern). First run gave
+exactly 63 failures = 7 cluster shapes x 3 layouts x 3 problem shapes, ALL of them 256x128
+and nothing else. Cause: the coopB refactor shrank the C-store TMA box from WG_M rows to
+one m64 atom (64) so a single descriptor could serve warpgroups owning different row
+counts -- but the epilogue still issued ONE store per warpgroup band. For WG_M=128
+(256x128) that wrote only 64 of 128 rows; tiles with WG_M==64 (128x256, 128x128) were
+unaffected because there box == band. Fixed by making the store a loop of n_atoms 64-row
+writes. LESSON: when a descriptor's box changes, every issue site that assumed the old box
+must change with it -- and a failure set that partitions perfectly by ONE tile parameter
+(here: WG_M) points straight at the parameter, not at the newly added feature.
+
+CLUSTER STATUS NOW: implemented 1x1, 1x2, 2x1, 2x2, 1x4, 4x1, 2x4, 4x2 = 8 shapes. This
+covers EVERY shape cuBLAS uses on the Qwen workload (1x2, 2x1, 1x4, 4x1, 2x4, 4x2) plus
+2x2 which cuBLAS never selects. Unbuilt: 1x8, 8x1 and the five size-16 shapes (1x16, 16x1,
+2x8, 8x2, 4x4) -- 7 theoretical shapes, none used by the workload, deferred by choice not
+by limitation.
+
+### H21 RASTER CROSS-PRODUCT -- 378/378 PASS, and the "natural pairing" default was WRONG
+
+Instantiated BOTH rasters for every (tile, cluster): 21 combos x 2 = 42 entries/layout,
+126 grid points, 144 entry points, 6.6 MB of object across the 3 TUs (was 3.5). Raster kept
+COMPILE-TIME deliberately -- it could have been runtime (two index expressions per
+mega-tile) but GEMM is the hot path of training and we do not pay runtime cost to shrink our
+own build. Aliases are free: identical template args = same type = same kernel.
+Also fixed a real naming trap -- bare `_1x2` used to mean v on 256x128 but h on 128x256.
+The §H16.9 one-off tn_1x2_h probe is deleted, subsumed by the grid.
+
+H200 result: 378/378 PASS, 0 failures.
+
+THE FINDING. First v-vs-h data across the WHOLE grid (189 comparable pairs) instead of the
+single config H16.9 measured:
+    h wins 105 | v wins 18 | tie(<0.3pt) 66     mean(h-v) = +0.72 pt, best +6.7
+  by cluster (mean h-v, + = h better):
+    1x2 +1.55 (natural h)   2x1 +1.23 (natural v!)   1x4 +0.93 (natural h)
+    2x4 +0.39 (natural v!)  4x1 +0.33 (natural v!)   4x2 +0.30 (natural v!)  2x2 +0.30 (v!)
+  biggest: 128x128_2x1 NT tall-narrow v 73.4 -> h 80.1 (+6.7)
+           128x256_1x2 NN residue     v 74.0 -> h 79.0 (+5.0)
+           128x256_1x4 TN residue     v 59.1 -> h 64.1 (+5.0)
+
+I had derived the "natural pairing" (1xN->h, Mx1->v) from cuBLAS's OBSERVED dispatch and
+adopted it as our default. For OUR kernel it is wrong on FIVE of seven cluster shapes: h
+beats v on 2x1, 4x1, 2x2, 2x4 and 4x2 too. We would have shipped v on those and silently
+left up to 6.7 points on the table. This is the concrete payoff of building the full
+cross-product rather than inheriting cuBLAS's choice -- exactly the case for
+build-all-then-measure over copy-the-heuristic.
+
+TWO QUALIFICATIONS, both important:
+ 1. This does NOT mean cuBLAS is wrong. Their kernel is not ours; their optimal pairing can
+    legitimately differ. We must not "correct" our reading of their catalog from this.
+ 2. v still wins 18 of 189. Raster is a genuine PER-CASE knob, not a new global constant to
+    hardcode the other way -- swapping the default to h everywhere would repeat the same
+    mistake in the opposite direction. It belongs in the Phase-5 dispatcher table.
+
+### H22 SWIZZLE research -- atoms decoded, descriptor fields PROBED for all 3 modes
+
+CUTLASS atom definitions (mma_traits_sm90_gmma.hpp:75-84), bf16 (16-bit) after upcast:
+    mode    MN-major atom     K-major atom     Swizzle<B,M,S>   layout_type
+    INTER    8 MN x 8 K        8 MN x  8 K     <0,4,3>          0
+    SW32    16 MN x 8 K        8 MN x 16 K     <1,4,3>          3
+    SW64    32 MN x 8 K        8 MN x 32 K     <2,4,3>          2
+    SW128   64 MN x 8 K        8 MN x 64 K     <3,4,3>          1
+So atom width = SwizzleBytes / sizeof(bf16) = 64/32/16 elems -- exactly what our existing
+sw_atom_elems() helper already computes. This ALSO explains the BK=64 static_assert: the
+K-major SW128 atom is 64 K wide, i.e. BK=64 is precisely one atom.
+
+PROBED descriptor fields (scratchpad/sw_probe.cu, same local CuTe method as H16.15; note
+make_gmma_desc<Major::K> also requires a 16-element K slice, "K-size 2 in uint128 units"):
+    K-major : SW128 leading 1   stride 64 | SW64 leading 1   stride 32 | SW32 leading 1   stride 16
+    MN-major: SW128 leading 512 stride 64 | SW64 leading 256 stride 32 | SW32 leading 128 stride 16
+General form with atom_w = SwizzleBytes/2:
+    K-major : leading = 1              stride = atom_w
+    MN-major: leading = atom_w*BK/8    stride = atom_w
+Cross-checks against the SW128 values we already hardcode (MN 512/64) -> method validated.
+
+LATENT BUG FOUND. make_gmma_desc_k_major is templated on BK and sets stride = BK = 64.
+That is only correct because SW128's K-major atom is exactly 64 K wide, i.e. BK == atom_w
+by coincidence. At SW64 the stride must be 32, NOT BK. So the current parameterisation is
+accidentally right and would break silently the moment a non-128 swizzle is used. It must
+key off SwizzleBytes, not BK.
+
+COST, known before building. The atom width sets the TMA box inner dimension, so a narrower
+swizzle multiplies the TMA instruction count per stage:
+    SW128  MN: BMN/64 issues   K: 1 issue
+    SW64   MN: BMN/32 (2x)     K: 2
+    SW32   MN: BMN/16 (4x)     K: 4
+=> SW64/SW32 WILL be slower than SW128 on our current (wide) tiles. That is not a defect;
+they exist for tiles too narrow for a 128B atom (BK<64, or MN<64 -- e.g. the catalog's
+32x64, 128x64, 64x64). Build them as a validated knob, expect them to lose on wide tiles,
+and let the dispatcher use them only where SW128 does not fit.
+
+IMPLEMENTATION SCOPE (all coupled, none inferable-by-guess now that the constants are probed):
+  1. Config: _SWIZZLE_BYTES template param (default 128); MN_ATOM -> sw_atom_elems(SW).
+  2. TMA descriptors: swizzle enum (sw_tma_enum helper exists) + box inner dim = atom_w.
+  3. make_gmma_desc_k_major : retemplate BK -> SwizzleBytes; leading 1, stride atom_w.
+  4. make_gmma_desc_mn_major: leading = atom_w*BK*2 bytes, stride = atom_w*16 bytes.
+  5. Producer: issues per operand per stage = BMN/atom_w (MN-major), BK/atom_w (K-major).
+  6. Consumer: atom strides in the smem addressing scale with atom_w.
+
+### H22 SWIZZLE implementation -- PART 1 done (derivation + MN-major), PART 2 outstanding
+
+DESIGN, following CUTLASS rather than my first instinct. Swizzle is NOT a tuning axis: a
+narrower atom than necessary is strictly worse (identical math, more TMA issues per stage),
+so there is exactly one right answer per tile. CUTLASS encodes that in ss_smem_selector
+(sm90_common.inl:273) -- widest atom that divides the operand's contiguous extent. We now do
+the same, so we get all four modes with ZERO grid blowup (126 points, not 378). Contrast
+with RASTER, where we measured genuine wins BOTH ways (h 105 / v 18) -- there the
+cross-product was justified; here it would re-measure a foregone conclusion.
+
+DONE and compiling clean (144 entry points, UNCHANGED -> derivation is a no-op for every
+current tile, which is the safety property we want):
+ - Config gains _SWIZZLE_BYTES (10th param, 0 = auto-derive, non-zero = force override).
+ - sw_pick() = CUTLASS's selector, ported. sw_layout_type() adds INTER (=0). sw_tma_enum()
+   adds CU_TENSOR_MAP_SWIZZLE_NONE. Swizzle is named by BYTE width: 128/64/32, and 16 for
+   INTER (8 bf16 = 16B atom). Helpers made __host__ __device__ (needed on both sides).
+ - Sm90SmemLayout derives A_SWIZZLE and B_SWIZZLE PER OPERAND from majorness + extent
+   (BK for K-major, BM/BN for MN-major), exactly as CUTLASS selects SmemLayoutAtomA/B
+   independently. All current tiles derive 128, so codegen is byte-identical.
+ - MN-major path fully generalised: init_3d_tma_MN_sm90 templated on SwizzleBytes (box[0] =
+   atom width, swizzle enum derived); issue_operand_3d_mn issues BMN/atom_w TMAs;
+   make_gmma_desc_mn_major uses the PROBED leading = atom_w*BK*2, stride = atom_w*16.
+ - make_gmma_desc_k_major LATENT BUG FIXED: stride now keys off the swizzle atom width, not
+   RowStrideElems(=BK). The old form was right only because SW128's K-major atom is exactly
+   64 K wide (BK == atom_w by coincidence) and would have silently produced 64-where-32 at
+   SW64. Added a static_assert that BK is a whole number of atoms.
+
+NOT DONE -- K-major TMA path is still SW128-only:
+   init_4d_tma_A_MK_sm90 / _B_NK_sm90 set boxDim = {BK, BM, 1, 1}, i.e. the box inner
+   (contiguous K) dim is BK regardless of swizzle, and the launcher calls them WITHOUT
+   explicit template args so SwizzleBytes silently defaults to 128. For SW64 the box inner
+   must be the atom width (32) with BK/32 = 2 issues per operand per stage.
+   => Forcing a non-128 swizzle TODAY would build a descriptor whose box contradicts its
+   swizzle mode = silently wrong numbers. No override configs added until this is fixed.
+   This is the remaining work for H22 part 2 (mirror of what issue_operand_3d_mn already
+   does on the MN side: loop BK/atom_w issues, box inner = atom_w).
+
+OPEN QUESTION, must be settled before ANY non-128 swizzle ships -- the K-major LBO.
+CuTe emits leading_byte_offset = 1 (16 bytes); we have always emitted 0 and been correct
+(378/378). I had never A/B-tested this; the 0 was inherited with a reasoning comment.
+MEANING: wgmma reads 8-row x 16-byte "core matrices"; a k16 step needs TWO of them along K,
+and LBO is the byte distance between them. CuTe's 1 = the natural adjacent distance.
+HYPOTHESIS (unverified): for SW128/64/32 the k16 step fits ENTIRELY inside one swizzle atom
+(64/32/16 K wide), so addressing is determined by the swizzle function and LBO is inert --
+which would make 0 and 1 equivalent and explain our passes. FALSIFIABLE PREDICTION: LBO is
+NOT inert for INTER, whose atom is only 8 K wide, so a k16 step spans two atoms and 0 should
+be wrong there. LBO is now exposed as a template knob (K_LBO_BYTES, default 0 = today's
+proven value) precisely so this can be A/B-tested on hardware instead of assumed.
+
+### H22 PART 2 done -- K-major path generalised, swizzle probes added
+
+INDEPENDENT CONFIRMATION OF THE DESIGN. cuBLAS kernel names carry NO swizzle token. The
+complete token vocabulary across every captured nvjet sm90 name is: tile, 64xStages,
+cluster, h|v, bz, coopA|coopB, splitK, layout-suffix. If swizzle were a tuning axis cuBLAS
+would have to name it to tell variants apart -- it doesn't, because (like CUTLASS) it
+DERIVES swizzle from the tile shape. So deriving rather than cross-producting is what both
+reference implementations do, not just a build-size convenience.
+
+K-MAJOR now swizzle-general (previously SW128-only, and silently so):
+ - init_4d_tma_A_MK_sm90 / _B_NK_sm90: box inner (contiguous K) dim is now the swizzle atom
+   width, was BK. Those coincide ONLY at SW128 (atom = 64 K = BK).
+ - issue_operand_4d: templated on <MULTICAST, BK, SW, MN_ROWS>, issues BK/atom_w chunks,
+   chunk c at smem offset c*MN_ROWS*atom_w -- mirrors issue_operand_3d_mn on the MN side.
+   At SW128 CHUNKS == 1, so codegen is byte-identical for everything we ship.
+ - launcher now passes SmemL::A_SWIZZLE / B_SWIZZLE explicitly; previously these calls took
+   the default template arg (128) regardless of what the operand had derived -- which would
+   have been a silent mismatch the moment a non-128 swizzle was used.
+
+VALIDATION PROBES added (4 configs x 3 layouts = 12 kernels): 256x128_1x2_h and
+128x128_1x2_h, each forced to SW64 and SW32. Rationale: every tile we ship derives SW128, so
+without these the SW64/SW32 paths would never execute and would rot undetected until a
+narrow tile arrives. They are correctness probes, NOT dispatcher candidates -- they are
+expected to be SLOWER (narrower atom = more TMA issues per stage for identical arithmetic).
+
+State: 156 entry points (was 144; +12 probes), gate at 46 entries/layout = 138 grid points.
+Compiles clean at sm_90a. The 144 non-probe entry points are unchanged in count AND in
+codegen, since the derivation yields 128 for every current tile.
+AWAITING H200: this run doubles as the LBO experiment -- if the k16-fits-in-one-atom
+hypothesis holds, SW64/SW32 pass with K_LBO_BYTES=0; if they fail numerically while SW128
+passes, LBO is NOT inert and must become atom-dependent.
+
+### H22-RESULT swizzle derivation SHIPS CORRECT; SW64/SW32 execution still broken
+
+Run 2 after the two fixes: 414 points, 36 failures -- and the 36 are EXACTLY the swizzle
+probes. All 378 non-probe points pass (126 per layout x 3 layouts).
+
+CONFIRMED FIX 1 -- MN-major k16 step. A k16 step advances 2 k_atoms = 16*atom_w elements;
+I had written 8*atom_w when generalising off the hardcoded 1024 (= 16*64). Attribution was
+exact: NT has no MN-major operand and was unaffected (126 ok throughout), while NN and TN
+failed 100% before and are 126/126 after.
+
+CONFIRMED FIX 2 -- K-major LBO. Our long-standing leading_byte_offset = 0 is replaced by
+CuTe's 16 bytes (stored 1) = distance between the two 8-element core matrices of a k16 step.
+NT's 126 non-probe points still pass, so the new value is safe at SW128 as well. This is a
+REAL latent-correctness improvement: 0 was only accidentally harmless, never right.
+
+HYPOTHESIS REFUTED (twice now on this topic). I predicted LBO was inert for SW128/64/32
+because a k16 step fits inside one atom, and that it was therefore the SW64/SW32 blocker.
+Both wrong: LBO=0 vs 16 changes nothing at SW128, and fixing it does not make SW64/SW32
+work. All 36 probes still fail, identically across NT, NN and TN -- so the cause is neither
+layout-specific nor major-ness-specific nor the LBO.
+
+WHAT CHECKS OUT ON PAPER for SW64 (so the remaining cause is elsewhere):
+  K-major  atom 8 MN x 32 K; CuTe ((_8,_32),(_32,_2)):((_32,_256),(_1,_8192)).
+           our chunk offset c*MN_ROWS*atom_w = c*256*32 = 8192 == CuTe's k_chunk stride.
+           descriptor stride atom_w = 32 == probe.
+  MN-major atom 32 MN x 8 K; CuTe ((_32,_8),(_8,_8)):((_1,_2048),(_32,_256)).
+           our atom offset i*atom_w*BK = i*2048 == CuTe's mn_atom stride.
+           descriptor leading atom_w*BK*2 = 4096B -> 256 == probe; stride 32 == probe.
+           k-step 16*atom_w = 512 == 2 k_atoms * 256.
+Box inner byte width is 32*2 = 64 B = the swizzle width, as required. Suspect an
+unchecked TMA descriptor validity rule specific to non-128 swizzle; NOT diagnosed.
+
+STATUS AND DECISION. The feature as SHIPPED is complete and correct: swizzle is a real
+per-operand template knob, derived exactly like CUTLASS's ss_smem_selector, and every tile
+we currently build derives SW128 and passes 378/378. SW64/SW32 are only ever needed for
+tiles too narrow for a 128B atom (BK<64 or MN<64) -- none of which exist in our module yet.
+So the non-128 execution path is NOT on the critical path for anything, and further
+debugging of it is deferred until a narrow tile actually needs it, at which point there is a
+concrete target to debug against. Until then it MUST be guarded so it cannot be selected
+silently -- a wrong swizzle gives wrong numbers, not an error.
+
+### H22 fix 3 -- the m64 atom and the SWIZZLE atom are different things
+
+Root cause of the surviving 36 probe failures, found by re-deriving the offsets rather than
+guessing a third hypothesis. Two distinct "atoms" appear in this kernel:
+   * wgmma m64 atom  = 64 MN rows, FIXED by hardware, never varies;
+   * swizzle atom    = atom_w MN rows = SwizzleBytes/2 (64 / 32 / 16).
+They are EQUAL at SW128, which is exactly what made them look interchangeable. When
+generalising the consumer I replaced the m64-atom stride with the swizzle width:
+    atom_idx * (sw_atom_elems(A_SWIZZLE) * BK) * 2     <-- wrong
+In this smem layout MN row `mn` lives at offset mn*BK, so stepping ONE wgmma m64 atom is
+always 64*BK, independent of swizzle. At SW64 my version produced 2048 where 4096 is
+required -- off by exactly 2x -- and at SW128 it is identical, which is precisely why SW128
+stayed green while every SW64/SW32 probe failed in all three layouts equally.
+Restored to 64*BK.
+The K step is the one that IS genuinely swizzle-dependent (K offset = k*atom_w, so a k16
+step = 16*atom_w); that earlier fix stands. Two different quantities -- I generalised the
+wrong one.
+
+RULE worth remembering: at SW128, atom_w == 64 == the wgmma M height == BK. THREE distinct
+quantities collapse to the same number, so any of them can be substituted for another
+without SW128 noticing. Every one of the three swizzle bugs in this section was exactly that
+substitution: make_gmma_desc_k_major used BK where atom_w was meant; the consumer used
+atom_w where the m64 height was meant; the K-major TMA box used BK where atom_w was meant.
+When touching this code, always ask WHICH of the three a 64 actually is.
+
+### H22 fix 4 + PERMANENT PROBE -- strides now MECHANICALLY verified, not hand-derived
+
+Run 3: 36 -> 24 failures with exact attribution -- TN (both operands MN-major) reached
+138/138 INCLUDING all its SW64/SW32 probes, so the MN-major swizzle path was done; NT (both
+K-major) and NN (A K-major) still failed 12 each. Remaining cause was the same 64-collision
+one level deeper, in the K-MAJOR CONSUMER: it assumed row stride BK and a flat ks*16 k-step.
+
+STOPPED HAND-DERIVING. Hand algebra had been wrong three times in this exact spot, so
+instead of reasoning out the fix and shipping it, wrote tools/sm90_probes/
+swizzle_offset_check.cu: it evaluates CuTe's real layout (get_nonswizzle_portion, i.e. the
+linear offsets our address math must produce -- the XOR is applied by hardware) at the exact
+coordinates our consumer uses, and compares them against OUR formulas. Pure layout math, no
+kernel, no Hopper needed.
+
+RESULT -- all 30 values across 6 configurations MATCH:
+    K  SW128  row  64  m64 4096  k16   16  k32   32  k48    48
+    K  SW64   row  32  m64 2048  k16   16  k32 8192  k48  8208
+    K  SW32   row  16  m64 1024  k16 4096  k32 8192  k48 12288
+    MN SW128  row   1  m64 4096  k16 1024  k32 2048  k48  3072
+    MN SW64   row   1  m64 4096  k16  512  k32 1024  k48  1536
+    MN SW32   row   1  m64 4096  k16  256  k32  512  k48   768
+Two things this PROVES rather than argues:
+  * MN-major m64 step is 4096 for EVERY swizzle -> swizzle-INDEPENDENT (64 rows x BK),
+    confirming fix 3 was right and my "generalisation" to atom_w*BK was the bug.
+  * K-major m64 step is 64*atom_w -> swizzle-DEPENDENT, and k-steps really do cross chunk
+    boundaries (SW64: k=32 -> 8192; SW32: EVERY k16 crosses, 4096). A flat ks*16 is correct
+    only at SW128.
+
+PROBES PROMOTED TO PERMANENT TOOLS: tools/sm90_probes/{swizzle_offset_check,
+gmma_desc_probe}.cu + README. Rationale recorded there: at SW128 the swizzle atom width, the
+wgmma m64 height and BK are ALL 64, so any substitution is invisible; four bugs in this file
+were exactly that (two latent and correct only by coincidence, two introduced while
+generalising). The README says plainly: do not hand-derive these strides, run the probe.
+This is the durable fix -- the next person touching smem addressing gets a mechanical
+ground-truth check instead of having to re-derive and re-break it.
+
+### H22 fix 5 -- the FOURTH and final 64-collision: K-major multicast slice stride
+
+Run 4 came back byte-identical to run 3 (24 failures, TN 138/138, NT 12 fail, NN 12 fail),
+which proved fix 4 shipped (commit 1bcb1d1, verified in tree) but changed nothing -- i.e.
+another K-major bug remained. Confirmed first that descriptors ENCODE fine (no driver error
+anywhere in the log) and that SW64 is genuinely active (TN's SW64 probes run at 78.0% /
+58.6% vs SW128's ~90%, correctly slower), so the MN path was truly complete.
+
+The H22 offset probe validates the CONSUMER's addressing. It does NOT cover the MULTICAST
+slice offsets -- and every probe config is a 1x2 cluster, so multicast is live. Found:
+    constexpr int A_SLICE_BYTES = A_SLICE_ROWS * BK * 2;    <-- BK
+but the probe PROVED a K-major smem row is atom_w wide (64/32/16), not BK. At SW128 they are
+both 64 so it is invisible; at SW64 a multicast peer writes its MN-slice at twice the correct
+offset. Only K-major operands slice along MN (MN-major operands slice along K, a different
+formula), which is exactly why NT and NN failed while TN passed -- the pattern matched before
+the fix was made, not after.
+Fixed: A/B_SLICE_BYTES now use sw_atom_elems(A/B_SWIZZLE).
+
+AUDIT of every remaining "* BK * 2" -- all three are legitimately BK, not row strides:
+  A_STAGE_BYTES / B_STAGE_BYTES = whole-tile size (BM*BK elements, swizzle-independent);
+  ATOM_BYTES = AW * BK * 2 in issue_operand_3d_mn = the MN swizzle atom, and CuTe's mn_atom
+  stride at SW64 is 2048 = 32*64 = atom_w*BK, confirming it.
+
+TALLY of the 64-collision, all four instances:
+  1. make_gmma_desc_k_major stride      used BK      should be atom_w   (latent, pre-existing)
+  2. K-major TMA box inner dim          used BK      should be atom_w   (latent, pre-existing)
+  3. consumer m64-atom stride           used atom_w  should be 64       (introduced by me)
+  4. K-major multicast slice bytes      used BK      should be atom_w   (latent, pre-existing)
+Three were pre-existing bugs that were correct ONLY because SW128 makes atom_w == BK == 64,
+and would have produced silently wrong numbers the first time a narrow tile shipped. They
+were invisible until the forced-SW64 probes existed. This is the concrete argument for
+building validation probes for paths nothing currently uses.
+
+### H22 COMPLETE -- swizzle validated end to end, 414/414 PASS on H200
+
+Final run after fix 5: 414 points, 0 failures. All 36 forced-SW64/SW32 probes pass across
+NT, NN and TN, alongside the 378 derived-SW128 points.
+
+PERFORMANCE CONFIRMS THE MECHANISM (mean %cuB over the 9 shape/layout combinations each):
+    256x128   SW128 ~90.0   SW64 82.7   SW32 55.1
+    128x128   SW128 ~77.0   SW64 61.4   SW32 38.6
+Monotonic in atom width and worse on the smaller tile -- exactly what "narrower atom = more,
+smaller TMA issues for identical arithmetic" predicts (2x issues at SW64, 4x at SW32). This
+also independently confirms the narrow paths are genuinely EXECUTING rather than silently
+falling back: a fallback would have matched SW128's numbers.
+
+FEATURE STATUS -- swizzle is now a real, validated, per-operand template knob:
+ * derived like CUTLASS's ss_smem_selector (widest atom that divides the operand's
+   contiguous extent), so every tile automatically gets the correct mode and future narrow
+   tiles will select SW64/SW32 with no further work;
+ * all four modes expressible (128/64/32/INTER), with ZERO grid blowup -- 126 grid points,
+   not 378, because swizzle is derived rather than cross-producted;
+ * BOTH operand paths general (K-major and MN-major): descriptor fields, TMA box, issue
+   counts, consumer addressing and multicast slice offsets;
+ * override configs kept as permanent correctness probes so the non-default paths cannot rot
+   before a narrow tile needs them.
+
+WHAT THIS COST AND WHY IT WAS WORTH IT. Five fixes, of which THREE were pre-existing latent
+bugs in shipped code (see the H22 fix-5 tally). All three were correct only because SW128
+collapses three unrelated quantities -- swizzle atom width, wgmma m64 height, and BK -- to
+the same number 64. They would have surfaced as silently wrong numbers the first time a
+narrow tile was added, with nothing pointing at swizzle. Building probes for a path nothing
+currently uses is what made them visible, and tools/sm90_probes/swizzle_offset_check.cu now
+catches the whole class mechanically, locally, in seconds.
