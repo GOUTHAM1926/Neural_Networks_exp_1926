@@ -7076,3 +7076,25 @@ THIS CLOSES THE WORK-GRID-SPLIT FEATURE (§H27-H27n) END TO END:
 NEXT: tiles 128x320 (blocked on setmaxnreg + C-store multi-chunk together), 192x192
 (blocked on swap-AB canonicalisation, a dispatch-layer change), then ping-pong for the small
 tiles, then splitK, then the all-combination sweep, then the dispatcher last.
+
+### H27o cleanup: deleted the last dead H18 remnants, fixed a duplicate config + stale comment
+
+Q asked to reconfirm cluster/raster/swizzle/work-grid-split are all done and templatized,
+and specifically that we never claimed the work-grid split IS coopA/B. Verified by grep
+against live code (not memory): no live code names anything "coop" as a fact -- only
+Sm90WorkGrid/WGMMA_N/SPLIT_M. Found and fixed three real leftovers while checking:
+  1. TOTAL_ATOMS/ATOMS_WG0/ATOMS_WG1/MAX_ATOMS_PER_WG/COOP_B/WG1_ROW0 -- H18's old uneven-
+     split fields, computed but never read anywhere after H27l's rewrite. Deleted (6 lines).
+  2. Sm90Config_192x128x64 was defined TWICE -- once by H27l (used by the validated entry
+     point) and once in the old H18 "odd-atom tiles" section (never wired to anything).
+     Both resolved to the identical type so it compiled silently; removed the stale
+     duplicate, kept the tested one.
+  3. The surrounding H18 comment block described machinery that no longer exists. Checked
+     whether Sm90Config_320x128x64 (and every 192x128x64/320x128x64 cluster variant sharing
+     that section) was ever actually compiled: grepped every .cu/test file for their names --
+     ZERO hits. None were ever wired to an extern "C" entry point or a test, under EITHER
+     the old or new scheme, so there is no prior H200 result to regress and nothing was
+     silently broken. Comment rewritten to state this plainly and to flag that these
+     cluster x tile combinations are legal, untested leftovers -- composability the
+     architecture allows, not a validated claim.
+Recompiled all three layouts after the cleanup: 57/51/51 entry points, unchanged.
