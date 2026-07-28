@@ -7043,3 +7043,36 @@ RESULTS SO FAR (24/24 that ran, before the crash): all PASS, including 128x192-b
 multitile/batch2 -- i.e. the new M-split multi-N-chunk compute path IS validated on H200.
 STILL UNVALIDATED: 128x192-residue/llm and ALL of 192x128-* (the N-split disjoint-store
 path -- the actual point of this test round). Re-run needed with the fixed test file.
+
+### H27n CONSUMER REWRITE H200-VALIDATED, 34/34 PASS -- closes the work-grid-split feature
+
+Re-ran on a fresh H200 instance after the N%8 test-data fix. ALL 34 cases PASS, including
+every 192x128-* case (the N-split disjoint-store path, the one thing still unproven after
+H27m's crash):
+    128x192-beta0/beta1/k512/multitile/batch2/residue/llm   -- all PASS
+    192x128-beta0/beta1/k512/multitile/batch2/residue/square-2048/llm -- all PASS
+"PASS" = matched the cuBLAS reference within tolerance -- this is a real correctness result,
+not a compile-time inference. The disjoint-store reasoning (H27l: size each warpgroup's
+C-store box to WG_N_WIDTH so the two warpgroups' stores can never touch each other's smem
+or gmem, avoiding any need for a cross-warpgroup barrier) is now hardware-confirmed, not just
+SASS-verified.
+
+One number worth noting, not a defect: 192x128-square-2048 runs at 441.52 TFLOPS, well below
+128x192-llm's 706.84 or the existing 128x256 square-2048 (~638). This is a tile-fit issue
+(192x128 has less area than 128x256, and this test forces one fixed config regardless of
+shape) -- not a correctness or overhead problem. Choosing the right tile per shape is the
+dispatcher's job (last item on the roadmap), not something to address here.
+
+THIS CLOSES THE WORK-GRID-SPLIT FEATURE (§H27-H27n) END TO END:
+  - wgmma n64/n96 transcribed (H27)
+  - WGMMA_N + work-grid derivation, then made layout-aware (H27-H27g)
+  - N-chunk atom alignment guard, sourced from a CuTe probe not hand algebra (H27b, H27f)
+  - BN constraints sourced from the CUDA header; chunked C-store for BN>256 (H27h/H27i),
+    H200-validated (H27j)
+  - B-descriptor N-chunk offset proven additive with the K-step offset, 72/72 combos (H27k)
+  - coopA/coopB fully decoded from SASS, 18/18 (H27d)
+  - consumer rewrite: zero-added-synchronization N-split fix (H27l), H200-validated 34/34
+    including the riskiest new code path (H27m/H27n)
+NEXT: tiles 128x320 (blocked on setmaxnreg + C-store multi-chunk together), 192x192
+(blocked on swap-AB canonicalisation, a dispatch-layer change), then ping-pong for the small
+tiles, then splitK, then the all-combination sweep, then the dispatcher last.
