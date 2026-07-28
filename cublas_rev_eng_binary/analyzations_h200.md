@@ -7025,3 +7025,21 @@ VERIFIED, in order:
     batch>1, non-multiple-of-tile residue shapes, and one square-2048 stress case for
     192x128 specifically (the riskiest path, run through many persistent-scheduler
     iterations). This is the next thing that needs to run on hardware.
+
+### H27m first H200 run of the consumer rewrite -- crashed on a TEST DATA bug, not a kernel bug
+
+Ran output_h27l.md. 24 of 30 cases printed, all PASS, then the binary exit(EXIT_FAILURE)'d
+with "cuTensorMapEncodeTiled: invalid argument" -- BEFORE printing 128x192-llm and losing
+every 192x128-* case entirely (the one that actually tests the new N-split disjoint-store
+path). Root-caused, not guessed: read cuda.h's own constraint (cuda.h:23792) --
+"globalStrides array ... must be a multiple of 16". init_2d_tma_C_sm90 sets
+globalStrides[0] = N * sizeof(bf16) = N*2 bytes. The 128x192-residue test case I added used
+N=250: 250*2=500, 500%16==4 -- violates it. This is a PRE-EXISTING constraint on the C
+descriptor (present in every layout, since before this session, N must be a multiple of 8
+for bf16) that simply never got tested with an odd N before -- not a bug introduced by H27l.
+FIXED: 250 -> 248 (still genuine residue vs BN=192: 248%192==56, and 248%8==0). Audited every
+other N value in the test file; all already multiples of 8.
+RESULTS SO FAR (24/24 that ran, before the crash): all PASS, including 128x192-beta0/1/k512/
+multitile/batch2 -- i.e. the new M-split multi-N-chunk compute path IS validated on H200.
+STILL UNVALIDATED: 128x192-residue/llm and ALL of 192x128-* (the N-split disjoint-store
+path -- the actual point of this test round). Re-run needed with the fixed test file.
