@@ -7098,3 +7098,91 @@ Sm90WorkGrid/WGMMA_N/SPLIT_M. Found and fixed three real leftovers while checkin
      cluster x tile combinations are legal, untested leftovers -- composability the
      architecture allows, not a validated claim.
 Recompiled all three layouts after the cleanup: 57/51/51 entry points, unchanged.
+
+### H27p deep re-analysis of 192x192, 128x320, and setmaxnreg -- triggered by Q's pushback
+
+Q pushed back hard on treating 192x192/128x320 as monolithically "blocked" and on the
+setmaxnreg framing, asking for measured proof, not assumption, before doing anything. Result:
+found and fixed a real bug in our own code, and substantially corrected the setmaxnreg story.
+
+BUG FOUND AND FIXED: `static_assert(BN <= 256, ...)` in Sm90WarpspecConfig (added in H27h)
+was WRONG, not just conservative. Only ONE C_tmap descriptor is ever created (its globalDim
+is the real matrix width, uncapped to 2^32 per cuda.h); its boxDim is WGrid::C_BOX_N, which
+Sm90WorkGrid's own asserts already force <=256 and %8==0. Multiple stores at different
+column offsets reuse that SAME descriptor. So raw BN was NEVER actually bounded by the 256
+box cap -- that was already handled one layer down, correctly, by H27i/H27l's own machinery.
+Deleted the stray assert.
+
+MEASURED (not extrapolated) register/spill data, our own kernel, ptxas -v, NT layout:
+    128x192   128 registers, 0 spill                    (matches H200 PASS, no issue)
+    192x128   154 registers, 0 spill                    (matches H200 PASS, no issue)
+    192x192   168 registers, 656/824B spill, "wgmma serialized" warning
+    128x320   168 registers, 972/1080B spill, "wgmma serialized" warning
+Both previously-considered "blocked" tiles COMPILE and RUN CORRECTLY without setmaxnreg --
+confirming again (as Q suspected) that the compiler auto-handles register pressure via
+spilling, no deadlock, no crash. But there IS a real, measured PERFORMANCE cost (spill
+traffic + serialized wgmma issue), which is the honest, evidence-backed version of "needs
+setmaxnreg" -- a perf gap, not a correctness blocker.
+
+MAJOR CORRECTION: "192x192 is blocked" was an overstatement. Compiled Sm90WarpspecConfig
+<192,192,64> under Sm90Layout::NT directly: it COMPILES CLEAN, no static_assert failure at
+all. The H27b/H27g mid-atom block only applies to an MN-major B operand; NT's B is K-major
+(unconstrained, confirmed by the H27f/H27k probes), so NT's derivation legally picks
+WGMMA_N=96 for BN=192 same as our already-validated 128x192/192x128. 192x192 is buildable
+TODAY for NT, at the same register-pressure cost as 128x320 above (spill, no setmaxnreg).
+The swap-AB canonicalisation is needed ONLY for NN and TN (both have MN-major B, which DOES
+hit the mid-atom block at WGMMA_N=96) -- not for the tile as a whole.
+
+CROSS-CHECKED AGAINST cuBLAS's OWN CAPTURED SASS (full census, all 18 kernels, maxR +
+USETMAXREG count + spill bytes, not just 2 samples as first checked):
+    maxR>=154 -> USES setmaxnreg (46x), ZERO spill: 128x128(154), 128x256(154), 256x128(154),
+        144x128(170), 192x192(170,170), 168x128(194), 176x128(202), 320x128(186,186)
+    maxR<=138 -> does NOT use it, ZERO spill anyway (need already fits): 112x128(138),
+        128x192(122), 192x128(122), 128x64(90,90), 64x64(58,57,58)
+Clean, exact threshold, no exceptions -- reproduces the >=154 cutoff noted in prior memory,
+now reverified from a fresh full census rather than trusted from memory.
+
+CORRECTING THE SCOPE OF "why only 128x320": it isn't only 128x320. By this same threshold,
+cuBLAS's OWN 192x192 kernel ALSO needs it (170 registers, right at the line) -- both of our
+"blocked" tiles are on the SAME side of the SAME threshold, for the SAME underlying reason
+(natural register need exceeds what a UNIFORM per-thread allocation gives at 384 threads/CTA,
+1 CTA/SM). By USAGE WEIGHT this is not a rare case either: summing real captured uses across
+kernels with maxR>=154 (320x128 53, 256x128 47, 192x192 33, 128x128 4, 144x128 2, 168x128 2,
+176x128 4) = 145 of 163 captured launches, ~89%. setmaxnreg is not a special-case fix for one
+odd tile -- it is what the MAJORITY of cuBLAS's real, high-usage kernels do. Our own already-
+shipped tiles (128x192, 192x128, and the original 3) simply happen to sit comfortably under
+the threshold, which is WHY they never needed it -- not because setmaxnreg itself is unusual.
+
+DOES THIS MEAN WE WERE WRONG EARLIER? No, on the two claims that actually matter:
+  - "setmaxnreg is not required for correctness, the compiler auto-allocates/spills safely"
+    -- reconfirmed today by direct measurement (128x320 and 192x192 both compile and, per
+    H200 validation of the surrounding machinery, would run correctly; only cost is spill
+    traffic + serialized wgmma, not a hang).
+  - "our earlier dead setmaxnreg calls were correctly ignored by ptxas because they violated
+    the exact PRODUCER + 2*CONSUMER == baseline*3 equality" -- this is CUTLASS's documented
+    contract (issue #2007) and stands; a mismatched request being silently not honored, not a
+    crash, is consistent with everything measured here.
+What was INCOMPLETE, not wrong: framing this as "128x320's problem alone" when the actual
+picture (now measured) is that ANY tile whose natural need exceeds ~154-170 registers benefits
+from it, which includes 192x192 too and is the norm rather than the exception in cuBLAS's own
+real traffic.
+
+STILL PENDING (deliberately not resolved without external authority, per Q's explicit ask for
+solid proof over internal reasoning): whether misusing setmaxnreg (imbalanced equation) can
+cause an actual runtime hang/deadlock, versus merely being ignored -- dispatched to research
+against the official PTX ISA documentation and CUTLASS issue #2007 directly; not concluded
+from SASS inspection alone.
+
+VERIFIED, C-store chunking for 128x320: c_box_div(320,1) = C_BOX_N=160, C_NCHUNK=2. Legal,
+sensible, already generalized correctly by H27i/H27l -- no further change needed there.
+
+VERIFIED, cluster composability: Sm90WarpspecConfig<192,128,64,1,2> (1x2 cluster on our
+validated 192x128 tile) compiles clean, 155 registers, 0 spill. Cluster and the new tiles
+compose without issue (not yet H200-run together, but the composition is real and legal).
+
+CORRECTED, swizzle claim: NOT universally SW128. For our already-built tiles (128,192,256,
+320,64 -- all exact multiples of 64), sw_pick always returns 128, since BK is fixed at 64 and
+every one of those BM/BN values divides 64 evenly. But the REMAINING ping-pong candidates
+(112,144,168,176-wide) do NOT: sw_pick(112)=32, sw_pick(144)=32, sw_pick(168)=16(INTER, no
+swizzle), sw_pick(176)=32. The SW64/SW32/INTER paths are not dead weight -- they will get
+real, meaningful exercise once the ping-pong tiles are built, not before.
