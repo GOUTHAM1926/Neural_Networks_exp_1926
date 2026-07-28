@@ -6960,3 +6960,68 @@ layout query, not by trusting the formula.
 So the consumer rewrite's B-descriptor change is: ADD nc * WGMMA_N * AW_B * 2 bytes to the
 existing B_smem base pointer, before the existing ks-dependent offset math -- no other change
 to that math is needed. This is now implementation-ready, not a risk.
+
+### H27l THE CONSUMER REWRITE, IMPLEMENTED -- zero synchronization added, not a barrier
+
+Before writing this, surfaced a real correctness gap to Q: 128x192 splits along M (each
+warpgroup owns different rows, writes/stores independently -- safe), but 192x128 splits
+along N (both warpgroups own the SAME rows, different columns of the SAME shared smem
+buffer). The naive plan (each warpgroup independently issues the C-store, sized to the OLD
+C_BOX_N which spans the FULL BN) would race: warpgroup 0's store could include columns
+warpgroup 1 hasn't finished writing. Q asked for the permanent, no-overhead fix rather than
+a quick barrier.
+
+FOUND A BETTER FIX THAN A BARRIER: derive the C-store's box width from WG_N_WIDTH (how many
+columns ONE warpgroup ever owns), not from the raw tile BN.
+    WG_N_WIDTH = WG_NCHUNKS * WGMMA_N   (== BN when SPLIT_M; == BN/2 when N-split, since
+                 WORK_BLOCKS%2==0 already forces NCHUNKS even whenever SPLIT_M is false)
+C_BOX_N/C_NCHUNK (H27i) moved from Sm90WarpspecConfig into Sm90WorkGrid and re-derived from
+WG_N_WIDTH instead of BN. Consequence: WG_N_LO (= nchunk0*WGMMA_N, this warpgroup's starting
+column) is ALWAYS an exact multiple of the new C_BOX_N (since WG_N_WIDTH -- a multiple of
+C_BOX_N by construction -- is exactly nchunk0's stride), so each warpgroup's owned column
+range decomposes into a WHOLE, DISJOINT set of chunk indices -- proven, not assumed. Each
+warpgroup's smem write range and its own TMA store therefore NEVER overlap the other's,
+by construction, for every tile, not just the ones tested. NO cross-warpgroup barrier exists
+anywhere in this code -- there is nothing to add, because there is nothing to wait for.
+This is strictly better than the barrier design considered: same correctness, zero added
+synchronization, zero added instructions for tiles that don't need it (M-split: WG_N_WIDTH
+== BN, C_BOX_N is IDENTICAL to H27i's, unchanged).
+
+IMPLEMENTATION (Bgemm_sm90_warpspecialized_template.cuh, consumer warpgroup body):
+  - H18's ATOMS_WG0/ATOMS_WG1/WG1_ROW0/MAX_ATOMS_PER_WG/COOP_B are DEAD from here down --
+    WGrid only chooses SPLIT_M when MATOMS is even, so the two warpgroups always get an
+    EQUAL atom count now; asymmetry moved to N, matching what H23-H25 measured in cuBLAS.
+  - acc[MAX_ATOMS][CREGS] -> acc[WG_MATOMS][WG_NCHUNKS][CREGS_CHUNK] (CREGS_CHUNK=WGMMA_N/2).
+  - mainloop: nested nc-loop inside the existing ks-loop; B descriptor gets
+    + (nchunk0+nc)*WGMMA_N*atom_w elements on top of the EXISTING (unchanged) K-step offset
+    -- the additivity verified in H27k, now actually used.
+  - epilogue write: col from wgmma_frag_rowcol is LOCAL to one WGMMA_N chunk; tile_col =
+    (nchunk0+nc)*WGMMA_N+col recovers the GLOBAL 0..BN-1 position, fed into the same
+    ch/cic chunk-major addressing H27i already had (now against the new, WG_N_WIDTH-based
+    C_BOX_N).
+  - store: wg_ch_start = (nchunk0*WGMMA_N)/WGrid::C_BOX_N (exact, proven above); each
+    warpgroup only loops cc over ITS OWN WGrid::C_NCHUNK chunks, at ch_global=wg_ch_start+cc.
+  - host launcher's C_tmap init switched from Config::C_BOX_N to WGrid::C_BOX_N.
+
+VERIFIED, in order:
+ 1. All three layouts (nt/nn/tn) compile clean, 57/51/51 entry points (nt +2 for the new tiles).
+ 2. SASS-diffed the 55 kernels that existed BEFORE this rewrite (all M-split or single-chunk)
+    against the last H200-validated commit (9c9e9c9): HGMMA/STS/BAR/ELECT/UBLKCP counts all
+    IDENTICAL (308/5952/483/882/0/0 both sides). Net instruction count -408 (fewer address/
+    scheduling instructions, same direction as H27i's earlier diff). Confirms the rewrite is
+    a true no-op for every tile shipped before it.
+ 3. Added the first two REAL new tiles as entry points: 128x192 (M-split, exercises the new
+    multi-N-chunk-per-warpgroup compute path) and 192x128 (N-split, exercises the disjoint-
+    store path -- the riskiest new code). SASS instruction counts match the hand-derived
+    block math exactly: 128x192 issues 8x HGMMA.64x96x16 (WG_MATOMS(1)*WG_NCHUNKS(2)*
+    K_STEPS(4)=8; NT's B is K-major so n96 is legitimately preferred over n64, unlike the
+    MN-major case H27b restricts), 192x128 issues 12x HGMMA.64x64x16
+    (WG_MATOMS(3)*WG_NCHUNKS(1)*K_STEPS(4)=12). Both match the derivation exactly -- the loop
+    nesting issues precisely the intended number of wgmma calls, no duplicates or omissions.
+ 4. NOT YET DONE: an actual H200 run comparing against the cuBLAS reference. Steps 1-3 prove
+    the code compiles, doesn't regress existing tiles, and has the right shape -- they do NOT
+    prove the new tiles are numerically correct. 14 new test cases added to
+    test_bgemm_sm90_bf16.cu (128x192-*, 192x128-*) covering beta0/1, multi-K, multi-tile,
+    batch>1, non-multiple-of-tile residue shapes, and one square-2048 stress case for
+    192x128 specifically (the riskiest path, run through many persistent-scheduler
+    iterations). This is the next thing that needs to run on hardware.
