@@ -206,5 +206,6 @@ cublas_rev_eng_binary/**/*_trace.csv
 cublas_rev_eng_binary/**/*_trace_demangled.csv
 BluBridge-BLAS_kota_latest_10_07_2026/BluBridge-BLAS/
 BLUBLAS_kota/
-cublas_rev_eng_binary/
+cublas_rev_eng_binary/*
+!cublas_rev_eng_binary/*.md
 Blublas_gautam_10_07_2026.zip
