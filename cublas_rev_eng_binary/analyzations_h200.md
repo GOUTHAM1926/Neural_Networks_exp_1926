@@ -6647,3 +6647,36 @@ to half-apply it.
 RECOMMENDED FIRST STEP FOR (e): extend tools/sm90_probes/swizzle_offset_check.cu with the
 N-chunk offset for both majornesses, so the B-descriptor arithmetic is verified against CuTe
 BEFORE it goes in the kernel -- exactly the method that finally worked for the swizzle bugs.
+
+### H27b PROBE CAUGHT A BUG BEFORE IT WAS WRITTEN -- N-chunks must be atom-aligned
+
+Before writing the consumer's B-descriptor offset, probed CuTe for where an N-chunk actually
+starts (scratchpad/nchunk_probe.cu). Result:
+    K-major  B, BN=192, wgmmaN=96 : chunk1 @ col 96 -> real 6144, naive col*atom_w 6144  ok
+    MN-major B, BN=192, wgmmaN=96 : chunk1 @ col 96 -> real 4128, naive col*BK     6144  MISMATCH
+    MN-major B, BN=192, wgmmaN=64 : chunk1 @ col 64 -> real 4096                          ok
+CAUSE: 96 is not a multiple of the 64-wide swizzle atom. For an MN-major operand the columns
+are packed INSIDE atoms, so a chunk starting at column 96 lands MID-ATOM -- CuTe places it at
+4128 = 32 + 1*4096, not 96*BK. K-major is unaffected because its columns are col*atom_w
+strided. Starting a GMMA descriptor mid-atom would need the base_offset swizzle-phase field
+(bits [49,52), which this file deliberately keeps at 0), so it is simply not expressible here.
+
+CONSTRAINT ADDED to the picker (nchunk_ok): when NCHUNKS > 1, WGMMA_N must be a multiple of
+64. Conservative -- it also applies to K-major where 96 would be legal -- because the picker
+lives in Config and is layout-agnostic. Compiles clean, 54 entry points unchanged.
+
+CONSEQUENCE -- 192x192 IS NOT BUILDABLE the way H27 assumed. For MN-major B:
+    n192 -> 1 chunk,  grid 3x1 = 3   ODD, cannot halve
+    n96  -> 2 chunks, grid 3x2 = 6   even BUT chunks land mid-atom  -> rejected
+    n64  -> 3 chunks, grid 3x3 = 9   ODD, cannot halve
+No legal even split exists. cuBLAS's own 192x192 uses n96, which works for it because that
+kernel's B is K-major. For our NN/TN (MN-major B) it is not available.
+=> 192x192 needs EITHER an uneven M split (the H18 machinery, which is written but unwired
+and would finally have a real use) OR a base_offset fixup. Both are future work; the
+static_assert now names the reason instead of failing obscurely.
+
+UNAFFECTED, still the right first targets:
+    192x128 -> n64, 2 chunks, boundary at col 64 = atom-aligned, N-split      OK
+    128x192 -> n192, 1 chunk, no N-chunking at all, M-split                    OK
+Both were verified by the same probe. This is the third time probing CuTe before writing
+address arithmetic has caught an error that hand-reasoning missed (cf. H22's four bugs).
