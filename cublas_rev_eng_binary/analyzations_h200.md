@@ -6725,3 +6725,196 @@ a known and cheap-ish route, and the H27b static_assert correctly refuses it mea
 DECISION: keep and finish the work-grid split. Validate it as a NO-CHANGE refactor on the three
 tiles we already ship (128x128, 128x256, 256x128 -- all even M-atoms, all must stay bit-exact
 and same TFLOPS). New tiles come later, in the tiled-variants phase, per the agreed order.
+
+### H27d coopA/coopB DECODED (supersedes the "we don't know" hedge in H27c)
+
+H27c said we could not claim our feature IS coopA/B. That hedge is now RESOLVED by evidence,
+not by assumption. Method: every (m-atom x n-chunk) block runs 184 HGMMA in the K-loop, so
+(HGMMA count / 184) = the number of blocks the SASS actually executes. Compared against the
+block grid derived from the tile (token is NxM, H23). All 18 distinct kernels:
+
+  kernel(cuBLAS)      ours      Matoms wgmmaN  grid  SASS-does   verdict
+  256x128 coopA       128x256      2    128      4       2       HALF -> split
+  128x256 coopA       256x128      4    128      4       2       HALF -> split
+  192x192 coopB       192x192      3     96      6       3       HALF -> split
+  192x128 coopB       128x192      2     64      6       3       HALF -> split
+  128x192 coopB       192x128      3     64      6       3       HALF -> split
+  320x128 coopB       128x320      2     64     10       5       HALF -> split
+  128x128 (no tag)    128x128      2    128      2       2       FULL -> no split
+  112/144/168/176x128 128xNN       2     NN      2       2       FULL -> no split
+  128x64  (no tag)    64x128       1     64      2       2       FULL -> no split
+  64x64   (no tag)    64x64        1     64      1       1       FULL -> no split
+
+CONCLUSIONS (18/18, no exceptions):
+  coop      = the 2 consumer warpgroups SPLIT one output tile's work grid (SASS = half).
+              This is exactly the feature we implemented. Our thing IS cooperative.
+  no tag    = ping-pong: each warpgroup computes a WHOLE tile independently (SASS = full).
+  coopA/B   = blocks-per-warpgroup EVEN (2) vs ODD (3,5). 6/6. It is a code-generator variant
+              tag for even/odd handling, not a different algorithm -- consistent with H23/H24's
+              finding that the two emit an identical opcode census.
+Tile area confirms the dispatch rule independently: every coop tile has area >= 24576, every
+no-tag tile <= 22528. Clean separation, no overlap.
+
+BONUS DECODE -- the "64xS" field is BK x PIPELINE STAGES, and S tracks smem inversely with
+tile size: 320x128->3, 256x128->4, 192x192->4, 192x128->5, 176x128->5, 128x128->6, 128x64->8,
+64x64->13. Directly useful for our LOAD_PIPE_DEPTH knob (currently auto). 64x64 at 13 stages
+= 16KB/stage * 13 = 208KB, just under H100/H200's 228KB smem -- consistent.
+
+### H27e CORRECTION to H27c's benefit count
+
+H27c listed ours-64x64 (4 uses) and ours-64x128 (4 uses) as "impossible without the N-split".
+WRONG. Both are ping-pong tiles in cuBLAS (no coop tag), and 64x64 has a 1-block grid which
+CANNOT be split between 2 warpgroups at all -- our picker correctly refuses it (no legal
+WGMMA_N -> static_assert). Those tiles need the PING-PONG schedule, a different feature.
+Corrected numbers:
+    cooperative schedule (what this feature implements) : 138/163 = 85% of cuBLAS's picks
+      of which STRICTLY need the N-split (odd M-atoms)  :  34/163 = 21%  (192x192 x33, 192x128 x1)
+    ping-pong tiles (need the other, unbuilt feature)   :  25/163
+The feature is still clearly worth keeping; the reason is corrected. Without it our catalogue
+is capped at BM in {128,256}, and BN is capped to values we have a single wgmma for.
+
+### H27f two gaps found by a per-tile derivation probe, both fixed
+
+Ran the picker over every candidate tile instead of hand-computing (scratchpad/derive.cpp).
+
+GAP 1 -- picker offered an instruction we do not have. BM=128,BN=192 picked WGMMA_N=192, but
+wgmma_m64nk16_bf16 only implements {64,96,128,256}; n192 exists in CUTLASS but was never
+transcribed here. Compile would have failed on the first 128x192 instantiation. FIX: removed
+the n192 line from the picker. That tile now falls through to n64 -> 3 chunks, grid 2x3=6,
+3 blocks/WG -- which is EXACTLY what cuBLAS's 192x128 kernel does (HGMMA.64x64x16, 552/184=3).
+
+GAP 2 -- a stale whitelist. static_assert(BN == 128 || BN == 256) predates the H27 derivation
+and would have rejected every new tile. Under the derivation BN no longer has to EQUAL a wgmma
+N shape, only to be tiled by one. Replaced with BN % 64 == 0 (the smem layout, C-store box and
+N-chunk offsets all assume whole 64-wide swizzle atoms). The real gates are now WGMMA_N != 0
+and the {64,96,128,256} assert inside wgmma_m64nk16_bf16.
+
+AGREEMENT WITH cuBLAS after the fix (our BMxBN -- derivation vs what its SASS actually does):
+    128x192  n64 x3, 3 blk/WG, M-split   cuBLAS 192x128 coopB  n64, 3 blk/WG   MATCH
+    192x128  n64 x2, 3 blk/WG, N-split   cuBLAS 128x192 coopB  n64, 3 blk/WG   MATCH
+    128x320  n64 x5, 5 blk/WG, M-split   cuBLAS 320x128 coopB  n64, 5 blk/WG   MATCH
+    256x128  n128x1, 2 blk/WG, M-split   cuBLAS 128x256 coopA  n128,2 blk/WG   MATCH
+    128x256  n256x1, 1 blk/WG, M-split   cuBLAS 256x128 coopA  n128,2 blk/WG   DIFFERS
+The one difference is benign: widest-first gives us a single n256, cuBLAS splits into 2x n128.
+Both are legal and ours already ships and validates, so it stays.
+
+PER-TILE STATUS (proven by the probe, not asserted):
+  BUILDABLE with this feature: 128x192, 192x128, 64x128, 128x320(*), plus today's 3 unchanged
+  REFUSED, needs swap-AB canonicalisation: 192x192
+  REFUSED, needs the PING-PONG schedule instead: 64x64, 128x112, 128x144, 128x176
+    -- 64x64 has a 1-block grid: it CANNOT be split between 2 warpgroups by any means, which
+       is why cuBLAS ships it untagged (= ping-pong). Refusing it is correct, not a limitation.
+    -- 112/144/176 need wgmma n112/n144/n176, which exist in HW but not in CUTLASS's list.
+  (*) 128x320 derives fine but BN=320's register demand still gates it behind setmaxnreg.
+
+NOTHING WAS DELETED OR DISABLED. nchunk_ok is a compile-time REFUSAL of one illegal
+(tile, WGMMA_N) pair; the swizzle feature itself is untouched, still fully templatized, still
+applies to every variant. Existing kernels rebuild clean at 54 entry points, unchanged.
+
+### H27g work-grid derivation MOVED to a layout-aware struct (removes a hardcoded atom width)
+
+The H27b constraint was implemented in the Config as `wn % 64 == 0`, with the comment
+"64 = SW128 atom width for bf16". That was a hardcode against our own rule: swizzle is a
+validated knob (SW128/64/32/INTER -> atoms of 64/32/16/8 bf16 elements), so baking one
+variant's atom width into a constraint is wrong even though it happens to be SAFE (64 is a
+multiple of 32 and 16, so anything passing really is aligned). It was needlessly STRICT: under
+SW64 the atom is 32, so WGMMA_N=96 is legal (96 % 32 == 0) and we were refusing it.
+
+Root cause was placement, not arithmetic: the derivation lived in Sm90WarpspecConfig, which
+cannot see the layout, and the alignment rule depends on WHICH operand is MN-major and WHICH
+swizzle was picked. Both are known only in Sm90SmemLayout<Config, Layout> (A_IS_MN / B_IS_MN /
+A_SWIZZLE / B_SWIZZLE, derived via sw_pick).
+
+FIX: new Sm90WorkGrid<Config, Layout>, placed after Sm90SmemLayout, owning WGMMA_N, NCHUNKS,
+WORK_BLOCKS, BLOCKS_PER_WG, SPLIT_M, WG_MATOMS, WG_NCHUNKS. The grain is now derived:
+    static constexpr int N_GRAIN = SmemL::B_IS_MN ? sw_atom_elems(SmemL::B_SWIZZLE) : 1;
+    nchunk_ok(bn,wn) = (bn/wn) == 1 || (wn % N_GRAIN == 0);
+K-major B gets grain 1 (unconstrained -- the probe showed its n96 offset is exactly naive);
+MN-major B gets its real atom width. Only B is checked: the M split always lands on 64-row
+wgmma atoms and every swizzle's atom width divides 64, so M is aligned by construction.
+Config keeps only MATOMS and exposes WGMMA_N_OVERRIDE so the explicit knob still wins.
+Aliased as WGrid in launch_bgemm_sm90 with a live static_assert, because an uninstantiated
+template's asserts never fire. All three layouts rebuild clean (54/51/51 entry points).
+
+### H27h BN's real constraints, and a LATENT RUNTIME BUG the placeholder was hiding
+
+Asked whether the leftover `BN % 64 == 0` would bite future expansion. It would, both ways --
+and this was found by auditing the epilogue, not by reasoning about it.
+
+TOO STRICT: three tiles already on the roadmap violate it -- the ping-pong tiles 128x112,
+128x144, 128x176 (BN = 112, 144, 176). All three are perfectly storable.
+
+TOO LOOSE, and this is the real find: it ADMITS BN=320. init_2d_tma_C_sm90 passes
+boxCols = BN directly to cuTensorMapEncodeTiled (line ~1955, "64u, (uint32_t)BN"), and the
+CUDA Driver API documents every boxDim as "non-zero and less than or equal to 256". A BN=320
+tile would therefore have compiled fine and then failed at DESCRIPTOR CREATION at runtime.
+Under the old assert we would have met that as a CUDA error during the 320 bring-up and had
+to debug it; it is now a compile-time refusal that names the fix.
+
+Swizzle turns out to be irrelevant to C entirely: init_2d_tma_C_sm90 declares
+CU_TENSOR_MAP_SWIZZLE_NONE (deliberately -- the epilogue writes that smem plain row-major),
+so there is no atom-width rule on the C path at all. The two REAL constraints are:
+  (1) BN % 2 == 0  -- the epilogue writes a __nv_bfloat162 (4 bytes) at element offset
+      row*BN + col; wgmma_frag_rowcol always returns an even col, so 4-byte alignment holds
+      iff row*BN is even for all rows, i.e. iff BN is even.
+  (2) BN <= 256    -- the C TMA boxDim cap above.
+Both are now asserted with those reasons in the message. Net effect: 112/144/176 unblocked,
+320 correctly refused at compile time with the actual remedy named (split the C store into
+<= 256-column chunks, each with its own descriptor -- an epilogue change, not an assert tweak).
+
+This supersedes H27f's claim that "the smem layout, the C-store box and the N-chunk offsets
+all assume 64-wide atoms". The smem layout derives its own atoms, C uses no swizzle, and the
+N-chunk rule is now H27g's N_GRAIN. That sentence was a guess and it was wrong.
+
+### H27i PERMANENT FIX for BN>256: chunked C-store (deep research done first, per Q's request)
+
+Q pushed back hard on H27h's `BN <= 256` refusal ("why remove the bandage instead of fixing
+it"), and asked for the authoritative source, the overhead/precision answer, and whether it
+needs code changes -- BEFORE any testing. Answered in that order, no guessing.
+
+SOURCE: /usr/local/cuda-12.8/include/cuda.h:23807-23809 (cuTensorMapEncodeTiled docs), read
+directly, not from memory or a doc site:
+  "boxDim array ... must be non-zero and less than or equal to 256."
+  "When interleave is CU_TENSOR_MAP_INTERLEAVE_NONE, { boxDim[0] * elementSizeInBytes
+   (tensorDataType) } must be a multiple of 16 bytes."
+For bf16 (2B) rule 2 means boxDim[0] % 8 == 0. This ALSO caught that H27h's own
+`BN % 2 == 0` assert (reasoned only from the epilogue's 4B store) was too weak -- BN=100
+would have passed it and failed inside cuTensorMapEncodeTiled at runtime. Replaced with
+`BN % 8 == 0`, sourced to the header line number, not inferred.
+
+PERMANENT FIX: split the C store into C_NCHUNK column chunks of C_BOX_N <= 256 (each its own
+TMA descriptor box + its own store), with the epilogue smem laid out CHUNK-MAJOR
+([C_NCHUNK][BM][C_BOX_N]) instead of plain [BM][BN] -- a column slice of a row-major buffer
+isn't contiguous, which is why this needed a real layout change, not just a loop around the
+old store.
+    C_BOX_N = largest divisor of BN that is <= 256 and % 8 == 0 (derived, with an
+              _C_BOX_N override knob for forcing a specific chunk width, same policy as
+              WGMMA_N/SWIZZLE_BYTES). For every BN <= 256 this yields C_BOX_N == BN,
+              C_NCHUNK == 1 -- every new expression collapses to exactly the old single-chunk
+              code (ch=0, cic=col) for all tiles shipping today.
+    col is always even (wgmma_frag_rowcol) and C_BOX_N % 8 == 0, so the bf162 packed pair
+    (col, col+1) can never straddle a chunk boundary -- no split-store case to handle.
+
+OVERHEAD/PRECISION -- MEASURED, not asserted. Compiled the NT variants file at HEAD (old
+single-chunk epilogue) and at the new commit, same nvcc flags, and diffed the full SASS
+instruction stream (54 kernels, ~103K instructions each):
+    HGMMA (the math)         304 -> 304   SAME
+    STS (epilogue writes)   5824 -> 5824  SAME
+    BAR / ELECT (sync)    477/868 -> 477/868  SAME
+    LDL / STL (spills)        8/3 -> 3/1  FEWER
+    total instructions    102904 -> 102888  -16 (net FEWER)
+So: zero precision effect (no FP instruction changed at all), zero runtime overhead for every
+tile shipping today (if anything, marginally fewer integer address + spill instructions --
+benign scheduling from the address-expression change, not a functional difference). SASS was
+NOT byte-identical (register numbers/order shuffled), which corrected an earlier over-claim
+that the refactor would be byte-identical; the invariant that actually matters (compute/
+memory-traffic/sync counts) held exactly.
+
+MADE TESTABLE, not left dead: added Sm90Config_128x256x64_cbox128 (forces C_BOX_N=128 on the
+existing BN=256 tile, so C_NCHUNK=2 actually executes) as a bisection twin -- same method as
+§H13.4's multicast-OFF twins. New entry point
+blublasBgemmSM90_bf16_nt_128x256x64_cbox128_template, declared in Bgemm_sm90_bf16.cuh, and 6
+cases added to examples/test_bgemm_sm90_bf16.cu mirroring the plain 128x256x64 matrix
+(beta0/1, K=256, batch=2, square-2048, llm-qkv) so a mismatch pinpoints the C-store change,
+not the tile. Compiles clean (NT 55 entry points, up from 54; test file links clean).
+This is what actually needs H200 validation next -- not yet run there.
