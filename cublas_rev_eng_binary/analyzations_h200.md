@@ -7186,3 +7186,46 @@ every one of those BM/BN values divides 64 evenly. But the REMAINING ping-pong c
 (112,144,168,176-wide) do NOT: sw_pick(112)=32, sw_pick(144)=32, sw_pick(168)=16(INTER, no
 swizzle), sw_pick(176)=32. The SW64/SW32/INTER paths are not dead weight -- they will get
 real, meaningful exercise once the ping-pong tiles are built, not before.
+
+### H27q setmaxnreg deadlock question RESOLVED against the authoritative PTX ISA spec
+
+Dispatched research against docs.nvidia.com/cuda/parallel-thread-execution (setmaxnreg,
+Miscellaneous Instructions section) and CUTLASS issue #2007 directly, per Q's explicit
+demand for solid proof over internal reasoning. Result CORRECTS a casual "no deadlock"
+claim made earlier in this same conversation, before the research had returned.
+
+QUOTE, PTX ISA spec: "A pool of available registers is maintained per-CTA... The
+setmaxnreg.inc instruction blocks execution until enough registers are available in the
+CTA's register pool." If the CTA-wide register math never balances (a consumer's .inc
+requests more than a producer's .dec ever actually released back to the pool), .inc BLOCKS
+FOREVER. This is a real, documented hang -- not silent-ignore, not abstract UB.
+
+CONFIRMED IN THE WILD: CUTLASS issue #2007 (the same one already cited in memory) --
+__launch_bounds__(384,1) forced a 168-register ceiling, the consumer still requested
+warpgroup_reg_alloc<232>(), and the kernel HUNG at that call. Fixed by matching the request
+to the actual launch-bounds ceiling (168). An independent NVIDIA forums thread reports the
+identical symptom, with an NVIDIA engineer (Robert Crovella) confirming the failure class
+exists under Hopper launch_bounds + setmaxnreg combinations.
+
+Also documented (not previously distinguished from the hang case): setmaxnreg additionally
+requires (a) ALL warps of a warpgroup execute the SAME instruction together (else UB), (b)
+imm-reg-count in [24,256] and a multiple of 8, (c) .dec requires current-count >= target,
+.inc requires current-count <= target (else UB), (d) the kernel must already have an
+explicit max-registers-per-thread setting (e.g. our existing __launch_bounds__) or the
+instruction "may have no effect" -- this LAST case (missing launch_bounds -> no-op) is the
+ONLY documented no-op scenario, and it does not apply to us (we already set launch_bounds).
+
+RECONCILING WITH OUR OWN EARLIER "dead code, no difference" FINDING (H2.7/H2.8): that
+result describes ONE specific past test, not a general safety guarantee. The general,
+authoritative rule is: mismatched setmaxnreg math is NOT safely ignored in general -- it can
+genuinely hang, confirmed by NVIDIA's own spec and a reported CUTLASS bug with the identical
+symptom. Our earlier "no effect" observation was, at best, specific to whatever exact
+(mismatched) values we tried then; it must NOT be generalized into "misuse is always benign."
+
+PRACTICAL RULE GOING FORWARD: setmaxnreg is not to be added to 128x320 or 192x192 (or
+anywhere) without first proving PRODUCER_DEALLOC + NUM_CONSUMERS*CONSUMER_ALLOC == 
+TOTAL_WARPGROUPS * (the exact ceiling __launch_bounds__ imposes, i.e. 65536/NUM_THREADS
+rounded down -- 170 for our 384-thread/1-CTA-per-SM config) EXACTLY, at compile time via a
+static_assert, before it is ever run on hardware -- and the first H200 run of any such change
+must be done in a way that can be killed/timed-out, not run blind, given the confirmed hang
+risk.
