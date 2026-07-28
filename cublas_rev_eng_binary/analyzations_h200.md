@@ -6680,3 +6680,48 @@ UNAFFECTED, still the right first targets:
     128x192 -> n192, 1 chunk, no N-chunking at all, M-split                    OK
 Both were verified by the same probe. This is the third time probing CuTe before writing
 address arithmetic has caught an error that hand-reasoning missed (cf. H22's four bugs).
+
+### H27c IS THE WORK-GRID SPLIT WORTH KEEPING? -- measured against the captured sweep
+
+Q asked: this feature does not enable 192x192, so does it buy anything at all? Answered from
+the 163 captured cuBLAS kernel names (sweep_results_cublas/sass/*.kernelname.txt), no new runs.
+
+FIRST, A NAMING CORRECTION. What we implemented is NOT "coopA/B". coopA/coopB is only cuBLAS's
+label for whether blocks-per-warpgroup came out even or odd (H23/H24 proved the two emit
+identical SASS). What we implemented is the underlying thing: derive WGMMA_N, build the
+(M/64)x(BN/WGMMA_N) work grid, halve it between the 2 consumers. Keep the feature, drop the
+name.
+
+BENEFIT, MEASURED. Tile token is NxM (H23), so converting to our BMxBN and taking M-atom parity:
+    ours 192x192   33 uses   M-atoms 3  ODD  -> impossible without the N-split
+    ours 64x64      4 uses   M-atoms 1  ODD  -> impossible without the N-split
+    ours 64x128     4 uses   M-atoms 1  ODD  -> impossible without the N-split
+    ours 192x128    1 use    M-atoms 3  ODD  -> impossible without the N-split
+    ------------------------------------------------------------------
+    42 / 163 = 26% of cuBLAS's real Qwen tile picks need this feature to exist at all.
+Without it our tile catalogue is permanently capped at BM in {128, 256}. So: KEEP IT.
+It costs nothing at runtime (H27: register allocation byte-identical) and reduces to today's
+behaviour on every tile we currently ship.
+
+SECOND FINDING -- WHY cuBLAS NEVER HITS THE H27b MID-ATOM TRAP.
+Every one of the 163 kernels ends in _TNT or _TNN. The first two letters are TN in 100% of
+cases, even though the sweep genuinely varied opA/opB across NN/NT/TN
+(test_qwen_cublas_catalog_by_pass.cu:82-84 sets opB=T iff isNT, opA=T iff isTN). Only the
+THIRD letter varies (T vs N, not decoded, and not needed here).
+=> cuBLAS does not implement per-layout kernels. It CANONICALISES every user layout into one
+TN core (A^T * B, i.e. both operands K-major in its column-major convention) and absorbs the
+difference elsewhere -- swapping A/B and/or transposing the output, which is what the varying
+third letter most likely encodes.
+That is why cuBLAS's 192x192 can use wgmmaN=96: its B is ALWAYS K-major, and H27b's probe
+showed K-major at n96 is correct (6144 = naive). cuBLAS has not solved the mid-atom problem;
+it has arranged never to face it.
+
+CONSEQUENCE FOR OUR 192x192. The route is NOT a base_offset swizzle-phase fixup. It is the
+same canonicalisation cuBLAS uses -- swap A/B so the MN-major operand becomes the K-major one
+(the "swap-AB" idea already noted for SM103 1x2). That is a separate, larger piece of work at
+the dispatch/setup layer, not a change to this kernel. 192x192 therefore stays deferred, with
+a known and cheap-ish route, and the H27b static_assert correctly refuses it meanwhile.
+
+DECISION: keep and finish the work-grid split. Validate it as a NO-CHANGE refactor on the three
+tiles we already ship (128x128, 128x256, 256x128 -- all even M-atoms, all must stay bit-exact
+and same TFLOPS). New tiles come later, in the tiled-variants phase, per the agreed order.
