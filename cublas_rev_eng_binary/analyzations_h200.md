@@ -7243,3 +7243,30 @@ by direct enumeration, not algebra. (Algebraic reason, confirmed rather than jus
 col is always even because the real loop only calls wgmma_frag_rowcol with even r; C_BOX_N is
 always a multiple of 8 hence even; an even 2-wide pair can only straddle an even boundary via
 an odd starting column, which cannot occur.) Proceeding to implement on this basis.
+
+### H27s 192x192 and 128x320 implemented as real entry points (NT only), ready for H200
+
+Wired both as full extern "C" entry points (blublasBgemmSM90_bf16_nt_192x192x64_template,
+blublasBgemmSM90_bf16_nt_128x320x64_template), declared in Bgemm_sm90_bf16.cuh, same pattern
+as 128x192/192x128. NN/TN deliberately excluded (need swap-AB, separate dispatch-layer work).
+No setmaxnreg (H27p/H27q: correct without it, real but modest perf gap from spilling; adding
+it needs a compile-time-proven register-balance equality first, given the confirmed PTX-ISA
+hang risk of an unbalanced request -- not a precondition for correctness).
+
+Compiled clean: NT 59 entry points (was 57). SASS structural check against the hand-derived
+block math (as done for 128x192/192x128 before their H200 run):
+    192x192 -> 12x HGMMA.64x96x16   (WG_MATOMS(3) * WG_NCHUNKS(1) * K_STEPS(4) = 12, matches)
+    128x320 -> 20x HGMMA.64x64x16   (WG_MATOMS(1) * WG_NCHUNKS(5) * K_STEPS(4) = 20, matches)
+Both exact matches, no discrepancy.
+
+16 new test cases added (8 per tile): beta0/1, K=512, multi-tile, batch2, residue (N%8==0
+verified across the WHOLE file again, all clean), a square-2048 stress case, and an LLM-
+derived shape (128x320's is 4096x5120x4096, since 320 is cuBLAS's single highest-usage real
+tile and deserves a properly-sized realistic case, not just small synthetic ones).
+
+NOT YET DONE: an H200 run. Given Q's explicit concern about reproducibility -- one green run
+is not proof against an intermittent race, especially for 128x320 which is the first tile to
+combine the multi-N-chunk compute path (5 chunks) with the multi-chunk C-store path (2
+chunks) simultaneously, at the highest chunk-count of anything tested so far -- the plan is
+to run the FULL test suite MULTIPLE TIMES (not once), specifically to build confidence that
+any pass is not luck.
