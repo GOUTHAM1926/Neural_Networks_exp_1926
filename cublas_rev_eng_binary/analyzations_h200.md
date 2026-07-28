@@ -6171,3 +6171,479 @@ the same number 64. They would have surfaced as silently wrong numbers the first
 narrow tile was added, with nothing pointing at swizzle. Building probes for a path nothing
 currently uses is what made them visible, and tools/sm90_probes/swizzle_offset_check.cu now
 catches the whole class mechanically, locally, in seconds.
+
+### H23 coopA/coopB SOLVED from real H200 SASS -- and it invalidates the H18 plan
+
+Source: sweep_results_cublas/sass/ (327 per-shape SASS dumps already captured from the H200;
+no new run needed, and the local CUDA installs contain NO nvjet_sm90 kernels at all -- 0 hits
+from strings on libcublasLt 12.8 and 13.0 -- since this box is sm_86).
+
+MEASURED, one wgmma shape per kernel, with static HGMMA counts:
+    tile        sched  wgmmaN   count
+    256x128     coopA    128      368
+    128x256     coopA    128      368
+    192x192     coopB     96      552
+    192x128     coopB     64      552
+    128x192     coopB     64      552
+    320x128     coopB     64      920
+
+THE MODEL, and it is exact for all six (calibrated on ONE kernel, predicts the other five):
+    HGMMA count  proportional to  (BM/64) x (BN/wgmmaN)      [= number of 64 x wgmmaN blocks]
+    4 blocks -> 368,  6 -> 552,  10 -> 920.
+Two facts fall out, both PROVEN rather than inferred:
+ 1. The tile token is M x N (first number is BM). BM/64 is what makes the arithmetic close;
+    reversing the order breaks every prediction. This also retires the earlier open question
+    about whether the first number was really BM.
+ 2. The block count is EVEN in every case, i.e. the two consumer warpgroups always take
+    exactly half each. cuBLAS never splits work unevenly.
+
+=> WHAT coopA/coopB ACTUALLY IS:
+    coopA: BM/64 is EVEN (256->4, 128->2). Splitting by M alone already balances the two
+           warpgroups, so wgmmaN stays large (full BN, or BN/2).
+    coopB: BM/64 is ODD (192->3, 320->5). An M-only split cannot balance. cuBLAS SHRINKS
+           wgmmaN to double the block count and restore an even split.
+    Outlier: 128x192 has BM/64 = 2 (even) yet is tagged coopB. 5 of 6 fit exactly; this one
+    is NOT explained. Recording it rather than papering over it.
+
+THIS INVALIDATES THE H18 IMPLEMENTATION PLAN. H18 assumed coopB meant an UNEVEN warpgroup
+split (192 -> 2+1 atoms, 320 -> 3+2) and that code is written (Config ATOMS_WG0/ATOMS_WG1,
+per-atom C store) though never wired into the grid. cuBLAS does the opposite: it keeps the
+split perfectly EVEN and subdivides N instead. The correct design is therefore:
+   1. add wgmma N variants n64 and n96 (we implement only n128/n256), transcribed from
+      CUTLASS mma_sm90_gmma.hpp -- NOT hand-derived, same rule as the existing shapes;
+   2. distribute the (BM/64) x (BN/wgmmaN) block grid evenly across the two warpgroups
+      (a 2D split), instead of splitting the M-atoms unevenly.
+This is both simpler and vendor-matching. The H18 uneven-split machinery should NOT be wired
+in; keep it only if a future tile genuinely cannot be balanced by shrinking wgmmaN.
+NOTE the uneven-split work was not wasted in one respect: the per-ATOM C-store box (64 rows)
+it forced is correct and needed either way.
+
+### H23b PROVEN from SASS register allocation -- the exact warpgroup work split
+
+Method: for each coop kernel, count the DISTINCT accumulator base registers of its HGMMA
+instructions. Each base is one accumulator block held in registers by a warpgroup, and the
+spacing between bases must equal CREGS = wgmmaN/2 (fp32 accumulators, 2 per thread per
+column-pair). Both are directly observable and cannot be argued with.
+
+  tile      sched  wgmmaN  acc bases            blocks/WG  spacing  CREGS=wN/2
+  256x128   coopA    128   R24 R88                  2         64        64  MATCH
+  128x256   coopA    128   R24 R88                  2         64        64  MATCH
+  192x192   coopB     96   R24 R72 R120             3         48        48  MATCH
+  192x128   coopB     64   R24 R56 R88              3         32        32  MATCH
+  128x192   coopB     64   R24 R56 R88              3         32        32  MATCH
+  320x128   coopB     64   R24 R56 R88 R120 R152    5         32        32  MATCH
+
+blocks/WG equals HALF of (BM/64)x(BN/wgmmaN) in all six -> both warpgroups always take
+exactly half the block grid. Combined with H23's instruction-count model (same six, exact),
+the work decomposition is now established twice over by independent observables.
+
+THE SPLIT AXIS IS FORCED BY ARITHMETIC, not chosen:
+  320x128: 5 blocks/WG out of a 5x2 grid. The only factorisation is 5 M-atoms x 1 N-chunk
+           -> N-SPLIT (each warpgroup owns ALL M-atoms for its half of N).
+  192x192 / 192x128: 3 out of 3x2 -> 3 M x 1 N -> N-SPLIT.
+  128x192: 3 out of 2x3. 2 does not divide 3, so it CANNOT be N-split; the only
+           factorisation is 1 M-atom x 3 N-chunks -> M-SPLIT.
+  256x128: 2 out of 4x1 -> 2 M x 1 N -> M-SPLIT.
+  128x256: 2 out of 2x2 -> 1 M x 2 N -> M-SPLIT.
+
+=> THE ACTUAL RULE (fits all six):
+      choose wgmmaN so that (BM/64) x (BN/wgmmaN) is EVEN;
+      split along M when BM/64 is EVEN, along N when BM/64 is ODD.
+This RESOLVES the 128x192 outlier flagged in H23: it is M-split (BM/64 = 2, even), which is
+exactly why it did not fit the earlier "coopB == odd M" reading. The coopA/coopB LABEL does
+not map cleanly onto the split axis (128x192 is M-split yet labelled coopB), so we stop
+trying to reverse-engineer the label. The label is cuBLAS-internal naming; the STRUCTURE is
+what we implement, and the structure is fully determined.
+
+EXTERNAL SEARCH OUTCOME (recorded so nobody repeats it): there is NO official NVIDIA
+documentation of nvjet kernel naming. nvjet kernels are JIT-generated and replaced the old
+sm90_xmma_gemm / cutlass::Kernel kernels in CUDA 12.8, which also explains why `strings` finds
+ZERO nvjet_sm90 names in the local libcublasLt (12.8 and 13.0) -- this box is sm_86. The only
+third-party decode found claims the NxN token is "warp tiling", which CONTRADICTS our own
+verified finding that it is the CLUSTER shape (we implemented 1x2/2x1 clusters, matched the
+multicast behaviour and ~90% of cuBLAS throughput). Unattributed blog < our SASS. Do not cite it.
+
+NO OPEN-SOURCE REFERENCE EXISTS for this split. CUTLASS's SM90 cooperative builder hardcodes
+AtomLayoutMNK = Shape<_2,_1,_1> (2 warpgroups along M, so TileShape_M must be a multiple of
+128) -- which is precisely why CUTLASS contains NO 192 or 320 M tiles at all. DeepGEMM's
+sm90 GEMM uses a SINGLE math warpgroup (kNumMathThreads == 128). So cuBLAS is doing something
+neither library does, and we are implementing from first principles + SASS, not porting.
+CuTe itself permits it: make_tiled_mma only requires rank-3 AtomLayoutMNK, so N-tiled
+warpgroups (Shape<_1,_2,_1>) are legal, just never selected by the SM90 builder.
+
+IMPLEMENTATION SPEC (now fully determined, nothing left to assume):
+ 1. wgmma N variants needed: n64 and n96 (we have n128/n256). CUTLASS implements bf16
+    m64nNk16 for N in {8,16,32,64,96,128,192,256}, so both exist -- transcribe the PTX from
+    cute/arch/mma_sm90_gmma.hpp, do NOT hand-derive.
+ 2. Pick wgmmaN per tile such that (BM/64)*(BN/wgmmaN) is even.
+ 3. Warpgroup w owns half the grid: M-split if BM/64 even, N-split if odd.
+ 4. N-split changes the consumer's B addressing (each WG reads its own N half) and the
+    epilogue's C column range; M-split is what we already do.
+ 5. acc[] sizing = blocks_per_wg x (wgmmaN/2) registers -- matches the observed 144 regs for
+    192x192 (3x48) and 160 for 320x128 (5x32).
+
+### H23c CORRECTION -- the tile token is N x M, not M x N. H23's claim was WRONG.
+
+Prompted by the right question: compare NON-COOP kernels against coop ones. The non-coop
+kernels break a tie the coop kernels cannot, because their wgmma N EXCEEDS the second number:
+    144x128  wgmmaN=144   176x128  wgmmaN=176   168x128  wgmmaN=168   112x128  wgmmaN=112
+A wgmma instruction produces 64 x N of output, so N can never exceed BN. Reading these as
+M x N is therefore IMPOSSIBLE (n144 with BN=128). Reading them as N x M works exactly:
+N=144, M=128 -> M-atoms 2, N-chunks 1, grid 2 == the 2 accumulator bases measured. Same for
+168/176/112.
+
+Why H23 got it backwards: the coop kernels are AMBIGUOUS. The block count is
+BM*BN/(64*wgmmaN), which is symmetric in the two numbers, so instruction counts alone cannot
+distinguish the ordering. Only a kernel where wgmmaN does NOT divide the second number
+breaks the symmetry -- and every such kernel is non-coop. Comparing coop vs non-coop is what
+settled it.
+
+EVERYTHING RE-DERIVED UNDER N x M (M-atoms = M/64, N-chunks = N/wgmmaN):
+  token     ->  N     M    Mat  Nch  grid  blocks/WG  forced split      label
+  256x128   ->  256  128    2    2     4       2      ambiguous         coopA
+  128x256   ->  128  256    4    1     4       2      2M x 1N  = M      coopA
+  192x128   ->  192  128    2    3     6       3      1M x 3N  = M      coopB
+  320x128   ->  320  128    2    5    10       5      1M x 5N  = M      coopB
+  192x192   ->  192  192    3    2     6       3      3M x 1N  = N      coopB
+  128x192   ->  128  192    3    2     6       3      3M x 1N  = N      coopB
+  (non-coop) 144x128 -> N=144 M=128, Mat 2, Nch 1, grid 2, blocks/WG 2 == grid -> ONE
+  consumer warpgroup owns the whole tile. Same for 112x128/168x128/176x128/128x64; 64x64 -> 1.
+
+TWO CLEAN RULES, both 6/6 with NO outlier:
+  (a) SPLIT AXIS: split M when M-atoms is EVEN, split N when ODD. Forced by which
+      factorisation of blocks/WG is an integer -- not a preference.
+  (b) THE LABEL: coopA <=> blocks/WG is EVEN (2,2);  coopB <=> blocks/WG is ODD (3,5,3,3).
+      The 128x192 outlier flagged in H23/H23b DISAPPEARS -- it was purely an artifact of the
+      reversed tile ordering. Every kernel now fits.
+And non-coop <=> blocks/WG equals the WHOLE grid, i.e. a single consumer warpgroup owns the
+tile. That matches the documented meaning of "cooperative" (PyTorch/CUTLASS: cooperative =
+both warpgroups share one C output tile; ping-pong = each warpgroup has its own tile).
+
+PRACTICAL CONSEQUENCE -- this changes WHICH TILES WE BUILD. In our naming (BM x BN):
+    cuBLAS 320x128  ==  our BM=128, BN=320
+    cuBLAS 192x128  ==  our BM=128, BN=192
+    cuBLAS 256x128  ==  our BM=128, BN=256   (which we ALREADY have)
+    cuBLAS 128x256  ==  our BM=256, BN=128   (which we ALREADY have)
+    cuBLAS 192x192  ==  our BM=192, BN=192
+    cuBLAS 128x192  ==  our BM=192, BN=128
+So the two tiles we already ship ARE cuBLAS's two coopA tiles, and the missing work is
+large-BN tiles (BN = 192/320) plus BM=192, NOT the large-BM tiles H18 assumed. The H18
+uneven-M-split plan was aimed at the wrong axis twice over.
+
+METHOD NOTE: instruction counts alone were not sufficient here and led to a confident wrong
+answer. The register-allocation evidence (H23b) plus the non-coop comparison is what pinned
+it. When a model is symmetric in two unknowns, look for the case that breaks the symmetry.
+
+### H23d COMPLETE MODEL -- verified on EVERY kernel using SASS + ncu together
+
+Two corrections to H23c, both from ncu data we already had (sweep_results_cublas/ncu_csv):
+
+CORRECTION 1: Block Size is (384,1,1) for EVERY kernel -- coop AND non-coop. So all of them
+run 3 warpgroups = 1 producer + 2 consumers. My H23c inference that non-coop meant a SINGLE
+consumer warpgroup was WRONG.
+
+CORRECTION 2: that makes the no-suffix family PING-PONG, not "no cooperation". It matches the
+documented distinction exactly (PyTorch/CUTLASS): ping-pong = each consumer owns its OWN C
+tile; cooperative = both consumers share ONE C tile. So blocks/WG = the FULL grid for
+ping-pong, and grid/2 for cooperative -- which is precisely what the registers show.
+
+VERIFIED ON EVERY KERNEL (acc-base count = blocks/WG, spacing = CREGS = wgmmaN/2):
+  family      token     N     M   Mat  Nch  grid  blocks/WG  spacing  wgmmaN/2
+  pingpong    176x128  176  128    2    1     2       2         88       88
+  pingpong    144x128  144  128    2    1     2       2         72       72
+  pingpong    112x128  112  128    2    1     2       2         56       56
+  pingpong    128x64   128   64    1    2     2       2         32       32
+  pingpong     64x64    64   64    1    1     1       1          -       32
+  coop        256x128  256  128    2    2     4       2         64       64
+  coop        192x192  192  192    3    2     6       3         48       48
+  coop        320x128  320  128    2    5    10       5         32       32
+8/8 on the register spacing, and the blocks/WG rule holds for BOTH families. No outliers.
+
+THE COMPLETE DECODED MODEL:
+  * every kernel: 384 threads = 1 producer warpgroup + 2 consumer warpgroups
+  * tile token = N x M  (NOT M x N)
+  * wgmma = m64 x wgmmaN x k16;  CREGS = wgmmaN/2 accumulator regs per thread per block
+  * work grid = (M/64) M-atoms  x  (N/wgmmaN) N-chunks
+  * NO SUFFIX      -> PING-PONG   : each consumer owns a whole tile, blocks/WG = grid
+  * coopA / coopB  -> COOPERATIVE : consumers share one tile,       blocks/WG = grid/2
+  * coopA <=> blocks/WG EVEN (2,2);  coopB <=> blocks/WG ODD (3,5,3,3)
+  * split axis when cooperative: M when M-atoms even, N when odd (forced by factorisation)
+
+WHY N x M IS SETTLED (three independent lines, the first decisive on its own):
+ 1. LOGICAL: nvjet_sm90_tst_176x128_64x5_1x2_h_bz_TNN issues HGMMA.64x176x16 as its ONLY
+    wgmma opcode (verified verbatim). A wgmma writes 64 x N of output, so N cannot exceed
+    BN. Reading 176 as BM would need BM/64 = 2.75 atoms -- not an integer -- AND would write
+    176 columns into a 128-column tile. Both impossible. So 176 is N.
+ 2. STATISTICAL: over 163 profiled cases, corr(log N, first) = +0.47 vs corr(log M, first) =
+    +0.22; corr(log M, second) = +0.40 vs corr(log N, second) = +0.25.
+ 3. DIVISIBILITY / USAGE: 76.7% exact divisions under N x M vs 65.0% under M x N; and
+    112x128 is used almost only on N=896 shapes, where 896/112 = 8 exactly.
+NOTE the grids are all (2,66,1) = 132 CTAs = the SM count, i.e. these are PERSISTENT
+kernels, so grid dimensions CANNOT be used to infer the tile -- that route is closed.
+
+BONUS: this identifies PING-PONG for free. It is not a missing feature to research from
+scratch -- it is the no-suffix family already in our catalog, and we now know exactly how it
+differs (each consumer warpgroup takes a whole output tile instead of half of one).
+
+IN OUR NAMING (BM x BN) the cuBLAS catalog is:
+  cooperative: 128x256 (have), 256x128 (have), 128x320, 128x192, 192x192, 192x128
+  ping-pong  : 128x176, 128x144, 128x112, 64x128, 64x64
+So both tiles we already ship are cuBLAS's two coopA tiles, and every missing cooperative
+tile needs either BN in {192,320} or BM=192.
+
+### H24 PING-PONG vs COOPERATIVE -- cross-verified against official docs AND our own data
+
+OFFICIAL SOURCE (CUTLASS docs, docs.nvidia.com/cutlass efficient_gemm.html), verbatim:
+  Cooperative: "Presence of two consumer warp groups cooperating on the same output tile by
+               splitting the tile in half across the M dimension." ... "This allows for
+               larger tile sizes to be enabled - since the register pressure per consumer
+               warp group is reduced."
+  Ping-Pong  : "The two consumer warp groups are assigned a different output tile using the
+               Tile Scheduler." ... "This allows for epilogue of one consumer warp group to
+               be overlapped with the math operations of the other consumer warp group."
+The PyTorch deep-dive adds: 1 producer + 2 consumer warpgroups; producer does TMA. It does
+NOT state tile-M constraints or which shapes suit which -- flagged as not covered.
+NOTE the CUTLASS GitHub issue #2181 asking exactly "why both schedules?" is UNANSWERED (no
+maintainer reply), so there is no vendor guidance beyond the doc text above.
+
+OUR MEASUREMENT CONFIRMS ALL OF IT, and quantifies what the docs only assert:
+ * ncu: Block Size = (384,1,1) on EVERY kernel = 1 producer + 2 consumer warpgroups. Matches
+   the documented structure exactly.
+ * THE KEY RELATION, exact on 12/12 kernels:  max register used = (blocks/WG * wgmmaN/2) + 26
+       pingpong    64x64 32->57   128x64 64->90   112x128 112->138  144x128 144->170
+                   168x128 168->194   176x128 176->202
+       cooperative 128x192 96->122  192x128 96->122  256x128 128->154  128x256 128->154
+                   192x192 144->170  320x128 160->186
+   One relation validates the WHOLE model simultaneously -- blocks/WG, CREGS = wgmmaN/2, the
+   N x M tile reading, and the pingpong/cooperative distinction. If any were wrong the +26
+   could not hold across 12 kernels of both families.
+
+QUANTIFIED BENEFIT/LOSS (the docs assert this; these are OUR numbers):
+                       biggest tile   area     acc regs/thread   total regs
+      ping-pong        176x128       22528          176             202
+      cooperative      320x128       40960          160             186
+   Cooperative buys 1.8x the tile area for FEWER registers, because two consumers share one
+   tile. Ping-pong tops out at 176x128 because a single consumer holding a WHOLE tile hits
+   the register wall (202 of the 255 hardware max).
+   Tile areas are CLEANLY SEPARATED with zero overlap: cuBLAS uses cooperative for every
+   tile >= 24576 and ping-pong for every tile <= 22528. That is the dispatch rule, measured.
+      gain  pingpong    : epilogue/math overlap between the two consumers -> tensor-core util
+      cost  pingpong    : register-limited to small tiles
+      gain  cooperative : half the register pressure -> ~1.8x larger tiles
+      cost  cooperative : no inter-consumer epilogue overlap
+
+TWO CORRECTIONS TO MY OWN EARLIER CLAIMS IN THIS SECTION:
+ 1. I claimed launch__registers_per_thread=168 contradicted the pingpong model (176 acc regs
+    > 168). WRONG -- the SASS references R202, so 168 is not the max (it is an average across
+    warpgroups; producers use far fewer). The contradiction was my misreading of the metric.
+ 2. I predicted ping-pong would show extra named barriers for its MMA/epilogue alternation.
+    It does NOT -- all kernels have identical barrier structure (46 BAR.SYNC, same BAR.LE /
+    BAR.SYNC ops, no BAR.ARV). So the alternation is NOT observable in the barrier mix. That
+    test was inconclusive, neither confirming nor refuting; the register/block evidence is
+    what carries the identification.
+
+ALSO SETTLED: no SETMAXNREG anywhere in the nvjet kernels. cuBLAS does not do dynamic
+register redistribution here, so our own deferred setmaxnreg work is not a gap versus cuBLAS.
+
+DIVERGENCE FROM CUTLASS worth remembering: CUTLASS cooperative splits the tile "across the M
+dimension" ALWAYS, which forces TileShape_M % 128 == 0 and is why CUTLASS has no 192/320
+tiles. cuBLAS splits N instead when M/64 is odd (192x192, 128x192 -> 3 M-atoms x 1 N-chunk).
+So cuBLAS's cooperative is a genuine superset of CUTLASS's, and we are implementing beyond
+the open-source reference, not porting it.
+
+### H24b TERMINOLOGY TRAP -- "cooperative" is overloaded across THREE levels
+
+Checked the Khronos "Cooperative Matrix Multiply" deck (Boudier, May 2022) in case it
+explained coopA/coopB. It does NOT -- it is a different concept that shares the word.
+Verbatim from the slides: "'Cooperative Matrix' - a new matrix type where the storage for
+and computations performed on the matrix are spread across a set of invocations such as a
+SUBGROUP", and "All invocations in a (complete) subgroup cooperate to compute the result".
+That is the Vulkan/SPIR-V tensor-core API (OpTypeCooperativeMatrixNV, coopMatLoadNV,
+16x8x8 etc) -- the Vulkan equivalent of CUDA wmma/mma. There is no coopA/coopB, no warpgroup
+scheduling, no producer/consumer, no ping-pong and no tile splitting anywhere in it. The A/B
+in that document are simply the operand names in D = A*B + C.
+
+THE THREE DIFFERENT "COOPERATIVE"s -- do not conflate them again:
+  1. Khronos/Vulkan cooperative matrix : 32 threads of a SUBGROUP jointly hold a matrix
+     fragment. Instruction level. This is what our HGMMA/wgmma instruction already IS.
+  2. CUTLASS cooperative SCHEDULE      : 2 WARPGROUPS (256 threads) share one output tile.
+     Kernel-scheduling level. THIS is the level cuBLAS's coopA/coopB lives at.
+  3. CUDA cooperative groups           : grid-wide sync. Unrelated to either.
+
+WHICH LEVEL cuBLAS's coopA/coopB IS, settled by our own measurement rather than by the word:
+coop-tagged kernels have blocks/WG = grid/2, untagged have blocks/WG = grid. That is a
+warpgroup-scheduling property (level 2). If the tag referred to the instruction level it
+could not change the per-warpgroup block count at all.
+
+### H25 EXHAUSTIVE opcode census of ALL 18 unique kernels -- coopA/coopB is NOT a code mechanism
+
+Method: full opcode histogram for every unique nvjet sm90 kernel in sweep_results_cublas/sass
+(18 distinct kernels), then list every opcode that is NOT present in all of them, i.e. every
+possible discriminator. Exactly three exist, and NONE of them tracks coopA vs coopB:
+
+  discriminator                       present in   actually correlates with
+  WARPGROUP.WAIT                        10/18      LAYOUT: every _TNT has it, no _TNN does
+  STSM.16.MT88.* vs STSM.16.M88.*       9 vs 8     LAYOUT: MT (transposed epilogue store)
+                                                   <=> TNT;  M <=> TNN
+  USETMAXREG.TRY_ALLOC/.DEALLOC.CTAPOOL 10/18      REGISTER PRESSURE (see threshold below)
+
+USETMAXREG THRESHOLD, exact across all 18, no exceptions:
+    max R used  57 58 58 90 90 122 122 138  -> USETMAXREG absent
+    max R used  154 154 154 170 170 170 186 186 194 202 -> USETMAXREG present
+Clean break between 138 and 154, and it cuts ACROSS all three families (coopA, coopB and
+pingpong each appear on both sides). So register redistribution is a pure register-pressure
+response, orthogonal to the schedule.
+
+=> CONCLUSION, by ELIMINATION rather than inference: coopA and coopB emit the SAME code. The
+only differences between them are (1) the HGMMA N shape and (2) the accumulator block count,
+both of which are consequences of the tile shape. There is no "coopA mechanism" and no
+"coopB mechanism" to implement -- it is one kernel parameterised by wgmmaN and by how the
+block grid is halved. This independently confirms the H23/H23b/H23d model, and it means the
+implementation surface is smaller than assumed: no new schedule, just parameters.
+
+CORRECTION TO H24: I reported "no SETMAXNREG anywhere, so cuBLAS does not redistribute
+registers". WRONG -- I grepped the PTX mnemonic. In SASS it is USETMAXREG.TRY_ALLOC.CTAPOOL /
+USETMAXREG.DEALLOC.CTAPOOL, and it appears in 10 of 18 kernels. cuBLAS DOES use dynamic
+register redistribution, precisely when the consumer's register demand is high (>=154).
+
+CONSEQUENCE FOR OUR OWN DEFERRED setmaxnreg WORK: it is no longer "cuBLAS does not use it
+either". cuBLAS uses it exactly for the high-register kernels, which is the regime our
+larger tiles will enter. Our biggest planned tiles (BN=320 -> 160 acc regs -> ~186 total,
+BM=192/BN=192 -> 144 -> ~170) sit ABOVE the 154 threshold, so setmaxnreg moves from
+"optional, deferred" to "likely required for those tiles to hit their occupancy". Re-rank it.
+
+### H25b CORRECTION to H25 -- setmaxnreg is required for ONE tile, not for the class
+
+H25 said setmaxnreg "moves from optional to likely required" for our big tiles. OVERSTATED.
+Checked against the actual register-file arithmetic instead of the cuBLAS threshold:
+
+  SM90 register file 65536, our CTA = 384 threads -> UNIFORM CAP = 170 regs/thread.
+     tile (BMxBN)        consumer regs   384*R    fits   setmaxnreg
+     128x256 / 256x128        154        59136     yes   not needed  (we already ship these)
+     128x192 / 192x128        122        46848     yes   not needed
+     192x192                  170        65280     yes   not needed (EXACTLY at the cap)
+     128x320                  186        71424     NO    REQUIRED -- cannot launch otherwise
+So it is a hard prerequisite for exactly ONE planned tile (BN=320), and irrelevant for the
+other three. 192x192 sits precisely on the 170 cap with zero margin -- worth watching.
+
+WHY THE EARLIER "NO DIFFERENCE" RESULT STILL STANDS (user correctly pushed back on this):
+H2.7/H2.8 removed setmaxnreg calls that ptxas was IGNORING ("setmaxnreg ignored to maintain
+minimum register requirements") because they violated the exact-equality constraint. They
+were DEAD CODE, and H2.8 proved via SASS (3192 instructions both versions) + ncu + nsys that
+deleting dead code changes nothing. That was the right call and remains right. It says
+nothing about whether WORKING setmaxnreg helps, because we never had it working.
+
+WHAT setmaxnreg ACTUALLY DOES (clarifying the "doesn't the compiler do it?" question):
+ptxas allocates registers UNIFORMLY -- every thread in the CTA gets the same count, sized
+for the hungriest warpgroup. setmaxnreg does not create registers; it REDISTRIBUTES a fixed
+CTA pool so the producer warpgroup (which needs few) hands registers back and the consumers
+can exceed the uniform share. It therefore only matters when a consumer needs MORE than
+RF/threads = 170. Below that, the compiler's automatic uniform allocation is sufficient and
+setmaxnreg buys nothing -- which is exactly our situation for 3 of 4 tiles.
+Note cuBLAS enables it at max R >= 154, i.e. BELOW the 170 hard limit, so they use it for
+headroom rather than only when forced.
+
+DECISION: do NOT implement setmaxnreg now. Build 128x192, 192x128 and 192x192 without it.
+It becomes a blocking prerequisite only for BN=320, and at that point the constraint to
+satisfy is known exactly (CUTLASS issue #2007, maintainer thakkarV):
+    PRODUCER_REGS + num_consumer_warpgroups * CONSUMER_REGS == baseline_regs * total_warpgroups
+    e.g. CUTLASS ships 40 + 2*232 = 504 = 168 * 3.
+Getting that equality wrong is precisely why our previous attempt was silently ignored.
+
+### H26 OUR SASS vs cuBLAS SASS (same tile) -- explains our register overhead + 2 real gaps
+
+NOTE p1_ours_sass.md / p1_cub_sass.md in the repo are SM103 (B300) kernels, NOT SM90 -- there
+was no ours-vs-cuBLAS SM90 comparison until now. Built one locally: cuobjdump on our own
+compiled .o (we target sm_90a, so this needs no H200) versus the captured cuBLAS SASS.
+Pairing (careful, cuBLAS tokens are N x M): our BM=256,BN=128 == cuBLAS "128x256".
+
+MEASURED REGISTER OVERHEAD, ours vs theirs, same tile:
+    ours   256x128: acc 128 + overhead 40 = 168 regs (ptxas -v, ALL variants pinned at 168)
+    cuBLAS 128x256: acc 128 + overhead 26 = 154 regs
+Our 256x128 is pinned at exactly 168 for every cluster/raster/swizzle variant -- that is
+ptxas capping against __launch_bounds__(384,1) (max 170), and one variant reports 8 bytes of
+stack, i.e. it is already spilling slightly.
+
+WHERE THE 14 EXTRA REGISTERS GO -- the uniform datapath:
+    uniform-datapath instructions   ours 120/2040 = 5.9%   cuBLAS 10833/26680 = 40.6%
+UR registers are a SEPARATE physical file from R registers. cuBLAS runs ~40% of its
+instruction stream on the uniform path (UIMAD, UISETP, UPRMT, USHF, UIADD3, ULOP3, UIMAD.WIDE)
+-- address arithmetic, predicates and loop counters -- which frees R registers for
+accumulators. We do 6%, keeping that math in R. This is the most likely source of the
+overhead gap and is actionable.
+
+SECOND GAP -- the epilogue store path:
+    ours  : STS x128 (plain shared store) + UTMASTG.2D
+    cuBLAS: STSM.16.M88.4 x368 (hardware store-matrix) + UTMASTG.3D
+Our epilogue explicitly does NOT use stmatrix (the code comment says "No stmatrix (fp32
+accumulator, straight out of wgmma)"). Each plain STS needs its own address computation, so
+this costs both instructions and registers. cuBLAS uses STSM, which writes a fragment into
+swizzled smem in one instruction. Also note MT88 vs M88 selects the transposed variant by C
+layout (H25), so an stmatrix path must handle both.
+
+THIRD, smaller: we issue LDG.E.CONSTANT x64 inside the kernel (the beta read-back of C)
+where cuBLAS issues far fewer global loads.
+
+METHODOLOGICAL CAVEAT, important: the captured cuBLAS .sass file contains MORE THAN ONE
+kernel (26680 instructions vs our 2040), so ABSOLUTE counts are NOT comparable between the
+two columns. Only the proportions and the presence/absence of opcodes are meaningful. The
+40.6% vs 5.9% uniform-datapath ratio is a fair comparison; "368 STSM vs 128 STS" is NOT a
+clean 3x claim and must not be quoted as one.
+
+CONSEQUENCE FOR THE TILE PLAN: with OUR overhead of 40 (not cuBLAS's 26),
+    128x192 / 192x128 : 96 acc + 40 = 136  -> fits under the 170 cap, fine
+    192x192           : 144 acc + 40 = 184 -> EXCEEDS 170, would cap at 168 and SPILL
+So 192x192 is NOT free for us the way H25b implied. Two ways out, and they should be tried in
+this order: (1) reduce overhead by pushing address math onto the uniform datapath and/or
+adopting stmatrix -- this helps EVERY tile and closes part of the throughput gap too;
+(2) setmaxnreg, which only redistributes and fixes nothing else. Prefer (1).
+Also correcting H25b: cuBLAS's own 192x192 DOES use USETMAXREG (max R 170, in the YES list),
+so even at overhead 26 they wanted the headroom -- setmaxnreg's real value is that consumers
+can then reach (65536 - 128*40)/256 = 236 regs instead of the uniform 170, not merely "fit".
+
+### H27 IMPLEMENTATION -- step 1+2 done (wgmma shapes + derivation), step 3 outstanding
+
+DONE, compiles clean at sm_90a, 54 NT entry points unchanged (nothing wired yet):
+ 1. wgmma m64n64k16 and m64n96k16 added. Operand structure TRANSCRIBED from CUTLASS
+    cute/arch/mma_sm90_gmma.hpp MMA_64x{64,96}x16_F32BF16BF16_SS -- verified identical in
+    form to our existing n128/n256 (desc_a, desc_b, scale_D, then n-constants scaleA/scaleB/
+    tnspA/tnspB), N/2 fp32 accumulators. Generated programmatically, not hand-typed.
+    Dispatch wgmma_m64nk16_bf16 now covers N in {64,96,128,256}.
+ 2. Config gains the derivation (new template param _WGMMA_N, 0 = auto, non-zero = override
+    for validation, same policy as _SWIZZLE_BYTES):
+        WGMMA_N       = widest legal N dividing BN that leaves (BM/64)*(BN/N) EVEN
+        MATOMS/NCHUNKS/WORK_BLOCKS/BLOCKS_PER_WG
+        SPLIT_M       = (MATOMS % 2 == 0)          -- forced, not chosen
+        WG_MATOMS / WG_NCHUNKS  with a static_assert that they multiply to BLOCKS_PER_WG
+    VERIFIED the derivation reduces to today's behaviour for every tile we already ship:
+        256x128 -> N=128, 1 chunk, M-split, 2 blk/WG   (== current)
+        128x256 -> N=256, 1 chunk, M-split, 1 blk/WG   (== current)
+        128x128 -> N=128, 1 chunk, M-split, 1 blk/WG   (== current)
+    and matches cuBLAS on the new ones:
+        192x192 -> N=96, 2 chunks, N-split, 3 blk/WG, 144 acc  (cuBLAS: n96, 3 blk/WG)
+        192x128 -> N=64, 2 chunks, N-split, 3 blk/WG,  96 acc  (cuBLAS: n64, 3 blk/WG)
+        128x192 -> N=192, 1 chunk, M-split, 1 blk/WG,  96 acc  (cuBLAS chose n64/3blk; both
+                   valid, ours is fewer+wider wgmma)
+        128x320 -> N=64, 5 chunks, M-split, 5 blk/WG, 160 acc  (cuBLAS: 5 blk/WG, matches)
+
+STEP 3 OUTSTANDING -- the consumer rewrite. Currently the derived constants are UNUSED; the
+consumer still runs the old H18 path (ATOMS_WG0/ATOMS_WG1, wgmma at full BN). Remaining:
+   a. acc[BLOCKS_PER_WG][WGMMA_N/2] instead of acc[MAX_ATOMS][BN/2]
+   b. iterate the 2-D block grid: for mi in WG_MATOMS, ni in WG_NCHUNKS
+   c. this warpgroup's grid origin: m0 = SPLIT_M ? g*WG_MATOMS : 0
+                                    n0 = SPLIT_M ? 0 : g*WG_NCHUNKS
+   d. call wgmma with WGMMA_N (not BN)
+   e. B DESCRIPTOR must offset by the N-chunk (n0+ni)*WGMMA_N -- and the offset differs by
+      majorness: K-major B has row stride atom_w so column n sits at n*atom_w; MN-major B is
+      mn-contiguous within a swizzle atom. THIS IS THE RISKY PART -- it is the same class as
+      the H22 64-collision, where three different quantities coincide at the default config.
+   f. epilogue must write this warpgroup's N range, not the full BN.
+
+DELIBERATELY STOPPED HERE. Steps (e) and (f) are exactly the kind of coupled address change
+that produced four separate bugs in H22, and the tree is currently in a safe state: the new
+constants are dead, codegen is byte-identical, all 54 entry points intact. Better to do the
+consumer rewrite as one careful pass with the offset probe extended to cover N-chunking than
+to half-apply it.
+RECOMMENDED FIRST STEP FOR (e): extend tools/sm90_probes/swizzle_offset_check.cu with the
+N-chunk offset for both majornesses, so the B-descriptor arithmetic is verified against CuTe
+BEFORE it goes in the kernel -- exactly the method that finally worked for the swizzle bugs.
