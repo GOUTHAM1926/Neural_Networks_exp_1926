@@ -6942,3 +6942,21 @@ pre-existing cases are unaffected within noise (e.g. square-4096 747.26 -> 748.2
 This closes out H27i: sourced from the CUDA header, SASS-diffed for zero overhead, and now
 hardware-confirmed for correctness and speed. The permanent fix for BN>256 (and the
 BN%8/BN<=256 asserts that replace the earlier placeholder) is validated, not just derived.
+
+### H27k B-descriptor N-chunk offset: verified ADDITIVE with the K-step offset (closes the RISKY item)
+
+The original consumer-rewrite plan flagged step (e) "B descriptor N-chunk offset -- differs
+by majorness" as RISKY: the earlier probe (H27f) only checked the offset at k=0. CuTe's
+swizzle XOR pattern is not guaranteed separable, so before writing
+  total_offset = base_k_offset(ks) + nc * WGMMA_N * atom_w
+into the kernel, extended the probe (scratchpad/nchunk_probe2.cu) to sweep EVERY (n-chunk,
+k-step) combination the mainloop actually issues (all 4 ks per K_STEPS=BK/16), for both
+majornesses, up to BN=320 (5 chunks).
+RESULT: additive-ok on all 72 combinations tested, both K-major and MN-major, no exceptions.
+n_term is always exactly nc * WGMMA_N * atom_w (atom_w = sw_atom_elems(B_SWIZZLE)), and it
+sums cleanly with whatever K-offset the kernel already computes today (koffB for K-major,
+ks*16*AW_B for MN-major) -- confirmed by comparing "predicted" against CuTe's own "real"
+layout query, not by trusting the formula.
+So the consumer rewrite's B-descriptor change is: ADD nc * WGMMA_N * AW_B * 2 bytes to the
+existing B_smem base pointer, before the existing ks-dependent offset math -- no other change
+to that math is needed. This is now implementation-ready, not a risk.
