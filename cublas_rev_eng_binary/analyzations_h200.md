@@ -6918,3 +6918,27 @@ cases added to examples/test_bgemm_sm90_bf16.cu mirroring the plain 128x256x64 m
 (beta0/1, K=256, batch=2, square-2048, llm-qkv) so a mismatch pinpoints the C-store change,
 not the tile. Compiles clean (NT 55 entry points, up from 54; test file links clean).
 This is what actually needs H200 validation next -- not yet run there.
+
+### H27j H200 HARDWARE VALIDATION of the chunked C-store (H27i) -- PASS, 19/19
+
+Ran on H200 after a real git pull (7d46e26..9c9e9c9, confirmed by the fast-forward log, not
+stale). All 19 cases in test_bgemm_sm90_bf16.cu PASS, including the 6 new cbox128-* twin
+cases that force C_NCHUNK=2 on the 128x256 tile:
+
+    case                  plain (1 chunk)   cbox128 (2 chunks)   delta
+    beta0, K=64                0.66 TFLOPS        0.66            same
+    beta1, K=64                0.41              0.41            same
+    K=256                       2.11              2.11            same
+    batch=2                     1.32              1.32            same
+    square-2048               642.27            645.01           +0.4%
+    llm-qkv-like               318.94           326.66           +2.4%
+
+Correctness: PASS means matched the cuBLAS reference within tolerance -- the chunk-major
+epilogue smem layout and the per-chunk TMA store are numerically correct on real hardware,
+not just compile-clean. Performance: never slower; the two largest shapes are marginally
+faster (within normal run-to-run noise but consistently non-negative across both). The 13
+pre-existing cases are unaffected within noise (e.g. square-4096 747.26 -> 748.29).
+
+This closes out H27i: sourced from the CUDA header, SASS-diffed for zero overhead, and now
+hardware-confirmed for correctness and speed. The permanent fix for BN>256 (and the
+BN%8/BN<=256 asserts that replace the earlier placeholder) is validated, not just derived.
