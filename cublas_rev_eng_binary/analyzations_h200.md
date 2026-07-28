@@ -5474,3 +5474,116 @@ consistent with H16.12: the multicast was never the problem.
 COSMETIC BUG FIXED: the refusal message printed "N %% 64 == 0" because the constraint
 fragments are %s ARGUMENTS, not format strings, so they must contain a literal '%'.
 Corrected; recompiles clean, 64 entry points intact.
+
+### H16.15 step 1 DONE -- wgmma Major::MN descriptor fields PROBED (not inferred)
+
+Ran cute::GMMA::make_gmma_desc<Major::MN> directly (scratchpad/gmma_mn_probe.cu). Pure
+layout math + bit packing, no kernel launch, so it runs on ANY machine -- no H200 needed.
+Note make_gmma_desc<Major::MN> static_asserts the K extent == 256/sizeof_bits<T> = 16 for
+bf16, i.e. ONE wgmma k-step, exactly how our kernel calls it; so the probe slices the full
+(BMN,BK) tile with local_tile to (BMN,16), which PRESERVES parent strides (rebuilding
+tile_to_shape at (BMN,16) would give the wrong mn_atom stride for the CUTLASS ordering).
+
+  ordering              tile     full-tile smem layout                        leading stride
+  DEFAULT Step<_1,_2>   256x64   ((64,4),(8,8)):((1, 512),(64,2048))             64     256
+  DEFAULT Step<_1,_2>   128x64   ((64,2),(8,8)):((1, 512),(64,1024))             64     128
+  CUTLASS Step<_2,_1>   256x64   ((64,4),(8,8)):((1,4096),(64, 512))            512      64
+  CUTLASS Step<_2,_1>   128x64   ((64,2),(8,8)):((1,4096),(64, 512))            512      64
+
+METHOD VALIDATED: the DEFAULT rows reproduce EXACTLY what make_gmma_desc_mn_major
+hardcodes today (leading 64, stride = MN_WIDTH). So the CUTLASS rows are trustworthy.
+
+KEY RESULT: under the CUTLASS ordering both fields are CONSTANT, independent of MN_WIDTH
+(leading 512, stride 64). Cross-check: leading 512 -> 512*16 = 8192 B = 4096 elements =
+mn_atom stride = 64*BK ok; stride 64 -> 1024 B = 512 elements = k_atom stride ok. General
+form: leading = 8*BK (512 at our fixed BK=64), stride = 64 always. Two consequences:
+  - the descriptor stops depending on the tile width, so the current
+    static_assert(MN_WIDTH > 64) can be dropped -> sub-64 MN tiles become possible later.
+  - the k-step slice prints as ((64,4),_16):((1,4096),_64): K is CONTIGUOUS within an MN
+    atom, which is exactly what lets the TMA box be {64, BK} instead of {64, 8}.
+
+CONSUMER ADDRESSING ALSO SIMPLIFIES: today the per-k-step base is A_smem + ks*(16*BM)*2.
+Under the CUTLASS ordering a 16-K step advances 2 k_atoms = 2*512 = 1024 elements WITHIN an
+atom, and the descriptor's leading field walks the mn_atoms, so it becomes
+A_smem + ks*1024*2 -- constant, independent of BM.
+
+SMEM OFFSETS for the producer loop (CUTLASS ordering, offset in elements):
+  offset(mn_in, mn_atom, k_in, k_atom) = mn_in + 4096*mn_atom + 64*k_in + 512*k_atom
+  -> TMA instruction i (mn_atom i) writes at base + i*64*BK
+  -> with K-axis multicast slice s of width BK/C: base + i*64*BK + s*64*(BK/C)
+Remaining steps are now mechanical: rank-3 descriptor {MN,K,batch} + box {64,BK,1},
+producer loop of BMN/64 issues, new descriptor constants, relax guard to MN%8.
+
+### H16.15 IMPLEMENTED (compiles clean, UNVALIDATED on hardware yet)
+
+Replaced the 5D MN-major TMA path with the rank-3 one CuTe actually uses. Six coupled
+edits, all driven by the probe + research, none inferred:
+
+1. NEW tma_3d_gmem2smem / tma_3d_gmem2smem_multicast PTX primitives.
+2. NEW issue_operand_3d_mn<MULTICAST, BMN, BK>: one TMA instruction per 64-wide MN atom,
+   atom i -> smem + i*64*BK elements; K-axis multicast slice s -> + s*64*slice_k.
+   BMN/64 instructions per operand per stage (4 for BM=256, was 1) -- still 4x fewer than
+   CuTe's default ordering would need, because the K-innermost box is {64, BK} not {64, 8}.
+3. NEW init_3d_tma_MN_sm90: globalDim {MN, K, batch} with the REAL extent, globalStrides
+   {MN*2, batchStride*2} bytes (dim-0 stride is an implicit 1 element, not passed),
+   boxDim {64, BK_BOX, 1}. BK_BOX = BK/CLUSTER for the multicasting operand.
+4. make_gmma_desc_mn_major retemplated on BK: leading = 64*BK*2 bytes (stored 512),
+   stride = 512*2 bytes (stored 64) -- PROBE OUTPUT for the CUTLASS ordering. Both fields
+   are now independent of MN_WIDTH, so static_assert(MN_WIDTH > 64) was dropped.
+5. Consumer addressing: MN atom stride 512 -> 64*BK elements; k-step 16*BMN -> a constant
+   1024 elements (the descriptor's leading field walks the atoms now).
+6. Producer slice constants: k_atom counts + byte spans -> plain K-element widths.
+
+DEAD CODE REMOVED: tma_5d_gmem2smem, tma_5d_gmem2smem_multicast, issue_operand_5d_mn,
+init_5d_tma_MN_sm90 -- verified unreferenced first. Deliberate: leaving a known-broken
+descriptor callable is a trap, and the whole point of H16.15 is that the 5D formulation is
+wrong, not merely superseded. Stale comments naming the 5D path updated too.
+
+GUARD RELAXED per the research: MN % 64 -> MN % 8 (CUTLASS's real constraint, their
+can_implement accepts M=3000 and rejects 3001/3004). K % 8 kept.
+
+Compiles clean at sm_90a, 64 entry points intact (nt 23 / nn 20 / tn 21).
+
+RISK NOTE -- compiling proves nothing here. The dangerous part is the pairing of the smem
+ordering the TMA box lands with the strides the wgmma descriptor assumes; if those two
+disagree the result is wrong numbers, not an error. That exact mismatch was the original
+4D-box all-FAIL bug (H15.5). The 45-point cluster grid gate is the test: it already
+contains 4000x3000x2048, which is %8 but NOT %64 in both M and N, i.e. precisely the case
+that used to corrupt. EXPECTED: the 30 NN/TN FAIL(numeric) entries become ok, NT unchanged,
+and the aligned/tall-narrow %cuB numbers stay where H16.13 left them (size-2 ~90%,
+size-4 ~73%). Any regression on the ALIGNED shapes would mean the new descriptor/ordering
+pairing is wrong, not the residue handling.
+
+### H16.15-VERIFIED rank-3 MN-major path is CORRECT (135/135, MN%64 limit gone)
+
+cluster_grid_gate on H200 after the rewrite: 135/135 PASS, 0 failures. The 30 NN/TN
+FAIL(numeric) at M=4000 N=3000 K=2048 (%8 but NOT %64 in both M and N) are gone -- the
+descriptor now carries the real extent so TMA bounds-checks and zero-fills the tail.
+
+CRITICAL DIAGNOSTIC PASSED: the ALIGNED shapes did not move, which is what proves the new
+smem-ordering / wgmma-descriptor pairing is right rather than accidentally passing (a
+mismatch there is silent wrong numbers -- the H15.5 failure mode).
+    NT 256x128_1x2 90.4 -> 90.6    NT 128x256_2x1 91.0 -> 91.2
+    NN 256x128_1x2 90.1 -> 90.5    TN 256x128_1x2 90.4 -> 90.8
+The probed descriptor constants (leading 512 / stride 64, tile-width independent) are
+therefore confirmed on hardware, not just against CuTe.
+
+HONEST REGRESSION -- 128x128 only, and it scales with MN-major operand count:
+    aligned 128x128   TN 1x2 76.7 -> 72.9 (-3.8)   TN 2x1 77.3 -> 73.0 (-4.3)
+                      NN 1x2 76.3 -> 75.2 (-1.1)   NT 1x2 76.5 -> 76.9 (0)
+    (TN has 2 MN-major operands, NN 1, NT 0 -- the ordering of the losses matches exactly.)
+Cause is structural and expected: rank-3 issues BMN/64 TMA instructions per MN-major
+operand instead of the 5D path's 1. 256x128 absorbs the extra issues (no regression at
+all); 128x128 has too little work per tile to hide them. Accepted trade: ~4 points on our
+WEAKEST tile, which cuBLAS selects for only 4/162 catalog shapes, in exchange for removing
+a limitation that made 2 of 3 layouts silently wrong on any non-multiple-of-64 shape.
+Not chasing it now; if it ever matters the lever is fewer/larger issues, but box[0] is
+pinned at 64 by the 128B swizzle so there is no free win there.
+
+Also visible: on the RESIDUE shape, 128x256_1x2 is much worse than 128x256_2x1 for NN/TN
+(79.8 vs 90.1 NN; 78.1 vs 90.5 TN) while NT is fine (90.3 vs 90.2). A-multicast + MN-major
++ partial tile is the weak combination. Logged for the Phase-4 combination sweep, not
+chased now.
+
+STATUS: the SM90 cluster axis and the MN-major residue hole are both CLOSED. Guard now
+enforces only MN%8 / K%8, matching CUTLASS's real constraint.
