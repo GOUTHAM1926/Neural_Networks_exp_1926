@@ -7321,3 +7321,72 @@ work, not attempted here).
 
 NOT YET DONE: H200 hardware validation of any of these 6 new NN/TN kernels. Everything above
 is compile-time + SASS-structural verification only.
+
+### H27u/H27v REAL BUG FOUND AND FIXED: the A/B input-side TMA descriptor had the SAME
+### boxDim<=256 defect as the C-store did -- this is what crashed 128x320's every run
+
+Root-caused the confusing "invalid argument" line that appeared before all prior output in
+every run since 128x320 was added. Traced it precisely, not by re-reading the same output
+again: stdout is fully buffered when piped (as every `tee` capture in this project is), while
+stderr is unbuffered; `check_cu_sm90`'s fprintf+exit() on the FIRST 128x320 launch fires,
+writes its stderr line immediately, then exit() flushes the (until-then undelivered) huge
+stdout backlog of every PRIOR passing test case -- so in the final captured file the crash
+line appears to print BEFORE all the successful output that chronologically preceded it. This
+explains why 128x320 never appeared in any NT run: the process was dying on its FIRST
+128x320 case, immediately, every single time -- not stalling after the successful cases.
+
+REAL BUG: B_BOX_N = NEEDS_B_MULTICAST ? (BN/CLUSTER_M) : BN -- for our un-clustered 128x320
+config this is 320, directly violating cuTensorMapEncodeTiled's boxDim<=256 cap (cuda.h:
+23807-23809), the SAME constraint the C-store hit (H27h/H27i) -- but that fix only ever
+touched the OUTPUT descriptor. The INPUT (A/B) descriptor had the identical latent defect,
+missed when 128x320 was built, and A_BOX_M has the same defect for any future BM>256 tile
+(none built yet).
+
+FIX, mirroring the C-store's chunking pattern but on the load side:
+  - load_box_div(w, atom_w): largest divisor of w that is <=256 AND a multiple of the
+    swizzle atom (not just %8==0) -- the atom-alignment requirement matters here because,
+    UNLIKE the C-store (unswizzled), the K-major smem tile IS swizzled, and a chunk boundary
+    landing mid-atom would corrupt the TMA write the same way H27b's mid-atom read did.
+  - chunked_box_width(raw, atom_w): returns raw UNCHANGED for raw<=256 (every existing
+    config, INCLUDING sub-atom cluster slices like 128x128's 1x4 cluster, which slices A to
+    128/4=32 -- SMALLER than one atom. Applying the atom-alignment constraint
+    UNCONDITIONALLY broke this real, already-shipped config: load_box_div legitimately has
+    no answer for a width smaller than the atom, and the naive version returned 0, causing
+    a DIVISION-BY-ZERO COMPILE ERROR -- caught immediately, before it could reach hardware,
+    by just trying to build all three layouts. Only widths >256 invoke the constrained
+    search at all, since only a genuine multi-chunk split has a boundary to protect.
+  - issue_operand_4d gained an outer MN-chunk loop (orthogonal to the existing K-chunk loop),
+    template-defaulted to MN_CHUNKS=1/LOAD_BOX_WIDTH=MN_ROWS so every existing call site is
+    unaffected unless explicitly given a wider chunk count.
+  - SPECIAL-CASED MN_CHUNKS==1 to the EXACT pre-existing code (no loop at all), not merely
+    an "equivalent after compiler optimization" version: SASS-diffed and found ptxas did NOT
+    fully fold the trivial 1-iteration loop away (a handful of stray IMAD/ISETP/NOP/SEL per
+    kernel, no HGMMA/STS/BAR change, but short of this file's byte-identical bar). With the
+    if-constexpr split, RE-diffed: 58/58 non-128x320 NT kernels are now BYTE-IDENTICAL to
+    the pre-fix build, zero exceptions.
+  - 128x320 itself: UTMALDG.4D (TMA load count) 14 -> 42 (+28 = 7 unrolled call sites x
+    (5-1) extra B-chunks; A is unaffected since BM=128<=256). HGMMA 20->20, STS 160->160,
+    UTMASTG.2D (C store) 2->2 -- all exactly unchanged, confirming the fix touches ONLY the
+    broken B-load path and nothing else.
+
+Compiled clean across NT/NN/TN (59/54/54 entry points, unchanged counts). NOT yet H200-
+validated -- this is the next, and now genuinely necessary, hardware run.
+
+### H27u also found: a test-data mistake (not a kernel bug) in the NN/TN residue case
+
+TN 192x128-residue (M=250, N=200) failed deterministically, 3/3 runs, with a clear stderr
+line: "REFUSING launch: the MN-major TMA path currently requires M % 8 == 0 for layout TN".
+Traced the guard's actual code (Bgemm_sm90_warpspecialized_template.cuh:2036, pre-existing
+since H16.14/H16.15, well before this session): it DOES correctly `return;` before ever
+launching -- this is not new, broken, or related to any H27 work. Traced the test harness
+(examples/test_bgemm_sm90_nn_tn.cu run_case): dC is seeded with random data before the call
+and never touched again if the launch is refused (the wrapper returns void, so the harness
+has no way to detect refused-vs-computed), so it compared the untouched seed against
+cuBLAS's real answer and reported a misleading FAIL. Root cause: my own test case reused
+M=250 (safe for NT/NN, whose A is K-major with no M%8 constraint) without checking TN's
+actual constraint (A is [K,M] MN-major, needs M%8==0). Fixed: M=250 -> 248 (still genuine
+residue against BM=192, and %8==0). Scanned every other M/N value in the file for the same
+mistake -- none found, this was isolated to the one case.
+Separately flagged, not fixed today (a bigger, riskier API change): the void-return +
+stderr-only refusal signaling is a real observability gap for ANY future caller, not just
+tests -- worth a return-code pass at some point, out of scope for today.
