@@ -7390,3 +7390,59 @@ mistake -- none found, this was isolated to the one case.
 Separately flagged, not fixed today (a bigger, riskier API change): the void-return +
 stderr-only refusal signaling is a real observability gap for ANY future caller, not just
 tests -- worth a return-code pass at some point, out of scope for today.
+
+### H27w SESSION EOD SUMMARY -- H27 (work-grid split) start to now, server unreachable for final H200 run
+
+STATUS AT THIS POINT: code is committed+pushed (both repos). H200 (host "hard-instance-
+laughs-fin-02") is currently unreachable, so the H27u/H27v fix (A/B input TMA descriptor
+boxDim>256 bug) has NOT yet been hardware-validated. Everything below is proven at compile
+time + SASS level only, pending that one run.
+
+WHAT GOT DONE, IN ORDER:
+  H27      wgmma n64/n96 added; WGMMA_N + work-grid-split DERIVATION written (not yet wired)
+  H27b     N-chunk swizzle-atom alignment constraint found by a CuTe probe, BEFORE coding
+  H27d     coopA/coopB fully decoded from real cuBLAS SASS (18/18 kernels): it is a
+           blocks/warpgroup-EVEN-vs-ODD tag, not a different algorithm -- our own feature
+           does the same underlying thing, kept our own name (Sm90WorkGrid) throughout
+  H27g     work-grid split moved out of Config into a layout-aware Sm90WorkGrid struct
+  H27h/i   BN>256 C-store: sourced the real cuTensorMapEncodeTiled constraint from cuda.h
+           itself, built chunked multi-descriptor C-store, H200-validated (H27j, 19/19)
+  H27k     B-descriptor N-chunk offset proved additive with the K-step offset by CuTe
+           enumeration (72 combos) before writing the consumer
+  H27l     the actual consumer rewrite: work-grid split with a zero-added-synchronization
+           N-split fix (per-warpgroup C-store box sized to WG_N_WIDTH, not raw BN) --
+           H200-validated 34/34 (H27n), including the riskiest new code path
+  H27o     cleanup: deleted genuinely-dead H18 fields, fixed a duplicate config + a stale
+           comment describing machinery that no longer existed
+  H27p     deep audit (prompted by Q's pushback): found and fixed a WRONG static_assert
+           (BN<=256 on the raw tile, when only the C-store CHUNK needed that cap); found
+           192x192 compiles fine under NT (only NN/TN are genuinely blocked); measured our
+           own register/spill numbers instead of trusting cuBLAS-derived extrapolation
+  H27q     setmaxnreg deadlock question resolved against the actual PTX ISA spec + a real
+           CUTLASS issue (#2007) -- a mismatched register request genuinely blocks forever,
+           not "gets silently ignored"; corrected an over-casual claim made earlier same
+           session
+  H27r     192x192 and 128x320 implemented as real NT entry points; proved the NEW
+           cross-chunk-boundary interaction (5 compute-chunks vs 2 store-chunks for 320)
+           safe by direct enumeration before writing any of it
+  H27s     both H200-validated on NT, all cases PASS
+  H27t     deep audit (2nd pushback): found 128x192/192x128/128x320 ALSO compile clean
+           under NN/TN (only 192x192 is genuinely NT-only) -- wired all three, 6 new
+           kernels, all SASS-verified against hand-derived block math
+  H27u/v   H200 run exposed the real crash: A/B input TMA descriptor had the SAME
+           boxDim<=256 defect the C-store did (missed on the input side). Root-caused via
+           stdio buffering behaviour, not guessed. Fixed with real load-side chunking;
+           caught a second bug of my own WHILE fixing it (atom-alignment applied too
+           broadly, would have broken an already-shipped 128x128/1x4-cluster config) before
+           it ever reached hardware. Re-diffed: 58/58 unrelated kernels byte-identical.
+           Also fixed an unrelated test-data mistake (TN 192x128-residue used an M value
+           that violates TN's own pre-existing M%8 constraint) -- not a kernel bug.
+
+STILL PENDING, IN ORDER:
+  1. H200 run of the H27u/H27v fix (server currently unreachable) -- the very next thing
+  2. 192x192/128x320 for NN/TN -- blocked behind swap-AB canonicalisation (dispatch-layer,
+     separate work), only 192x192 needs it (128x320's NN/TN already wired and working)
+  3. Ping-pong schedule for the small tiles (64x64, 64x128, 128x112/144/168/176)
+  4. splitK + splitKreduce
+  5. All-combination perf+precision sweep
+  6. Dispatcher (deliberately LAST, per standing instruction)
