@@ -7270,3 +7270,54 @@ combine the multi-N-chunk compute path (5 chunks) with the multi-chunk C-store p
 chunks) simultaneously, at the highest chunk-count of anything tested so far -- the plan is
 to run the FULL test suite MULTIPLE TIMES (not once), specifically to build confidence that
 any pass is not luck.
+
+### H27t corrected an over-generalized claim and unlocked 3 tiles across all layouts
+
+Deep-audited the codebase per Q's request (hidden bugs, future-proofing, setmaxnreg safety,
+full layout coverage) before implementing further. Found:
+
+1. 192x192 IS genuinely NT-only: compiling it under Sm90Layout::NN and ::TN both produce a
+   real static_assert failure ("no legal wgmma N gives an EVEN grid with atom-aligned
+   N-chunks") -- confirmed by actually attempting the compile, not by re-stating the earlier
+   claim. Its WGMMA_N=96 lands mid-swizzle-atom for an MN-major operand (H27b); NN/TN both
+   have an MN-major B, so both hit it. Genuinely blocked behind swap-AB canonicalisation.
+
+2. 128x320 was WRONGLY generalised into "NT only" alongside 192x192. It derives WGMMA_N=64,
+   not 96 -- and 64 IS a multiple of the swizzle atom width (64) regardless of which operand
+   is MN-major, so H27b's constraint never fires for it. Confirmed by directly compiling
+   Sm90WarpspecConfig<128,320,64> under NN and TN: both compile clean, 168 registers, same
+   spill amounts as NT -- byte-identical register profile in all three layouts.
+
+3. The SAME check on 128x192 and 192x128 (already H200-validated on NT) showed they ALSO
+   compile clean under NN/TN (128 and 154 registers respectively, zero spill, matching NT
+   exactly) -- they were simply never wired for NN/TN, not blocked. This was a real,
+   previously-unnoticed gap across three tiles, only surfaced by directly testing the
+   compile rather than assuming the 192x192 restriction generalised.
+
+4. setmaxnreg / warpgroup_reg_alloc / warpgroup_reg_dealloc: grepped the ENTIRE SM90 tree.
+   Zero live call sites anywhere. Confirmed by absence: no deadlock surface exists in
+   anything currently shipped.
+
+IMPLEMENTED: NN and TN entry points for 128x192, 192x128, 128x320 (blublasBgemmSM90_bf16_
+{nn,tn}_{128x192,192x128,128x320}x64_template), declared in Bgemm_sm90_bf16.cuh. Corrected
+the misleading "NT only" comments left over from before this finding, in both
+Bgemm_sm90_warpspecialized_template.cuh and Bgemm_sm90_nt_variants.cu.
+
+Compiled clean: NT 59 (unchanged), NN 54 (was 51, +3), TN 54 (was 51, +3). SASS-checked all
+6 new NN/TN kernels against the hand-derived block math -- all exact matches:
+    128x192 (NN & TN): 12x HGMMA.64x64x16   (WGMMA_N=64 here, NOT 96 -- MN-major B forces
+                                              the narrower, atom-aligned choice; NT's B is
+                                              K-major so NT picked 96 instead -- different
+                                              WGMMA_N per layout, same tile, both correct)
+    192x128 (NN & TN): 12x HGMMA.64x64x16
+    128x320 (NN & TN): 20x HGMMA.64x64x16   (same as NT -- 64 was already the only legal
+                                              choice for BN=320 regardless of layout)
+50 new test cases added to examples/test_bgemm_sm90_nn_tn.cu (25 NN + 25 TN across the 3
+tiles): beta0/1, K=512, multi-tile, batch2, residue (N%8==0 throughout, verified), plus
+square-2048 for 192x128 and 128x320 specifically (the N-split and highest-chunk-count tiles).
+
+STILL NT-ONLY, genuinely: 192x192 (blocked behind swap-AB for NN/TN, separate dispatch-layer
+work, not attempted here).
+
+NOT YET DONE: H200 hardware validation of any of these 6 new NN/TN kernels. Everything above
+is compile-time + SASS-structural verification only.
