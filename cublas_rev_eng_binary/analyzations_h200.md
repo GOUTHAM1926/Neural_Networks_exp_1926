@@ -7229,3 +7229,17 @@ rounded down -- 170 for our 384-thread/1-CTA-per-SM config) EXACTLY, at compile 
 static_assert, before it is ever run on hardware -- and the first H200 run of any such change
 must be done in a way that can be killed/timed-out, not run blind, given the confirmed hang
 risk.
+
+### H27r proved the compute-chunk/store-chunk interaction for 128x320 BEFORE implementing it
+
+128x320 is the first real tile where the compute-side N-chunk grid (WGMMA_N=64, 5 chunks)
+and the store-side C-store chunk grid (C_BOX_N=160, 2 chunks) do NOT align 1:1 -- compute
+chunk 2 (cols 128-191) geometrically spans BOTH store chunks (boundary at col 160). Every
+tile validated so far had exactly one store chunk, so this interaction was never actually
+exercised. Wrote scratchpad/chunk_interaction_probe.cpp: enumerated every (nc, even-col) pair
+the real epilogue loop touches (160 total writes) and checked (a) every column 0..319 hit
+EXACTLY ONCE, (b) no packed (col,col+1) pair straddles the chunk-160 boundary. Both hold,
+by direct enumeration, not algebra. (Algebraic reason, confirmed rather than just asserted:
+col is always even because the real loop only calls wgmma_frag_rowcol with even r; C_BOX_N is
+always a multiple of 8 hence even; an even 2-wide pair can only straddle an even boundary via
+an odd starting column, which cannot occur.) Proceeding to implement on this basis.
