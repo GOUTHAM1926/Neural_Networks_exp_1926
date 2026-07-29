@@ -7873,3 +7873,72 @@ new swizzle-aware N=96 path against the current asymmetric-split path to confirm
 expected performance win. Reported to Q before starting any of this, given the scope of
 touching the swizzle derivation (a knob every existing tile also depends on) versus the
 narrower, already-validated asymmetric-split change.
+
+## §H27z.4 implemented -- swizzle-aware symmetric-split derivation replaces the asymmetric split entirely; full regression proves ONLY 192x192 NN/TN changed, everything else byte-identical to the pre-H27z baseline
+
+Q approved proceeding, conditional on being sure and proving zero regression first --
+bisected the hypothesis cheaply before writing any real derivation, per this file's own
+established bisection-twin pattern.
+
+**Bisection twin (temporary, since removed):** `Sm90WarpspecConfig<192,192,64,...,
+SWIZZLE_BYTES=64>` -- the EXISTING force-override knob, forcing SW64 on both operands (a
+blunt first test, also narrows NN's K-major A unnecessarily). Added a compile-time
+host-side report (`printf` of `SmemL::A_SWIZZLE/B_SWIZZLE`, `WGrid::WGMMA_N/NCHUNKS/
+NCHUNKS_WG0/NCHUNKS_WG1/ASYMMETRIC_N`) instead of relying on inspection. Result, both NN
+and TN: `A_SWIZZLE=64 B_SWIZZLE=64 WGMMA_N=96 NCHUNKS=2 NCHUNKS_WG0=1 NCHUNKS_WG1=1
+ASYMMETRIC_N=0` -- exactly the symmetric split hypothesized. ptxas confirmed: the C7520
+divergent-path warning is GONE entirely (only the pre-existing C7512 spill warning
+remains), and spill dropped from 2392/2764 bytes to **656/824 -- matching 192x192 NT's
+already-H200-validated profile byte-for-byte**. Hypothesis confirmed before writing any
+real derivation code.
+
+**Real fix implemented** (`Bgemm_sm90_warpspecialized_template.cuh`): added
+`nchunk_ok_free`/`splittable_free`/`wgmma_n_pick_free`/`split_is_symmetric_free` -- free
+functions that duplicate `Sm90WorkGrid`'s own formulas EXACTLY (same source of truth, not
+divergent logic), parameterized directly on `(bn, n_grain, split_m)` instead of via
+Config/SmemLayout types, so they can run BEFORE `Sm90WorkGrid` exists (which needs the
+swizzle already chosen). `sw_pick_symmetric_mn(bn, bm)` tries candidate atom widths
+widest-first (64/32/16, matching `sw_pick`'s own cascade), returning the widest one that
+ALSO gives a symmetric split; falls back to plain `sw_pick(bn)` if no candidate achieves
+symmetry (preserves H27z.1's asymmetric split as a strict last resort for any future tile
+this doesn't help -- never a regression, never a silent behavior change without a reason).
+Wired into `Sm90SmemLayout::B_SWIZZLE` ONLY for the MN-major case (`B_IS_MN`) -- K-major B
+(NT) and A (never needs this, M is "aligned by construction" per the file's own long-
+standing comment) are completely untouched.
+
+**Hand-derivation before writing the wiring, confirmed against real compile-time output
+after:** walked `sw_pick_symmetric_mn`'s formulas by hand for every currently-shipped
+BM/BN pair. 128x128/128x256/256x128/128x192/128x320 are all SPLIT_M (MATOMS even) --
+`split_is_symmetric_free` returns true unconditionally there regardless of atom width, so
+the function returns `sw_pick`'s own plain answer, unchanged. 192x128 is already symmetric
+even at the widest atom (SW128) -- unchanged. Only 192x192 (odd MATOMS, forced N-split,
+MN-major B) actually changes: from SW128/WGMMA_N=64-asymmetric to SW64/WGMMA_N=96-symmetric.
+
+**Full regression, measured, not asserted:** removed the now-redundant bisection twin
+(its job was done) and recompiled all three variant files (`nn`/`tn`/`nt`) plus both test
+files clean. Function-matched SASS diff against the TRUE original pre-H27z baseline
+(reconstructed earlier this session by reverse-applying every H27z edit and independently
+verified clean):
+
+```text
+NT: 59/59 identical, 0 new, 0 removed  -- NT was never touched, confirmed
+NN: 54/54 pre-existing identical, exactly 1 new kernel (192x192)
+TN: 54/54 pre-existing identical, exactly 1 new kernel (192x192)
+```
+
+The new 192x192 kernel is now **identical across all three layouts**: 168 registers,
+448-byte stack frame, 656/824 bytes spill stores/loads, matching NT (which was always
+symmetric) exactly -- proving NN and TN now use the SAME underlying wgmma structure NT
+already had, just with the operand-specific descriptor differences (MN-major vs K-major
+addressing) the file's design already handles generically.
+
+**Still not done:** real H200 correctness + benchmark. Everything above is compile-time
+proof (derivation math, ptxas diagnostics, SASS regression) -- necessary but not
+sufficient. The actual test (`make run TEST=examples/test_bgemm_sm90_nn_tn.cu`, same 14
+192x192 cases already in the suite from H27z.1) needs to be re-run on real H200 to (a)
+confirm numerical correctness still holds under the new SW64 addressing (expected, since
+the swizzle-composition probe proved address correctness directly, but not yet measured on
+real tensor cores) and (b) get real TFLOPS numbers to confirm the expected win over the
+38 TFLOPS the asymmetric split measured. Given the register/spill profile now exactly
+matches 192x192 NT's, and NT is already known-good on H200, confidence is high -- but
+"proven" requires the actual run, not this reasoning alone.
