@@ -8193,3 +8193,64 @@ liveness. One concrete contributor is identified (8 registers from descriptor ho
 disabling the one obvious lever for it (unroll pragma) did not change anything -- meaning
 the true mechanism behind that hoisting, and the remaining ~38 registers of the gap, are
 NOT yet identified. This is being continued, not stopped here.
+
+## §H27y.6 RETRACTION -- H27y.2's "unfixable toolchain limitation" conclusion was WRONG. CUTLASS gets setmaxnreg honored on our EXACT toolchain; the blocker is our own kernel structure
+
+Q refused to accept the H27y.2 conclusion and told me to keep researching instead of
+documenting a dead end. That was correct -- the conclusion was wrong, and here is the proof.
+
+**Primary source finally consulted** (local PTX ISA PDFs at `ptx_docs/`, found via a
+background search; the H27y.2 subagent had explicitly flagged not having primary-source
+access as a gap). PTX ISA 9.3 §9.7.20.5, verbatim:
+
+> "The setmaxnreg instruction requires that the kernel has been launched with a valid value
+> of maximum number of per-thread registers specified via the appropriate compile-time
+> option or the appropriate performance tuning directive. **Otherwise, the setmaxnreg
+> instruction may have no effect.**"
+
+That is exactly our C7507 symptom, and it names a precondition H27y.2 never tested.
+Chased it: the directive is `.maxnreg` (§11.4.1), distinct from the `.maxntid`/
+`.minnctapersm` that `__launch_bounds__` emits, and §11.4 notes these directives take
+precedence over command-line options -- which explains why `--maxrregcount` (tried at
+168/192/224/255 in H27y.3) had literally zero effect. In CUDA C++ `.maxnreg` is
+`__maxnreg__(n)`. Tested it: nvcc rejects combining them outright ("The __launch_bounds__
+and __maxnreg__ qualifiers cannot be applied to the same kernel"), and REPLACING
+`__launch_bounds__(384,1)` with `__maxnreg__(168)` still yielded C7507. So the directive
+alone is not the answer either.
+
+**THE DECISIVE TEST, which H27y.2 should have run and did not: compile CUTLASS's OWN
+warp-specialized cooperative kernel on our exact toolchain (CUDA 13.0, sm_90a) and see
+whether IT gets C7507.** Built `KernelTmaWarpSpecializedCooperative` + BF16 + the same
+`cutlass::device_kernel` entry `__launch_bounds__` path we mirror:
+
+```text
+                        C7507?   registers   spill(st/ld)   SASS SETMAXREG
+CUTLASS 128x128 tile      NO       168        0 / 0         TRY_ALLOC + DEALLOC (present)
+CUTLASS 128x256 tile      NO       168        0 / 0         TRY_ALLOC + DEALLOC (present)
+OUR 192x192 kernel       YES       168      656 / 824       NONE (dropped entirely)
+```
+
+CUTLASS's compiled SASS contains `SETMAXREG.TRY_ALLOC.CTAPOOL` and
+`SETMAXREG.DEALLOC.CTAPOOL` -- the SAME instruction forms found in cuBLAS's real shipped
+kernel (H27y.3). Ours contains no SETMAXREG at all: ptxas drops it.
+
+**This retracts H27y.2 completely.** It is NOT a CUDA 13.0 bug, NOT a documented-unfixable
+`__launch_bounds__`/setmaxnreg conflict, and NOT something the NVIDIA forum thread's
+"no known fix" applies to. Two independent real implementations (CUTLASS built here from
+source, cuBLAS shipped binary) get setmaxnreg honored at 168 registers with ZERO spill.
+The H27y.2 write-up reasoned from a forum thread instead of running the one control
+experiment that would have falsified it. Retained above as a record of the wrong turn.
+
+**Also ruled out: register pressure as the cause.** CUTLASS at 128 accumulator regs/thread
+(128x256 tile -- close to our 192x192's 144) still keeps setmaxnreg AND zero spill. So the
+difference is structural in OUR kernel, not a pressure threshold.
+
+**Concrete, evidence-backed leads for the actual cause** (C7507's own wording is
+"'setmaxnreg' ignored to maintain **minimum register requirements**" -- i.e. ptxas computed
+a per-thread minimum our producer's `.dec` target cannot satisfy):
+- our shared prologue (everything before the `wg_id` producer/consumer branch) is 424
+  instructions with 62 distinct values spilled and **0% uniform-datapath** instructions,
+  versus cuBLAS's 163-instruction prologue at 16.6% uniform (H27y.3). A heavy shared
+  prologue raises the whole-function minimum, which is what `.dec` must fit under.
+- barrier count: CUTLASS 2, ours 16.
+NEITHER is yet proven causal -- that is the next experiment, not a conclusion.
