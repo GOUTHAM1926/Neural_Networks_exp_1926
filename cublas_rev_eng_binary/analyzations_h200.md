@@ -7795,3 +7795,81 @@ confirmed against external documentation and by direct re-derivation from the ac
 generated-code semantics, not reassurance from memory. This does not replace real H200
 correctness testing (still pending, per H27z.1) -- it just rules out "the warning itself
 proves a bug" as a hypothesis.
+
+## §H27z.3 real H200 results: correctness proven (14/14 new cases PASS), but the asymmetric split is severely slower than the other new tiles -- and cuBLAS's own real SASS proves a better fix exists that we should have found before implementing
+
+**Hardware run (`make run TEST=examples/test_bgemm_sm90_nn_tn.cu`, real H200, output.md).**
+All 14 new 192x192 NN/TN test cases PASS (b0/b1/k512/multitile/batch2/residue/square-2048,
+both layouts) -- the asymmetric ceil/floor N-split is numerically correct on real tensor
+cores. This is the hardware proof H27z.1 was missing.
+
+**But the performance gap is severe, not "modest."** square-2048 (M=N=K=2048), same size
+across tiles for a fair comparison:
+
+```text
+192x128 (no spill, no serialization):  NN 447.80  TN 437.76  TFLOPS
+128x320 (pre-existing spill only):     NN  84.00  TN  83.81  TFLOPS
+192x192 (spill + NEW serialization):   NN  38.07  TN  38.14  TFLOPS
+```
+
+192x192 is ~11x slower than 192x128 and ~2.2x slower than 128x320 -- even though 128x320
+already carries the same KIND of register-spill penalty (C7512). The extra drop is
+consistent with the C7520 divergent-path serialization (H27z.2) being a real, substantial
+cost, not a rounding error.
+
+**Q pushed back hard, correctly: why ship something this inefficient without checking what
+cuBLAS/CUTLASS actually do first?** Fair challenge -- H27z's research stopped at "the
+asymmetric split is legal and correct" without checking whether real, shipped libraries
+solve this differently. Checked, using resources we already had captured:
+
+**cuBLAS's real 192x192 kernel does NOT use an asymmetric split at all.** Disassembled the
+actual captured SASS for `nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coopB_TNN`
+(`sweep_results_cublas/sass/shape_5_M896_N4864_K4096.sass`, confirmed via
+`shape_to_kernel_mapping.tsv` -- this is the SAME real cuBLAS kernel used for our 192x192
+MN-major case, already characterized generically back in H15.2 as landing MN-major
+operands natively via TMA with zero software transpose). It issues `HGMMA.64x96x16`
+uniformly -- N=96, the EQUAL split we originally wanted in H27b and rejected as mid-atom-
+illegal, NOT our 64+64+64 asymmetric split. The mainloop is clean: regular
+`WARPGROUP.ARRIVE`/`HGMMA`x4/`WARPGROUP.DEPBAR` groups, no data-dependent branch gating
+individual wgmma issues (the only `@P`-predicated branches present are ordinary K-loop/
+tile-loop control, not a per-chunk skip).
+
+**Root cause of the discrepancy, found and PROVEN, not assumed: our own swizzle picker
+never considers this tradeoff.** `sw_pick` (line ~629) always chooses the WIDEST swizzle
+whose atom divides the operand's contiguous extent -- for BN=192, `192%64==0` picks SW128
+(64-elem atom) unconditionally, on the general (usually correct) principle that wider
+swizzle = fewer TMA instructions per stage. But this MEANS our own kernel never even
+considers SW64 (32-elem atom) for B, where `96%32==0` -- i.e. a NARROWER swizzle would make
+the ORIGINAL equal N=96 split perfectly atom-legal. Verified directly with the same
+rigorous CuTe swizzle-composition probe as H27z (not a new claim, the same methodology):
+
+```text
+MN SW128 (atom=64), split@96:  4096/6144 mismatches (66.7% WRONG) -- H27b's real constraint
+MN SW64  (atom=32), split@96:     0/6144 mismatches -- PERFECTLY LEGAL
+```
+
+This is not a coincidence or edge case -- it is exactly the mechanism cuBLAS's real kernel
+appears to use (the HGMMA.64x96x16 uniform split is only possible if B's smem swizzle atom
+divides 96, which SW128 does not and SW64 does).
+
+**Conclusion: the asymmetric split (H27z.1) is a correct but almost certainly inferior
+implementation.** The right fix is very likely: extend the swizzle derivation so that for
+an MN-major operand, when the WIDEST swizzle's atom doesn't divide the tile's natural
+equal-split WGMMA_N, a NARROWER swizzle that DOES divide it is preferred over falling back
+to either an asymmetric split OR a smaller WGMMA_N -- trading a modest increase in TMA
+load-instruction count (SW64 issues more, narrower TMA transfers per stage than SW128)
+for eliminating BOTH the extra register spill AND the wgmma-serializing divergent branch
+entirely. Given 192x128 (no spill/serialization at all) hits 447 TFLOPS while our current
+192x192 hits 38, the TMA-side cost of a narrower swizzle is very unlikely to offset that
+gap -- but this is a reasoned expectation, not yet measured, and must be verified before
+being treated as proven, per standing instruction.
+
+**NOT YET DONE, explicitly:** rewriting `sw_pick`/`Sm90WorkGrid` to make this swizzle-aware
+NxN-split preference a real, derived, composable knob (not a hardcoded special case for
+192x192); re-verifying with the swizzle-composition probe across every other shipped tile
+to confirm no regression in swizzle choice for BN values that don't have this issue;
+re-running the full SASS regression + H200 test suite; and a real benchmark comparing the
+new swizzle-aware N=96 path against the current asymmetric-split path to confirm the
+expected performance win. Reported to Q before starting any of this, given the scope of
+touching the swizzle derivation (a knob every existing tile also depends on) versus the
+narrower, already-validated asymmetric-split change.
