@@ -7446,3 +7446,63 @@ STILL PENDING, IN ORDER:
   4. splitK + splitKreduce
   5. All-combination perf+precision sweep
   6. Dispatcher (deliberately LAST, per standing instruction)
+
+### H27x COLLEAGUE'S coopA/coopB IMPLEMENTATION CROSS-CHECKED -- WRONG MECHANISM,
+### FLAGGED NOW SO A FUTURE MERGE DOESN'T MISTAKE IT FOR THE REAL FEATURE
+
+Colleague sent 3 files (Bgemm_sm90_warpspecialized_template.cuh,
+Bgemm_sm90_cluster_nn_template.cuh, Bgemm_sm90_cluster_nn_coopB_template.cuh) claiming to
+have implemented cuBLAS's coopA/coopB. Cross-checked against our own H23-H25/H27d finding
+(the ONLY one of the two actually verified against real SASS instruction counts) and against
+the raw captured kernel filenames still on disk (sweep_results_cublas/sass/*.kernelname.txt).
+
+HIS DEFINITION (his own file header comments, verbatim intent): coopA = the 2-CTA cluster
+multicasts operand A (clustered along N, "1x2"), coopB = multicasts operand B (clustered
+along M, "2x1"). Quote: "coopA (A-multicast, N-direction cluster)... cuBLAS ships BOTH a
+coopA family (128x256, 256x128 -- wide-N tiles, A shared) AND a coopB family (192x128,
+192x192, 320x128 -- wide-M tiles, B shared)".
+
+REFUTED DIRECTLY by data both sides can check, no new run needed:
+    nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT      <- 1x2 cluster, tagged coopB
+    nvjet_sm90_tst_192x192_64x4_1x2_h_bz_coopB_TNN      <- 1x2 cluster, tagged coopB
+    nvjet_sm90_tst_256x128_64x4_1x2_h_bz_coopA_TNT      <- 1x2 cluster, tagged coopA
+Three real, captured kernels, ALL clustered exactly 1x2. If coopA/coopB genuinely named
+"which operand this cluster shares", every 1x2-clustered kernel would carry the SAME tag --
+a 1x2 cluster shares the same operand (A) for every tile, by definition, regardless of tile
+shape. Two of these three are coopB despite being 1x2. His own cited family (320x128, 192x192)
+directly contradicts his own theory using his own cited evidence.
+
+OUR definition (H23-H25/H27d, verified against actual SASS instruction counts, all 18 real
+kernels, zero exceptions, NOT just kernel-name pattern-matching): coopA/coopB is whether the
+compute work-grid (M-atoms x N-chunks, after the wgmma-width pick) splits into an EVEN
+(coopA) or ODD (coopB) block count per consumer warpgroup -- and there are ALWAYS exactly 2
+consumer warpgroups, confirmed by matching register/thread counts across all 18 kernels
+(H8.9). This is completely independent of clustering, which is exactly why the SAME tile
+keeps the SAME coop tag across DIFFERENT cluster orientations (320x128 and 192x192 are both
+coopB whether clustered 1x2 or 2x1) -- something his theory cannot explain, since for him the
+tag IS the cluster direction.
+
+A TELL in his own file: his 320x128 comment says the split is "odd/asymmetric... beyond even
+CUTLASS's own abstraction", attributing this to "320/64 = 5 physical warpgroups, an
+inconveniently odd count". He is looking at the SAME real oddness we found, but modeling the
+cause wrong -- we proved (matching register/thread counts) cuBLAS ALWAYS uses exactly 2
+physical warpgroups, never 5. The real oddness is in blocks-per-warpgroup after the wgmma-N
+pick, not in physical warpgroup count.
+
+WHAT'S ACTUALLY LEGITIMATE IN HIS FILES: the cluster + TMA-multicast-on-one-operand mechanism
+he built (Bgemm_sm90_cluster_nn_coopB_template.cuh) is real, separate engineering -- it is
+structurally our OWN "cluster multicast" feature (NEEDS_A_MULTICAST/NEEDS_B_MULTICAST,
+H14.7/H15.9 in this doc), just mislabeled with cuBLAS's coopA/coopB names, which mean
+something else entirely. Also confirmed: his file explicitly defers BM>256 ("not yet
+implemented", blocked by his own static_assert) -- he has NO 128x320 at all, cuBLAS's single
+highest-real-usage kernel, which we have already implemented, SASS-verified, and are
+H200-validating (H27r-H27v).
+
+FLAGGING THIS NOW, explicitly for future merge/comparison: do NOT assume his
+"..._coopA_template.cuh" / "..._coopB_template.cuh" file names mean the real coopA/coopB
+work-grid-split mechanism is already covered if his code gets merged or referenced later --
+it is not. His files implement cluster-multicast-direction (valid, but a different, already-
+covered-by-us feature under honest naming) with the WRONG theory attached to cuBLAS's actual
+naming. Our Sm90WorkGrid (H27g onward) is the one verified against real SASS instruction
+counts; his coopA/coopB naming should be treated as a mislabel, not cross-referenced as prior
+art for the real mechanism.
