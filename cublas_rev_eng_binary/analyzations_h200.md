@@ -8004,3 +8004,35 @@ kernel each.
 failures (expected, given the CuTe proof, but "expected" is not "proven" -- see the
 standing instruction this section's own header references). Given to Q for a second H200
 run.
+
+## §H27z.6 SECOND H200 RUN: ALL PASS, performance confirmed -- 192x192 NN/TN closed out
+
+Real H200 run of the nchunk_term fix: **84/84 PASS, 0 FAIL** across the whole test suite
+(every existing tile plus all 12 previously-failing 192x192 NN/TN cases). The bug is
+genuinely fixed, not just plausible.
+
+**Performance, measured (square-2048, M=N=K=2048):**
+
+```text
+192x192 NN/TN (asymmetric split, H27z.1, buggy-but-"working"):       38.07 / 38.14 TFLOPS
+192x192 NN/TN (symmetric SW64 split, H27z.4/.5, bug fixed):        132.18 / 132.36 TFLOPS
+128x320 NN/TN (unchanged, same run, sanity check vs prior numbers):  84.12 / 83.85 TFLOPS
+192x128 NN/TN (unchanged, no spill/serialization at all):          447.82 / 437.99 TFLOPS
+```
+
+**3.5x faster than the original (broken-then-fixed) asymmetric split, and now faster than
+128x320** -- the remaining gap to 192x128's 447 TFLOPS is the same register-spill cost
+192x192 NT has always had (656/824 bytes, unavoidable given this tile's accumulator
+footprint at 168 registers), not anything specific to NN/TN. 128x320's numbers (84.12 vs
+84.00 from the pre-fix run) confirm zero regression -- run-to-run noise only.
+
+**This closes out the 192x192 NN/TN investigation** that started from Q's demand for a
+real, researched, non-assumed canonicalisation plan (H27z's opening). The path traveled:
+swap-AB retracted (real transpose needed) -> base_offset retracted (never used nonzero
+anywhere in CUTLASS) -> asymmetric N-split implemented and H200-proven correct but severely
+slow (38 TFLOPS) -> cuBLAS's real SASS showed the actual mechanism (HGMMA.64x96x16,
+equal split) -> swizzle-aware derivation found and implemented, bisected before writing
+real code -> a genuine 6th "64-collision" bug surfaced on the FIRST real H200 run (exposed
+by this being the first config ever where WGMMA_N != the swizzle atom width) -> found via
+the failure signature (first_bad_idx=96 in every case), diagnosed against the real CuTe
+layout, fixed, and now confirmed correct AND fast on real hardware. 192x192 NN/TN is DONE.
