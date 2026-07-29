@@ -8112,3 +8112,84 @@ setmaxnreg is left UNUSED (0/0, the SASS-proven no-op default) for every shipped
 exactly as before. The C7512 spill (656/824 bytes, 192x192/128x320) is accepted as the
 real, understood, safety-confirmed performance ceiling on this toolchain -- not a danger,
 not something forced through with an unproven guess.
+
+## §H27y.3 does cuBLAS actually avoid this spill, and why? Deep instruction-level SASS comparison, not inference from CUTLASS/DeepGEMM reference code -- Q correctly pushed back that citing generic library source was "the wrong location" to look
+
+Q's pushback, verbatim in substance: does the C7512 warning actually cost real performance,
+and if other real libraries pay the same cost, fine -- but if not, why are we shipping
+something worse without proof? And: stop citing CUTLASS/DeepGEMM's generic reference
+templates -- look at cuBLAS's own real, compiled, shipped SASS, which we already have
+captured, since that's the actual ground truth, not a teaching implementation.
+
+**cuBLAS's real 192x192 kernel (`nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coopB_TNN`,
+`sweep_results_cublas/sass/shape_5_M896_N4864_K4096.sass`): ZERO spill instructions.**
+`grep -c "LDL\|STL"` = 0, across the entire 29,072-instruction kernel. Cross-checked against
+the real ncu capture for the SAME kernel (`ncu_csv/shape_5_M896_N4864_K4096.csv`,
+`launch__registers_per_thread` = **168** -- the IDENTICAL register count our own kernel
+uses). This is decisive, not inferential: cuBLAS achieves zero spill at the EXACT SAME
+168-register budget we have. Spilling is not an inherent cost of this tile's accumulator
+footprint -- it's a real, fixable gap between our codegen and cuBLAS's.
+
+**Instruction-level cluster comparison, apples-to-apples (same logical unit: one k_iters
+step's worth of 12 HGMMA calls spanning all 3 M-atoms, isolated from WARPGROUP.ARRIVE to
+the group's final commit in both kernels):**
+
+```text
+                          cuBLAS (real)   Ours
+Total instructions             44           377
+Accumulator bases used     R24,R72,R120   R24,R72 (R120 NEVER appears)
+Other R-registers               2            9   (R4,R7  vs  R8-R15,R21)
+STL (spill store)                0           24
+LDL (spill load)                  0           24
+WARPGROUP.ARRIVE                  4           12
+WARPGROUP.DEPBAR                  1           11
+```
+
+R120 never appearing anywhere in our compiled kernel is direct proof: our third M-atom's
+accumulator has NO permanent register home. It round-robins through R24's 48-register
+slot via a literal 24x `STL.64`-then-24x `LDL.LU.64` sequence found in the raw SASS (store
+atom 0's full accumulator group to local memory at one stack offset, immediately reload a
+DIFFERENT value -- atom 2's accumulator -- from a different stack offset into the SAME
+registers). The extra ARRIVE/DEPBAR count (12/11 vs cuBLAS's 4/1) is not a separate cause
+-- it is the compiler's OWN safety mechanism, forced in because it must synchronize before
+it's allowed to overwrite R24 with a different logical accumulator's reloaded value.
+
+**Traced the extra "other" registers to a specific mechanism:** R8-R15 (4 register pairs)
+hold four INDEPENDENT, simultaneously-live smem descriptor values -- `VIADD Rx, R14, 0x6000`
+/ `0x6400` / `0x6800` / `0x6c00`, one per K-step (ks=0..3), each packed into a UR pair via
+`R2UR` for the HGMMA `gdesc[URxx]` operand -- all computed BEFORE any of that atom's 4
+HGMMA calls issue. cuBLAS needs only 2 scalar registers (R4, R7) for the equivalent job,
+implying it computes each k-step's descriptor just before that specific HGMMA and reuses
+one register, rather than hoisting all four.
+
+**Four real experiments run to test WHY, not just document that it happens:**
+
+1. `#pragma unroll 1` on the k-step loop (forcing a genuine runtime loop instead of a
+   compile-time-unrolled one, to see if frontend unrolling was what let ptxas hoist all 4
+   descriptors) -- **no change whatsoever**: identical 656/824 spill bytes. Disproves the
+   hypothesis; ptxas's own scheduler hoists regardless of the frontend unroll hint.
+2. `ptxas -O2` instead of the default `-O3` -- **no change**: identical 656/824.
+3. Explicit `--maxrregcount=168/192/224/255` on the command line -- **no change at any
+   value, including 255** (the hardware maximum): identical 656/824 every time. Proves
+   `__launch_bounds__(384,1)` in the SOURCE overrides command-line register-count flags
+   entirely -- confirming the H27y.2 forum-thread diagnosis directly, not just citing it.
+4. Removing `__launch_bounds__` from the kernel entirely -- spill VANISHES: 214 registers,
+   0 bytes spill, 0 stack frame. **But verified this is NOT a usable fix**: 214 registers x
+   384 threads/block = 82,176, versus the SM's 65,536-register file -- mathematically
+   impossible to launch with the 384-thread block this kernel requires (max viable is
+   65536/384 = 170.67). This result is real but a dead end, not progress; flagged
+   explicitly rather than presented as a fix, per the standing instruction not to blabber
+   an assumption as a result.
+
+**CONCLUSION, fully proven, nothing left unverified in this pass:** 168-170 registers/
+thread is a hard, physical ceiling for a 384-thread block on this hardware, not a tunable
+compiler choice -- confirmed by directly trying to bypass it four different ways, all
+failing or proving unlaunchable. Our kernel's true unconstrained register need is 214
+(reproducing H27y's original measurement exactly), 46 registers over that ceiling. cuBLAS's
+real kernel needs no more than 168 for the identical accumulator footprint. The gap is real
+and precisely quantified (46 registers), not fixable by any compiler-level lever (four
+tried, four failed), and requires actual source-level restructuring to shrink simultaneous
+liveness. One concrete contributor is identified (8 registers from descriptor hoisting) but
+disabling the one obvious lever for it (unroll pragma) did not change anything -- meaning
+the true mechanism behind that hoisting, and the remaining ~38 registers of the gap, are
+NOT yet identified. This is being continued, not stopped here.
