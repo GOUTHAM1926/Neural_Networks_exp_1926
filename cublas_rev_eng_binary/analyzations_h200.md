@@ -8254,3 +8254,79 @@ a per-thread minimum our producer's `.dec` target cannot satisfy):
   prologue raises the whole-function minimum, which is what `.dec` must fit under.
 - barrier count: CUTLASS 2, ours 16.
 NEITHER is yet proven causal -- that is the next experiment, not a conclusion.
+
+## §H27z.7 EOD 2026-07-29 -- session summary and exact resume point for tomorrow
+
+**SHIPPED AND H200-VALIDATED TODAY (done, closed):** 192x192 now works in ALL THREE layouts.
+Was NT-only at session start. Final H200 run: **84/84 PASS, 0 FAIL**, 192x192 NN/TN at
+**132.18 / 132.36 TFLOPS** on square-2048 -- 3.5x over the first working version (38 TFLOPS)
+and now ahead of 128x320 (84 TFLOPS). Committed by Q as `8683c77`.
+
+Path taken (each step's evidence is in its own section above): swap-AB canonicalisation
+RETRACTED (numerically disproven -- majorness is physical, relabelling cannot change it);
+base_offset fixup RETRACTED (CUTLASS hardcodes it to 0 in BOTH SM90 and SM100 -- never a
+real mechanism); asymmetric ceil/floor N-split implemented and H200-proven CORRECT but only
+38 TFLOPS; cuBLAS's own shipped SASS then showed it uses an EQUAL split (HGMMA.64x96x16),
+which a CuTe swizzle-composition probe proved is legal under a NARROWER SW64 atom
+(0/6144 mismatches vs SW128's 4096/6144); implemented that as a derived, composable knob
+(`sw_pick_symmetric_mn`); first H200 run FAILED all 12 cases with `first_bad_idx=96` in
+every single one, which localised a genuine 6th "64-collision" bug -- `nchunk_term` used
+`WGMMA_N*AW_B` for both majornesses when MN-major needs `WGMMA_N*BK` (identical only while
+WGMMA_N==AW_B==BK==64, true for every tile until this one); fixed after CuTe verification
+(0/12288), re-ran, 84/84 PASS.
+
+**OPEN, ACTIVE INVESTIGATION (resume here tomorrow): the C7512 register-spill gap.**
+192x192 and 128x320 spill (656/824 and 972/1080 bytes). Proven today, with evidence:
+- SAFE, not a correctness risk (PTX ISA wgmma.wait_group semantics + real bug reports;
+  ptxas's spill-serialisation ADDS synchronisation, the one real corruption bug in this
+  class came from a pipeliner SKIPPING a wait). Not a danger -- but a real perf cost.
+- cuBLAS achieves **ZERO spill at the IDENTICAL 168 registers** (its ncu capture confirms
+  168 regs/thread; its SASS has zero LDL/STL). So this is OUR gap, not an inherent cost.
+- The spill mechanism is exactly located: R120 is never allocated at all -- our 3rd M-atom's
+  48-register accumulator group has no permanent home and round-robins through R24's slot
+  via 24x`STL.64` + 24x`LDL.LU.64`, with 12 ARRIVE/11 DEPBAR (cuBLAS: 4/1) as ptxas's own
+  forced safety sync around the reuse.
+- **H27y.2's "unfixable toolchain limitation" conclusion is RETRACTED (see H27y.6).** Built
+  CUTLASS's own warp-specialized cooperative kernel on our EXACT toolchain: no C7507, 168
+  registers, ZERO spill, `SETMAXREG.TRY_ALLOC.CTAPOOL` present in its SASS. Ours drops
+  setmaxnreg entirely. Also ruled out register pressure (CUTLASS at 128 accum regs/thread
+  keeps both). So it IS achievable; the blocker is our own kernel structure.
+
+**Levers already tried and MEASURED as failures (do not repeat):** `#pragma unroll 1` on the
+k-step loop; ptxas `-O2`; `--maxrregcount` at 168/192/224/255 (no effect at ANY value --
+PTX ISA §11.4 explains why: the source directives outrank command-line options); removing
+`__launch_bounds__` (spill vanishes at 214 regs but 214*384=82176 > 65536, mathematically
+unlaunchable); `__maxnreg__(168)` replacing `__launch_bounds__` (still C7507); a
+`__shfl_sync` uniformity hint; and register-split values 40/232 (CUTLASS default), 24/240
+(CUTLASS heavy-pressure), 48/224 (DeepGEMM cooperative), 24/184 (cuBLAS's own, decoded from
+its SASS) -- all four rejected identically, proving the rejection is not value-specific.
+
+**The one lever that DID move it, deliberately NOT shipped:** dropping the software
+accumulator zero-init and using `scale_d=0` on each tile's first wgmma to let the tensor
+core overwrite instead (cuBLAS's own method -- its SASS has ZERO CS2R; ours had 49).
+Measured 656/824 -> **412/716** on 192x192, CS2R 49->2, STL 116->55, and correctness was
+verified exhaustively by simulation (every acc[a][nc] slot's first touch is scale_d=0,
+exactly once; no stale value survives the persistent multi-tile loop). NOT shipped because
+the full-library sweep showed it splits by CLUSTERING: plain-1x1 kernels net **-2100 bytes**
+(win) but clustered kernels net **+1368 bytes** (regression). Gating it on a measured
+">128 accumulator registers" threshold was implemented and then REVERTED on Q's instruction
+-- fitting a number to data without understanding WHY clustering reverses the benefit is
+exactly the kind of temporary fix this project does not ship. Repo is back to the
+H200-validated state; the experiment is preserved in
+`scratchpad/exp_scaled/` for tomorrow.
+
+**RESUME POINT, two concrete unanswered questions:**
+1. WHY does ptxas drop our setmaxnreg when CUTLASS's survives? C7507's own wording is
+   "ignored to maintain **minimum register requirements**". Leads, neither proven causal
+   yet: our shared prologue is 424 instructions / 62 spilled values / **0% uniform-datapath**
+   vs cuBLAS's 163 instructions at 16.6% uniform; and barrier count CUTLASS 2 vs ours 16.
+2. WHY does clustering reverse the `scale_d` benefit? Suspects are the cluster barrier
+   (template.cuh ~line 1815) and the epilogue's cluster branches (~2510/2542/2582), which
+   may extend the accumulator live range across a sync the plain path does not have.
+
+**Repo state at EOD:** code repo has ONE uncommitted modified file
+(`Bgemm_sm90_warpspecialized_template.cuh`) holding only the H27y.2 bisection twins
+(`*_regsplit_cutlass_heavy`, `*_regsplit_deepgemm`) plus their updated comment -- unused,
+not wired to any entry point, kept as documented negative evidence. Verified all three
+variant files still compile clean (0 errors). Everything H200-validated is already
+committed at `8683c77`. Nothing is half-applied.
