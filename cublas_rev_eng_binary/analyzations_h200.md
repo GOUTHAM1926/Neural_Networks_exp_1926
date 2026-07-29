@@ -7506,3 +7506,70 @@ covered-by-us feature under honest naming) with the WRONG theory attached to cuB
 naming. Our Sm90WorkGrid (H27g onward) is the one verified against real SASS instruction
 counts; his coopA/coopB naming should be treated as a mislabel, not cross-referenced as prior
 art for the real mechanism.
+
+### H27y setmaxnreg register-split: implemented, values proven-safe, but ptxas STILL
+### rejects it -- honestly reported as unresolved, not forced through
+
+Deep research first, per Q's explicit demand (checked real source, not memory):
+
+DEEPGEMM (deepseek-ai/DeepGEMM, deep_gemm/include/deep_gemm/impls/sm90_bf16_gemm.cuh):
+uses cutlass::arch::warpgroup_reg_dealloc<48>()/warpgroup_reg_alloc<224>() for the 1
+producer + 2 consumer (384-thread) layout matching ours exactly. 48+2*224=496<=512.
+
+THUNDERKITTENS (HazyResearch/ThunderKittens, kernels/gemm/bf16_h100/bf16_h100_gemm.cu):
+hardcodes decrease_registers<40>()/increase_registers<232>() -- IDENTICAL to CUTLASS's own
+default (non-HeavyRegisterPressure) values, same 384-thread layout. 40+2*232=504<=512.
+
+Neither project's issue tracker has ANY reported hang/deadlock tied to this (searched
+directly). The only confirmed real incident anywhere is CUTLASS's own issue #2007
+(mismatched request exceeding what launch_bounds allowed).
+
+IMPLEMENTED properly, not a bandage: added Config::PRODUCER_REGS/CONSUMER_REGS/
+USE_REGISTER_SPLIT (default 0/0 = off), a compile-time static_assert enforcing
+PRODUCER_REGS + NUM_CONSUMER_WARPGROUPS*CONSUMER_REGS <= 512 (corrects an EARLIER, WRONG
+comment in this file claiming setmaxnreg needs exact equality -- the real PTX ISA
+constraint, re-confirmed at docs.nvidia.com/cuda/parallel-thread-execution, is <=, a pool
+constraint, not ==), and the actual gated warpgroup_reg_dealloc/alloc calls (raw PTX,
+matching cutlass/arch/reg_reconfig.h's own asm exactly). Verified the static_assert
+actually catches a real over-budget value (72/240=552>512, the SAME pair the colleague's
+untested coopB kernel uses) -- refused at compile time rather than risking a hang.
+SASS-diffed against the pre-change build: 59/59 existing kernels byte-identical (first
+diff attempt gave a false "0/59 identical" result due to a diff-script bug -- mangled names
+changed because the new template params shifted C++ name mangling even at their 0/0
+defaults; re-matched functions by semantic identity, ignoring the two new trailing
+defaulted params, and got the correct 59/59 match).
+
+RESULT: compiling the two bisection twins (Sm90Config_192x192x64_regsplit,
+Sm90Config_128x320x64_regsplit, both P=40/C=232) produces:
+    ptxas info: (C7507) Potential Performance Loss: 'setmaxnreg' ignored to maintain
+    minimum register requirements.
+ptxas silently refuses to apply the split and falls back to flat allocation -- 168
+registers, SAME spill byte counts as with no split at all (656/824 for 192x192, 972/1080
+for 128x320). This is the IDENTICAL symptom the colleague's own pasted files report for
+HIS default configs (his values 24/40/56/64/72 all "REJECTED... ignored to maintain
+minimum register requirements", same message verbatim).
+
+RULED OUT, with evidence, not assumption:
+  - the budget math: 40+2*232=504<=512, provably safe, matches CUTLASS/ThunderKittens
+    exactly (measured our own true unconstrained register need first -- 214 for 192x192,
+    190 for 128x320, both well under 232 -- so this is not a case of the values being
+    wrong for our accumulator footprint either)
+  - __launch_bounds__ mismatch: CUTLASS's actual kernel entry point (cutlass/device_kernel.h:
+    116) uses __launch_bounds__(Operator::MaxThreadsPerBlock, Operator::MinBlocksPerMultiprocessor)
+    = __launch_bounds__(384, 1) for this exact kernel shape -- identical to ours
+  - call-site ordering: read CUTLASS's actual placement (sm90_gemm_tma_warpspecialized_
+    cooperative.hpp:557-561 producer, 769-771 consumer) -- the dealloc/alloc calls are NOT
+    the first statement in either branch either (producer: after load_init + cluster_wait_fn;
+    consumer: after initial_work_tile_info), so "call it earlier" is not an obvious fix
+    just from comparing placement
+
+ROOT CAUSE NOT YET IDENTIFIED. Rather than force a fix without understanding it (guessing
+at further structural changes, e.g. matching CUTLASS's more abstracted
+scheduler/collective-mainloop code shape, which would be a much larger rewrite on pure
+speculation), this is left as an HONESTLY MARKED, NOT-DONE experiment: the config
+scaffolding (PRODUCER_REGS/CONSUMER_REGS/static_assert/raw-PTX helpers) is real,
+correct, and SASS-proven to be a no-op for every existing tile -- but the two regsplit
+twins are explicitly commented NOT TO BE TREATED AS WORKING, NOT wired into any entry point
+or test, pending a real root-cause finding (not a guessed fix). 192x192/128x320 continue
+shipping via their existing, correct, no-split configs (spill + serialized wgmma, a real
+but modest perf gap, not a correctness issue -- H27p) exactly as before.
