@@ -7739,3 +7739,59 @@ instruction to never guess at what compiles or runs. The numerical-correctness c
 (that WGMMA_N=64 ceil/floor chunks at columns [0,128)/[128,192) actually produce the right
 FP32 accumulator values on real tensor cores) is NOT yet verified on hardware and must not
 be treated as proven until it is.
+
+## §H27z.2 real H200 build reproduces the predicted C7520 warning exactly -- Q pushed back ("insufficient registers = illegal allocation?"), verified against real docs + the actual code rather than reasserting it's fine
+
+Q's own H200 build log (`make clean && make all -j126`, output.md) shows both predicted
+ptxas diagnostics, in exactly the pattern H27z.1 predicted from the local compile:
+`(C7512)` insufficient-register-resources on 128x320 (all 3 layouts) AND 192x192 NT
+(pre-existing, unrelated to this change -- 192x192 NT has spilled since H27s/H27p);
+`(C7520)` "serialized due to program dependence on compiler-inserted WG.AR in divergent
+path" on 192x192 NN and TN ONLY (`Sm90Layout0`/`Sm90Layout2`), never NT (`Sm90Layout1`) --
+exactly the my_nchunks-guard signature predicted (symmetric split folds the guard away,
+asymmetric split keeps it a real branch).
+
+Q pushed back hard, correctly: "insufficient registers" sounds like it COULD mean an
+illegal/out-of-bounds register allocation, not just a slowdown, and demanded this be
+checked against real documentation rather than asserted. Did that -- web search + a
+direct re-derivation from the actual code, not reasoning from memory:
+
+**What C7512/C7520 actually are** (CUTLASS #2452, #1255; TensorRT-LLM #2116): both are
+`ptxas info` PERFORMANCE diagnostics for wgmma's async pipelining. When the compiler lacks
+register headroom to keep more than one in-flight wgmma group's state live, it falls back
+to a slower but fully-defined path -- spill to local memory (C7512) or insert an explicit
+wait before a point it can't statically prove is safe to pipeline through (C7520). Neither
+is a silent-corruption path; if register pressure could break correctness, ptxas would
+refuse to compile, not warn.
+
+**The REAL hazard that would matter, checked directly (not assumed away):**
+`wgmma.mma_async` has a genuine hardware constraint (CUTLASS/Colfax WGMMA docs) --
+it must be executed COLLECTIVELY by all 128 threads of a warpgroup. If the `my_nchunks`
+guard caused SOME threads in a warpgroup to skip the wgmma while others executed it (real
+lane divergence within the warpgroup), that would be an actual correctness bug, not a perf
+warning. Traced this in the real source, not asserted: `wg_id = threadIdx.x/32/4`-derived
+(`warp_id = tid/32`, `wg_id = warp_id/4`, `Bgemm_sm90_warpspecialized_template.cuh:1656`).
+For every thread in warpgroup 0, `tid` in [0,127) gives `warp_id` in {0,1,2,3}, and
+`warp_id/4` = 0 for ALL FOUR -- so `g` (hence `my_nchunks = (g==0)?NCHUNKS_WG0:NCHUNKS_WG1`)
+is PROVABLY identical across all 128 threads of a warpgroup, by direct integer-division
+arithmetic, not by assumption. `nc` in the guard is a `#pragma unroll`-fully-unrolled
+compile-time constant, identical at each unrolled instance across all threads too. So
+`if (nc >= my_nchunks) continue;` is taken by ALL 128 threads of a warpgroup or NONE --
+never a subset -- satisfying the collective-execution requirement. ptxas still flags it
+"divergent" because its STATIC analysis can't prove `g`/`my_nchunks` are warp-uniform at
+compile time (they're threadIdx-derived runtime values, even though mathematically
+constant per-warpgroup) -- a conservative, safe-but-unnecessary fallback, not evidence the
+code is actually unsafe.
+
+Also re-verified: `wgmma_commit_group()`/`wgmma_wait_group<0>()` are called unconditionally
+after the `nc` loop closes, once per k-step, matching whatever subset of wgmma calls THIS
+warpgroup's threads (uniformly) actually issued that iteration -- no commit/wait mismatch
+across the guard. The zero-init/reset loops touching `acc[a][WG_NCHUNKS-1]` for warpgroup
+1's unused slot are unguarded but harmless (thread-private registers, never read since
+every READ site IS guarded by the same my_nchunks check).
+
+CONCLUSION: both warnings are real, sourced, non-fatal performance advisories --
+confirmed against external documentation and by direct re-derivation from the actual
+generated-code semantics, not reassurance from memory. This does not replace real H200
+correctness testing (still pending, per H27z.1) -- it just rules out "the warning itself
+proves a bug" as a hypothesis.
