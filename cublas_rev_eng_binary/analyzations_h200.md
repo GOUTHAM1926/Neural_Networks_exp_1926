@@ -8036,3 +8036,79 @@ real code -> a genuine 6th "64-collision" bug surfaced on the FIRST real H200 ru
 by this being the first config ever where WGMMA_N != the swizzle atom width) -> found via
 the failure signature (first_bad_idx=96 in every case), diagnosed against the real CuTe
 layout, fixed, and now confirmed correct AND fast on real hardware. 192x192 NN/TN is DONE.
+
+## §H27y.2 setmaxnreg C7512 spill: deep research, three real value-pairs tested, root cause finally identified (a documented, community-acknowledged toolchain limitation) -- NOT fixable on the current toolchain, not a danger, honestly left unresolved rather than forced
+
+Q asked (after seeing the C7512 spill warning persist on 192x192/128x320, now uniform
+across all layouts post-H27z.6) for a genuine deep-dive: is this actually dangerous, and do
+real libraries handle it differently -- using cuBLAS SASS, CUTLASS, DeepGEMM, ThunderKittens
+source, and the web, not assumption.
+
+**Safety, answered directly: NOT a danger.** The only documented wgmma correctness hazard in
+the PTX ISA is accessing an accumulator/operand register before its `wgmma.wait_group`
+completes -- undefined behavior. Register spilling is an ordinary generic-proxy
+`st.local`/`ld.local`; ptxas is the SAME compiler that tracks wgmma-group liveness, so when
+it can't keep two accumulator sets live, it is FORCED to insert the wait before reusing/
+spilling a register a pending wgmma still owns -- that forced wait is exactly what
+"instructions are serialized" describes. Cross-checked against real bug reports: NVIDIA/
+TensorRT-LLM#2116 and NVIDIA/cutlass#1645 both show the identical warning class treated as
+pure codegen/perf by NVIDIA maintainers, never a correctness concern. The one REAL
+correctness bug found in this class (triton-lang/triton#9433) was from a software
+pipeliner computing too SMALL a wait_group count and skipping a wait entirely -- a
+different, opposite failure mode (missing synchronization) from what ptxas's own
+spill-driven serialization does (adding synchronization). Confirms: our C7512 warning is
+safe, slower-but-correct, same as every production kernel that hits this regime.
+
+**What CUTLASS/DeepGEMM/ThunderKittens actually do, with citations:**
+
+- CUTLASS (`sm90_gemm_tma_warpspecialized_cooperative.hpp:131-151`) computes
+  `RegsPerThread` directly from tile shape and switches from 40/232 to a more aggressive
+  **24/240** once `RegsPerThread>=208` ("heavy register pressure").
+- DeepGEMM (`sm90_bf16_gemm.cuh:128-129`) uses **48/224** for its two-math-warpgroup
+  (cooperative) case -- the closest real architectural match to ours -- and 48/248 for a
+  single-warpgroup-owns-the-whole-tile variant that doesn't apply to our 2-consumer-
+  warpgroup structure (48+2*248=544 exceeds our own 512 budget, versus DeepGEMM's own
+  single-consumer budget where it fits).
+- ThunderKittens (`bf16_h100_gemm.cu:52,68`) uses the plain CUTLASS default (40/232)
+  unconditionally -- because it AVOIDS the heavy-pressure regime entirely by tiling
+  differently (more, smaller warpgroups, each always owning exactly one 64-row atom,
+  never multiple), not by tuning the split.
+
+**Tested BOTH real alternatives directly on our own kernel, not just cited them.** Added
+bisection twins for CUTLASS's heavy split (24/240) and DeepGEMM's cooperative split
+(48/224), alongside H27y's already-tested default (40/232), and compiled all three against
+both 192x192 and 128x320. Result: **identical `(C7507) 'setmaxnreg' ignored to maintain
+minimum register requirements` for all three, on both tiles.** This is real, useful negative
+evidence -- it DISPROVES the hypothesis that H27y simply used the wrong industry-standard
+numbers; the rejection is not value-specific.
+
+**Root cause finally identified via a directly-relevant NVIDIA developer forum thread**
+("Hopper `__launch_bounds__` and setmaxnreg conflicts?", forums.developer.nvidia.com/t/
+hopper-launch-bounds-and-setmaxnreg-conflicts/317408): `__launch_bounds__` sets a STATIC,
+whole-CUDA-BLOCK register ceiling (ours: `__launch_bounds__(384,1)`, computing ~168
+registers/thread from 65536/384), while `setmaxnreg` is a DYNAMIC, PER-WARPGROUP request
+that can ask for MORE than that block-wide ceiling for one warpgroup (compensated by asking
+for less on another). NVIDIA's own Robert Crovella confirms in that thread: "there does
+appear to be an issue if you use dynamic register allocation on Hopper and also force the
+maximum register count to be below a certain level" -- with NO definitive fix given, and an
+explicit note that cuBLAS achieves the same 168-register profile "suggesting a solution
+exists but remains undocumented." This fully explains our result: every value we tried for
+the consumer warpgroup (232, 240, 224) exceeds our launch_bounds-implied 168-register
+ceiling, so ALL of them get rejected identically -- not because the numbers were wrong, but
+because `__launch_bounds__(384,1)` itself caps what setmaxnreg can ever grant, and no
+published, safe way to lift that cap while keeping the SAME occupancy target is known even
+to NVIDIA's own community as of this research.
+
+**CONCLUSION -- honestly unresolved, not forced through:** this is a genuine, currently
+undocumented CUDA/ptxas toolchain limitation (CUDA 13.0, confirmed via an independent
+NVIDIA forum thread describing the identical symptom), not a defect in our own code, and
+not something three different real, sourced register-split values could work around. No
+permanent fix exists on the current toolchain without either (a) an NVIDIA bug report and
+a future toolchain update, or (b) a structural redesign avoiding
+`__launch_bounds__(384,1)`'s fixed occupancy target entirely (ThunderKittens's actual
+approach: never let one warpgroup exceed one M-atom's accumulator footprint in the first
+place) -- a much larger change than tuning setmaxnreg, out of scope for this investigation.
+setmaxnreg is left UNUSED (0/0, the SASS-proven no-op default) for every shipped config,
+exactly as before. The C7512 spill (656/824 bytes, 192x192/128x320) is accepted as the
+real, understood, safety-confirmed performance ceiling on this toolchain -- not a danger,
+not something forced through with an unproven guess.
