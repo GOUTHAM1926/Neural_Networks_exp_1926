@@ -7573,3 +7573,169 @@ twins are explicitly commented NOT TO BE TREATED AS WORKING, NOT wired into any 
 or test, pending a real root-cause finding (not a guessed fix). 192x192/128x320 continue
 shipping via their existing, correct, no-split configs (spill + serialized wgmma, a real
 but modest perf gap, not a correctness issue -- H27p) exactly as before.
+
+## §H27z DEEP RESEARCH into 192x192/NN,TN -- "swap-AB" retracted, real mechanism found, H27b confirmed correct, real path forward identified
+
+Triggered by Q pushing back hard on "swap-AB canonicalisation" being treated as a settled
+plan for unlocking 192x192 under NN/TN, demanding proof from every resource available
+(our own SASS, ThunderKittens, DeepGEMM, CUTLASS, cuBLAS SASS/nsys, web) before accepting
+any fix as real. This section documents two self-corrections found DURING the research
+(not told to us -- found by checking), and the actual conclusive result.
+
+**Self-correction #1 -- "swap-AB" is WRONG, not just incomplete.** Verified numerically
+(numpy): swapping which buffer plays A vs B (plus computing C^T) does NOT avoid a real
+data transpose of whichever operand is MN-major. Majorness is a physical byte-stride
+property. `B.T` in numpy is a zero-copy view, but its strides confirm the fast-varying
+axis is UNCHANGED -- relabelling never converts an N-contiguous buffer into a K-contiguous
+one. Every earlier claim this session that swap-AB was a free/cheap dispatch-level fix
+(H27p, H27t, and repeated verbally) was wrong.
+
+**Self-correction #2 -- cuBLAS itself does NOT do a real transpose either.** Queried a
+real captured nsys/CUPTI SQLite trace for an actual 192x192/TNN shape
+(`sweep_results_cublas/nsys/shape_5_M896_N4864_K4096.sqlite`, kernel
+`nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coopB_TNN`, found via `shape_to_kernel_mapping.tsv`)
+via Python's stdlib `sqlite3` (no CLI sqlite3 binary on this box):
+
+```sql
+SELECT k.start, k.end, s.value AS name FROM CUPTI_ACTIVITY_KIND_KERNEL k
+JOIN StringIds s ON k.demangledName = s.id ORDER BY k.start
+```
+
+Result: 23/23 kernel launches in the trace are the IDENTICAL GEMM kernel. Zero separate
+transpose/copy kernels anywhere. cuBLAS solves the MN-major addressing problem natively,
+inside one kernel -- confirming the real fix must be a descriptor/addressing-level
+mechanism, not a dispatch trick.
+
+**Investigated: GMMA descriptor `base_offset` field as the candidate mechanism.**
+`cute/arch/mma_sm90_desc.hpp` documents `base_offset_` (3 bits, [49,52)) as "Valid only
+for SWIZZLE_128B and SWIZZLE_64B" -- exactly the kind of phase-correction field a
+mid-atom start would need. But grepped BOTH the SM90 (`mma_traits_sm90_gmma.hpp:218`) AND
+SM100 (`mma_traits_sm100.hpp:228`) reference `make_gmma_desc`/`make_smem_desc`
+implementations: **both hardcode `base_offset = 0`, unconditionally, with zero examples
+anywhere in CUTLASS of it ever being computed nonzero.** This is not "CUTLASS chooses not
+to need it here" -- it is the ONLY value ever used across both architectures' public
+source. Whatever cuBLAS's closed-source kernel does, it is not exercising a documented,
+reusable CUTLASS mechanism we can copy.
+
+**THE decisive test: does a mid-atom-based descriptor even compute correct addresses?**
+Built a CuTe compile-time probe using the REAL composed `Swizzle o Layout` tile
+(`GMMA::Layout_MN_SW128_Atom<bf16>` tiled to `(BN,BK)`), not just raw offset arithmetic:
+for the actual blocked case (BN=192, split at column 96 -- the WGMMA_N=96 chunk boundary
+NN/TN needs), compared the tile's TRUE swizzled address at every (96+n_local, k) against
+what the WGMMA hardware would compute if it started a fresh periodic swizzle pattern from
+that mid-atom base (i.e. `base_full + full(n_local,k) - full(0,0)`, the natural
+"treat-descriptor-start-as-origin" assumption every wgmma descriptor makes):
+
+```text
+split@96 (our real blocked case):  4096 / 6144 mismatches (66.7% WRONG)
+split@64 (atom-aligned control):   0 / 8192 mismatches
+split@64, BN=320 (atom-aligned):   0 / 16384 mismatches
+```
+
+Atom-aligned splits (64, 128, ...) compose perfectly with the swizzle -- zero mismatches,
+confirming the general formula `offset(n,k)=(n/64)*(64*BK)+(n%64)+k*64` derived earlier in
+this investigation is exact (also verified 0/32768 mismatches standalone, independent of
+this test). But the mid-atom split (column 96) is genuinely, provably broken: a WGMMA
+descriptor built from that base does NOT read the bytes the swizzle actually put there.
+The earlier finding that 4128 elements (=8256 bytes) is 16-byte aligned was real but
+INSUFFICIENT -- 16-byte alignment is required to legally *encode* a descriptor address,
+but it is a much weaker condition than swizzle-atom alignment, which is what correctness
+actually needs. **H27b's original constraint stands: it was not overly conservative.**
+
+**CONCLUSION -- neither previously-considered fix is real. The actual viable path is a
+THIRD option, structurally new, not yet implemented.** Re-examined why 96 fails but is
+the only candidate: for BM=192/BN=192 (MATOMS=3, odd), the WGMMA_N=64 fallback gives
+MATOMS*(BN/64)=3*3=9 work blocks -- ODD, cannot halve across 2 consumer warpgroups either
+(this is a genuine, separate constraint already correctly encoded by
+`Sm90WorkGrid::wgmma_n_pick`/`nchunk_ok`, not something newly found). So 96 (atom-illegal
+for MN-major B) is the ONLY split that gives an even 6-block grid; 64 (atom-legal) gives
+an odd 9-block grid. Neither works as a UNIFORM per-chunk width.
+
+The real opening: nothing requires the two consumer warpgroups' N-chunks to be the SAME
+width. An ASYMMETRIC split -- WG0 owns columns [0,128) (2 atoms, WGMMA N=128, legal
+atom-aligned start at 0), WG1 owns columns [128,192) (1 atom, WGMMA N=64, legal
+atom-aligned start at 128) -- keeps BOTH chunk starts on swizzle-atom boundaries (0 and
+128 are both multiples of 64) while still covering all 192 columns exactly once. This is
+precisely what our own static_assert message (H27b, line ~741) already named as an
+option ("needs either an UNEVEN M split or a base_offset swizzle-phase fixup") --
+generalised here to an uneven N split, since M can't be split evenly with MATOMS=3 odd
+either. base_offset is now conclusively ruled out (previous paragraph); uneven split is
+the one real remaining mechanism.
+
+This required genuine new structure in `Sm90WorkGrid` (previously assumed one uniform
+`WGMMA_N` chunk count for every warpgroup) plus the consumer's wgmma-issue loop and
+C-store chunking (previously sized off a single shared `WG_N_WIDTH`) to support two
+warpgroups doing DIFFERENT amounts of work. Reported to Q before proceeding (per standing
+instruction); Q said proceed. Implemented and verified -- see H27z.1.
+
+## §H27z.1 asymmetric N-split implemented -- 192x192 NN/TN now compile and pass a real SASS regression proof; one honest perf caveat found, not yet fixed
+
+**What changed (`Bgemm_sm90_warpspecialized_template.cuh`).** `Sm90WorkGrid` now derives
+`NCHUNKS_WG0 = ceil(NCHUNKS/2)` and `NCHUNKS_WG1 = floor(NCHUNKS/2)` (equal to each other,
+and to the old single `WG_NCHUNKS`, for every tile shipped before this change -- only an
+odd `NCHUNKS` under an N-split produces a genuine asymmetry). `WGMMA_N`'s candidate
+acceptance (`wgmma_n_pick`) no longer requires an even `MATOMS*(BN/wn)` grid when the
+split is along N -- a `splittable()` check (`SPLIT_M || (bn/wn)>=2`) replaces it, since the
+ceil/floor split covers any `NCHUNKS>=2` regardless of parity. `C_BOX_N` -- which sizes the
+ONE shared C_tmap TMA descriptor both warpgroups use -- is set to `WGMMA_N` itself in the
+new asymmetric case (proven to divide each warpgroup's own N-width exactly by
+construction), instead of the general `c_box_div` search used in the symmetric case. In
+the consumer body, a runtime `my_nchunks = (g==0) ? NCHUNKS_WG0 : NCHUNKS_WG1` guards
+every loop that indexes a GLOBAL chunk (`nchunk0+nc`) -- the mainloop's wgmma issue, the
+epilogue's smem write, and the TMA store loop -- so warpgroup 1's "phantom" trailing chunk
+(when `NCHUNKS_WG1 < NCHUNKS_WG0`) is skipped rather than reading/writing past this tile's
+real BN. The accumulator zero-init and reset loops are left unguarded -- they only touch
+a thread-private register array, never shared/global memory, so an unused slot is harmless.
+
+**Compile-time proof, not assumption.** Building `Bgemm_sm90_{nn,tn}_variants.cu` with the
+new 192x192 entry points now SUCCEEDS -- before this change the exact same Config would
+have hit `Sm90WorkGrid`'s `static_assert(WGMMA_N != 0, ...)` at compile time (proven
+directly: the picker's `splittable()` check is what newly accepts wn=64 for
+BM=192/BN=192, where the old parity check rejected it). A first attempt at the
+`static_assert(NCHUNKS_WG0 + NCHUNKS_WG1 == NCHUNKS, ...)` sanity check was ITself WRONG --
+it fired for every SPLIT_M (M-split) tile, since under SPLIT_M both warpgroups
+independently see the FULL NCHUNKS (they split M-rows, not N-chunks), so the sum is
+2*NCHUNKS there by design, not a partition. Caught immediately by actually compiling
+(`nvcc -c Bgemm_sm90_nn_variants.cu`) before claiming success, not by inspection -- fixed
+to `static_assert(SPLIT_M || (NCHUNKS_WG0+NCHUNKS_WG1==NCHUNKS), ...)`.
+
+**SASS regression proof (not claimed, measured).** Reconstructed the exact pre-H27z header
+(reversing this turn's edits against the known original text) and compiled the unmodified
+`Bgemm_sm90_nt_variants.cu` against both the before and after headers with identical
+`nvcc -gencode arch=compute_90a,code=sm_90a` flags. Raw `diff` of the full `cuobjdump
+--dump-sass` output: **0 lines different, 59/59 kernels present in both.** For
+`nn_variants.cu`/`tn_variants.cu` (which also gained the new 192x192 entry point), matched
+functions by mangled name between HEAD's committed version (no 192x192) and the current
+build: **54/54 pre-existing kernels byte-identical in both, 0 removed, exactly 1 new
+kernel added per file** (the 192x192 entry). The asymmetric-split machinery is a proven
+no-op for every kernel that existed before it.
+
+**Honest perf caveat, found by checking, not assumed away.** The new 192x192 NN/TN kernel
+compiles and is provably correct-by-construction (same swizzle-atom-aligned WGMMA_N=64
+chunks already validated for 128x320/192x128), but its ptxas profile is worse than every
+other tile: **168 registers, 472-byte stack frame, 2392 bytes spill stores / 2764 bytes
+spill loads** -- roughly 2.4x the spill of the next-worst tile (128x320: 972/1080 bytes).
+Additionally, ptxas emits a NEW warning not seen on any other tile: `(C7520) Potential
+Performance Loss: wgmma.mma_async instructions are serialized due to program dependence on
+compiler-inserted WG.AR in divergent path`, on both the NN and TN 192x192 kernels but
+NOT the NT one (confirmed by grepping ptxas -v output across all three variant files) --
+consistent with the mechanism: NT's 192x192 split is symmetric (NCHUNKS_WG0==NCHUNKS_WG1),
+so `my_nchunks` folds to a compile-time-equal value on both branches of its ternary and
+the `if (nc >= my_nchunks) continue;` guard optimizes away; NN/TN's split is genuinely
+asymmetric, so the guard stays a real runtime branch and ptxas serializes the wgmma
+pipelining around it. This is CORRECT, not a bug -- but it is very likely SLOWER than an
+alternative implementation that gives each warpgroup (g==0 vs g==1) its own fully
+compile-time-specialized mainloop (an `if constexpr`-free `if (g==0) {...} else {...}`
+split with NO runtime chunk-count comparison inside either branch), which would remove the
+divergent-path penalty entirely. NOT attempted this session -- flagged as a concrete,
+scoped follow-up optimization once correctness is confirmed on real H200 hardware; fixing
+a hypothetical perf issue before confirming the functional result on hardware would be
+solving problems out of order.
+
+**Not yet done:** real H200 execution. Everything above is compile-time/static proof
+(SASS regression, ptxas register/spill counts, static_assert firing behavior) -- exactly
+the category of evidence that CAN be gathered without the remote server, per standing
+instruction to never guess at what compiles or runs. The numerical-correctness claim
+(that WGMMA_N=64 ceil/floor chunks at columns [0,128)/[128,192) actually produce the right
+FP32 accumulator values on real tensor cores) is NOT yet verified on hardware and must not
+be treated as proven until it is.
