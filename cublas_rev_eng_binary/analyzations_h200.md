@@ -7942,3 +7942,65 @@ real tensor cores) and (b) get real TFLOPS numbers to confirm the expected win o
 38 TFLOPS the asymmetric split measured. Given the register/spill profile now exactly
 matches 192x192 NT's, and NT is already known-good on H200, confidence is high -- but
 "proven" requires the actual run, not this reasoning alone.
+
+## §H27z.5 real bug found on real H200 -- H27z.4 shipped a genuine defect; found, diagnosed, and fixed with proof, not assumption; this is exactly why "compile-time proof is not sufficient" above was not just a formality
+
+Q ran the H200 test. ALL 12 new 192x192 NN/TN correctness cases FAILED (b0/b1/k512/
+multitile/batch2/residue/square-2048, both layouts) -- H27z.4 shipped with a real defect.
+
+**The failure signature immediately localized the bug.** Every single failing case's
+`first_bad_idx` was exactly **96** (one case: 97, a beta-read adjacent element) -- the
+first column of the SECOND N-chunk (WGMMA_N=96, so columns 0-95 are chunk 0, 96-191 are
+chunk 1). ~45% of elements wrong in every case, consistent with one whole 96-column half
+being computed from garbage while the other is fine.
+
+**Root cause, verified against the real composed CuTe layout before touching any code:**
+the consumer's N-chunk offset term (`nchunk_term`, the per-column-chunk smem address
+contribution added on top of the K-step offset) was `chunk_index * WGMMA_N * AW_B` (AW_B =
+the swizzle atom's element width) for BOTH majornesses. Checked directly:
+
+```text
+Real offset at (col=96, k=0), SW64 (atom=32):      6144
+Existing formula, chunk index 1 (96*32):           3072   -- WRONG, off by exactly 2x
+```
+
+The correct formula for MN-major B is `chunk_index * WGMMA_N * BK` (BK, not AW_B) --
+derived and verified: an MN-major swizzle atom spans `ATOM_N` columns x `BK` rows
+contiguously, so ONE atom costs `ATOM_N*BK` elements; a WGMMA_N-wide chunk is exactly
+`WGMMA_N/ATOM_N` whole atoms (guaranteed integral by `nchunk_ok`'s own legality
+requirement), costing `(WGMMA_N/ATOM_N)*(ATOM_N*BK) = WGMMA_N*BK` -- the atom width
+cancels out algebraically. Verified against the real composed swizzle layout (not the
+nonswizzle portion): **0/12288 mismatches** for `WGMMA_N*BK` across every (chunk,
+column-in-chunk, k) triple.
+
+**Why this was dormant through the ENTIRE work-grid-split feature (H27l onward) and both
+H27z revisions:** every MN-major config shipped before H27z.4 had `WGMMA_N == AW_B == BK
+== 64` simultaneously (a three-way coincidence -- BK is always 64 in this file, and every
+prior MN-major WGMMA_N pick happened to equal the SW128 atom width, also 64). The WRONG
+formula (`WGMMA_N*AW_B`) and the RIGHT one (`WGMMA_N*BK`) are numerically IDENTICAL
+whenever `AW_B==BK`, so this never manifested. H27z.4's SW64 fix for 192x192 was the FIRST
+config where `WGMMA_N(96) != AW_B(32)`, which is precisely what exposed it. This is the
+SAME "64-collision" bug family H22 already documented five instances of (two conceptually
+different 64s -- there, wgmma-atom-64 vs swizzle-atom-64 vs BK=64; here, chunk-width vs
+atom-width vs K-tile-depth) -- a sixth instance, same root cause (an assumption that two
+independently-meaningful quantities are equal, true by luck for every config tested until
+now, silently wrong the moment they diverge).
+
+**K-major B's formula (`WGMMA_N*AW_B`, unchanged) was separately re-verified, not just
+assumed safe because "the fix doesn't touch it":** confirmed 0/12288 mismatches against the
+real K-major SW128 composed layout at WGMMA_N=96, AW_B=64 -- the exact NT 192x192 case
+already H200-validated, i.e. re-derived the SAME formula that was already known-good,
+rather than trusting it by inference alone.
+
+**Fix applied:** `nchunk_term` is now computed conditionally on `MN_MAJOR_B` -- `WGMMA_N*BK`
+for MN-major, `WGMMA_N*AW_B` (unchanged) for K-major. Full regression re-run after the fix:
+SASS-identical to before the fix for every kernel EXCEPT the 192x192 ones (confirmed via a
+direct SASS diff between the pre-fix and post-fix 192x192 NN build -- exactly 1 function
+differs, proving the fix actually changed generated code, not a no-op); NT still 59/59
+identical to the true original baseline; NN/TN still 54/54 pre-existing identical, 1 new
+kernel each.
+
+**Not yet done:** the actual re-run on H200 to confirm this specific fix resolves the
+failures (expected, given the CuTe proof, but "expected" is not "proven" -- see the
+standing instruction this section's own header references). Given to Q for a second H200
+run.
