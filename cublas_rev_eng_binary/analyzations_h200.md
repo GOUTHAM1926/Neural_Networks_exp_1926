@@ -8402,3 +8402,40 @@ check printed empty output that I nearly read as "passed"; recreated it and re-r
 which is a real runtime behaviour change (registers genuinely redistributed between
 warpgroups), so this needs the full H200 suite before it can be trusted -- correctness AND
 absence of hangs, since `setmaxnreg.inc` blocks until the CTA pool can satisfy it.
+
+## §H27y.8 H200 VALIDATION of the setmaxnreg placement fix -- 84/84 PASS, zero warnings, 128x320 +6.7x and 192x192 +4.65x
+
+Real H200 run of H27y.7 (`make clean && make all -j126`, then
+`make run TEST=examples/test_bgemm_sm90_nn_tn.cu`). **84/84 PASS, 0 FAIL, and ZERO ptxas
+warnings of any code** -- C7512 is gone from the build output entirely, which is also the
+quickest proof the new code was actually live (a first attempt tested stale code: the fix
+was still uncommitted locally so there was nothing on the remote to pull, and the tell was
+C7512 still naming exactly 192x192/128x320 with TFLOPS unchanged within noise).
+
+Measured, square-2048 (M=N=K=2048), vs the H27z.6 validated baseline:
+
+```text
+case                       before          after         change
+128x320 NN/TN           84.12 / 83.85   565.22 / 555.77   6.7x  / 6.6x
+192x192 NN/TN          132.18 / 132.36  614.55 / 615.64   4.65x / 4.65x
+192x128 NN/TN (no spill before) 447.80 / 437.76  441.54 / 449.90   unchanged
+square-2048 (128x256)  643.58 / 645.47  663.29 / 660.24   +3%
+square-4096            731.67 / 728.55  768.96 / 771.96   +5%
+qwen-shape132 (TN, 6144x2048x4096)     698.65 -> 737.49   +6%
+```
+
+The two tiles that carried 100% of the library's register spill were also its two slowest;
+they are now in the same performance class as everything else. Every other case gained a
+consistent 2-6% from the reduced register pressure, and nothing regressed (192x128's
+0.99x/1.03x is run-to-run noise -- it never spilled, so it had nothing to gain).
+
+This matters more than the tile count suggests: 128x320 and 192x192 are cuBLAS's #1 and #2
+most-used tiles in the real captured Qwen sweep (52/163 and 33/163 shapes respectively,
+H27r), i.e. over half of everything cuBLAS itself dispatches for this workload.
+
+No hang, confirming `setmaxnreg.inc`'s blocking semantics are satisfied at runtime by the
+40 + 2*232 = 504 <= 512 budget the Config static_assert enforces at compile time.
+
+**192x192 and 128x320 are now DONE**: correct in all three layouts, zero spill, zero ptxas
+warnings, and performance-competitive. The C7512 investigation that ran from H27p through
+H27y.8 is closed.
