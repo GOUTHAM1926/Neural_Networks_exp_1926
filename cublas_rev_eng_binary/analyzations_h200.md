@@ -8519,3 +8519,75 @@ gap from the STSM one.
 
 NOT yet implemented: the STSM epilogue. Recorded here first, per Q's instruction to note the
 finding before acting on it.
+
+## §H27y.11 NSYS-ONLY capture (ours vs cuBLAS, 4 real shapes) -- kernel identity PROVEN from the timeline, and the gap splits cleanly by whether we own the tile cuBLAS chose
+
+Done as a deliberate single-tool step at Q's instruction (nsys first, ncu and SASS to follow
+separately), after two earlier combined attempts produced invalid data.
+
+**Capture mechanics -- three traps hit and fixed, each verified locally before the run:**
+  1. `nsys profile --stats=false` emits ONLY a .nsys-rep, NO .sqlite (proven by running it on
+     /bin/true). An earlier script queried a .sqlite that never existed.
+  2. `nsys stats <f>.nsys-rep` GENERATES the sqlite itself on first use, so --stats=true is
+     unnecessary. BUT: after the FIRST report creates it, the remaining reports can hit
+     "Existing SQLite export found ... Use --force-export=true" and REFUSE. That happened
+     here for every cuBLAS capture (4 of 5 CSVs empty). Harmless in the end because the
+     .sqlite files are complete and everything was re-extracted directly from them, but the
+     script needs `--force-export=true` (or to run stats off the .sqlite) next time.
+  3. `CUPTI_ACTIVITY_KIND_MEMCPY` does NOT exist when a trace has no memcpys -- an unguarded
+     query throws and would have killed the whole timeline block. Guarded.
+
+**KERNEL IDENTITY -- the point of doing nsys first. Read off the timeline, not our printf:**
+```text
+shape              ours                                      cuBLAS
+896x4864x4096      tile=192x192 regsplit=40/232 layout=1     nvjet_..._192x192_..._coopB_TNN
+2048x11008x4096    tile=192x192 regsplit=40/232 layout=1     nvjet_..._192x192_..._coopB_TNN
+1024x5120x4096     tile=128x192 regsplit=40/232 layout=1     nvjet_..._320x128_..._coopB_TNT
+2560x4096x4096     tile=128x128 regsplit=40/232 layout=1     nvjet_..._320x128_..._coopB_TNT
+```
+`regsplit=40/232` visible in every one of our kernels confirms H27y.7's setmaxnreg is live in
+the binary actually executed -- independent of the build log.
+
+**MEASURED (median of 23 launches per capture; block=384 on both sides):**
+```text
+shape             side    CTAs  regs  smemKB   med_us   sd_us  idle%  gap_us
+896x4864x4096     ours     130   168   217.0    47.84    0.50    7.0    1.38
+896x4864x4096     cublas   130   168   208.2    45.66    0.23    5.6    1.15
+2048x11008x4096   ours     132   168   217.0   223.52    1.49    1.8    1.33
+2048x11008x4096   cublas   132   168   217.34   0.50     2.1    3.62
+1024x5120x4096    ours     132   168   209.0    63.49    0.66    5.6    1.18
+1024x5120x4096    cublas   128   168   184.2    50.98    0.41    5.3    1.49
+2560x4096x4096    ours     132   168   225.0   123.87    1.62    3.0    1.22
+2560x4096x4096    cublas   132   168   184.2    99.23    0.54    2.9    1.39
+```
+
+**THE HEADLINE RESULT -- the gap is tile SELECTION, not kernel quality:**
+```text
+shape             cuBLAS tile   our tile   tiles ours/cuBLAS   slowdown
+896x4864x4096     192x192       192x192 (SAME)      1.00x        +4.8%
+2048x11008x4096   192x192       192x192 (SAME)      1.00x        +2.8%
+1024x5120x4096    320x128       128x192             1.35x       +24.5%
+2560x4096x4096    320x128       128x128             2.50x       +24.8%
+```
+**When we run the SAME tile as cuBLAS we are within 3-5%.** The 24% deficit appears only
+where cuBLAS picks 320x128 -- a 40960-output tile larger than anything we own (our largest
+is 128x192 = 24576).
+
+**What this does NOT prove, stated explicitly.** 1.35x and 2.50x more tiles produce the SAME
+~24.5% slowdown. If per-tile epilogue cost were the driver, 2.50x should hurt far more than
+1.35x. It does not, so the dominant term is something that saturates -- most plausibly
+ARITHMETIC INTENSITY per tile: 320x128 loads 448 rows to produce 40960 outputs
+(91.4 outputs/row) versus our 128x128 at 64 and 128x192 at 76.8, i.e. cuBLAS's tile is
+1.19-1.43x better in loaded-data terms. So H27y.10's proven bank-conflict defect is REAL but
+is NOT established as the dominant cost on these two shapes. Separating "epilogue-bound" from
+"memory/intensity-bound" requires ncu on shapes 3-4 (DRAM throughput + tensor-core % would
+distinguish them). Recorded as an open question rather than resolved.
+
+**Secondary observations:**
+- smem: ours 209-225 KB vs cuBLAS 184.2 KB. Our 128x128 uses 225 KB -- MORE than our
+  192x192's 217 KB -- because LOAD_PIPE_DEPTH auto-derives a deeper pipeline for smaller
+  stages and fills the budget. Worth revisiting: is max depth always optimal?
+- run-to-run consistency: cuBLAS's per-launch stddev is 2-3x tighter (0.23-0.54us vs ours
+  0.50-1.62us).
+- NOT launch-bound: idle 1.8-7.0%, inter-kernel gaps 1.2-3.6us on both sides.
+- no memcpys inside any timed loop (3 memsets, setup only).
