@@ -8689,3 +8689,90 @@ afterwards rather than trusting that the patch reported success.
 **NOT yet hardware-tested.** 168 new kernels exist that have never run. The cluster gate
 tests that would exercise them are among the 10 stale ones broken by H21's raster rename
 (H27y.13), so they must be repaired before this matrix can actually be validated on H200.
+
+---
+
+## §H27y.15 — THE combination test: one matrix test replacing the 10 stale gates
+
+### Why not repair the 10 gates
+They are per-milestone bisection tools (1x2 gate, 2x2 gate, mn gate, …) that name pre-H21
+symbols like `..._1x2_template`. H21 added the raster axis and renamed everything to
+`_1x2_h` / `_1x2_v`, so all 10 have been dead since 2026-07-28. Repairing them yields ten
+ad-hoc tests that still cover a fraction of the 337 kernels. Replaced, not repaired.
+
+### Single source of truth (the actual future-proofing)
+The config list existed only inside `BLUBLAS_SM90_DECL_CLUSTER_GRID`. Extracted into an
+X-macro in `Bgemm_sm90_bf16.cuh`:
+
+```c
+#define BLUBLAS_SM90_CFG_FOREACH(X, A)   X(128x128x64_1x2_v, A) ... /* 102 entries */
+```
+
+`X(cfg, A)` takes the layout as a **parameter**, not a free identifier. First attempt used
+`#define BLUBLAS_SM90_DECL_ONE(cfg) BLUBLAS_SM90_DECL(lay_lc, cfg)` — a free `lay_lc` — and
+it silently produced literal `lay_lc` in every declaration. Macro parameters are substituted
+when the *enclosing* macro's body is scanned, and that body contains no `lay_lc`. Caught by
+compiling, not by inspection.
+
+Refactor proven to be a pure no-op: **115/115 kernels byte-identical SASS**, 0 different.
+
+### Coverage, measured both directions
+| | count |
+|---|---|
+| kernels defined by the library | 337 |
+| kernels referenced by the test | 337 |
+| uncovered | **0** |
+| phantom references | **0** |
+
+327 come from the FOREACH list (102 × 3 layouts) + 21 base tiles. The remaining 10 are
+one-offs outside the cluster grid — `redA`/`redB`/`red` (multicast-reduction) and
+`cbox128` — listed explicitly. Without them the matrix would have silently covered 327/337.
+`tools/matrix_test.sh` makes this a permanent guard: it diffs `nm` on the library against
+`nm` on the test binary and fails on any untested kernel.
+
+### Enable/disable
+`--tile= --cluster= --raster= --layout= --base --shape= --quick --list --bench --tol=`
+
+### Per-layout cuBLAS reference — one per layout, not one shared
+| layout | operands | opB / ldb | opA / lda |
+|---|---|---|---|
+| NN | A[M,K] B[K,N] | N / N | N / K |
+| TN | A[K,M] B[K,N] | N / N | **T / M** |
+| NT | A[M,K] B[N,K] | **T / K** | N / K |
+
+### Feature-by-tile derivation (host probe, compile-time constants)
+| tile | swA | swB | WGMMA_N | NCHUNKS | split | regs |
+|---|---|---|---|---|---|---|
+| 128x128 / 128x256 / 256x128 | 128 | 128 | 128/256/128 | 1 | M | 40/232 |
+| 128x192 | 128 | 128 | 96 NT, 64 NN/TN | 2–3 | M | 40/232 |
+| 192x128 | 128 | 128 | 64 | 2 | **N** | 40/232 |
+| 192x192 | 128 | **64** (NN/TN) | 96 | 2 | **N** | 40/232 |
+| 128x320 | 128 | 128 | 64 | 5 | M | 40/232 |
+
+Three findings:
+1. **Swizzle is derived, not hardcoded to 128.** 192x192 NN/TN derives **SW64** — the only
+   tile that does. Confirms `sw_pick_symmetric_mn` is live rather than decorative.
+2. **setmaxnreg is on every tile and layout** (40/232), inherited from the
+   `Sm90WarpspecConfig` template defaults.
+3. **`ASYMMETRIC_N` is now 0 everywhere.** The ceil/floor asymmetric split from H27z.1 is no
+   longer reached by any shipped tile — the SW64 fix made 192x192 split evenly. It survives
+   as dormant fallback and is therefore **untested in any production path**.
+
+### Why SW64 is correct for 192x192, and the cost of forcing SW128
+With SW128 the atom is 64 elements and `96 % 64 = 32`, so `WGMMA_N=96` is illegal; the
+derivation falls back to `WGMMA_N=64`, which with MATOMS=3 gives 3 chunks split **2/1 —
+asymmetric**. That needs a runtime per-warpgroup guard, which triggers ptxas **C7520**
+(wgmma serialized on a divergent path).
+
+Measured, same setmaxnreg state: **SW128+asymmetric 38 TFLOPS vs SW64+symmetric 132 TFLOPS
+— 3.5×.** SW64's theoretical cost is more TMA instructions per stage (narrower atom); it is
+dominated by avoiding the serialization. Forcing 128 is a regression, not an optimization.
+
+**Caveat:** that 3.5× was measured *before* the H27y.7 setmaxnreg fix. Whether the gap holds
+now is unmeasured. `SWIZZLE_BYTES` is an override knob, so a forced-SW128 192x192 config
+would settle it directly — worth adding to the matrix as a deliberate experiment.
+
+### Status
+Compiles clean; symbol coverage 337/337 verified locally against an `sm_90a` build.
+**Not yet run on hardware** — including the 168 cluster kernels from §H27y.14, which have
+never executed.
