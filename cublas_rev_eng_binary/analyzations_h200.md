@@ -8439,3 +8439,83 @@ No hang, confirming `setmaxnreg.inc`'s blocking semantics are satisfied at runti
 **192x192 and 128x320 are now DONE**: correct in all three layouts, zero spill, zero ptxas
 warnings, and performance-competitive. The C7512 investigation that ran from H27p through
 H27y.8 is closed.
+
+## §H27y.10 OURS vs cuBLAS head-to-head at real shapes -- we are at 96-97% on our best tile, and the remaining gap is localised to ONE thing: the epilogue does not use STSM
+
+Q pushed for a proper ours-vs-cuBLAS measurement instead of more doc reading. Two earlier
+capture attempts were invalid (documented so they are not repeated):
+  * ncu matched the SHORT function name by default, so a regex written against the mangled
+    name profiled NOTHING;
+  * after fixing that, --launch-count grabbed the FIRST matching launches = the tiny
+    M=192 N=192 K=64 cases -> grid=(1,1,1), ONE CTA on a 132-SM GPU. sm__throughput read
+    0.12% simply because 131 SMs were idle. That measured the launch being tiny.
+  * test_bgemm_sm90_vs_cublas.cu cannot be used for this: it calls the dispatcher, which
+    still has ZERO references to 192x192/128x320, so it silently benchmarks the OLD tiles.
+Fixed with `examples/qwen_shape_blublas.cu` -- one tile, one shape, repeated -- the direct
+counterpart of qwen_shape_cublas.cu that produced the cuBLAS reference numbers.
+
+**Measurement validity, verified in the raw CSV rather than assumed.** All 3 profiled
+launches per side, identical each time:
+```text
+ours  : Sm90WarpspecConfig<192,192,64,1,1,0,1,1,0,0,0,0,40,232>, Layout1(NT)  grid=(130,1,1) block=384
+cuBLAS: nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coopB_TNN                        grid=(2,65,1)  block=384
+```
+Same tile, same 130 CTAs, same block size, same shape, and the 40/232 register split is
+confirmed ACTIVE in our mangled name.
+
+**PHASE 1 -- throughput, our best tile vs cuBLAS (no profiler):**
+```text
+shape                 our best tile        ours     cuBLAS    ratio
+896  x4864 x4096      192x192            723.07     754.84    95.8%
+2048 x11008x4096      192x192            816.82     841.16    97.1%
+1024 x5120 x4096      128x192            660.01     814.27    81.1%
+2560 x4096 x4096      128x128            683.18     851.78    80.2%
+```
+
+**PHASE 2 -- ncu at shape_5, ours vs cuBLAS:**
+```text
+metric                              OURS        cuBLAS     ratio
+gpu__time_duration                63584.00     61792.00    1.03x
+tensor-core active %                 89.80        92.06    0.98x
+sm__throughput %                     84.00        86.54    0.97x
+registers/thread                    168.00       168.00    1.00x
+smem/block                        223232       214228      1.04x
+smsp__inst_executed            11282782      5350768       2.11x   <-- 2x the instructions
+l1tex bank conflicts (shared)     224990            5    ~45000x   <-- THE finding
+```
+Bank-conflict counts were 224959/225004/224990 for us and 5/4/5 for cuBLAS across the three
+launches -- reproducible, not noise.
+
+**ROOT CAUSE, from the SASS opcode census:**
+```text
+ours   : 144 x STS             (plain shared store), ZERO STSM
+cuBLAS : 414 x STSM.16.M88.4   (store-matrix) + only 69 plain STS
+         (cuBLAS also stores via UTMASTG.3D x276; ours uses UTMASTG.2D x3)
+```
+`STSM` (stmatrix) is the hardware store-matrix instruction built for writing wgmma
+accumulator fragments to smem in a bank-conflict-free pattern. We write
+`__nv_bfloat162` pairs with plain STS, and the wgmma fragment layout maps many lanes onto
+the same bank -> 225k conflicts. This single difference plausibly explains both the bank
+conflicts and a large share of the 2.11x instruction count.
+
+**A FALSE CLAIM IN OUR OWN CODE, now corrected.** The epilogue comment read: "No stmatrix
+(fp32 accumulator, straight out of wgmma -- matches both CUTLASS's and ThunderKittens'
+Hopper epilogues, which also skip stmatrix for this reason)." That is wrong about CUTLASS:
+`cutlass/epilogue/collective/builders/sm90_builder.inl:326,329,788,791` selects
+`Copy_Atom<SM90_U32x4_STSM_N, ...>` / `SM90_U32x2_STSM_N`, and the compiled CUTLASS kernel's
+own mangled name contains `SM90_U32x4_STSM_N`. cuBLAS uses it too (414 STSM). So the stated
+justification for not using stmatrix never held.
+
+**Interpretation, stated carefully:** at these shapes we are TENSOR-CORE BOUND (89.8% vs
+92.1%), which is why 225k bank conflicts and 2x instructions still only cost ~3% here. The
+waste is real but currently mostly hidden behind the math pipe. It should matter more on
+shapes with a larger epilogue-to-math ratio, and it is the clearest remaining inefficiency.
+
+**Also found: a genuinely missing tile.** On the two shapes where we sit at ~80%, cuBLAS
+dispatches 320x128 (BM=320, BN=128). We only have its transpose, 128x320 -- and on those
+shapes 128x320 is not even our best (128x192 and 128x128 beat it). BM=320 is legal for us
+(320/64 = 5 M-atoms, odd -> N-split), so the tile is buildable and is a separate, concrete
+gap from the STSM one.
+
+NOT yet implemented: the STSM epilogue. Recorded here first, per Q's instruction to note the
+finding before acting on it.
