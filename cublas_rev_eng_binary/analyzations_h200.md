@@ -8776,3 +8776,323 @@ would settle it directly — worth adding to the matrix as a deliberate experime
 Compiles clean; symbol coverage 337/337 verified locally against an `sm_90a` build.
 **Not yet run on hardware** — including the 168 cluster kernels from §H27y.14, which have
 never executed.
+
+---
+
+## §H27y.16 — C TMA descriptor folded batch into rows: 90 real H200 failures, and the same defect in every other arch
+
+### How it was found (and why the smoke test would have missed it)
+The §H27y.15 matrix test, full run: **1595 PASS / 90 FAIL** on H200.
+
+`--quick` runs 512x512x256 at **batch=1**. At batch=1 the descriptor height equals `M`, the
+bounds check works, and the bug is invisible — a smoke run would have reported **337/337
+PASS** and this would have shipped as silent cross-batch memory corruption. Only the full
+sweep's batched shape exposed it.
+
+### The failure signature was fully diagnostic
+| pivot | result |
+|---|---|
+| shape | **100% on the one batched shape**; all 4 unbatched shapes clean |
+| tile | **only 192x192 and 192x128** (45/45 each); other 5 tiles clean |
+| layout | 30 NN / 30 TN / 30 NT — uniform |
+| cluster/raster | all 15 variants incl. base — uniform |
+| `MaxRelErr` | **exactly 1.0** on all 90 |
+
+`MaxRelErr` of exactly 1.0 means our output is **zero** where the reference is nonzero — not
+a numerical error, a write that never landed or landed elsewhere.
+
+**A correlation that was initially misread:** 192x192 and 192x128 are the only two N-split
+tiles, which looked causal. It is coincidence. They are also the only two with **BM=192**,
+and `1024 % 192 = 64` while `1024 % 128 = 1024 % 256 = 0`. The discriminator is
+**BM not dividing M**, not the split mode.
+
+### Root cause
+C was the **only operand still using a rank-2 TMA descriptor**:
+```c
+init_2d_tma_C_sm90(&C_tmap, C, (uint64_t)batchCount * M, (uint64_t)N, ...);
+const int c_row = batch * M + block_row * BM + row0 + a * 64;
+```
+TMA bounds-checks each **coordinate against its own `globalDim`**. Folding batch into the
+row axis destroys the `M` check:
+
+- `M=1024, BM=192` → 6 row-tiles → the last covers rows **960–1151**
+- rows 1024–1151 are past `M` but inside the declared height **2048** → **not clipped**
+- they land on global rows 1024–1151 = **batch 1's rows 0–127**
+- the accumulator there is OOB-zero-filled → batch 1's first 128 rows are **zeroed**
+
+The N axis never had this problem because N was declared as the real `N` — which is direct
+evidence that TMA store bounds-checking works and only the M bound was wrong.
+
+### Fix — structural, not a guard
+- added `init_3d_tma_C_sm90`: rank 3, `globalDim = {N, M, batchCount}`, so M is
+  bounds-checked **per batch**
+- added `tma_3d_smem2gmem`
+- `c_row` no longer folds batch; batch is the 3rd coordinate
+- **deleted** the rank-2 helper so the broken form cannot be reintroduced
+- test gains `520x1032x264 × batch 3` (batched **and** residue on all 3 axes) as a
+  regression guard, plus the same shape unbatched to isolate batch from residue
+
+This restores the rule A and B have followed since §H16.15: **never fold a real matrix axis
+into another axis.** No clamp, no special case — the hardware bounds check does the work.
+
+Local verification: 337 kernels, 0 errors, 0 ptxas C7xxx, 0 spill, coverage still 337/337.
+
+### THE SAME BUG EXISTS IN EVERY OTHER ARCH — deferred, not fixed
+Marked in-source at **14 sites** across SM100, SM103 (BF16 / FP16 / FP8 / addmm) with a
+`§H27y.16 KNOWN BUG` block; comment-only, 181 lines, zero code changed.
+
+Proof that it is real there and not theoretical, for SM103:
+1. `grid_m = (M + CLUSTER_SIZE*OUT_ROWS - 1) / (...)` — a **ceil**, so residue tiles exist
+2. **no** M-divisibility `static_assert` anywhere
+3. **no** row bound against M anywhere in the store path (grep of the whole store region
+   for `< M`, `>= M`, `min(..M`, `M -` returns nothing)
+4. descriptor height is `batchCount * M`, and `c_row = cur_batch * M + ...`
+
+So the descriptor clip is the *only* guard, and it is the guard that batch-folding breaks.
+SM103's own comment at `Bgemm_sm103_cluster_template.cuh:2136` already acknowledges the
+mechanism — *"a 128-row box would overwrite the NEXT tile's rows (TMA clips only at the
+tensor edge)"* — but the tail box it added addresses box granularity **within** a batch, not
+the batch boundary.
+
+**Trigger everywhere: `batchCount > 1` AND `M % tile_row_step != 0`.**
+
+### BLAS-EXPANSION TASK (open)
+Port the rank-3 C descriptor to SM100, SM103 BF16/FP16/FP8 and the addmm variants. Same
+change as SM90. Deferred solely because it needs B300/SM100 revalidation — the 336/336
+B300 result on record was **not** run with `batch > 1` on an M-residue shape, so it does not
+cover this. Any batched Qwen workload with a non-aligned M on those paths is exposed today.
+
+---
+
+## §H27y.18 — producer tail: CTAs exiting a cluster while peers still targeted their DSMEM
+
+### Symptom
+Intermittent `unspecified launch failure`, surfaced only by the new batched-residue shape.
+Not reproducible in isolation — the same config passed alone twice, then failed as case
+#1426 of a full run. Which raster failed varied between runs (`4x2_h` once, `4x2_v` the
+next), so raster was never the discriminator.
+
+### Bisection (each cell = failures out of 8 runs, 128x128 unless noted)
+| condition | idle CTAs | result |
+|---|---|---|
+| `grid_m % 4 == 1`, M residue (M=520) | 6/8 | **7/8 FAIL** |
+| `grid_m % 4 == 2`, M residue (M=768) | 4/8 | **2/8 FAIL** |
+| `grid_m % 4 == 3`, M residue (M=896) | 2/8 | 0/8 |
+| M balanced (M=512), N imbalanced | 4/8 | 0/8 |
+| N-axis 6-of-8 idle (`2x4`, M balanced) | 6/8 | 0/8 |
+| `grid_m % 4 == 1`, **no** residue (M=640) | 6/8 | 0/8 |
+| 256x128, same geometry, no residue (M=1280) | 6/8 | 0/8 |
+
+Trigger = **M residue AND `grid_m % CLUSTER_M != 0`**, with the rate scaling in the idle-row
+count (1 row 0%, 2 rows 25%, 3 rows 88%).
+
+**A wrong turn worth recording:** M=1280 was read as proving the bug was 128x128-specific.
+It is 5×256 exactly — *residue-free* — so it tested the benign condition. The tile-specific
+conclusion was withdrawn once M=640 showed all four BM=128 tiles clean without residue.
+
+### Why the sanitizers said nothing
+`memcheck`: **0 errors**, and the failure did not occur under it. `synccheck`: **0 errors**,
+though the app did still fail. No bad address is ever formed — the address simply stops
+existing — and it is not `__syncthreads` divergence.
+
+### Root cause
+The producer fell out of its task loop and the CTA returned. Nothing kept it resident while
+cluster peers were still touching it, and two DSMEM paths do exactly that:
+1. consumers signal empty via `mbarrier_arrive_remote()` → `mapa.shared::cluster` into a
+   **peer's** barrier;
+2. a peer's producer multicasts TMA straight into **this** CTA's smem.
+
+M residue makes the CTAs' work uneven so they reach the exit skewed; idle CTA-rows of an
+unbalanced cluster widen that skew until one CTA leaves first. We had the start-of-kernel
+`cluster_arrive_relaxed`/`cluster_wait` but never the exit-side counterpart.
+
+### Fix, cross-checked against BOTH references
+Drain every outstanding stage's empty barrier before the producer returns. This creates the
+mutual dependency that keeps the cluster resident.
+
+- **CUTLASS** `sm90_mma_tma_gmma_ss_warpspecialized.hpp:394-409` — `load_tail()`, commented
+  verbatim *"Perform a Producer Epilogue to prevent early exit of blocks in a Cluster"*,
+  delegating to `sm90_pipeline.hpp:448-454` `producer_tail()` which waits every stage.
+- **cuBLAS SASS** (`shape_1_M256_N1536_K4096.sass`) — immediately before `EXIT`:
+  `SYNCS.PHASECHK.TRANS64.TRYWAIT` → `NANOSLEEP.SYNCS` → recheck → loop. cuBLAS spins on an
+  mbarrier before exiting.
+
+Only the stages actually filled are drained; waiting `LOAD_PIPE_DEPTH` times unconditionally
+would hang a producer that issued fewer loads than there are stages.
+
+**Open, not claimed closed:** cuBLAS also has a *second* `UCGABAR_ARV`/`UCGABAR_WAIT` pair
+(we have only the start-of-kernel one) and branches that jump straight to `EXIT` bypassing
+the spin. Whether our single producer tail is equivalent to everything cuBLAS does was not
+proven from a linear dump.
+
+### Result
+`520x1024x264x3`: **7/8 FAIL → 0/8**. At an 88% per-run rate, eight clean runs by chance is
+~4e-8. Build unchanged: 337 kernels, 0 spill, no C7xxx, SETMAXREG 674.
+
+**FULL MATRIX: 2022/2022 PASS, 0 FAIL, 0 UNTESTED** (337 configs × 6 shapes).
+
+---
+
+## §H27y.19 — what cuBLAS actually launches: the gap is tile coverage, not kernel quality
+
+nsys `cuda_gpu_kern_sum`, kernel time only (not driver wall-clock — see caveat).
+
+| shape | cuBLAS kernel | cuBLAS µs | ours µs | ours % |
+|---|---|---|---|---|
+| 896x4864x4096 | **192x192**_2x1_v_coopB | 1054.0 | 1099.0 | **95.9%** |
+| 2048x11008x4096 | **192x192**_2x1_v_coopB | 4997.7 | 5480.4 | **91.2%** |
+| 2048x2048x1024 | **256x128**_1x2_h_coopA | 299.2 | 342.3 | **87.4%** |
+| 1024x5120x4096 | `320x128`_1x2_h_coopB | 1178.7 | 1463.5 | 80.5% |
+| 1024x1024x512 | `128x64`_1x2_h | 93.2 | 135.6 | 68.7% |
+| 512x512x256 | `64x48`_2x4_h | 62.3 | 104.7 | 59.5% |
+
+**Tiles we own → 87–96%. Tiles we lack → 60–80%.** The catalog is the gap, not the kernels.
+
+New missing tiles: **`128x64`** and **`64x48`** join `320x128`. `64x48` is where we are worst.
+
+**cuBLAS used a cluster in all 6 shapes — never 1x1**; 4 of 6 were size-2 (`1x2`/`2x1`).
+Our own matrix run had *base* configs winning 11 of 18 shape×layout slots, so cuBLAS is
+extracting value from small clusters that we currently are not. Worth understanding before
+adding tiles.
+
+### Two measurement caveats
+1. **The drivers' own TFLOPS are wrong for small shapes.** 1024x1024x512: driver reported
+   12.0 µs/iter, nsys measured 5.9 µs of kernel time — ~6 µs/iter of launch+sync overhead.
+   Use nsys kernel time for ratios.
+2. **The 278%-of-cuBLAS reading on `1024x1024x256` batch 2 is unexplained.** cuBLAS gets
+   60–90 TFLOPS there vs 194–200 at the same M/N with K=512, and 327 of our 337 configs beat
+   it. The split-K guess is **unsupported** — no `splitKreduce` appeared in this sweep, and
+   that shape is not in it (the drivers take no batch argument). Do not quote 278% as a win.
+
+### Script defect fixed
+The v1 census reported `NO_KERNEL_DATA` for every shape while appearing to succeed:
+`[ -f "$SQL" ] || nsys stats ... --format csv` gated CSV creation on the **.sqlite**, which
+`--stats=true` had already created — so `nsys stats` never ran and no CSV ever existed. The
+fix removes the second nsys invocation entirely: `--stats=true` already prints the
+`cuda_gpu_kern_sum` table into the profile log, so parse that. Works offline from saved logs;
+validated against the real captures.
+
+---
+
+## §H27y.22 EOD 2026-07-30 -- session summary and exact resume point for tomorrow
+
+**SHIPPED AND H200-VALIDATED TODAY (done, closed):** the feature x variant matrix is tested
+end to end. **2076/2076 PASS, 0 FAIL, 0 UNTESTED** over 346 configs x 6 shapes, every case
+checked against a per-layout cuBLAS reference, `MaxRelErr 0.00000` throughout. Two real
+kernel bugs were found by it and fixed, both with the mechanism proven rather than guessed.
+
+Path taken. The day started by porting every feature onto all 7 tiles (§H27y.14, 169 -> 337
+kernels, SASS-proven no regression) and then replacing the 10 pre-H21 gate tests -- dead
+since the raster rename -- with ONE combination test built on a single-source X-macro config
+list, so declarations, definitions and the test registry can never drift again. First H200
+run: 1595 PASS / **90 FAIL**. Second bug surfaced only after fixing the first. Final: clean.
+
+**BUG 1 -- C TMA descriptor folded batch into the row axis (§H27y.16).** C was the only
+operand still rank-2, declared `height = batchCount*M` with `c_row = batch*M + ...`. TMA
+bounds-checks each COORDINATE against its own globalDim, so folding batch into rows destroys
+the M check: at M=1024/BM=192 the last row-tile covers 960..1151, rows 1024..1151 are past M
+but inside the declared 2048, are NOT clipped, and land on batch 1's rows 0..127. Signature
+was fully diagnostic -- `MaxRelErr` exactly **1.0** on all 90 (our output zero where the
+reference is not), confined to the one batched shape and the only two BM=192 tiles
+(1024 % 192 = 64; every other BM divides 1024). Fixed by making C rank-3 with batch as its
+own dimension, matching the rule A and B have followed since §H16.15; the rank-2 helper was
+DELETED so it cannot be reintroduced.
+
+**BUG 2 -- no producer tail, CTAs left a cluster while peers still wrote into them
+(§H27y.18).** Intermittent `unspecified launch failure`, ~88% of runs, needing M residue AND
+`grid_m % CLUSTER_M != 0` together; rate scaled exactly with the skew (1 idle row 0%, 2 rows
+25%, 3 rows 88%). Invisible to memcheck (no bad address -- the address stops existing) and to
+synccheck (not barrier divergence). Our producer fell out of its task loop and returned while
+consumers were still arriving into peer barriers via `mapa.shared::cluster` and peer
+producers were still multicasting into this CTA's smem. Fixed with a producer tail draining
+every outstanding stage. Confirmed against BOTH references before writing it: CUTLASS
+`load_tail()` commented verbatim *"prevent early exit of blocks in a Cluster"*, and cuBLAS
+SASS spinning on `SYNCS.PHASECHK.TRANS64.TRYWAIT` + `NANOSLEEP` immediately before `EXIT`.
+Result 7/8 FAIL -> **0/8** (at an 88% rate, eight clean runs by chance is ~4e-8).
+
+**Also shipped:** `RASTER_SWIZZLE` knob (grouped rasterisation, CUTLASS
+`log_swizzle_size`), proven a byte-identical no-op at 0 -- 337/337 instruction streams
+unchanged; the same C-descriptor defect marked in-source at **14 sites** across
+SM100/SM103/FP16/FP8 (comment-only, 181 lines, zero code changed) as a deferred task needing
+B300 revalidation; and `tools/kernel_bench.sh`.
+
+**FIRST REPRODUCIBLE PERFORMANCE NUMBERS (nsys kernel time, 5 repeats, +-0.5%):**
+
+```text
+shape              ours       cuBLAS     cuBLAS tile          gap
+2048x2048x1024   15,698 ns   13,838 ns   256x128 (SAME)       13.4% slower
+1024x1024x512     9,495 ns    4,110 ns   128x64 / 64x128      2.31x slower  <- tiles we lack
+```
+
+cuBLAS kernel selection is **stable**: identical kernel names in 5/5 repeats, times within
+0.4-1.1%. The mid-shape 2.31x is the strongest evidence yet that the TILE CATALOG, not kernel
+quality, is the dominant gap.
+
+**WRONG CONCLUSIONS I REACHED AND RETRACTED TODAY (do not resurrect):**
+1. "our multicast is defective" -- **false**. Proven identical to cuBLAS on every measurable
+   axis: TMA bytes from L2 **100,663,296** both, multicast requests **262,144** both, request
+   size histogram all-128B both, replays 0 both, epilogue writes 393,232 vs 393,285.
+2. "clustering should cut DRAM traffic" -- **false**. DRAM is pinned at **100.3%** of the
+   compulsory floor; the 16.8 MB working set fits in 60 MB of L2.
+3. "1x2 should cut L2 reads 25%, 2x2 50%" -- **false**, measured -3.3% / -19.5%.
+4. "cuBLAS shares both operands" -- **false**, its SASS is 46 multicast of 92 loads, same
+   one-operand ratio as ours.
+5. "grouped rasterisation will close the gap" -- **false**, measured: group 2 = noise,
+   group 4 = +6% L2 traffic, group 8 = +15%, time flat.
+6. ">100% of cuBLAS on several shapes" -- **measurement artifact**. The matrix test's
+   host-timed cuBLAS baseline moved up to **2.73x** between runs of the same binary
+   (1024x1024x512 nt: 198.20 -> 72.55 TFLOPS). Every >100% reading was on an unstable-baseline
+   shape; on the two stable shapes we are at 88-89% and 60-63%. **We are not beating cuBLAS.**
+
+Root cause of the repeated errors: comparing base vs cluster to isolate multicast changes TWO
+variables at once, and optimising L2 traffic before checking whether L2 traffic drives our
+runtime. It does not -- a **16% swing in L2 sectors moves time by under 1%**.
+
+**Levers tried and MEASURED as failures (do not repeat):** grouped rasterisation at group
+2/4/8; base-vs-cluster as a multicast isolator (invalid, two variables); DRAM-traffic
+optimisation (already at floor). **Confirmed useful:** derived SW128 is optimal -- forcing
+SW32 costs +74% L2 traffic and +15% time; raster `h` beats `v` by 12-13% traffic.
+
+**OPEN:** the 13.4% same-tile gap at 2048x2048x1024 is unexplained. Excluded by measurement:
+multicast, epilogue writes, TMA request geometry, replays, grouped rasterisation, and L2
+traffic as a driver. Next probe should be occupancy / stall-reason / issue-rate, NOT memory.
+
+**RASTER_SWIZZLE VERDICT -- MEASURED AND CLOSED (ran after the EOD was first written).**
+Per-config nsys capture, 5 repeats each, our kernel median ns:
+
+```text
+2048x2048x1024        med_ns     range            vs rs0     1024x1024x512   med_ns    vs rs0
+  base (no cluster)   15,678   15,664-15,716        --         base           9,488      --
+  1x2_h  (rs0)        15,860   15,851-15,940        --         1x2_h (rs0)    9,931      --
+  1x2_h_rs2           15,812   15,806-15,828      -0.30%       1x2_h_rs2      9,824    -1.08%
+  1x2_h_rs4           15,860   15,812-15,904       0.00%
+  1x2_h_rs8           15,863   15,847-15,984      +0.02%
+  cuBLAS              13,831                                   cuBLAS         4,050
+```
+
+`rs2` is a REAL effect, not noise -- the 5-run ranges do not overlap in either shape
+(2048: rs2 max 15,828 < rs0 min 15,851; 1024: rs2 max 9,831 < rs0 min 9,902). `rs4`/`rs8`
+overlap rs0 entirely: no effect. Caveat: configs ran in sequential nsys invocations, so at
+the 0.3% level thermal drift is not excluded; the 1.08% is likely above it.
+
+It changes no decision, because **clustering itself is the loss**: base beats every clustered
+variant (0.85% at 2048, 3.4% at 1024). `rs2` recovers part of the clustering cost, never
+beating plain base on these shapes.
+
+KEPT, all three. Zero loss proven on four axes: precision (`MaxRelErr 0.00000`, 2076/2076),
+existing kernels (337/337 instruction streams byte-identical at `RASTER_SWIZZLE=0`),
+registers (0 spill, no C7xxx, SETMAXREG 692 = 346x2), and runtime (rs4/rs8 inside noise, not
+slower). Only cost is 9 extra kernels in the binary; nothing selects them unless asked. It is
+a composable knob -- switchable per config, portable to any future tile.
+
+**RESUME POINT, in order:**
+1. Implement **320x128** (BM=320, BN=128, 5 M-atoms -> odd -> N-split). 32.0% of all real
+   Qwen launches, the single biggest coverage gap.
+3. Then **128x64** and **64x48** -- newly evidenced today as what cuBLAS picks on mid and
+   small shapes, where we are 2.31x and ~1.7x behind.
+
+**Repo state at EOD:** code repo committed at `dd3963a`; **14 SM100/SM103/FP16/FP8 files
+modified and UNCOMMITTED**, holding only the `§H27y.16 KNOWN BUG` comment blocks -- verified
+comment-only (181 insertions, zero non-comment lines). Docs repo committed at `89ec0e3`
+(§H27y.15); `analyzations_h200.md` uncommitted with §H27y.16, .18, .19 and this section.
+Nothing is half-applied; every H200-validated change is committed.
