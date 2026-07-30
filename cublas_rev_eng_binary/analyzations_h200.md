@@ -8638,3 +8638,54 @@ wrong. The verdict logic should separate "cannot build (test debt)" from "ran an
 
 **STATUS: H27y.7 setmaxnreg placement fix is VERIFIED and CLOSED.** Follow-up (separate,
 lower priority): repair the 10 stale gate tests to the post-H21 raster-suffixed names.
+
+## §H27y.14 FEATURE x VARIANT MATRIX COMPLETED -- cluster+raster grid ported to all four newer tiles; 169 -> 337 kernels, zero regression
+
+Q's call: finish porting every feature onto the variants we already have BEFORE adding more
+variants. Correct order -- the project rule is that any feature must be usable with any
+variant, and we were violating it.
+
+**The gap.** `BLUBLAS_SM90_CLUSTER_GRID` covered only the ORIGINAL three tiles:
+```text
+128x128 / 128x256 / 256x128 : 14 combos each (7 cluster shapes x 2 rasters)
+128x192 / 192x128 / 192x192 / 128x320 : 0 -- base 1x1 ONLY
+```
+
+**Legality proven BEFORE writing any code**, not assumed: compiled a throwaway probe
+instantiating all 4 tiles x 7 clusters {1x2,2x1,2x2,1x4,4x1,2x4,4x2} x 2 rasters x 3 layouts
+= **168 instantiations -> zero static_assert rejections**. The relevant guards are
+`BM % CLUSTER_N == 0` (partitioned A-multicast), `BN % CLUSTER_M == 0` (B-multicast), and
+`BK % (8*CLUSTER) == 0` for MN-major operands. 128/192/320 all divide by 2 and 4, and BK=64
+divides 8*2 and 8*4 -- so the entire grid is legal for all four tiles, in every layout.
+
+**Ported**: 56 new `Sm90Config_<tile>_<CMxCN>_<h|v>` definitions, 56 entries added to
+`BLUBLAS_SM90_CLUSTER_GRID` (46 -> 102) and 56 to `BLUBLAS_SM90_DECL_CLUSTER_GRID` in the
+public header, so all three layout TUs pick them up identically and cannot drift apart.
+
+**RESULT -- compiled, measured, not claimed:**
+```text
+layout   kernels before -> after   spill   ptxas C7xxx
+nn              55 -> 111            0        none
+tn              55 -> 111            0        none
+nt              59 -> 115            0        none
+TOTAL          169 -> 337            0        none
+```
+Still **zero register spill and zero ptxas warnings across all 337** -- H27y.7's setmaxnreg
+fix holds across the whole expanded matrix, including every new clustered config.
+
+**ZERO REGRESSION, proven by SASS diff against a HEAD rebuild** (not by inspection):
+```text
+nn: 55/55 pre-existing kernels byte-IDENTICAL, 0 changed, +56 new
+tn: 55/55 pre-existing kernels byte-IDENTICAL, 0 changed, +56 new
+nt: 59/59 pre-existing kernels byte-IDENTICAL, 0 changed, +56 new
+```
+
+**Two self-inflicted mistakes caught during the edit, recorded so they are not repeated:**
+the first macro-append silently no-op'd because the anchor line ends with padding + a
+backslash continuation that my match string omitted; and the same class of failure nearly
+recurred on the header. Both were caught by re-reading the file and counting entries
+afterwards rather than trusting that the patch reported success.
+
+**NOT yet hardware-tested.** 168 new kernels exist that have never run. The cluster gate
+tests that would exercise them are among the 10 stale ones broken by H21's raster rename
+(H27y.13), so they must be repaired before this matrix can actually be validated on H200.
