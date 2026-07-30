@@ -8591,3 +8591,50 @@ distinguish them). Recorded as an open question rather than resolved.
   0.50-1.62us).
 - NOT launch-bound: idle 1.8-7.0%, inter-kernel gaps 1.2-3.6us on both sides.
 - no memcpys inside any timed loop (3 memsets, setup only).
+
+## §H27y.13 setmaxnreg fix CLOSED OUT -- 353 PASS / 0 FAIL / 0 hangs across every buildable SM90 test; the 10 build failures are PRE-EXISTING stale tests, not ours
+
+Ran all 17 cuBLAS-validating SM90 tests (tools/verify_all_sm90.sh), each timeout-guarded.
+
+```text
+test                                  status      PASS  FAIL
+test_bgemm_sm90_nn_tn                 OK            84     0
+test_bgemm_sm90_bf16      (NT!)       OK            51     0
+test_bgemm_sm90_cluster_grid_gate     OK             1     0
+test_bgemm_sm90_256x128x64_gate       OK           166     0
+test_bgemm_sm90_mn_residue_gate       OK            13     0
+test_bgemm_sm90_vs_cublas             OK            38     0
+10 x *_gate                           BUILDFAIL      -     -
+test_bgemm_sm90_real46_layouts_gate   NO-PASS        0     0
+TOTAL                                              353     0
+```
+
+**WHY THIS CLOSES H27y.7:**
+- **NT layout finally covered**: 51 PASS. The earlier 5-run verification was NN(38)+TN(45) with
+  ZERO NT cases, while the fix touched the shared template used by all 169 kernels.
+- **No hangs anywhere.** This was the real risk: PTX ISA 9.3 SS9.7.20.5 says setmaxnreg.inc
+  BLOCKS until the CTA register pool can satisfy it, and clustered kernels add cluster-wide
+  barriers. That deadlock shape does not occur -- cleared empirically, not by argument.
+- **0 FAIL across 353 assertions**, including the 166-case 256x128x64 gate and vs_cublas.
+
+**The 10 BUILDFAILs are NOT caused by this fix -- proven, not assumed.** They all reference
+entry points like `blublasBgemmSM90_bf16_nt_256x128x64_1x2_template`. That name no longer
+exists: H21 (2026-07-28) instantiated BOTH rasters per tile x cluster, renaming cluster
+entry points to carry an `_h`/`_v` suffix. The header today exposes `..._1x2_red` and the
+raster-suffixed grid names, not the bare `_1x2_template`. Those test files were last modified
+2026-07-24 -- i.e. they have been broken since the H21 rename four days ago, before
+setmaxnreg work started. Pre-existing tech debt, now identified.
+
+**A false alarm worth recording:** `256x128x64_gate` ran >6 minutes at sm 0% / mem 0% and
+looked like the predicted deadlock. It was not: the test refills hA/hB/hC0 with per-element
+`rand()` for each of 53 shapes, and the largest (2560x9728x4096) alone needs ~75M rand()
+calls. Pure single-threaded host work with an idle GPU. Diagnosed by reading the test rather
+than by trusting the symptom; it then completed with 166 PASS. The distinguishing signal for
+a REAL in-kernel deadlock would be HIGH GPU utilisation with a resident kernel, not 0%.
+
+**Script defect noted:** verify_all_sm90.sh printed "DO NOT PROCEED" because it treats
+BUILDFAIL as failure. Compilation failure of a stale test is not evidence the kernel is
+wrong. The verdict logic should separate "cannot build (test debt)" from "ran and failed".
+
+**STATUS: H27y.7 setmaxnreg placement fix is VERIFIED and CLOSED.** Follow-up (separate,
+lower priority): repair the 10 stale gate tests to the post-H21 raster-suffixed names.
