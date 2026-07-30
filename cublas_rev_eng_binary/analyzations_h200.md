@@ -8330,3 +8330,75 @@ H200-validated state; the experiment is preserved in
 not wired to any entry point, kept as documented negative evidence. Verified all three
 variant files still compile clean (0 errors). Everything H200-validated is already
 committed at `8683c77`. Nothing is half-applied.
+
+## §H27y.7 SOLVED -- the setmaxnreg blocker was CALL PLACEMENT, not values. Library-wide spill 5124/6108 bytes -> 0/0, full cuBLAS parity at 168 registers
+
+Q opened the day by rejecting the whole approach: we kept reading other libraries' source
+and docs for an answer and kept landing on the same unsolved wall, so the instruction was to
+stop diverting and systematically test combinations of OUR OWN implementation instead. That
+was the correct call and it solved it in two experiments.
+
+**Scorecard that justified the pivot.** Everything that ever produced signal came from
+compiled artifacts (cuBLAS SASS instruction comparison -> the zero-CS2R/scale_d finding;
+actually BUILDING CUTLASS on our toolchain -> killed the "toolchain limitation" theory; ncu
+register data). Everything that wasted time came from reading source/docs as an answer book
+(4 borrowed register-value pairs, all rejected identically; PTX ISA -> `__maxnreg__`, also
+rejected; an NVIDIA forum thread that led to a WRONG conclusion I had to retract in H27y.6).
+
+**Experiment 1 -- is it pressure or structure?** Applied the same 40/232 request across the
+full pressure range. Result: **C7507 on all four tiles, including 128x128 which has 64 accum
+regs and ZERO spill.** So the rejection is 100% structural and completely independent of
+register pressure -- which also meant the bisection could run on the simplest kernel.
+
+**Experiment 2 -- placement.** Our calls sat at kernel top (line ~1778), but the real
+producer/consumer branch is at ~1860: **~82 lines of SHARED prologue in between** (smem base,
+mbarrier init, `__syncthreads`, cluster sync, TMA prefetch, tile-grid math). A `.dec` to 40
+placed BEFORE that shared code requires ptxas to prove all of it fits in the producer's
+reduced 40-register budget. It does not -- hence, verbatim, "(C7507) 'setmaxnreg' ignored to
+maintain **minimum register requirements**". CUTLASS places its calls INSIDE each branch
+(`sm90_gemm_tma_warpspecialized_cooperative.hpp:557-561` producer / `:769-771` consumer),
+where the `.dec` only has to cover the producer's actual TMA-load loop. Moved ours to match:
+
+```text
+                        C7507   C7512   192x192 spill   128x320 spill   SETMAXREG in SASS
+before (top of kernel)    4/4     yes      656/824        972/1080       absent
+after  (inside branch)      0      no          0/0             0/0       TRY_ALLOC + DEALLOC
+```
+
+**Then enabled it as the default for every config (40/232).** Full library, all three
+layouts, clustered variants included:
+
+```text
+                 kernels   spill stores   spill loads   C7507   C7512   max regs
+baseline            169         5124          6108      (n/a)    yes      168
+after H27y.7        169            0             0          0     no      168
+```
+
+**Complete elimination of register spilling across the entire SM90 BF16 GEMM library**, at
+the same 168 registers/thread cuBLAS uses, with our SASS now containing the identical
+`SETMAXREG.TRY_ALLOC.CTAPOOL` / `SETMAXREG.DEALLOC.CTAPOOL` pair found in cuBLAS's shipped
+kernel (H27y.3) and CUTLASS's control build (H27y.6). This retires C7512 as well -- the
+"wgmma serialized due to insufficient register resources" warning that started this whole
+investigation is gone library-wide, because the resources are no longer insufficient.
+
+**Safety, checked not assumed.** PTX ISA 9.3 §9.7.20.5 makes `.aligned` mandatory: in
+conditionally-executed code setmaxnreg is only legal if every thread in the warpgroup
+evaluates the condition identically. Ours is `wg_id == PRODUCER_WG` where
+`wg_id = (tid/32)/4`, provably identical across all 128 threads of a warpgroup (same
+uniformity argument proven in H27z.2). Budget: 40 + 2*232 = 504 <= 512, enforced by Config's
+existing compile-time static_assert, so an over-budget future value fails the build rather
+than risking the PTX-ISA-documented blocking behaviour of `setmaxnreg.inc`.
+
+**Two methodology errors I made and caught during this session, recorded so they are not
+repeated:** (1) the first "no-op" SASS check was invalid -- I passed `-I<scratchdir>` but the
+variant `.cu` files use quote-includes, which resolve to the header in their OWN directory,
+so the compile silently used the unmodified repo header; fixed by colocating the variant
+files with the modified header, which is also what made the global-enable measurement real
+(it initially showed "no change", with mangled names still reading `regsplit=(0,0)` -- the
+tell). (2) yesterday's compare script lived in a scratchpad that was wiped overnight, so a
+check printed empty output that I nearly read as "passed"; recreated it and re-ran.
+
+**NOT yet hardware-validated.** setmaxnreg is now ACTIVE on every kernel for the first time,
+which is a real runtime behaviour change (registers genuinely redistributed between
+warpgroups), so this needs the full H200 suite before it can be trusted -- correctness AND
+absence of hangs, since `setmaxnreg.inc` blocks until the CTA pool can satisfy it.
