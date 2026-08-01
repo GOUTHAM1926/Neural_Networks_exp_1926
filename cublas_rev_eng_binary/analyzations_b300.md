@@ -5883,6 +5883,16 @@ spinning drags avg-active-threads but steals ~nothing real. Restructuring warps
 would DEPART from SOTA, not catch up. Dead end.
 
 #### 62.3 THE REAL LEVER: wave quantization + split-K / stream-K (SOTA-confirmed)
+> **PARTIAL RETRACTION 2026-08-01 (see h200 doc §H27z.8) -- the "SMOKING GUN" claim below is
+> WRONG.** Measured on H200 by querying cuBLASLt's own algo config directly: cuBLAS does NOT
+> split ANY skinny-N shape. `4096x128x896`, `4096x256x1536` and `4096x512x1024` all come back
+> `splitK=1, reduction=NONE`. The real trigger is SMALL OUTPUT (M*N) + LARGE K -- e.g.
+> `512x512x8192` -> S=2 and `256x256x16384` -> S=8. The actual rule (validated on all 6 probe
+> shapes with zero exceptions) is: split so that `output_tiles * S ~= SM count`; the skinny-N
+> shapes already reach ~128 tiles on 132 SMs, so there is nothing for split-K to fix there.
+> The wave-quantization REASONING below is sound and the SOTA citations stand; only the claim
+> that cuBLAS dispatches split-K on *these particular shapes* is refuted. Planning split-K work
+> off the shape list below would target the wrong shapes.
 Confirmed 3-0 (NVIDIA GEMM perf docs + Stream-K arXiv 2301.03598 + Colfax): below
 one wave, SMs simply idle; the SOTA remedy is split-K/stream-K ("single persistent
 CTA per SM, fractional tiles split along K... eliminates wave quantization by

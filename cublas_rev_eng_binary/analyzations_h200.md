@@ -9096,3 +9096,438 @@ modified and UNCOMMITTED**, holding only the `§H27y.16 KNOWN BUG` comment block
 comment-only (181 insertions, zero non-comment lines). Docs repo committed at `89ec0e3`
 (§H27y.15); `analyzations_h200.md` uncommitted with §H27y.16, .18, .19 and this section.
 Nothing is half-applied; every H200-validated change is committed.
+
+---
+
+## §H27y.24 STATUS AND PLAN -- the 13-tile catalog, what builds today, what needs new features
+
+### Where we are
+
+**Correctness: closed.** 2076/2076 PASS across 346 configs x 6 shapes, every case against a
+per-layout cuBLAS reference, `MaxRelErr 0.00000`. Two real kernel bugs found and fixed this
+cycle (rank-3 C descriptor §H27y.16, producer tail §H27y.18), both with the mechanism proven
+against CUTLASS and cuBLAS SASS rather than guessed.
+
+**cuBLAS's kernel choice is DETERMINISTIC -- newly proven (§H27y.23).** All 163 Qwen shapes,
+5 repeats, NVTX-ranged so attribution is exact even for the one split-K shape that launches
+two kernels: **0 shapes changed kernel between runs**. The recorded shape->kernel table is a
+fact, not a sample, so the per-tile shape counts below are reliable.
+
+**Features implemented and validated as composable knobs:** clusters (1x2/2x1/2x2/1x4/4x1/
+2x4/4x2), raster h/v, per-operand derived swizzle (SW128/64/32), work-grid split (M-split and
+N-split, derived from M-atom parity), multicast A/B, register split (setmaxnreg 40/232),
+grouped rasterisation (RASTER_SWIZZLE). 346 kernels, 0 spill, no ptxas warnings.
+
+### The 13-tile catalog: measured status
+
+Shape counts are from the 163-shape sweep, now verified deterministic.
+
+```text
+tile        shapes   have?   builds today?   blocker
+320x128       52      no     YES             none -- 5 M-atoms, odd -> N-split, WGMMA_N=64,
+                                             NCHUNKS=2, smem 192KB, all 3 layouts derive
+256x128       46      YES    --
+192x192       33      YES    --
+112x128        5      no     NO              BM=112 not a multiple of 64
+192x128        5      YES    --
+64x64          4      no     NO              BM=64 -> 1 M-atom: cannot M-split across 2
+                                             consumer warpgroups, and BN=64 with WGMMA_N=64
+                                             gives NCHUNKS=1 so cannot N-split either
+176x128        4      no     NO              BM=176 not a multiple of 64
+128x64         4      no     YES             none -- 2 M-atoms, M-split, NCHUNKS=1, smem 208KB
+128x128        4      YES    --
+168x128        2      no     NO              BM=168 not a multiple of 64
+144x128        2      no     NO              BM=144 not a multiple of 64
+128x256        1      YES    --
+128x192        1      YES    --
+```
+
+Plus `128x320` (BM=128, BN=320), which we built and validated. Whether cuBLAS's tile *named*
+`320x128` is the same geometry or the opposite one is NOT established -- the transpose reading
+was claimed, then neither the grid test (clamped on every shape) nor the SASS block counts
+(fit both readings) could confirm it. It does not matter for the plan: `BM=128,BN=320` and
+`BM=320,BN=128` are two different tiles and a complete BLAS wants both. We have the first,
+measured at 87.5-90.9% of cuBLAS on `1024x5120x4096` (vs 80.5% for `128x192` on that shape).
+We build the second.
+
+### Two tiles need NOTHING new -- verified by compile probe
+
+```text
+320x128  NT/NN/TN   MATOMS=5  WGMMA_N=64  NCHUNKS=2  N-split  swA=128 swB=128  smem 192KB
+128x64   NT/NN/TN   MATOMS=2  WGMMA_N=64  NCHUNKS=1  M-split  swA=128 swB=128  smem 208KB
+```
+
+`320x128` is structurally the same case `192x192` already solved: odd M-atom count forces the
+N-split path, which is implemented, validated and shipping. **56 shapes (34.4%) unlocked with
+zero new features.**
+
+### Two structural features unlock the remaining five tiles
+
+**(A) Masked BM -- unlocks 112x128, 144x128, 168x128, 176x128 (13 shapes, 8.0%).**
+`wgmma.m64nNk16` computes 64 rows per atom, so BM must be a multiple of 64. 112/144/168/176
+are not. The kernel must compute a padded BM (128/192/192/192) and STORE only the real rows.
+This is not a hack and not per-tile: our own SM103 work already does it -- `Bgemm_sm103_
+cluster_template.cuh:2490` comments "OUT_ROWS (== BM unmasked; 160 for the masked tile whose
+MMA computes 192 rows but stores only 160 -- §45)". Port it as a knob (`OUT_ROWS`), and all
+four tiles follow from the same mechanism.
+
+**(B) Single-consumer-warpgroup (ping-pong) -- unlocks 64x64 (4 shapes, 2.5%).**
+With BM=64 there is exactly one m64 atom, which cannot be split across two consumer
+warpgroups; and BN=64 at WGMMA_N=64 gives one N-chunk, so the N-split fallback is unavailable
+too. Both static_asserts fire. A narrower WGMMA_N=32 would give NCHUNKS=2 and make the N-split
+legal, but 32 is not atom-aligned under SW128 -- it would need SW64 on a K-major operand,
+which `sw_pick` does not currently consider. The cleaner fix is the ping-pong structure
+already on the roadmap for small tiles. cuBLAS's own 64x64 is `64x13` (13 pipeline stages) and
+ships a splitK variant, consistent with small-tile handling being structurally different.
+
+### Coverage arithmetic
+
+```text
+now                          : 7 of 13 tiles, 90/163 shapes = 55.2%
++ 320x128, 128x64 (no new features) : 9 of 13, 146/163 = 89.6%
++ masked BM (4 tiles)               : 13 of 13 minus 64x64, 159/163 = 97.5%
++ ping-pong 64x64                   : 13 of 13, 163/163 = 100%
+```
+
+### The one open performance issue
+
+Every tile we own and run on a shape it suits lands **10-14% behind cuBLAS**: 192x192 at 95.9%
+and 91.2%, 256x128 at 87.4%, 128x320 at 87.5-90.9%, 256x128 at 2048x2048x1024 13.4% behind.
+That is a **uniform deficit, not per-tile defects**. Excluded by measurement so far: multicast
+(byte-identical to cuBLAS -- TMA bytes 100,663,296, 262,144 multicast requests, all-128B
+histogram, 0 replays), epilogue writes (393,232 vs 393,285), TMA request geometry, grouped
+rasterisation, and L2 traffic as a driver (a 16% swing in L2 sectors moves time <1%). The next
+probe should be occupancy / stall reasons / issue rate, NOT memory.
+
+Worth noting the scale: 13% across the 90 shapes we already serve is a larger total win than
+the 13 shapes the masked-BM feature unlocks.
+
+### Recommended order
+
+1. **320x128** -- 52 shapes, zero new features, structurally identical to the validated
+   192x192 N-split path. Biggest single step available.
+2. **128x64** -- 4 shapes, zero new features, trivial once 320x128 is in.
+3. **Masked BM as a knob** -- ports a mechanism we already have working on SM103; unlocks four
+   tiles and 13 shapes at once.
+4. **Ping-pong for 64x64** -- the only genuinely new structure needed.
+
+The uniform 10-14% gap runs in parallel with all of this and is worth more than items 3 and 4
+combined; it should not wait behind them.
+
+---
+
+## §H27y.27 RESEARCH before implementing the small tiles -- four sources cross-checked, and a documentation error in our own code
+
+Q's instruction: do not implement on assumption. Check CUTLASS, DeepGEMM, ThunderKittens and
+cuBLAS SASS first, and find any mistake in what we already have. Done; findings below.
+
+### The blocker chain, traced end to end
+
+Six tiles fail to build. Two distinct causes, both OURS, neither a hardware limit:
+
+```text
+1. wgmma_m64nk16_bf16 implements N in {64, 96, 128, 256} only  (4 hand-transcribed PTX forms)
+2. wgmma_n_pick cascade tries {256, 128, 96, 64}               (deliberately matches #1)
+3. static_assert(BM/64 >= NUM_CONSUMER_WARPGROUPS)             (blocks BM=64)
+```
+
+### What each source says about legal wgmma N (bf16, m64..k16)
+
+| source | N values | count |
+|---|---|---|
+| PTX ISA | every multiple of 8, 8..256 | 32 |
+| **cuBLAS (shipped SASS)** | includes **112, 144, 168, 176** | -- |
+| **ThunderKittens** | 16,32,48,64,80,96,**112**,128,**144**,160,**176**,192,208,224,240,256 | 16 |
+| **DeepGEMM** | includes `MMA_64x112x16_F32BF16BF16_SS` | -- |
+| CUTLASS | 8,16,32,64,96,128,192,256 | 8 |
+| **ours** | 64,96,128,256 | 4 |
+
+cuBLAS's own kernels, straight from the SASS dumps:
+
+```text
+112x128 -> HGMMA.64x112x16      168x128 -> HGMMA.64x168x16
+144x128 -> HGMMA.64x144x16      176x128 -> HGMMA.64x176x16
+```
+
+### MISTAKE FOUND IN OUR OWN CODE (documentation, but it would have cost us the tiles)
+
+`wgmma_m64nk16_bf16`'s static_assert reads:
+
+> "wgmma_m64nk16_bf16 implements N in {64,96,128,256}. **CUTLASS also defines 8/16/32/192**;
+> add them here (same transcribed form) if a tile ever needs one."
+
+This names CUTLASS as the authority on what is possible. **CUTLASS is incomplete** -- it has no
+112/144/168/176 atom. Anyone following that comment would extend to CUTLASS's 8 values, still
+fail to build these four tiles, and reasonably conclude the hardware cannot do it. That is the
+exact trap §H27y.2 fell into on setmaxnreg, where CUTLASS-based reasoning produced a wrong
+"unfixable toolchain limitation" conclusion that cuBLAS's SASS later overturned. The comment
+must cite the PTX ISA (any multiple of 8) with CUTLASS/TK/DeepGEMM as partial references, not
+as the ceiling.
+
+### 168 exists in NO library -- only in cuBLAS
+
+112, 144 and 176 are all in ThunderKittens, including an `st_st` (shared-shared) form at
+`include/ops/group/mma/base/64x112.impl:164` which is exactly our SS variant -- a working
+reference to check a transcription against. **168 is in none of the three libraries**
+(ThunderKittens covers multiples of 16 only; 168 = 8x21). PTX permits it and cuBLAS ships it,
+so it has to be transcribed from our own proven form. Same lesson as setmaxnreg: for the last
+case, cuBLAS's SASS is the only evidence there is.
+
+### Our SS form is mechanical, so the extension is generatable not guessable
+
+From the shipped `wgmma_m64n96k16_bf16`: **N/2 accumulator registers** `%0..%(N/2-1)`, then
+`%(N/2)`=desc_a, `%(N/2+1)`=desc_b, `%(N/2+2)`=scale_d, `%(N/2+3..N/2+6)`= the four immediates
+(1, 1, TnspA, TnspB). For N=112 that is 56 accumulators; N=176 -> 88. Generate rather than
+hand-type, then diff the N=112 output against ThunderKittens' `st_st` form as an independent
+check before trusting any of them.
+
+### The BM=64 assert is redundant AND over-strict -- remove, do not patch
+
+```c
+static_assert(BM / 64 >= NUM_CONSUMER_WARPGROUPS, "need at least one m64 atom per consumer warpgroup");
+```
+
+It lives in `Sm90WarpspecConfig`, which is evaluated BEFORE the work-grid split is decided, so
+it cannot know whether the tile will M-split or N-split. It assumes M-split. Under **N-split**
+both warpgroups see every M-atom and divide the N-chunks instead, so a single M-atom is
+perfectly legal -- which is why `BM=64` is rejected today for no real reason.
+
+`Sm90WorkGrid` already carries the correct guard:
+`splittable(bn,wn) = SPLIT_M || (bn/wn) >= 2`. With MATOMS=1, `SPLIT_M = (1 % 2 == 0) = false`,
+so it demands NCHUNKS >= 2 -- exactly the right condition, checked where the split mode is
+actually known. **Deleting the config-level assert loses no safety**; the WGrid assert catches
+every genuinely illegal case. Relaxing it in place with an extra clause would be the band-aid;
+removing a redundant guard that sits at the wrong layer is the permanent fix.
+
+### Implementation plan, in dependency order
+
+1. Generate SS emitters for N = 32, 112, 144, 168, 176 from our own N=96 form; cross-check the
+   112 output against ThunderKittens' `st_st`.
+2. Fix the static_assert message to cite the PTX ISA, not CUTLASS.
+3. Extend `wgmma_n_pick` / `wgmma_n_pick_free` cascades to the new values (widest-first).
+4. Delete the redundant `BM/64 >= NUM_CONSUMER_WARPGROUPS` assert.
+5. Compile-probe all six tiles across NT/NN/TN before wiring anything.
+6. SASS-diff the existing 352 kernels to prove steps 2-4 are a no-op for them.
+
+Unlocks `128x112`, `128x144`, `128x176`, `64x128`, `64x64` (19 of the 21 remaining Qwen
+shapes) and `128x168` if the 168 transcription validates.
+
+---
+
+## §H27y.28 IMPLEMENTED -- all 13 cuBLAS tiles build. 370 kernels, existing ones SASS-identical
+
+Outcome of the §H27y.27 research. Five decisions, each with the evidence that drove it.
+
+### 1. cuBLAS's SASS proved the wgmma N shapes are real; CUTLASS would have said otherwise
+
+`WGMMA_N` = 112, 144, 168, 176 are legal and cuBLAS ships all four:
+
+```text
+112x128 -> HGMMA.64x112x16      168x128 -> HGMMA.64x168x16
+144x128 -> HGMMA.64x144x16      176x128 -> HGMMA.64x176x16
+```
+
+**CUTLASS defines none of them** -- its bf16 atom list is {8,16,32,64,96,128,192,256}. Our
+`wgmma_m64nk16_bf16` assert previously read *"CUTLASS also defines 8/16/32/192; add them here
+if a tile ever needs one"*, naming CUTLASS as the authority on what is POSSIBLE. Following that
+comment gets you eight values, still no 112/144/168/176, and the reasonable conclusion that the
+hardware cannot do it. **That is exactly the trap §H27y.2 hit on setmaxnreg**, where
+CUTLASS-based reasoning produced a "toolchain limitation" verdict that cuBLAS's SASS overturned.
+The assert now cites the PTX ISA (any multiple of 8, 8..256); libraries are partial references,
+never the ceiling.
+
+### 2. ThunderKittens cross-checked the form; 168 exists only in cuBLAS
+
+ThunderKittens carries 112/144/176 (multiples of 16 only, so **not** 168). Its shared-shared
+variant at `ops/group/mma/base/64x112.impl:164` was used to CROSS-CHECK exactly two things:
+operand order (`pred, scale-a, scale-b, trans-a, trans-b`, matching the PTX spec `d, a-desc,
+b-desc, scale-d, imm-scale-a, imm-scale-b, imm-trans-a, imm-trans-b`) and the **N/2 accumulator
+count** (112 -> 56 in both). DeepGEMM also carries 112 (`MMA_64x112x16_F32BF16BF16_SS`).
+**168 is in no library** -- PTX permits it, cuBLAS ships it, so it was transcribed from the same
+mechanical rule. Same lesson as setmaxnreg: for the last case cuBLAS's SASS is the only evidence.
+
+### 3. Generated from OUR form, not copied from anyone's macro layout
+
+The five emitters (N = 32,112,144,168,176) were generated from our shipped
+`wgmma_m64n96k16_bf16`: N/2 accumulators, then desc_a, desc_b, scale_d, and the four
+immediates. Accumulator counts verified against N/2 programmatically before compiling.
+Borrowing another project's *methodology* is fine; importing its code layout into this file is
+not -- these follow this file's conventions and naming.
+
+### 4. The BM=64 assert was DELETED, not patched
+
+`static_assert(BM/64 >= NUM_CONSUMER_WARPGROUPS)` lived in `Sm90WarpspecConfig`, evaluated
+BEFORE the split mode is decided, so it silently assumed M-split. Under **N-split** both
+warpgroups see every M-atom and divide the N-chunks instead -- one m64 atom is legal, and that
+assumption was the only thing rejecting BM=64. Deleting it loses nothing: `Sm90WorkGrid` already
+guards at the layer that KNOWS the split mode (`splittable = SPLIT_M || (bn/wn) >= 2`; with
+MATOMS=1, SPLIT_M is false, so it demands NCHUNKS >= 2 -- the real requirement). Adding a clause
+to the config-level assert would have been a band-aid on a guard at the wrong layer.
+
+### 5. n192 stays deliberately excluded
+
+CUTLASS **and** ThunderKittens both define n192. Still not offered: `BM=128,BN=192` would then
+pick n192, whereas cuBLAS's `192x128` uses n64 (`HGMMA.64x64x16`, 3 blocks/WG). We match cuBLAS.
+**Availability in a library is not a reason to use a shape.**
+
+### Result
+
+```text
+kernels 352 -> 370   tiles 9 -> 13 (all of cuBLAS's catalog)
+0 ptxas C7xxx, 0 spill, coverage guard 370/370
+REGRESSION: 352/352 pre-existing instruction streams BYTE-IDENTICAL
+```
+
+---
+
+## §H27y.29 128x168 exposed a latent shared-memory budget bug -- and a pipeline-depth gap vs cuBLAS
+
+### The bug
+
+`128x168` built clean but failed on hardware: **`Launch error: invalid argument`**.
+
+`SMEM_BUDGET = 232448` is the TOTAL SM90 limit -- static + dynamic together -- but
+`LOAD_PIPE_DEPTH` spent all of it on DYNAMIC smem. The kernel also declares static shared
+memory the derivation never subtracted:
+
+```c
+extern __shared__ __align__(1024) char smem[];                  // dynamic
+__shared__ __align__(8) uint64_t full_mbar[LOAD_PIPE_DEPTH];    // static
+__shared__ __align__(8) uint64_t empty_mbar[LOAD_PIPE_DEPTH];   // static
+```
+
+For 128x168: `STAGE=37888`, `STORE_BUF=43008`, so `(232448-43008)/37888 = 5.000` **exactly** ->
+dynamic = 232448, the entire budget, leaving nothing for the 80 B of mbarriers or the 1024-byte
+alignment of the dynamic base. `cudaFuncSetAttribute` rejects it.
+
+**Every other tile's division happened to leave slack** -- that is the only reason this never
+fired before. It was latent from the start, not introduced by the new tiles.
+
+### The fix -- a property of the layout, not a number tuned to one tile
+
+```c
+static constexpr int SMEM_STATIC_RESERVE  = 1024;                          // static + align
+static constexpr int SMEM_DYNAMIC_BUDGET  = SMEM_BUDGET - SMEM_STATIC_RESERVE;
+LOAD_PIPE_DEPTH = (SMEM_DYNAMIC_BUDGET - STORE_BUF_BYTES) / STAGE_BYTES;
+```
+
+One 1024-byte quantum covers the static arrays (16 B per stage, <=208 B at our deepest) plus the
+alignment round-up. Verified: **every shipping tile keeps its exact depth**, and SASS-diff shows
+**367/370 identical, exactly 3 changed** -- the 128x168 in each layout, the only tile whose depth
+moved (5 -> 4).
+
+### Independent validation of the depth derivation
+
+cuBLAS names kernels `64x<depth>`. Ours derives, with no tuning: **64x64 -> 13** and
+**128x64 -> 8**, matching `nvjet_..._64x64_64x13` and `..._128x64_64x8` exactly.
+
+### A REAL GAP FOUND: cuBLAS runs one pipeline stage deeper on most tiles
+
+```text
+tile      cuBLAS depth   ours     STORE_BUF_BYTES
+64x64          13         13          8192      match
+128x64          8          8         16384      match
+320x128         3          2         32768      one short
+256x128         4          3         65536      one short
+192x192         4          3         73728      one short
+112x128         7          6         28672      one short
+176x128         5          4         45056      one short
+```
+
+It matches where `STORE_BUF_BYTES` is small and differs where it is large. Drop the store buffer
+for 256x128 and `231424/49152 = 4.7 -> 4` -- **exactly cuBLAS's depth**. So cuBLAS very likely
+**reuses the load pipeline's smem for the epilogue store** rather than holding a separate
+single-buffered tile (`STORE_BUF_BYTES = BM*BN*2`, flagged in the code as "no double buffer in
+v1 -- correctness first").
+
+That costs us a whole pipeline stage on five of seven tiles, and is a concrete, quantified
+candidate for the uniform 10-14% deficit that multicast, epilogue writes, TMA geometry, grouped
+rasterisation and L2 traffic were all measured NOT to explain. **Hypothesis, not proven** -- the
+test is to overlap the store buffer with the load stages and re-measure.
+
+### Status
+
+18 new kernels have never executed. `128x168` now has +36864 B margin but has still not launched
+successfully even once.
+
+---
+
+## §H27z.8 split-K RECON on H200 -- cuBLAS's real gating rule, reduce scheme and workspace, all measured (2026-08-01)
+
+Ran the split-K observation tooling that §63.1 (b300 doc) built and PARKED on 2026-07-16:
+`examples/probe_cublaslt.cu` (queries cuBLASLt's own algo config -- no SASS guessing) driven by
+`examples/splitk_observe.sh` (A: config per shape, B: nsys timeline, C: ncu SASS of the reduce).
+One CUDA-13.0 port was needed first: `CUBLASLT_ALGO_CONFIG_SPLITK_NUM_CHUNKS` was renamed
+`CUBLASLT_ALGO_CONFIG_SPLITK_NUM` (verified against 13.0's `cublasLt.h`, which defines only the
+latter; semantics unchanged, every other attribute the probe reads kept its original name).
+
+### RETRACTION -- b300 §62.3's "SMOKING GUN" is WRONG on H200
+
+§62.3 asserted "cuBLAS dispatches split-K on EXACTLY these" naming the skinny-N starved shapes.
+Measured, it does not split ANY of them:
+
+    shape                          cuBLASLt decision
+    skinny-N128  4096x128x896      splitK=1  reduction=NONE
+    skinny-N256  4096x256x1536     splitK=1  reduction=NONE
+    skinny-N512  4096x512x1024     splitK=1  reduction=NONE
+    small-out-bigK   512x512x8192  splitK=2  reduction=COMPUTE_TYPE(fp32 ws)
+    small-out-bigK2  256x256x16384 splitK=8  reduction=COMPUTE_TYPE(fp32 ws)
+    big-ref     4096x4096x4096     splitK=1  reduction=NONE      (control, as expected)
+
+The real trigger is SMALL OUTPUT (M*N) + LARGE K, not skinny N. Anyone planning split-K work off
+§62.3 would have aimed at the wrong shape set -- exactly the failure mode §H17 warned about for
+the layout-weighted catalog.
+
+### The gating rule, and it explains all six shapes with no exceptions
+
+Split so that (output tiles x S) ~= SM count (132 on this H200):
+
+    512x512   @64x64  ->  64 tiles x2 = 128    split S=2   ✓
+    256x256   @64x64  ->  16 tiles x8 = 128    split S=8   ✓
+    4096x128  @64x64  -> 128 tiles already ~132   no split ✓
+    4096x512  @128x128-> 128 tiles already ~132   no split ✓
+    4096x4096 @256x128-> 512 tiles >> 132         no split ✓
+
+Independently corroborated by the launch grids: BOTH split cases launch exactly 128 CTAs
+(`grid 2x64x1`, 384 thr) on 132 SMs. This is the CUTLASS "auto split factor so total CTAs ~=
+SM count" heuristic §63.1 quoted from docs -- now MEASURED on real cuBLAS, not quoted.
+
+### Reduce is DETERMINISTIC fp32 workspace -- proven twice, independently
+
+    (A) cuBLASLt config API : reduction = COMPUTE_TYPE(fp32 ws)   [NOT INPLACE(atomic)]
+    (C) real ncu SASS       : ATOM/RED instrs = 0 , LDG/STG = 48
+
+Two independent signals agree: fp32 workspace, load-add-store, ZERO atomics. Kernel is
+`cublasLt::splitKreduce_kernel<32,16,int,float,__nv_bfloat16,float,...>` -- reads fp32 partials,
+writes bf16. This is exactly the "fp32 partials + fp32 reduce" numerics §63.1 specified, and it
+means our no-atomicAdd requirement MATCHES cuBLAS rather than diverging from it for safety.
+
+### Workspace formula -- confirmed on 4 independent points
+
+    ws_bytes = M * N * 4 * S + 16
+    512^2 x4x2 +16 = 2097168 ✓   512^2 x4x4 +16 = 4194320 ✓
+    256^2 x4x8 +16 = 2097168 ✓   256^2 x4x4 +16 = 1048592 ✓
+
+### split-K is a MODIFIER on an existing variant, not a separate tile family
+
+    nvjet_sm90_tst_64x64_64x13_2x1_v_bz_splitK_NNT     (split)
+    nvjet_sm90_tst_64x64_64x13_2x1_v_bz_NNT            (non-split)
+
+Identical tile, cluster, raster and stage count -- only the `splitK` token differs. Direct
+evidence for §63.1's locked "shared splitk/ infra + tiny blockIdx.z hook, S=1 byte-identical"
+design over baking split-K into specific tiles.
+
+### Cost -- the reduce is NOT free
+
+`256x256x16384`: GEMM 184063 ns (77.5%) + splitKreduce 53535 ns (22.5%). `512x512x8192`:
+~9.5 us GEMM + ~2.4 us reduce (~20%). Any reduce strategy we adopt must beat that overhead, and
+the win has to come from the GEMM phase filling the machine. This is why the three-strategy
+comparison (cuBLAS-style separate deterministic kernel / CUTLASS turnstile / our map-reduce) is
+measured, not assumed.
+
+### Scope note
+
+On H200's REAL Qwen catalog split-K is small: 1 of 164 shapes in the NT sweep (§H8.8) and 6 of
+675 launches (0.9%) in §H17's per-layout sweep. The observation above defines when it is correct
+to use, not how much it is worth on Qwen specifically -- those are separate questions and the
+second one is still unmeasured.
