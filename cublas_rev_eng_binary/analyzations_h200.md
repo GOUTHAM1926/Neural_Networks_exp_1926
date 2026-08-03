@@ -6191,9 +6191,23 @@ THE MODEL, and it is exact for all six (calibrated on ONE kernel, predicts the o
     HGMMA count  proportional to  (BM/64) x (BN/wgmmaN)      [= number of 64 x wgmmaN blocks]
     4 blocks -> 368,  6 -> 552,  10 -> 920.
 Two facts fall out, both PROVEN rather than inferred:
- 1. The tile token is M x N (first number is BM). BM/64 is what makes the arithmetic close;
-    reversing the order breaks every prediction. This also retires the earlier open question
-    about whether the first number was really BM.
+ 1. [RETRACTED 2026-08-03 -- see H27y.25, which supersedes this] The tile token is M x N
+    (first number is BM). BM/64 is what makes the arithmetic close; reversing the order breaks
+    every prediction. This also retires the earlier open question about whether the first
+    number was really BM.
+    >> WHY THIS IS WRONG: the HGMMA count is (BM/64) x (BN/wgmmaN), a PRODUCT, so it is
+    >> commutative -- both readings give the identical count and the method cannot
+    >> discriminate. 320x128 with wgmmaN=64 is 5x2 under one reading and 2x5 under the other;
+    >> both predict 10 blocks. H27y.25 states this explicitly ("SASS block counts ... cannot
+    >> discriminate, ever") and settled the question a different way: mirrored (M,N)/(N,M)
+    >> probe pairs on shapes SMALL enough that the grid is not clamped, so grid == tile count
+    >> and the two readings predict different grids. Result: 8 shapes match TRANSPOSE, 0 match
+    >> DIRECT, self-checking because the grids exchange within each pair, identical over 3
+    >> repeats.
+    >> THE CORRECT MAPPING IS: cuBLAS's FIRST number is our N. "AxB" == our BM=B, BN=A.
+    >> Consequences that depend on it: cuBLAS 448x64 is our 64x448 and 320x64 is our 64x320
+    >> (both built in H27z.19), and cuBLAS 128x160 is our BM=160, which is ILLEGAL under the
+    >> wgmma m64 atom -- that tile stays blocked.
  2. The block count is EVEN in every case, i.e. the two consumer warpgroups always take
     exactly half each. cuBLAS never splits work unevenly.
 
