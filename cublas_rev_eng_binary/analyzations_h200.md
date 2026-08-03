@@ -9531,3 +9531,433 @@ On H200's REAL Qwen catalog split-K is small: 1 of 164 shapes in the NT sweep (�
 675 launches (0.9%) in §H17's per-layout sweep. The observation above defines when it is correct
 to use, not how much it is worth on Qwen specifically -- those are separate questions and the
 second one is still unmeasured.
+
+---
+
+## §H27z.9 split-K DESIGN for SM90 -- locked before implementation (2026-08-01)
+
+Follows the recon in §H27z.8. Everything below is either measured on this H200 or read out of
+cuBLAS/CUTLASS/BluTrain source; nothing is assumed.
+
+### BASELINE -- what split-K has to beat (measured, `--bench`, 1352 cases)
+
+    shape             our best        cuBLAS      %cuB    tiles@64x64   SM fill
+    512x512x8192      140.41 TF       333.46 TF   42.1%    8x8  =  64     48%
+    256x256x16384      36.57 TF       208.93 TF   17.5%    4x4  =  16     12%
+
+%cuB tracks SM fill almost exactly (12% fill -> 17.5% of cuBLAS). This is an IDLE-HARDWARE
+problem, not a kernel-quality problem -- exactly what split-K addresses. Best tile is
+`64x64` UNCLUSTERED in both cases, which is also the tile cuBLAS picks. Clustering HURTS here
+(64x64 base 42.1% vs 64x64_2x1_v 36.6%): too few tiles to exploit, and the cluster pays sync
+cost. So split-K goes on the UNCLUSTERED config and the dispatcher must not stack clustering
+on these shapes.
+
+### PRECISION -- the metric, settled
+
+Our own NO-SPLIT baseline already reports `maxRelErr = 0.30097` on these shapes and still
+PASSES, because the test's real criterion (test_bgemm_sm90_matrix.cu:338) is
+
+    d = fabs(a-b);  lim = tol*fabs(b) + 0.5;      // note the ABSOLUTE floor
+
+Summing 8192-16384 bf16 products produces genuinely near-zero outputs where positive and
+negative contributions cancel; relative error there is meaningless. This RETIRES the
+6-626% mystery from b300 §53.1(d): the colleague's reduce kernel is numerically correct
+(verified by reading it -- `const float* ws`, `float acc`, fixed `for k` order, no atomics,
+single final `__float2bfloat16`), and split-K is mathematically MORE accurate than one flat
+pass (grouped/tree summation has a tighter error bound). He measured raw relative error
+against cuBLAS output on cancelling elements and got an artifact.
+RULE: validate split-K with `|a-b| <= tol*|b| + floor`, NEVER raw relative error, or we will
+reject a correct implementation exactly as he did.
+
+### ARCHITECTURE -- separate composable feature, not per-variant code
+
+Confirmed by cuBLAS itself: `..._64x64_64x13_2x1_v_bz_splitK_NNT` vs
+`..._64x64_64x13_2x1_v_bz_NNT` differ ONLY by the splitK token -- same tile, cluster, raster,
+stages. split-K is a MODIFIER on an existing variant.
+
+    shared, outside the GEMM template (dtype-generic, reusable by SM90/SM100/SM103, bf16/fp16/fp8):
+        - fp32 partials workspace: sizing + allocation + reuse
+        - the reduce kernel(s)
+        - gating: when to split, and what S
+    inside the template: ONE new knob `SPLIT_K` on Sm90WarpspecConfig, alongside
+        CLUSTER_M/N, RASTER, SWIZZLE_BYTES. Default S=1.
+
+REQUIREMENT: at S=1 the emitted code must be BYTE-IDENTICAL to today. Proven the same way the
+X-macro refactor and RASTER_SWIZZLE were proven -- SASS diff over all existing kernels, not
+assumed. This is what protects the 676 validated kernels from regression.
+
+### K PARTITIONING -- exact coverage, the trap that must not be repeated
+
+b300's split-K used `k_units = K/BK` then `K/SK_TILE/BK` -- integer division TWICE. When
+`k_units % SK != 0` the tail of K is computed by NOBODY: a silent wrong answer whose magnitude
+varies with how much K is dropped. Its author listed `k_units % SK_TILE == 0` as a required
+constraint but the code never enforced it.
+
+Ours must instead guarantee, by construction:
+
+    k_iters_total = (K + BK - 1) / BK            // already ceil in our kernel (line 2458)
+    base   = k_iters_total / S
+    extra  = k_iters_total % S
+    slice s covers  [ s*base + min(s,extra) , (s+1)*base + min(s+1,extra) )   // length base + (s<extra)
+    => sum of all slice lengths == k_iters_total EXACTLY, for any K and any S
+
+plus a device-side assert that the slice ranges tile [0, k_iters_total) with no gap/overlap.
+No `%`-divisibility precondition on S at all.
+
+### NUMERICS -- fp32 partials, single conversion, alpha/beta applied ONCE
+
+The epilogue today (line ~2968) does: `acc*alpha` -> optional `+= beta*C_in` -> 
+`__float22bfloat162_rn` -> smem -> TMA. A PARTIAL-K slice must do NONE of those three:
+
+    S == 1 : unchanged (alpha, beta, bf16 convert, TMA store to C)
+    S >  1 : write RAW fp32 accumulators to workspace. No alpha. No beta. No bf16 convert.
+             The reduce kernel then does, once:  sum_s(partial_s) -> *alpha -> += beta*C_in
+             -> __float2bfloat16 -> C
+Applying alpha per-slice would multiply it S times; applying beta per-slice would add the C
+term S times. Both are silent wrong-answer bugs, so the split MUST happen before alpha.
+
+### REDUCE STRATEGIES TO BENCHMARK (three, all deterministic; atomics excluded)
+
+  (A) SEPARATE deterministic kernel -- what cuBLAS DOES (proven: config API reports
+      COMPUTE_TYPE(fp32 ws); SASS shows ATOM/RED=0, LDG/STG=48) and what CUTLASS's
+      `reduction/kernel/reduce_split_k.h` does (fixed `for k` loop, no atomics).
+      + fully parallel across output elements, simple
+      - extra kernel launch + full global round-trip
+      - MEASURED cost in cuBLAS: 22.5% of total on 256x256x16384, ~20% on 512x512x8192
+  (B) FUSED TURNSTILE -- CUTLASS `ReductionMode::Deterministic`
+      (gemm_universal_streamk.h:784 `wait_eq(block_idx - first_block_idx)`).
+      + single launch, no separate pass
+      - SERIALIZES the S peers of each tile: CTA k waits for 0..k-1. At S=8 that is an
+        8-deep chain per output tile.
+      - needs a barrier workspace on top of the partials workspace
+  (C) BLUTRAIN MAP-REDUCE -- our own, from ReductionKernels.cuh:607-670.
+      Every CTA stages its partial; `atomicAdd` on a SEMAPHORE COUNTER ONLY (never on data)
+      elects the last CTA; that CTA re-reads all partials in fixed order and reduces them
+      with the existing block_y_reduce/block_x_reduce trees.
+      + single launch AND no S-deep serialization -- structurally the best of (A) and (B)
+      + already production-validated in BluTrain's reduction module
+      - the electing CTA does the tile's whole reduce (tail), needs threadfence + semaphore
+      NOTE the atomic here is a COUNTER, not an accumulation -- it does not affect determinism.
+      This is the one strategy neither cuBLAS nor CUTLASS uses, and it is ours.
+
+EXCLUDED: fp32 atomicAdd accumulation. CUTLASS's own words for its `Nondeterministic` mode:
+"deterministic numeric behavior cannot be guaranteed ... rounding error will depend on the
+order of accumulation". Run-to-run non-reproducibility is disqualifying for training.
+
+### GATING -- reverse-engineered from cuBLAS, validated on 6/6 probe shapes (§H27z.8)
+
+    split so that   output_tiles * S  ~=  SM count (132)
+    do not split when output_tiles already >= SM count
+    workspace bytes = M * N * 4 * S  (+16)     [confirmed on 4 independent cuBLAS points]
+
+Predicted effect here: 512x512 S=2 -> 128 CTAs, 256x256 S=8 -> 128 CTAs; both ~97% fill vs
+48%/12% today. Upper bound on the win is bounded by the reduce cost (~20-22% in cuBLAS).
+
+### ORDER OF WORK
+
+  1. SPLIT_K knob + exact-K-partition + fp32-partial epilogue path, S=1 SASS-identical
+  2. strategy (A) first -- it is the reference both cuBLAS and CUTLASS ship, so it validates
+     the partials path independently of any reduce cleverness
+  3. then (C), then (B); compare perf AND precision (absolute-floor metric) on the two
+     measured baseline shapes; pick on data
+
+---
+
+## §H27z.10 split-K IMPLEMENTATION STATUS -- steps 1-2 landed, reduce/gating still open (2026-08-01 EOD)
+
+Implements the design locked in §H27z.9. Nothing here selects S>1 yet, so the shipping
+behaviour of all 676 kernels is unchanged; this is the plumbing plus its proof.
+
+### LANDED
+
+1. `SPLIT_K` template knob on `Sm90WarpspecConfig`, placed LAST in the parameter list so every
+   existing `Sm90Config_*` alias is untouched. Default 1. `USE_SPLIT_K = (SPLIT_K > 1)`.
+   static_asserts: `>= 1`, and `<= 16` (cuBLAS was never observed splitting harder than 8).
+
+2. EXACT K PARTITION -- `splitk_begin/end(k_iters_total, s)`, host+device constexpr so the
+   launcher and the kernel can never disagree about who owns which K:
+       slice s gets  k_iters/S  iterations, and the first  k_iters%S  slices get one extra
+   VERIFIED EXHAUSTIVELY before writing any kernel code: 4784 (k_iters, S) combinations,
+   k_iters 1..299 x S 1..16, checking every slice range is contiguous, non-overlapping, and
+   that the lengths sum to k_iters exactly. ZERO defects. Spot checks:
+       K=8192  S=2 -> [64,64]              K=16384 S=8 -> [32]*8
+       K=4096  S=3 -> [22,21,21]  (non-divisible, still exact)
+       K=1     S=7 -> [1,0,0,0,0,0,0]      (empty slices legal, see caveat below)
+   This is precisely the defect b300's split-K shipped: it integer-divided TWICE
+   (`K/BK` then `K/SK/BK`), so whenever `k_iters % S != 0` the K tail was computed by NOBODY.
+   Its author listed `k_units % SK_TILE == 0` as a required constraint but never enforced it.
+   CAVEAT recorded, not yet handled: an EMPTY slice (S > k_iters) must still WRITE ZEROS to
+   its workspace slot or the reduce sums uninitialised memory. Gating should simply never
+   choose S > k_iters; belt-and-braces is to zero the slot.
+
+3. Device K-range: `splitk_slice = blockIdx.z`, `k_begin/k_end` from the helpers, and
+   `k_iters = k_end - k_begin` (this CTA's own count). Inside the producer loop `kp` is the
+   LOCAL step and the new `kg = k_begin + kp` is the GLOBAL BK-step used by all four TMA
+   coordinate sites. At S==1, `k_begin` folds to 0 and `kg == kp`.
+
+4. fp32 partials workspace: kernel parameter `float* splitk_ws`, launcher allocates
+   `SPLIT_K * batchCount * M * N * sizeof(float)` (the measured cuBLAS sizing from §H27z.8,
+   extended by batchCount since our kernel is batched), grown-on-demand and held for the
+   process lifetime. Layout `[slice][batch][M][N]`.
+
+5. `gridDim.z = SPLIT_K` on both launch paths (clustered `cudaLaunchKernelEx` and plain
+   `<<<>>>`). Slice z walks the SAME persistent tile sequence over blockIdx.x as slice 0 and
+   differs only in K-range, so tile scheduling, cluster ranks and mega-tile decode are all
+   untouched.
+
+6. Epilogue partial-write branch under `if constexpr (USE_SPLIT_K)`: emits the RAW fp32
+   accumulator -- NO alpha, NO beta, NO bf16 convert -- via direct `float2` global stores with
+   explicit bounds checks (a raw STG has no TMA descriptor to clamp it; odd-N tail falls back
+   to a scalar store). Applying alpha per-slice would raise it to the S-th power and beta
+   per-slice would add the C term S times; both are silent wrong answers, which is why the
+   split must happen BEFORE alpha. The reduce applies all three exactly once -- same division
+   of labour as cuBLAS's splitKreduce and CUTLASS's reduce_split_k.h.
+
+### PROVEN
+
+S==1 BYTE-IDENTITY after step 1 (knob + K-partition + kg), by SASS diff of the whole library:
+    1352 differing lines, of which 0 were anything other than `Function :` mangled names
+    (1352 = 676 kernels x the </> pair; names grew by `Li1E` because the template gained a
+    parameter). Instruction streams with names stripped: IDENTICAL. Instruction counts:
+    4,261,672 vs 4,261,672.
+Step 2 (kernel parameter + epilogue branch + gridDim.z) has NOT yet been re-verified -- adding
+a parameter can perturb register allocation even when unused, so the same SASS diff must be
+re-run before this is trusted. That check is the immediate next action.
+
+### STILL OPEN
+
+  - reduce kernel. Strategy (A) first -- the separate deterministic fp32 kernel that BOTH
+    cuBLAS and CUTLASS ship -- because it validates the partials path independently of any
+    reduce cleverness. Then (C) BluTrain map-reduce, then (B) CUTLASS turnstile.
+  - gating: `output_tiles * S ~= SM count`, never S > k_iters, and do NOT stack clustering on
+    these shapes (measured: 64x64 base 42.1% vs 64x64_2x1_v 36.6% on 512x512x8192).
+  - dispatcher routing + the three-way perf/precision comparison on the two baseline shapes,
+    validated with the absolute-floor metric (`|a-b| <= tol*|b| + floor`), never raw relative
+    error -- see §H27z.9 for why that distinction retires the 6-626% mystery.
+
+---
+
+## §H27z.15-18 split-K STRATEGY BAKE-OFF: A wins, C's idea is right but its parallelism is not (2026-08-03)
+
+Continues §H27z.9-14. Everything below is measured on this H200. Two of my own conclusions get
+RETRACTED along the way; both retractions are the result of testing a claim rather than trusting
+the reasoning behind it.
+
+### THE PERF BUG THAT CONTAMINATED EVERYTHING BEFORE IT (§H27z.14)
+
+The split-K partial-write branch in the epilogue ended with `continue`, which skips only the
+rest of ONE `r` iteration -- control still fell through to the bf16 TMA store of a `c_buf` that
+the split-K path never writes. So every slice of every tile was storing stale smem to C:
+S*M*N*2 bytes per call, a cost that SCALES WITH S. The answer stayed correct only because the
+reduce kernel overwrites C afterwards on the same stream.
+Fixed by gating the store on `if constexpr (!USE_SPLIT_K)`. Effect:
+
+    256x256x16384 S=8    164.5 -> 172.7 TFLOPS
+    128x128x8192  S=16    35.05 -> 36.13
+    128x128x8192  S=32    33.98 -> 37.18    <-- and the PEAK MOVED from S=16 to S=32
+
+EVERY split-K number measured before this fix was pessimistic.
+
+### RETRACTION 1 -- the "minimum 8 K-iterations per slice" gating guard was fitted to that bug
+
+§H27z.13 added a second gating guard because 128x128x8192 (4 tiles) peaked at S=16 when pure
+occupancy predicted S=32, and blamed 4 K-iterations against a ~14-stage pipeline. But the wasted
+store penalised high S hardest, so it was manufacturing exactly that shape of curve. Post-fix the
+peak IS S=32, 4 iterations per slice is demonstrably fine, and the guard would have returned 16 --
+BLOCKING the true optimum. Removed. The only surviving guard is S <= k_iters, which is a
+correctness bound against empty slices, not a tuned constant.
+
+FINAL RULE:  S = largest power of 2 <= min( floor(SM_count / output_tiles), k_iters )
+Clean-data validation, 12 shapes 1..256 tiles: 10/12 exact, 11/12 counting a 1.03% noise tie.
+The one real miss is 384x384x8192 (36 tiles): rule says 2, measured peak is S=8 (124.6 vs 120.6,
+3.4%). 36 divides badly into 132 -- S=2 gives 72 CTAs (55% fill), S=4 gives 144 (a 12-CTA second
+wave), S=8 gives 288 (2.18 waves but 72.7% average fill). No closed form covers that; it is
+precisely the case STREAM-K exists to remove. The rule's pick still delivers 1.52x there, so it
+is suboptimal, not harmful. Negative controls hold: at 96/128/256 tiles it says DO NOT SPLIT and
+splitting monotonically hurts (1024x1024x8192: 290 -> 247 -> 236 -> 206 -> 150 -> 99 TFLOPS).
+
+### STRATEGY C (BluTrain fused map-reduce) -- IMPLEMENTED, CORRECT, and it LOSES
+
+Built as a `SPLITK_MODE` template knob so A and C sit in one binary and race on identical clocks.
+C: stage fp32 partials -> `__threadfence` -> `atomicAdd` on a per-tile COUNTER elects the last
+arriving CTA -> that CTA alone re-reads all S partials in ascending slice order, applies
+alpha/beta once, converts once, writes C, and resets its own counter (self-cleaning, so no host
+memset -- which is what keeps C at ONE launch; a memset per call would cost the same extra launch
+A already pays and defeat the point).
+
+CORRECTNESS: 54/54, and BIT-IDENTICAL to strategy A on every case, because both accumulate each
+element over s = 0..S-1 ascending. So the A-vs-C choice is purely performance -- no precision
+tradeoff. The empty-slice election also works: 520x1032x264 at S=32 has k_iters=5, so 27 slices
+are empty, yet they still increment the counter and the last CTA fires.
+
+A real bug was caught in C's vectorised reduce BEFORE it ever ran: the float4 address is
+`ws + s*slice_str + off0`, but `vec_ok` only checked `off0`. With slice_str = batchCount*M*N, any
+shape whose M*N is not a multiple of 4 (3x5, 129x131) misaligns every s>0 load -- and every shape
+in our suite has M*N%4==0, so it would have passed the entire suite and broken later.
+
+RESULT, all 8 A/C pairs to A:
+
+    shape            S    A        C       C/A
+    64x64x16384      8    11.58    10.96   0.946
+    64x64x16384     32    18.31    12.52   0.684
+    128x128x8192     8    31.39    28.54   0.909
+    128x128x8192    32    38.36    25.24   0.658
+    256x256x16384    8   170.80   164.48   0.963
+    256x256x16384   32   114.76    88.85   0.774
+    512x512x8192     8   173.70   158.50   0.912
+    512x512x8192    32    74.29    61.38   0.826
+
+Vectorising C's reduce (float4 + 4 independent accumulator chains, replacing a scalar loop with
+`#pragma unroll 1`) improved it 2.2x -- 6519 -> 2946 ns -- so the first draft really was leaving
+half on the table and the rematch was worth running. But A's reduce is 1561 ns, so C's is still
+1.89x slower.
+
+WHY, mechanistically: C's reduce thread count is FIXED at num_tiles * 256 regardless of S, while
+the reduce WORK scales with S. On 256x256 that is 16 elected CTAs against A's ~132 resident
+blocks. The deficit therefore grows with S exactly as measured (0.97x at S=2 -> 0.58x at S=32),
+and it is worst at the high S values our own gating rule selects for the starved shapes -- at
+S=32 A is +46%/+52% on 64x64x16384 and 128x128x8192, and A crosses 100% of cuBLAS on both while C
+does not approach it. This is not a flaw in the BluTrain algorithm: in its home module there are
+many CTAs per output so electing one still leaves plenty of parallelism. Split-K inverts that --
+the tile count is tiny BY CONSTRUCTION, which is why we are splitting at all.
+
+### RETRACTION 2 -- "A's reduce is parallelism-starved" was WRONG, and testing it proved it
+
+I read the low bandwidth utilisation (512 KB in ~1595 ns on 64x64x16384, ~7% of HBM) as
+parallelism starvation and retuned the geometry to chase block count: BLK 256 -> 128. Measured:
+
+    shape           data     blocks  blk   reduce
+    64x64  S=32     0.5 MB     16    256   1595 ns
+    64x64  S=32     0.5 MB     32    128   1598 ns   no change
+    256x256 S=8     2.0 MB    256    256   1561 ns
+    256x256 S=8     2.0 MB    512    128   1710 ns   9.5% WORSE
+
+Across 4x the data and 32x the block count the reduce never leaves ~1.6 us. That is a FIXED
+launch/ramp/drain floor, not a throughput or occupancy limit; 128 threads is also only 4 warps
+per block versus 8, so less in-block latency hiding for SM coverage it already had. Reverted to
+BLK=256 and confirmed: 1563.4 ns, correctness 18/18.
+CONSEQUENCE: A's reduce cannot be made meaningfully faster by tuning. And C's PREMISE -- do not
+launch a second kernel -- is therefore the only real lever on that 1.6 us. C's idea is sound; only
+its per-tile-election parallelism is not.
+
+### STRATEGY B (CUTLASS turnstile) -- DEPRIORITISED BY DERIVATION, NOT BUILT
+
+B and C both remove the same second launch. B additionally SERIALISES the S peers of a tile via a
+lock (`wait_eq(block_idx - first_block_idx)`, gemm_universal_streamk.h:784), each link needing its
+write globally visible before the next reads. So B is structurally C-minus-parallelism-plus-
+serialisation: since C already loses at 0.58x, and our gating picks S=8..32 where a 32-deep chain
+is worst, B cannot beat C and therefore cannot beat A. Two supporting signals: cuBLAS chose the
+separate kernel over turnstile, and CUTLASS uses turnstile mainly for STREAM-K, where a tile has
+2-3 partial contributors rather than 32 -- the regime it was designed for. B becomes relevant only
+if we implement stream-K.
+
+### VERDICT
+
+STRATEGY A ships. Same choice cuBLAS and CUTLASS made, now independently measured here rather
+than inherited, with C given a fair optimised implementation instead of being dismissed on theory.
+
+Final A gains over no-split (clean, post-bugfix):
+    64x64x16384     2.31 ->  17.73   7.67x    (99.4% cuBLAS)
+    256x256x16384  36.51 -> 171.94   4.71x    (81.5%)
+    128x128x8192    8.85 ->  38.44   4.34x   (103.1%)
+    128x256x8192   17.67 ->  70.32   3.98x   (118.3%)
+    256x512x8192   70.20 -> 170.76   2.43x
+    512x512x8192  140.65 -> 212.67   1.51x
+
+### THE ONE OPEN LEVER, stated with its risk
+
+C variant where ALL S CTAs spin until the counter reaches S and then each reduces 1/S of the
+tile. That gives C A's reduce parallelism with no launch at all: 2946/8 ~= 370 ns against A's
+~1.6 us floor, i.e. it should win. The cost is a cross-CTA spin, safe here ONLY because the
+persistent grid keeps every CTA co-resident (grid <= SM count). That is an assumption about
+launch geometry, not a guarantee -- it would break on a larger grid or a different arch. Not
+attempted; recorded so the option is not lost.
+
+### QWEN RELEVANCE, honestly scoped
+
+split-K is ~1% of Qwen launches. The one shape in the 164-sweep is shape_id 0
+(M=128 N=896 K=4096) = Qwen2.5-0.5B's KV-projection WEIGHT GRADIENT (`num_key_value_heads=2 x
+head_dim=64 = 128`, hidden 896), whose real layout per H17 is TN / BWD-dW. Its profile is exactly
+the trigger: tiny output, K=4096 tokens. Caveat: that observation came from the NT-convention
+capture, and in H17's correct per-layout sweep splitK instead appears on 128x256_coopA_splitK_NNN
+and 32x64_splitK_NTN, 6 of 675 launches -- which specific shapes those are was never attributed.
+So split-K's value here is general-BLAS and skinny/fat-K coverage (up to 7.67x, 100%+ of cuBLAS
+on starved shapes), not Qwen throughput.
+
+---
+
+## §H27z.19 two new tiles (64x448, 64x320) -- and a SCOPE CORRECTION to §H27z.3 (2026-08-03)
+
+H17's per-layout catalog showed cuBLAS using 16 tiles; we held 12. This adds two of the four
+missing, taking launch coverage from 97.8% to ~99.1%. The other two are deliberately deferred
+(see the bottom of this section) -- both need real work, neither is worth it at 0.4% each.
+
+### METHOD: the derivation was SIMULATED before a line was written
+
+Rather than add configs and see what the compiler said, the exact wgmma_n_pick /
+sw_pick_symmetric_mn / splittable / nchunk_ok cascade was reimplemented offline and FIRST
+VALIDATED against five tiles we already ship (64x64->n32, 128x320->n64, 192x192->n96,
+128x112->n112, 128x64->n64 -- 5/5 match). Only then were the candidates run through it. This
+is what caught, before any build, that my initial difficulty ranking was exactly backwards.
+
+    tile      wgmma_n  chunks  split    depth  verdict
+    64x448      112      4     2/2 SYM    2    clean, no new PTX
+    64x320       64      5     3/2 ASYM   3    legal, expected slow
+    64x32         0      -     -          -    BLOCKED: needs wgmma_m64n16k16
+    160x128       -      -     -          -    BLOCKED: BM=160, 160%64!=0
+
+64x32 was my first pick as "easiest -- one config line". WRONG: BM=64 gives 1 M-atom, which
+FORCES the N-split, which needs >=2 chunks, which needs wn<=16 -- and the smallest transcribed
+form is 32, so the cascade returns 0. It needs wgmma_m64n16k16 transcribed from CUTLASS plus a
+cascade entry, i.e. the same real work H27y.27 did for n32/n112/n144/n168/n176.
+
+160x128 is blocked by BM % 64 == 0, which is the wgmma m64 atom's own shape, not our rule.
+NOTE an unresolved ambiguity: cuBLAS's name is "128x160". Under our PROVEN mapping (cuBLAS AxB
+= our BM=B, BN=A) that is BM=160 -> illegal. Under the other reading it is BM=128, BN=160 ->
+LEGAL and healthy (M-split, wn=32, depth 5). §H18 already flagged that the nvjet name's first
+number may not be BM for tiles whose dimensions are not both multiples of 64. Resolvable by one
+mirrored-pair probe (tools/tile_orientation.sh); NOT resolved by assumption here.
+
+### ptxas INDEPENDENTLY CONFIRMED the asymmetry prediction, at BUILD time
+
+    45 x (C7520) + 3 x (C7519)   ALL on 64x320
+     0 warnings                  on 64x448
+     0 spills anywhere
+
+C7520 reads "wgmma.mma_async instructions are serialized due to program dependence on
+compiler-inserted WG.AR in DIVERGENT PATH". That divergent path IS the asymmetric
+per-warpgroup chunk-count guard: WG0 gets 3 chunks, WG1 gets 2, the loop bound differs between
+warpgroups, and the compiler must inject warpgroup.arrive to keep GMMA registers safe.
+
+USEFUL BY-PRODUCT: **C7520 is a build-time canary for asymmetric N-split.** A defect that
+previously required a hardware benchmark to detect is now visible at compile time. Any future
+tile emitting C7520 has this problem.
+
+### RESULTS -- correct, and a partial correction to §H27z.3
+
+Correctness: 270/270 each (45 configs x 6 shapes), all three layouts.
+
+    shape              64x448   64x320    64x64   128x320
+    2048x2048x1024      292.9    247.2    263.8     465.6
+    4096x4096x4096      410.0    332.2    300.5     519.5
+    1024x1024x512       104.0     93.2    143.9      94.3
+
+ASYMMETRY COSTS ~10-19%, NOT 12x. Comparing the two new BM=64 tiles, one clean and one with 48
+C7520 warnings: 15.6% / 19.0% / 10.4% slower. §H27z.3 recorded this failure mode as 38 vs 447
+TFLOPS (~12x) at 2048^3. THAT MAGNITUDE DID NOT REPRODUCE. The DIRECTION of the finding stands
+-- asymmetry is consistently and measurably worse -- but the severity does not generalise, and
+§H27z.3's 12x should not be quoted as a general rule without re-deriving what else was
+different in that case.
+HONEST CAVEAT: neither pair isolates asymmetry cleanly. 64x448 vs 64x320 also differ in BN,
+wgmma_n (112 vs 64) and depth (2 vs 3). The tighter control 64x320 vs 128x320 -- same BN=320,
+same 5 chunks, N-split vs M-split -- gives 1.88x / 1.56x / 1.01x, but differs in BM. So
+"~10-19%" is the best estimate from the closest available pair, not a controlled measurement.
+
+64x448 BEAT ITS OWN FORECAST. I predicted depth 2 would make it weak; instead it beats 64x64
+(depth 13) by 36% at 4096^3 and 11% at 2048^3. The wider tile amortises enough to overcome the
+shallow pipeline.
+
+NOT YET ANSWERED: neither new tile wins on these three shapes (128x320 dominates the large
+ones, 64x64 the small one) -- but these are large/square shapes, NOT the skinny shapes cuBLAS
+actually selects 64x448/64x320 for. Whether they earn their place is a question for the
+cartesian dispatcher sweep, not for this section.
