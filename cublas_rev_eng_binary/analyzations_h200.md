@@ -10727,3 +10727,69 @@ The median (91.8%) has now been stable across every correction applied all day -
 
 tn is unchanged as the weak layout: 0 wins, only 2 cases at or above 95%, 5 of the 8 sub-80%
 cases. §H27z.30 item 1 remains the highest-value follow-up in the campaign.
+
+## §H27z.33 THE DISPATCHER -- measured shape->config table replaces the N%256 rule (2026-08-04)
+
+Built from Test 2: 3 independent runs x 58,575 rows, 225 Qwen cases, 254-273 configs per case.
+Each table entry is the config with the highest MEDIAN-OF-3 throughput for that case.
+
+Files: src/level3/batched_gemm/BF16/SM90/Bgemm_sm90_dispatch_table.h (generated, 225 entries,
+75 per layout) and Bgemm_sm90_dispatcher.cu (do_nn/do_nt/do_tn now do a binary search on (M,N,K)).
+
+### WHAT IT REPLACES, and how wrong the old rule was
+
+    do_nt / do_nn : N % 256 == 0 ? 128x256x64 : 128x128x64
+    do_tn         : always 128x128x64
+
+Measured against the per-case optimum over the same 225 cases:
+
+    old rule   loss  median 11.35%   p90 27.50%   max 59.30%
+    table      loss  median  0.00%   p90  0.00%   max  0.00%   (in-sample by construction)
+
+    SPEEDUP from switching: median +12.80%   p90 +37.93%   max +145.69%
+    202 of 225 cases improved, 23 unchanged, ZERO made worse.
+
+    nn median +10.87% (62/75 improved)
+    nt median +11.29% (71/75)
+    tn median +21.35% (69/75)
+
+Biggest single gains:
+
+    +145.7%  tn 128x896x4096       128x128x64 -> 64x64x64_sk4
+    +116.6%  nt 4096x256x2048      128x256x64 -> 64x128x64
+    +109.3%  nt 4096x256x1536      128x256x64 -> 64x128x64
+     +69.5%  nt 4096x512x3584      128x256x64 -> 128x128x64
+     +48.6%  tn 151936x1536x4096   128x128x64 -> 256x128x64_1x2_h_rs2
+
+### THE tn LESSON -- a sound argument that was still wrong
+
+do_tn forced 128x128x64 for every TN shape, justified in a comment by smem arithmetic: TN stages
+BOTH operands raw, so at BN=256 the raw ring cannot double-buffer and drops to RAW_PIPE_DEPTH=1.
+That analysis is correct. The conclusion drawn from it was not. Across the 75 measured TN cases
+128x128x64 wins only 6, while 256x128x64_1x2_h_rs2 wins 18 and 256x128x64_1x2_v wins 12 -- both
+BN=128 tiles with a 1x2 cluster, a shape the old rule could not express at all because it only
+ever chose between two cluster-less configs. Reasoning from a resource constraint to a dispatch
+decision, without measuring, cost ~21% median on this layout.
+
+### HONEST LIMITS OF THIS TABLE
+
+  * The 0.00% row above is IN-SAMPLE. The out-of-sample expectation, measured by selecting on two
+    runs and scoring on the held-out third (all three rotations), is p90 ~2.5%. Judge the table
+    against 2.5%, not 0%.
+  * It is keyed on the EXACT (M,N,K) of the 225 measured cases. Anything else takes the fallback,
+    256x128x64_1x2_v -- lowest median loss (3.06%) among the 243 configs present in every case,
+    but with a 77.8% worst case. A shape far from anything measured can still be served badly.
+    A hardcoded table cannot be wrong about a shape it measured; a cost model can be wrong
+    everywhere. Generalising needs more measured shapes, not cleverer interpolation.
+  * batchCount is NOT part of the key. Test 2 ran batch=1 throughout, so there is no evidence any
+    batch count prefers a different config, and inventing a batch term would be exactly the
+    unmeasured reasoning this table exists to remove.
+  * 2-D clusters are excluded. They win 0 of 225 and excluding them costs 0.0000% at median, p90
+    AND max on all three runs -- and they are the only source of crashes in the campaign.
+
+### NOT YET DONE
+
+The table is derived and compiled but NOT yet validated on hardware end to end. Required before
+it can be trusted: run all 225 cases through blublasBgemmSM90_dispatch_* and confirm (a) results
+stay correct, and (b) nsys shows the kernel the table names actually launching. Deriving the
+right answer and wiring it up correctly are separate claims and only the first is evidenced here.
