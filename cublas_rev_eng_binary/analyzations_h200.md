@@ -9975,3 +9975,331 @@ NOT YET ANSWERED: neither new tile wins on these three shapes (128x320 dominates
 ones, 64x64 the small one) -- but these are large/square shapes, NOT the skinny shapes cuBLAS
 actually selects 64x448/64x320 for. Whether they earn their place is a question for the
 cartesian dispatcher sweep, not for this section.
+
+---
+
+## §H27z.22 TEST 1 (apples-to-apples) RESULT, and the measurement-reliability audit it forced (2026-08-04)
+
+### SETUP
+
+For each Qwen case, run OUR config matching the variant cuBLAS itself chose on that exact
+(shape, layout), and compare precision and speed. Reference comes from §H27z.8's per-case
+attribution -- the first time we have cuBLAS's kernel per case rather than H17's aggregates.
+223 of the 225 cases are runnable; the 2 that are not need tiles 64x32 and 160x128 (deferred,
+§H27z.19). Each case was run under BOTH cluster orientations, because that mapping is still
+unproven and all 223 cases disagree between the two readings -- 446 runs total.
+
+### RESULT -- we are typically at 86% of cuBLAS on its own chosen variant
+
+    correctness      223/223 PASS ; 444 of 446 rows BIT-EXACT (maxRelErr 0.00000)
+    %cuB             min 45.5 | p25 77.6 | MEDIAN 86.5 | p75 92.2 | mean 83.0
+      >=90%   86 (38.7%)      80-90%  64 (28.8%)      70-80%  39 (17.6%)
+      50-70%  24 (10.8%)      <50%     9 ( 4.1%)
+
+The 2 non-bit-exact rows are the SAME shape, 4096x896x151936 -- the LMhead BWD-dX, where
+K=151936 is the vocabulary dimension and the longest K in the whole workload. maxRelErr 21.7
+(2170%) on one element with a tiny ABSOLUTE error: summing 151936 bf16 products produces
+near-zero outputs where contributions cancel. Same phenomenon characterised in §H27z.9, and
+exactly why the pass criterion carries an absolute floor. Not a defect.
+
+The nine worst cases cluster: mostly TN with K=4096, i.e. the BWD-dW pass. Whether that is a
+selection problem or an implementation problem is a question for Test 2, not this section.
+
+### nsys VERIFICATION -- the test compared what we think it compared
+
+    total launches            ours 3122  |  cuBLAS 3122
+    223 cases x 14 launches (3 warmup + 10 timed + 1 correctness) = 3122   EXACT
+
+    cuBLAS chose            n     our config ran         n
+    320x128_1x2_h         994     128x320_c1x2         994   match
+    256x128_1x2_h         882     128x256_c1x2         882   match
+    192x192_2x1_v (x2 stg)364     192x192_c2x1         364   match
+    192x192_1x2_h         238     192x192_c1x2         238   match
+    128x256_2x1_v         182     256x128_c2x1         182   match
+    192x128_1x2_h          98     128x192_c1x2          98   match
+    112x128_2x1_v          28     128x112_c2x1          28   match
+
+Every count matches exactly, which also confirms the H27y.25 tile mapping live in production
+(cuBLAS 320x128 ran against our 128x320). 27 cuBLAS variants map to 26 of ours because cuBLAS
+distinguishes 192x192_64x3 from 192x192_64x4 by stage count and we do not.
+HONEST LIMIT: this proves the harness ran the intended kernels. It does NOT independently
+prove the cluster orientation -- the direct case file was CONSTRUCTED with that mapping, so
+the correspondence is by construction, not evidence.
+
+### MEASUREMENT RELIABILITY -- audited only because a 702% row appeared, and I was wrong first
+
+A row read 702% of cuBLAS. I initially called it "1 bad row" and moved on. That was wrong: it
+was asserted from a >2x CROSS-LAYOUT screen, which catches only the worst case. The correct
+control is that the direct and transposed runs each measured cuBLAS INDEPENDENTLY on the same
+223 shapes, so the two references can simply be compared:
+
+    cuBLAS reference, run-to-run disagreement over 223 shapes
+      <=5%   210 (94.2%)     5-10%  6      10-20%  4     20-50%  2     >50%  1
+      median 0.12%   mean 1.44%   max 88.4%
+
+So THIRTEEN shapes are unreliable, not one. And the 702% resolves: run1 read 76.88, run2 read
+662.75, and 662.75 matches the nn measurement of 661.71 on the same shape -- run1 was the
+glitch, our real figure there is 81.4%, consistent with 81.5% on nn.
+
+### ROOT CAUSE -- kernel duration, and TWO distinct mechanisms
+
+    cuBLAS kernel duration   shapes   median dev   >5%
+      < 20 us                  14       9.30%      8 of 14  (57%)
+      20-50 us                 35       0.46%      1
+      50-200 us                48       0.11%      0
+      200 us - 1 ms            60       0.06%      0
+      > 1 ms                   66       0.23%      4
+    median duration of UNSTABLE shapes  12.1 us
+    median duration of STABLE   shapes 417.8 us
+
+  MECHANISM 1 -- SHORT KERNELS. The harness times a FIXED 10 iterations regardless of size. At
+  12 us that is a 120 us window, and launch overhead (~3-5 us) is 25-40% of every iteration, so
+  any scheduler hiccup or clock transition lands inside it. 57% of sub-20us shapes broke.
+
+  MECHANISM 2 -- VERY LONG KERNELS. The four >1ms deviations run 3.9-6.3 ms each, so 10
+  iterations is 40-60 ms of sustained full-power compute and the GPU THERMALLY THROTTLES
+  mid-measurement. Different cause, same symptom, and it is why they sit consistently near 6%.
+
+  The 88.4% outlier is at 38.9 us, inside an otherwise clean bucket, so it looks like a genuine
+  external event (another process on the shared card, or a cuBLAS heuristic re-selection)
+  rather than either systematic mechanism.
+
+  THREE HARNESS MISTAKES, all mine:
+    1. fixed iteration COUNT instead of a time-based loop -- short kernels get too small a window
+    2. only 3 warmups and no clock lock -- long kernels throttle inside the measurement
+    3. a single measurement with no repeats -- no way to detect an outlier, which is exactly how
+       76.88 got recorded as a fact
+
+  CONSEQUENCE FOR TEST 2: 56,250 runs measured once each would carry this noise on ~6% of
+  results, and a wrong winner on a noisy shape means permanently routing that shape to a worse
+  config in the dispatcher table. Fix before launching: time-based iteration (run until N ms
+  elapsed rather than 10 times), more warmups, locked clocks, and 3 repeats taking the median.
+
+### CLUSTER ORIENTATION -- still unproven, and now shown not to matter much
+
+    direct faster      47      transposed faster  86      within 2%  89
+    median direct/transposed TFLOPS ratio  0.992
+
+Five methods have now failed to determine the mapping (§H27z.8 lists four; the DRAM-traffic
+probe is the fifth -- it produced 2 informative measurements out of 8, both pointing DIRECT,
+with the other 6 confounded because DRAM traffic depends on rasterisation, L2 reuse and
+scheduling, not just multicast). But the practical answer from 222 paired real cases is that
+the choice is worth under 1% on median, with 89 of 222 inside 2%. Not worth more GPU time, and
+Test 2 sweeps both orientations regardless.
+
+## §H27z.26 TEST 2 (full cartesian) RUN 1 RESULT -- 58,575/58,575 measured, and four findings that change the plan (2026-08-04)
+
+Test 2 ran the complete cartesian: every Qwen case against every applicable config. It COMPLETED
+-- 58,575 of 58,575, no gaps. Coverage per case is the full applicable registry, not a subset:
+254 configs for nn, 273 for nt (the 19 NT-only 128x168 cluster variants exist only there), 254 for
+tn. The often-quoted "~750 configs" is the whole registry summed across all three layouts (781);
+a case has exactly one layout, so 254-273 IS complete for it. Nothing was sampled or skipped.
+
+    rows 58,575   PASS 57,610   FAILSKIP 900 (= 4 skip-listed configs x 225 cases, exact)
+                  FAIL 61       CRASH 4
+
+The 900 FAILSKIP being exactly 4x225 is itself a check that the harness fix landed: before it,
+those configs were re-announced once per supervisor relaunch and never written to the results
+file at all (§H27z.25).
+
+### FINDING 1 -- 2-D CLUSTERS WIN NOTHING. 0 of 225 cases, from 21,671 measured rows.
+
+Every case winner uses a cluster with at least one dimension equal to 1:
+
+    cluster 1x2   127 cases (56.4%)
+    cluster 1x1    94 cases (41.8%)
+    cluster 2x1     3 cases (1.3%)
+    cluster 4x1     1 case  (0.4%)
+    ANY cluster with both dims >= 2 (2x2, 2x4, 4x2, 4x4 ...):  0 cases
+
+This is not a sampling artifact. 21,671 rows of 2-D cluster configs were measured across all 225
+cases and not one of them was the fastest for any case. Combined with FINDING 2 -- the only four
+crashes in the entire 58,575-row sweep are 2-D cluster variants -- 2-D clusters are currently pure
+liability: they cost build time, registry size, test time, and they are the sole source of
+context-destroying faults, while contributing zero wins. They should not appear in the dispatcher
+table. Whether to keep them in the registry at all is a separate call; keeping them costs a
+~21.7k-row slice of every future sweep for no measured benefit.
+
+### FINDING 2 -- the crash rule, and a RETRACTION of my own earlier rule
+
+All 4 crashes are the same tile on the same case, nn 4096x896x128, tile 128x144:
+
+    128x144x64_2x2_v  CRASH      128x144x64_2x4_v  CRASH
+    128x144x64_2x2_h  CRASH      128x144x64_2x4_h  CRASH
+    128x144x64_1x2_h/v, 1x4_h/v, 2x1_h/v, 4x1_h/v, 4x2_h/v, base   ALL PASS
+
+RETRACTED: after the first run I proposed "crashes iff CLUSTER_M >= 2 AND CLUSTER_N >= 2", and
+predicted 4x2_v and 4x2_h would crash. They PASSED. The rule was wrong and the prediction failed.
+
+The rule consistent with all 14 data points is narrower:
+
+    crashes iff CLUSTER_M == 2 AND CLUSTER_N >= 2        (4/4 crash, 10/10 pass)
+
+CLUSTER_M is what splits the B multicast, so the fault needs exactly TWO B-multicast peers --
+CLUSTER_M=4 (36-row B slices) is fine, CLUSTER_M=1 (no split) is fine, only CLUSTER_M=2 (72-row
+slices) breaks, and only when A multicast is also active. Note 2x1 also produces 72-row B slices
+and PASSES, so a 72-row slice is not sufficient on its own.
+
+Mechanism still UNKNOWN. A static-analysis pass over the smem layout ruled out the obvious
+candidates and produced a useful negative result: B_SWIZZLE for BN=144 is SW32 (atom 16 elems)
+and BN=176 selects the SAME SW32, so the swizzle cannot be what separates the crashing tile from
+the passing comparator. The store buffer does not alias the pipeline stages, every region boundary
+is 1024-byte aligned, and 128x128 -- which has the TIGHTEST smem slack of the whole set at 2048
+bytes -- passes. compute-sanitizer memcheck on the single failing pair is the outstanding step;
+it will name the faulting instruction directly and is worth about one minute of GPU time.
+
+### FINDING 3 -- all 61 FAILs are one bug, and it is NOT numerical
+
+Every FAIL is a split-K config (64x64x64_sk8/sk16/sk32) and every one has maxRelErr EXACTLY
+1.00000. That exactness is the tell: 1.0 means the computed value is 0 where the reference is
+non-zero. The harness memsets C to zero before each config, so an output of all zeros means the
+GEMM never wrote anything.
+
+Root cause, Bgemm_sm90_warpspecialized_template.cuh:3557-3575. The split-K workspace is
+S * batchCount * M * N * 4 bytes, held in a `static` grow-only cache PER CONFIG. On allocation
+failure the launcher prints a diagnostic and `return`s without computing -- deliberately, to avoid
+writing through a null pointer -- which leaves C at its memset zeros and is reported as FAIL.
+
+The allocation sizes are the problem:
+
+    largest request   159.45 GB   (152064x8192x4096, S=32)   on a 141 GB H200 -- impossible
+    smallest failure    1.76 GB   (8960x1536x4096,  S=32)
+    largest SUCCESS    39.83 GB   (4096x151936x896, S=16)
+
+RETRACTED: I first concluded "not size-related" because a 1.76 GB request fails while a 39.83 GB
+one succeeds. That reasoning was wrong -- it treated each allocation as independent. It IS memory,
+but CUMULATIVE: sk8, sk16 and sk32 each hold their own static cache at its high-water mark and
+never release it, so by late in the sweep tens of GB are held by caches for shapes long finished,
+and a modest 1.76 GB request fails against what is left.
+
+Two real defects follow, both worth fixing:
+  (a) the workspace grows as S*M*N with no bound. cuBLAS avoids this by sizing split-K against a
+      caller-supplied workspace budget; our gating (Splitk_gating.cuh) picks S from occupancy
+      alone and never consults available memory. The gating rule must gain a memory term:
+      clamp S so that S*batch*M*N*4 fits a budget, which for the failing shapes means S drops or
+      split-K is declined outright.
+  (b) the per-config static caches are never released and are invisible to each other. A single
+      shared arena would let one config's high-water mark be reused by the next instead of three
+      independent peaks coexisting.
+Neither is a numerical bug, and split-K precision remains as analysed in §H27z.9.
+
+### FINDING 4 -- the dispatcher table is small, but the choice is TIGHTER than I claimed
+
+Only 27 distinct configs ever win, out of 269 tested. Four of them take 66% of all cases:
+
+    256x128x64_1x2_v        56      192x192x64_1x2_v        13
+    256x128x64_1x2_h_rs2    36      128x256x64_cbox128      11
+    128x256x64              35      128x192x64               7
+    128x128x64              21      128x256x64_1x2_v         7
+
+By tile family (cluster and orientation collapsed): 256x128 wins 44.4%, 128x256 25.8%,
+128x128 9.3%, 192x192 6.2% -- the top three cover 79.5%.
+
+RETRACTED: §H27z.22 recorded a working rule that anything within ~3% of the top is effectively
+interchangeable. The full cartesian refutes it. The number of configs within 3% of the best is
+median 2 and MINIMUM 1 -- for many cases exactly one config sits in that band. And the penalty for
+being slightly wrong is real:
+
+    best vs #2   median  1.73%   p90  6.21%   max 18.94%
+    best vs #5   median  6.71%   p90 11.74%   max 48.14%
+    best vs #10  median 10.44%   p90 15.10%   max 53.20%
+    best vs #25  median 16.13%   p90 22.62%   max 55.97%
+
+So the dispatcher must be a real per-shape table, not a coarse "pick something near the top".
+
+Single-fallback analysis, for shapes the table does not cover: of the 243 configs present in all
+225 cases, the best universal default is 256x128x64_1x2_v at median loss 3.06%, but worst-case
+loss 77.8%. 128x128x64 has a higher median (9.50%) but a much better worst case (59.2%). A
+fallback is therefore acceptable for coverage but is not a substitute for the table.
+
+### WHERE WE STAND AGAINST cuBLAS (our best config per case, 225 cases)
+
+    median 92.1%   p10 85.4%   p90 97.2%   min 53.8%   max 288.2%
+    beat cuBLAS on 8 cases; 71 cases below 90%; 5 cases below 70%
+
+The worst cases are concentrated in small-M tn and small-K nn:
+
+    53.8%  tn 256x1536x4096      best 64x64x64
+    54.0%  tn 256x2048x4096      best 64x64x64
+    67.3%  nn 4096x3584x512      best 128x320x64
+    69.2%  tn 896x896x4096       best 64x128x64
+    69.4%  tn 1024x1024x4096     best 64x128x64
+
+Four of the five worst are tn with M <= 1024, where the best available tile is a small one
+(64x64 / 64x128) -- i.e. these are shapes where we lack a tile cuBLAS has, not shapes where we
+picked badly. That is a tile-coverage gap, and it is the highest-value target after the dispatcher.
+
+### STATUS AND WHAT RUNS 2 AND 3 ARE FOR
+
+Run 1 alone cannot distinguish a real winner from measurement noise, and cannot tell whether the
+61 FAILs and 4 CRASHes are deterministic. Runs 2 and 3 answer both for free: if the split-K FAILs
+do not reproduce, they are allocation-order dependent rather than fixed properties of the shape,
+which changes the fix. The dispatcher table is built from median-of-3, and given BAND3 above it
+must record an explicit winner per case rather than an equivalence class.
+
+## §H27z.27 SPLIT-K WORKSPACE: shared arena + budget guard, proven SASS-neutral (2026-08-04)
+
+Fix for FINDING 3 of §H27z.26 -- the 61 Test 2 failures that were all split-K, all with maxRelErr
+exactly 1.00000, and all caused by workspace allocation failure rather than by any numerical
+defect.
+
+### THE DEFECT
+
+The arena was `static float* s_ws` declared INSIDE the launcher, which is a template. A
+function-local static in a template gets one object PER INSTANTIATION, so sk2/sk4/sk8/sk16/sk32
+each held a separate cache, each grown to its own high-water mark and never released. Five peaks
+resident simultaneously, for shapes long finished.
+
+    largest request in the sweep    159.45 GB   (152064x8192x4096 S=32)  -- impossible on a 141 GB H200
+    smallest FAILING request          1.76 GB   (8960x1536x4096  S=32)
+    largest SUCCEEDING request       39.83 GB   (4096x151936x896 S=16)
+
+A 1.76 GB request failing while a 39.83 GB one succeeded is what makes the cumulative nature
+visible: the request size is not the variable, the residency of the other four caches is.
+
+On failure the launcher returns without computing, which is the right call -- writing partials
+through a null pointer would be worse -- but the caller's C is left untouched, and since the
+harness memsets C to zero beforehand the result reads as all zeros. Hence maxRelErr exactly 1.0 on
+every one of the 61. It looked like a precision catastrophe and was actually "never ran".
+
+### THE FIX -- src/level3/batched_gemm/splitk/Splitk_workspace.cuh (new)
+
+  * ONE arena for the process, in a non-template inline function, so all split-K configs share it.
+    Holding one peak instead of five is a strict reduction in resident memory under any access
+    pattern.
+  * A budget check via cudaMemGetInfo BEFORE allocating, against (free + already-held) minus a
+    ~6% margin. The margin exists so a split-K workspace can never take the last of device memory
+    and starve the caller's own A/B/C allocations, which would turn one declined GEMM into
+    unrelated failures elsewhere.
+  * A decline names the shape, the split factor, and how much was reachable, so an impossible
+    request is legible rather than opaque.
+  * The grow-on-demand fast path (`need <= held` returns immediately) is preserved, so a
+    steady-state training loop still allocates exactly once.
+  * `release_workspace()` added for long sweeps that want to hand the peak back between phases.
+
+Placed in splitk/ beside Splitk_reduce.cuh and kept arch- and dtype-agnostic for the same reason:
+partials are fp32 whatever the GEMM's types are, so SM90/SM100/SM103 and bf16/fp16/fp8 all reuse
+it. Nothing in it knows about tiles, TMA or wgmma.
+
+### WHY THIS IS SAFE TO LAND BETWEEN TEST 2 RUNS -- PROVEN, NOT ARGUED
+
+Changing measured code mid-campaign normally invalidates a median-of-3. It does not here, and the
+reason is checkable rather than rhetorical: the entire workspace block sits inside
+`if constexpr (Config::USE_SPLIT_K)`, and `USE_SPLIT_K = (_SPLIT_K > 1)` is false for all 264
+non-split-K configs, so the code is not merely skipped at runtime -- it is never emitted.
+
+Verified by compiling Bgemm_sm90_nn_variants.cu before and after and diffing cuobjdump -sass:
+
+    1,029,035 lines of SASS -- BIT-IDENTICAL, zero differences
+
+(The host object grew 1,496 bytes for the new inline functions; device code is unchanged.)
+
+So runs 1/2/3 remain directly comparable for every config that can actually win a dispatcher slot,
+and runs 2/3 additionally produce real numbers where run 1 had 61 holes.
+
+### WHAT IS DELIBERATELY NOT FIXED YET
+
+The 4 crashes (128x144 with CLUSTER_M==2, §H27z.26 FINDING 2) are untouched. Two reasons: the
+mechanism is still unknown, so any change would be a guess; and 2-D cluster configs win 0 of 225
+cases, so the dispatcher loses nothing by their absence. That fix waits on compute-sanitizer
+memcheck against the single failing pair, which will name the faulting instruction directly.
