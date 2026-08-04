@@ -10303,3 +10303,225 @@ The 4 crashes (128x144 with CLUSTER_M==2, §H27z.26 FINDING 2) are untouched. Tw
 mechanism is still unknown, so any change would be a guess; and 2-D cluster configs win 0 of 225
 cases, so the dispatcher loses nothing by their absence. That fix waits on compute-sanitizer
 memcheck against the single failing pair, which will name the faulting instruction directly.
+
+## §H27z.28 TEST 2 RUN 2: the split-K fix validated, the crashes proven non-deterministic, and two run-1 conclusions retracted (2026-08-04)
+
+Run 2 is an independent repeat of the full cartesian on identical kernel code except for the
+§H27z.27 split-K workspace change, which was proven SASS-neutral for the 264 non-split-K configs.
+Both runs: 58,575 rows, 225 cases, no gaps.
+
+                    run 1     run 2
+    PASS            57,610    57,671
+    FAILSKIP           900       900
+    FAIL                61         1
+    CRASH                4         3
+
+### THE SPLIT-K FIX WORKED: 61 FAILURES -> 1
+
+The single survivor is 64x64x64_sk32 on 152064x8192x4096, whose workspace is 159.45 GB on a
+141 GB device -- genuinely impossible, not a defect. It now declines through the new budget check
+with a diagnostic naming the shape and split factor, instead of failing an opaque cudaMalloc and
+leaving C at its memset zeros. Sharing one arena across sk2/4/8/16/32 instead of five independent
+grow-only statics recovered all 60 of the others.
+
+### THE CRASHES ARE NOT DETERMINISTIC -- which settles the mechanism question
+
+    run 1 crashes: 128x144 2x2_v, 2x2_h, 2x4_v, 2x4_h
+    run 2 crashes: 128x144 2x2_v, 2x2_h, 2x4_v          <- 2x4_h PASSED in run 2
+
+Combined with the compute-sanitizer result (memcheck: ERROR SUMMARY 0 errors, but maxRelErr
+10,332 on the same pair), the same config now demonstrably produces THREE different outcomes on
+identical inputs: bit-correct (run 1's first launch), silently wrong by 10^4 (under sanitizer),
+and context-destroying crash (under a repeated-launch burst). That is a RACE, not an
+out-of-bounds access.
+
+RETRACTED: §H27z.26 framed this as an illegal memory access and memcheck was chosen on that
+basis. memcheck found zero invalid accesses in both the 128x144 and the 128x112 case. The OOB
+framing was wrong. The remaining tools are synccheck and racecheck, which test synchronization
+rather than addressing.
+
+### MEASUREMENT REPEATABILITY, and why a single run cannot pick a winner
+
+Same (config, case) measured in both runs, 57,610 pairs:
+
+    median 0.70%   p90 2.73%   p99 8.69%   max 49.11%
+    within 1%: 62.4%   within 2%: 83.5%   within 3%: 91.5%   within 5%: 96.7%
+
+That looks good, and it is -- but it is NOT good enough to pick a winner from one run:
+
+    identical winner in run 1 and run 2 : 132 of 225  (58.7%)
+    winner FLIPPED                      :  93 of 225  (41.3%)
+
+The flips are noise, provably: cases whose winner flipped had a median run-1 gap between #1 and
+#2 of 1.09%, while cases whose winner held had 2.29%. Flips happen exactly where the top two
+were already inside measurement noise. The underlying choice is far more stable than the exact
+config suggests -- the winning TILE FAMILY agrees in 73.3% of cases and the winning CLUSTER SHAPE
+in 79.6%.
+
+CONSEQUENCE FOR THE DISPATCHER -- selection must average across runs, not trust one:
+
+    pick by MEAN of both runs : loss vs run-2 optimum   median 0.00%  p90 0.72%  max 10.27%
+    pick by RUN 1 alone       : loss vs run-2 optimum   median 0.00%  p90 6.85%  max 16.51%
+
+Averaging two runs cuts p90 selection loss by 9.5x. Note the pick-by-mean figures are IN-SAMPLE
+and therefore optimistic; run 3 exists to provide a held-out test -- select on runs 1+2, score on
+run 3 -- which is the only honest measure of how the shipped table will behave.
+
+### DROPPING 2-D CLUSTERS COSTS EXACTLY ZERO
+
+Selecting only from 1-D clusters (1xN / Nx1) and no-cluster configs, scored against the best of
+ALL configs by mean-of-2:
+
+    loss: median 0.000%   p90 0.000%   max 0.000%   cases losing >1%: 0 of 225
+
+Not "small" -- zero to three decimal places, on every case. §H27z.26 measured that 2-D clusters
+win 0 of 225; this measures the stronger statement that removing them from consideration costs
+nothing at all. They remain the sole source of every crash in both runs. Excluding them from the
+dispatcher is free, and excluding them from future sweeps would cut ~21.7k of 58.6k rows (37%).
+
+### RETRACTED: TWO OF RUN 1'S EIGHT "WINS" WERE cuBLAS MISMEASURING ITSELF
+
+    nt 4096x128x896   run1: ours 149.4 vs cuBLAS  51.9 = 288.2%
+                      run2: ours 146.5 vs cuBLAS 180.0 =  81.4%
+    nn 4096x896x128   run1: cuBLAS  80.6      run2: cuBLAS 155.7
+
+Our own numbers are stable across runs (149.4 vs 146.5, 2% apart). cuBLAS's reference for that
+case moved 3.5x. The 288.2% headline in §H27z.26 is therefore withdrawn -- it measured a bad
+cuBLAS sample, not a 2.9x win.
+
+The cuBLAS reference is itself unstable on exactly 5 of 225 cases (>10% between runs, worst
+110.5%), and two of those five happened to be our best-looking results. Any single-run claim of
+beating cuBLAS on those shapes is unsafe.
+
+### POSITION VERSUS cuBLAS, on mean-of-2 (the defensible number)
+
+    median 92.0%   p10 85.7%   p90 96.6%   min 57.5%   max 127.6%
+    beat cuBLAS 5 of 225   |   >=95% on 39   |   <90% on 75   |   <80% on 7
+
+    nn: median 92.5%  beat 2  >=95% 20  <80% 2
+    nt: median 91.9%  beat 3  >=95% 17  <80% 0
+    tn: median 91.7%  beat 0  >=95%  2  <80% 5
+
+tn remains the weak layout and the gap is structural, not a dispatch error: the worst cases are
+tn 256x1536x4096 and 256x2048x4096 at 57.5%, plus tn 896x896x4096 and 1024x1024x4096 near 69%,
+all with M <= 1024 where our best available tile is 64x64 or 64x128. That is a TILE COVERAGE gap.
+It is worth more than every open bug on the list combined: 5 of the 7 sub-80% cases are tn.
+
+### §H27z.28b CONFIRMED BY ISOLATION: run 1's cuBLAS references were corrupted by OUR OWN leak
+
+Ran the disputed case with nothing else on the GPU, five times:
+
+    cuBLAS: 183.81 / 183.96 / 184.82 / 184.97 / 188.22 TF   (spread 2.4%)
+    ours  : 148.70 / 148.65 / 151.26 / 150.34 / 152.45 TF   (spread 2.6%)
+
+    nt 4096x128x896     cuBLAS      ours     ratio
+      run 1 (with leak)    51.9     149.4    288.2%   <- WRONG by 3.6x
+      run 2 (leak fixed)  180.0     146.5     81.4%
+      isolation           185.2     150.3     81.2%   <- ground truth
+
+cuBLAS is stable to 2.4% in isolation. Run 2 lands within 3% of it. Run 1 is off by 3.6x. The
+run-1 reference for this case is therefore definitively an artifact, and the correlation is exact:
+run 1 is the run holding five leaked split-K workspace caches (§H27z.27), run 2 is the run after
+they were merged into one arena, and run 2 agrees with an empty GPU. All three of the large
+cuBLAS deviations were run-1-DEPRESSED, and all three are small-dimension shapes -- precisely
+where cuBLAS wants split-K workspace and where less free memory would push its
+CUBLAS_GEMM_DEFAULT heuristic onto a slower algorithm. Not instrumented inside cuBLAS's chooser,
+so the mechanism stays a strong hypothesis; that the run-1 numbers are wrong is not a hypothesis.
+
+LESSON, and it is a general one: a benchmark harness that leaks device memory does not just fail
+its own allocations, it silently DEGRADES THE REFERENCE it is measuring against, and the result
+looks like a spectacular win rather than like a bug.
+
+### CORRECTED SCOREBOARD -- ours by mean-of-2, cuBLAS by MAX-of-2
+
+MAX for cuBLAS because a depressed sample is an artifact and cuBLAS cannot be faster than its own
+best observation; mean for ours because §H27z.28 measured MAX to be the WORST selector at n=2
+(it chases lucky samples: p90 loss 3.04% vs 0.72% for mean).
+
+    median 91.9%   p10 84.4%   p90 96.4%   min 53.6%   max 123.5%
+    beat cuBLAS 4 of 225   |   >=95% on 34   |   <90% on 79   |   <80% on 8
+
+    the four REAL wins, surviving both runs and the max-cuBLAS reference:
+      123.5%  nt 4096x256x1536      64x128x64
+      104.6%  nn 4096x896x896       256x128x64
+      103.7%  nt 4096x256x2048      64x128x64
+      102.9%  nn 4096x5120x151936   256x128x64_1x2_v
+
+RETRACTION SUMMARY versus §H27z.26, which was written from run 1 alone:
+
+    claimed: 8 wins, max 288.2%, median 92.1%
+    actual : 4 wins, max 123.5%, median 91.9%
+
+The MEDIAN barely moved -- 92.1% to 91.9% -- so the campaign's central conclusion is robust. It
+was only the EXTREMES that were inflated, and they were inflated by our own harness. Half the
+"wins" were cuBLAS being mismeasured, not us being fast.
+
+    nn: median 92.3%  beat 2  >=95% 17  <80% 3
+    nt: median 91.4%  beat 2  >=95% 15  <80% 0
+    tn: median 91.6%  beat 0  >=95%  2  <80% 5
+
+## §H27z.29 ISOLATION VERIFICATION OF EVERY EXTREME, and a harness bug that made 6 of 8 look broken (2026-08-04)
+
+After §H27z.28b proved run 1's 288% "win" was cuBLAS mismeasured 3.6x by our own leaked split-K
+arena, no extreme result was trusted until it reproduced on an empty GPU. All 8 extremes -- the
+4 surviving wins and the 4 worst losses -- were re-run in isolation, 5 reps each, best-of.
+
+### A HARNESS BUG SURFACED FIRST: --shape + --layout verified against the WRONG reference
+
+Six of the eight reported FAIL with maxRelErr between 18,848 and 313,576, on configs that pass
+every day in the sweep. Cause, found by printing the raw output instead of guessing:
+
+`dR` is ONE buffer. The per-shape reference loop runs `for li in 0..2` and writes cuBLAS's result
+into dR each time, so dR ends up holding whichever layout ran LAST -- li=2, nt. With `--cases`
+this never mattered: each case pins `only_layout`, exactly one iteration runs, dR is right. With a
+bare `--shape`, `only_layout` stays -1, all three run, and every nn (li=0) or tn (li=1) config is
+verified against an nt reference. Guaranteed FAIL, absurd error, correct kernel.
+
+That is exactly the observed split: both nt cases PASSED, all six nn/tn cases FAILED.
+
+CRUCIALLY the TFLOPS and %cuB columns were CORRECT throughout, because they index `cub_tf[li]` by
+the CONFIG's own layout (line ~601), not by whatever dR happens to contain. So the measurements
+were valid and only the PASS/FAIL verdict was wrong -- the numbers below are read from those
+columns and are trustworthy.
+
+SWEEP RESULTS ARE UNAFFECTED. Test 2 always ran through `--cases`, which pins only_layout. Runs 1
+and 2 verified against the correct reference.
+
+Fixed: `--layout` now pins `only_layout` on CLI shapes (never overriding a --cases pin), so
+`--shape` + `--layout` behaves like a --cases row.
+
+### THE VERDICTS -- 2 wins survive, 2 were artifacts, and 2 losses are WORSE than reported
+
+    case                        sweep      isolated   verdict
+    nn 4096x896x896             104.6%      104.3%    REAL WIN
+    nn 4096x5120x151936         102.9%      103.2%    REAL WIN
+    nt 4096x256x1536            123.5%       94.7%    ARTIFACT -- we LOSE
+    nt 4096x256x2048            103.7%       90.4%    ARTIFACT -- we LOSE
+    tn 256x1536x4096             53.6%       53.3%    loss confirmed
+    tn 256x2048x4096             53.9%       53.7%    loss confirmed
+    nn 4096x3584x512             68.3%       62.4%    loss, WORSE than reported
+    tn 1024x1024x4096            69.4%       67.6%    loss, worse than reported
+
+### THE PATTERN IS CONSISTENT AND MECHANISTIC
+
+Every refuted win is a SMALL-N nt shape (N=256, and the earlier N=128 case). Every confirmed win
+is a large-N nn shape (N=896, N=5120). Small-N is exactly where cuBLAS needs a split-K workspace
+to escape wave quantisation -- §H27z.28b computed that a 128x128 tile on 4096x128x896 fills only
+32 of 132 SMs (24.2%), and that denying cuBLAS its workspace costs it the 3.6x we measured. Our
+leaked arena starved precisely the shapes where cuBLAS depends on workspace, and nowhere else.
+
+So the inflation was never random noise. It was systematic, one-directional, and caused by our own
+harness -- and it inflated exactly the results that looked most impressive.
+
+### FINAL HONEST COUNT versus §H27z.26
+
+    §H27z.26 (run 1 alone)              : 8 wins, max 288.2%
+    §H27z.28 (mean-of-2, max-cuBLAS)    : 4 wins, max 123.5%
+    §H27z.29 (isolation-verified)       : 2 wins, max 104.3%
+
+Two of 225 cases genuinely beat cuBLAS, both by under 5%. The median (~92%) never moved across any
+of these corrections, because our own measurements were stable the whole time -- only the
+competitor's numbers were being damaged.
+
+STANDING RULE from this: in-sweep %cuB is NOT reliable for small-N shapes, and no claim of beating
+cuBLAS should be made from sweep data alone. Verify on an empty GPU first.
