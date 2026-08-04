@@ -10525,3 +10525,205 @@ competitor's numbers were being damaged.
 
 STANDING RULE from this: in-sweep %cuB is NOT reliable for small-N shapes, and no claim of beating
 cuBLAS should be made from sweep data alone. Verify on an empty GPU first.
+
+## §H27z.30 OPEN ITEMS as of 2026-08-04 EOD -- everything found today, with what is proven and what is not
+
+Consolidated list. Nothing here blocks the dispatcher; all of it is real and should be fixed.
+Ordered by value, not by how interesting it is.
+
+### 1. tn TILE COVERAGE GAP -- the biggest performance item, bigger than every bug below combined
+
+Measured over 225 cases, mean-of-2, cuBLAS by max-of-2:
+
+    nn: median 92.3%   beat 2   >=95% 17   <80% 3
+    nt: median 91.4%   beat 2   >=95% 15   <80% 0
+    tn: median 91.6%   beat 0   >=95%  2   <80% 5
+
+Five of the seven sub-80% cases are tn, and four of those have M <= 1024, where the best tile we
+own is 64x64 or 64x128. Isolation-verified: tn 256x1536x4096 = 53.3%, tn 256x2048x4096 = 53.7%,
+tn 1024x1024x4096 = 67.6%. These are not dispatch mistakes -- the dispatcher already picks the
+best tile we have. We are missing a tile cuBLAS has. Finding out which one it uses on small-M tn
+is the highest-value follow-up in the whole campaign.
+
+### 2. 64x320 ASYMMETRIC N-SPLIT still emits C7520 -- and we already have the fix mechanism
+
+CORRECTION to what I said earlier today: I described C7520 as "deliberately kept, never fixed".
+That was wrong. §H27z.3 fixed it for 192x192 via `sw_pick_symmetric_mn`, which picks a swizzle
+whose atom width yields an EVEN chunk count so both warpgroups get the same loop bound. Result
+there was unambiguous: "the C7520 divergent-path warning is GONE entirely" and spill fell from
+2392/2764 bytes to 656/824.
+
+So the mechanism works. It simply does not resolve 64x320, which still emits 45 x C7520 +
+3 x C7519 (bit-exact reproduction of §H27z.19's count). BM=64 gives one M-atom, so SPLIT_M is
+false and the N-split is FORCED; the question is why no candidate atom width in the 64/32/16
+cascade yields a symmetric chunk count for BN=320. NOT derived -- do not assume it is impossible
+until the cascade is simulated for 320 the way §H27z.19 simulated the tile additions.
+
+Cost if fixed: 10-19% on that tile (§H27z.19, measured 64x320 vs the clean 64x448).
+Value if fixed: currently ZERO for the dispatcher. 64x320 wins 0 of 225 cases, median rank 187 of
+269, median gap 52.69% from the winner. Even with the penalty removed it stays ~40% off. Worth
+doing for correctness of the tile catalog and because the same cascade gap may bite a future tile
+that DOES matter -- not worth doing for speed.
+
+### 3. 128x144 with CLUSTER_M == 2 -- a RACE, not a memory fault
+
+Rule from 14 data points: crashes iff CLUSTER_M == 2 AND CLUSTER_N >= 2. 4/4 crash, 10/10 pass.
+CLUSTER_M=4 is fine, CLUSTER_M=1 is fine -- it needs exactly two B-multicast peers.
+
+RETRACTED twice on the way here: first "both cluster dims >= 2" (refuted -- 4x2 passes, and my
+prediction that it would crash failed), then "illegal memory access" (refuted -- compute-sanitizer
+memcheck reports ERROR SUMMARY 0 errors while the same run returns maxRelErr 10,332).
+
+Proof it is a race: the same config on the same input gives THREE outcomes -- bit-correct
+(run 1 first launch), silently wrong by 10^4 (under memcheck), crash (under a repeated-launch
+burst). And it is not stable across runs: run 1 crashed on 2x4_h, run 2 did not.
+Next tool: synccheck / racecheck, NOT memcheck.
+
+### 4. 128x112 with 2x2 and 1x4 -- broken on EVERY shape, silently wrong
+
+maxRelErr 31,798 on nn 1024x1024x1024 with zero memcheck errors. Currently on the --skip list, so
+900 of 58,575 rows are FAILSKIP by design. Note 1x4 has CLUSTER_M=1, which does NOT match the
+128x144 rule -- these are probably two different bugs, not one.
+Dispatcher value: zero. 2x2 and 1x4 are the two WORST cluster shapes of eight (median gap 19.73%
+and 18.05%), and 128x112 base ranks median 168th. Fix for library correctness only.
+
+### 5. A LIBRARY SAFETY ISSUE, worth more than items 2-4
+
+Items 3 and 4 return WRONG ANSWERS rather than crashing. A caller invoking those configs directly
+gets silent garbage. Until they are fixed they should be REFUSED at the API boundary, not merely
+omitted from the dispatcher. Nothing dispatches to them today, so this is not urgent -- but
+"produces garbage if called" is not an acceptable end state for a BLAS.
+
+### 6. split-K: one genuinely impossible case remains
+
+64x64x64_sk32 on 152064x8192x4096 needs a 159.45 GB workspace on a 141 GB device. §H27z.27 made it
+decline with a named diagnostic instead of silently returning zeros, which is correct behaviour,
+but the GATING (Splitk_gating.cuh) still chooses S from occupancy alone and never consults memory.
+It should clamp S so the workspace fits, the way cuBLAS sizes split-K against a caller-supplied
+workspace budget.
+
+### 7. MEASUREMENT HYGIENE -- a standing rule, not a task
+
+In-sweep %cuB is unreliable for small-N shapes and cannot support a claim of beating cuBLAS.
+12 of 225 cuBLAS references disagree >5% between runs, worst 110.5%, in BOTH directions (run 1 was
+low on nt 4096x128x896; run 2 was low on tn 256x1536x4096). Only isolation on an empty GPU is
+ground truth. Our own measurements were never the problem: median 0.70% run-to-run, 0.68% of rows
+beyond 10%, nothing beyond 50%.
+
+### 8. Dead flag
+
+`--full-verify` is a no-op since verification moved to the GPU and now always checks every
+element. Remove it or make it mean something.
+
+## §H27z.31 TEST 2 RUN 3 -- three-run campaign complete, out-of-sample validated, dispatcher table derived (2026-08-04)
+
+Run 3 was executed on the SAME binary as run 2 (no pull, no rebuild) so the two are bit-identical
+and directly comparable.
+
+    run    rows    PASS    FAILSKIP  FAIL  CRASH
+    run1  58,575  57,610     900      61     4
+    run2  58,575  57,671     900       1     3
+    run3  58,575  57,671     900       1     3
+
+Runs 2 and 3 are status-identical: same counts, same three crash pairs, same single split-K
+failure (64x64x64_sk32 on 152064x8192x4096, the 159.45 GB request). The §H27z.27 workspace fix is
+confirmed stable, not a one-run fluke.
+
+### CRASH DETERMINISM, finally resolved with three samples
+
+    128x144x64_2x2_v   3/3 runs
+    128x144x64_2x2_h   3/3 runs
+    128x144x64_2x4_v   3/3 runs
+    128x144x64_2x4_h   1/3 runs   (run 1 only)
+
+So three of the four are DETERMINISTIC and one is intermittent. That refines §H27z.28's "the
+crashes are not deterministic" -- which was inferred from a single disappearance. The accurate
+statement is that the fault is deterministic for CLUSTER_M=2 with CLUSTER_N=2 and for 2x4_v, and
+marginal for 2x4_h. A race whose window depends on cluster geometry fits all four observations;
+the sanitizer verdict (0 memcheck errors, maxRelErr 10,332) still rules out an addressing bug.
+
+### OUT-OF-SAMPLE VALIDATION -- and a RETRACTION of §H27z.28's headline number
+
+§H27z.28 reported "pick by mean-of-2: p90 selection loss 0.72%". That figure was IN-SAMPLE --
+selected and scored on the same two runs -- and it is optimistic by roughly 3.5x. Run 3 provides
+the held-out test that measures it honestly. Selecting on two runs and scoring on the third,
+all three rotations:
+
+    selector              held-out    median     p90     p95     max
+    MEAN of runs 1,2      run 3        0.00%   2.23%   3.89%  11.92%
+    MEAN of runs 2,3      run 1        0.00%   2.93%   4.55%  12.95%
+    MEAN of runs 1,3      run 2        0.00%   2.54%   5.09%  14.03%
+
+    single run alone      held-out     0.00%   4.51-6.68%      13.8-18.3%
+    MAX of 2              held-out     0.00%   5.53-7.65%      16.5-18.3%
+
+True out-of-sample p90 for mean-of-2 is ~2.5%, not 0.72%. It still halves the single-run figure
+(~5.6%), and MAX remains the worst selector at every rotation -- §H27z.28's finding that MAX
+chases lucky samples holds up on a third run.
+
+MEDIAN-OF-3, scored on each run (in-sample, therefore still optimistic):
+
+    run1 p90 2.05%   run2 p90 1.39%   run3 p90 0.53%
+
+Its true out-of-sample figure cannot be measured without a fourth run. By the trend it should be
+at or below mean-of-2's ~2.5%; do NOT quote 0.53% as the expected shipped-table loss.
+
+WINNER AGREEMENT is genuinely low and that is fine:
+
+    run1 vs run2  58.7%      run2 vs run3  59.1%      run1 vs run3  62.2%
+    all three agree           44.9%
+
+Only 45% of cases have the same winning config in all three runs, yet the COST of that
+instability is ~2.5% at p90 -- because the flips happen between configs that are already tied
+within measurement noise (spread across 3 runs: median 1.14%, p90 3.75%).
+
+DIMINISHING RETURNS: 1 run -> 2 runs cut p90 loss from ~5.6% to ~2.5%. A fourth run would buy
+much less. Three is enough.
+
+### 2-D CLUSTERS: ZERO COST TO REMOVE, confirmed on all three runs
+
+    loss from excluding every 2-D cluster, median-of-3:
+      median 0.0000%   p90 0.0000%   max 0.0000%   cases losing >0.5%: 0 of 225
+    2-D cluster wins on median-of-3: 0 of 225
+
+Third independent confirmation. They win nothing, cost nothing to remove, and are the sole source
+of every crash in all three runs. The dispatcher excludes them.
+
+### THE DISPATCHER TABLE -- 25 configs, median-of-3, 1-D clusters and base only
+
+    256x128x64_1x2_v        69     128x176x64                2
+    256x128x64_1x2_h_rs2    41     192x128x64_1x2_v          2
+    128x128x64              23     128x320x64                2
+    128x256x64              18     256x128x64                2
+    192x192x64_1x2_v        14     128x168x64                2
+    128x256x64_cbox128      12     + 13 configs at 1 case each
+    128x256x64_1x2_v        10
+    128x192x64               9
+    64x128x64                4
+    64x64x64                 3
+    256x128x64_1x2_h_rs8     3
+
+Four configs cover 151 of 225 cases (67%). The long tail of 13 single-case configs is where a
+future cost model would earn its keep; a hardcoded table handles them for free.
+
+### FINAL SCOREBOARD -- ours median-of-3, cuBLAS max-of-3
+
+    median 91.8%   p10 84.5%   p90 96.0%   min 53.7%   max 104.0%
+    beat 2   |   >=95% on 39   |   <90% on 80   |   <80% on 8
+
+    nn: median 92.0%  beat 1  >=95% 20  <80% 3
+    nt: median 91.6%  beat 1  >=95% 17  <80% 0
+    tn: median 91.6%  beat 0  >=95%  2  <80% 5
+
+IMPORTANT -- the sweep scoreboard and the isolation checks DISAGREE, and isolation wins:
+  * nt 4096x256x2048 appears here at 103.7% but isolation measured 90.4%. Sweep says win,
+    ground truth says loss.
+  * nn 4096x5120x151936 does NOT appear here as a win, yet isolation measured 103.2%.
+So the in-sweep number is wrong in BOTH directions. Only two wins are isolation-verified:
+nn 4096x896x896 at 104.3% and nn 4096x5120x151936 at 103.2%. Everything else is unverified.
+
+The median (91.8%) has now been stable across every correction applied all day -- 92.1%, 92.0%,
+91.9%, 91.8%. Our own measurements were never the unstable part.
+
+tn is unchanged as the weak layout: 0 wins, only 2 cases at or above 95%, 5 of the 8 sub-80%
+cases. §H27z.30 item 1 remains the highest-value follow-up in the campaign.
