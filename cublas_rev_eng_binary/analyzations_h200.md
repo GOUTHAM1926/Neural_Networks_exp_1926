@@ -10793,3 +10793,50 @@ The table is derived and compiled but NOT yet validated on hardware end to end. 
 it can be trusted: run all 225 cases through blublasBgemmSM90_dispatch_* and confirm (a) results
 stay correct, and (b) nsys shows the kernel the table names actually launching. Deriving the
 right answer and wiring it up correctly are separate claims and only the first is evidenced here.
+
+## §H27z.34 DISPATCHER VALIDATED END TO END -- 225/225, correct AND selecting the measured winner (2026-08-04)
+
+Ran all 225 Qwen cases through the real public entry points blublasBgemmSM90_dispatch_{nn,nt,tn}.
+
+    225 ok   |   0 WRONG RESULT   |   0 SLOW (selection suspect)   |   0 NOT TAKEN
+
+Both claims are now evidenced, and they are separate claims:
+
+  CORRECTNESS -- every element of every case checked on device against cuBLAS with the sweep's own
+  criterion (|a-b| <= 0.05*|b| + 0.5). No failures.
+
+  SELECTION -- achieved throughput compared against what Test 2 recorded for the config the table
+  names. This is the check a correctness test cannot make, because a silent fallback, an off-by-one
+  in the binary search, or an enum drifted from the switch would all still produce the RIGHT ANSWER,
+  merely slower. Result:
+
+    delta vs the table's own recorded TFLOPS:
+      median +1.20%   p10 +0.00%   p90 +4.90%   min -2.40%   max +15.80%
+      201 of 225 ABOVE the table, 20 below, ZERO below -3%
+
+  and the dispatcher selected exactly 25 distinct configs across the 225 cases -- the same 25 the
+  table contains. Nothing fell through to the fallback.
+
+WHY MEASURED IS CONSISTENTLY ~1.2% ABOVE THE TABLE. The table's numbers come from the sweep, where
+254-273 configs run back to back per case under sustained load. This validation runs one case at a
+time on an otherwise idle GPU. That is the same in-sweep depression established in §H27z.28b and
+§H27z.29 -- there it corrupted the cuBLAS column by 3.6x on a small-N shape, here it shows up as a
+harmless ~1% on our own kernels. The direction is consistent and the magnitude is small, which is
+itself corroboration: our kernels allocate nothing and choose nothing, so the effect on them is
+thermal/contention only, not algorithmic.
+
+Per layout the effect is uniform: nn +1.30%, nt +1.30%, tn +1.10% median.
+
+### CAMPAIGN STATUS
+
+The dispatcher is DONE and proven. Against the rule it replaces (N%256 ? 128x256 : 128x128, and
+always-128x128 for tn) it gains a median +12.80%, improves 202 of 225 cases and degrades none.
+Expected out-of-sample selection loss is ~2.5% at p90 (§H27z.31), not the 0% the in-sample table
+scores against itself.
+
+What remains is §H27z.30's open-items list, unchanged in priority:
+  1. the tn tile-coverage gap (M <= 1024) -- 5 of the 8 sub-80% cases, worth more than the rest
+     combined, and NOT a dispatch error: the table already picks the best tile we own
+  2. 64x320 asymmetric N-split (C7520) -- the sw_pick_symmetric_mn fix exists but does not apply
+  3. 128x144 CLUSTER_M==2 race, and 128x112 2x2/1x4 -- silently wrong, refuse at the API until fixed
+  4. split-K gating should clamp S against a memory budget
