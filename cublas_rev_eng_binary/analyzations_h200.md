@@ -10840,3 +10840,219 @@ What remains is §H27z.30's open-items list, unchanged in priority:
   2. 64x320 asymmetric N-split (C7520) -- the sw_pick_symmetric_mn fix exists but does not apply
   3. 128x144 CLUSTER_M==2 race, and 128x112 2x2/1x4 -- silently wrong, refuse at the API until fixed
   4. split-K gating should clamp S against a memory budget
+
+## §H27z.43 THE SMALL-SHAPE CAMPAIGN, the merged 423-entry table, and the tier-2 decision (2026-08-05)
+
+### WHY A SECOND CAMPAIGN
+
+§H27z.33's table was measured on the 225 Qwen shapes and validated 225/225. Running it against
+863 shapes -- the 225, the colleague's 41-shape suite, 370 generic model matmuls (GPT-2, Llama-2/3,
+Mistral, Phi-2, BERT, ViT, T5) and 167 small-output shapes -- exposed that it was excellent only
+on what it had measured:
+
+    group          n     median %cuB    under 80%    beat cuBLAS
+    qwen(table)   225        95.2%           8            56
+    colleague     101        88.0%          44             3
+    generic       370        79.0%         194            33
+    small         167        44.0%         148             0
+
+Reproduced across two independent runs (44.0% / 43.3%), so not an artifact. 0 wrong results in
+either run, and nsys confirmed our kernels ran (51.4% of GPU time as bgemm_sm90_kernel, zero
+Ampere fall-through).
+
+ROOT CAUSE: selection bias in how the FALLBACK was chosen. 256x128x64_1x2_v was picked as "lowest
+median loss across the 225", but the 225 contain only 6 shapes with M < 1024 and have a median M
+of 4096. On a 512x768 output a 256x128 tile makes 2x6 = 12 tiles for 132 SMs -- 9% of the machine.
+The fallback was fitted entirely to large outputs and then applied to everything.
+
+### THE SMALL-SHAPE SWEEP -- and it is a DISPATCH problem, not a kernel problem
+
+204 small-output cases (189 of them under one wave on a 256x128 tile) x ~158 configs x 3 runs,
+33,048 rows each, 0 FAIL, 0 CRASH, ~625 s per run.
+
+    current fallback : median 53.7% of cuBLAS   p10 23.3%   under 80% 183/204   beat 0
+    BEST config we already own : median 88.4%   p10 66.1%   under 80%  70/204   beat 43
+    gain from choosing correctly: median +101.0%   p90 +191.9%   max +438.1%
+
+No new kernel was required. The single largest gain in the sweep is nt 256x256x4096 going from
+17.7% to 95.4% of cuBLAS on 64x64x64_sk8.
+
+THE SMALL REGIME IS EASIER TO DISPATCH THAN THE LARGE ONE, which is counter-intuitive and worth
+recording:
+
+    winner agreement across all 3 runs :  small 84.3%   vs   Qwen 44.9%
+    out-of-sample selection loss (p90) :  small 0.08-0.20%  vs  Qwen 2.5%
+
+Because in the small regime the right config beats the alternatives by margins far outside noise,
+whereas the large-shape winners are separated by less than run-to-run variance.
+
+WINNING TILE DISTRIBUTION INVERTS COMPLETELY:
+
+    tile      small regime   large regime (the 225)
+    64x64        48%              ~1%
+    64x128       16%              ~2%
+    128x128      15%               9%
+    256x128       6%              44%    <- our fallback
+
+SPLIT-K FINALLY EARNS ITS KEEP. 10% of small cases are won by 64x64x64_sk{2,4,8}. Those kernels
+were built, validated and documented in §H27z.9-18 and then NEVER DISPATCHED TO, because they only
+win on small-M/N with large K -- precisely the region the first table had no data for.
+
+### THE MERGED TABLE: 225 -> 423 ENTRIES
+
+Cross-check first: the two campaigns overlap on 6 cases and chose the SAME config for all 6, days
+apart, from different sweeps. Independent evidence the methodology reproduces.
+
+Measured before/after, per shape, against the mean of two pre-table runs:
+
+    group        n     before    after     change      under-80% before -> after
+    qwen(table) 225     95.8%    95.7%     -0.0pp            8 -> 9
+    colleague   101     84.5%    92.5%     +8.0pp           44 -> 28
+    generic     370     79.0%    79.3%     +0.3pp          193 -> 190
+    small       167     42.3%    84.6%    +42.3pp          148 -> 61
+
+CROSS-VERIFIED against the colleague's own independent harness on 36 shared shapes: median
+agreement 1.6pp, 32 of 36 within 5pp, overall median his 92.5% vs our 92.0%. Different code,
+different author, different timing loop, 0.5pp apart on aggregate.
+
+CRITICAL HONESTY NOTE: the gain is entirely HARDCODING, not new logic. Split by table membership:
+
+    colleague IN table  15 :  68.8% -> 109.7%   (+41.0pp)
+    colleague MISS      86 :  89.2% ->  91.6%   ( +2.4pp)
+    small     IN table 167 :  42.3% ->  84.6%   (+42.3pp)
+    generic   IN table  16 :  53.7% ->  88.4%   (+34.7pp)
+    generic   MISS     354 :  79.5% ->  79.1%   ( -0.4pp)
+
+Every in-table row jumped 35-42 points; every miss row did not move. 184 of the 190 generic shapes
+still under 80% are simply not in the table. Tier 2 does not exist yet -- the dispatcher contains
+ZERO M/N/K threshold comparisons and a table miss falls to one hardcoded config.
+
+### THE TIER-2 DECISION, measured head-to-head rather than argued
+
+5-fold CV on the 204 small cases, scoring only shapes the rule never saw:
+
+    our single fallback (what ships today)      median 50.24%   p90 65.74%   max 81.42%
+    COLLEAGUE's wave-utilisation heuristic      median  8.20%   p90 21.72%   max 61.19%
+    OUR tree fitted to measured data            median  0.00%   p90 16.34%   max 56.82%
+
+DECISION: build our own tree; do NOT port his cost model. His heuristic is good -- 50.24% -> 8.20%
+is a large real improvement and it is hand-derived, which is impressive. But ours measures better
+on our hardware and our config set, and a hand-tuned threshold cascade has to be re-calibrated
+every time it is wrong. His own file documents exactly that failure mode: thresholds were "silently
+relaxed at some point ... WITHOUT updating this comment and WITHOUT any hardware test at the new
+relaxed levels", found during an unrelated review and reverted.
+
+CAVEAT ON THAT COMPARISON: his logic was transcribed faithfully but mapped onto OUR config set. He
+owns BN=8/16/32 tiles we do not, so his real dispatcher would score better than 8.20% on narrow-N.
+This compares SELECTION LOGIC, not kernel inventory.
+
+Architecture settled:
+
+    GATE     %8, M unconstrained in nn/nt        DONE (§H27z.35)
+    TIER 1   423-entry measured table, hash      DONE -- 0% loss on measured shapes
+    TIER 2   tree fitted to all 423              TO BUILD -- 0.00% median on unseen
+    later    own cost model                      LOW PRIORITY -- the tree already beats one
+
+### THE CEILING: what dispatch CANNOT fix
+
+Even choosing the best config we own, 24 of 204 small shapes stay under 70%. Two distinct kernel
+gaps, both matching capability the colleague already has:
+
+    shape class    n    median    under 70%
+    K >= 8192      6     46.5%      6 of 6      <- every single one
+    N <= 256      42     80.8%      7
+    N <= 512      81     82.0%     11
+    N >= 2048     81     90.2%      3
+
+  * HUGE-K, SMALL-OUTPUT (512x768x50304 at 37.6%): every K>=8192 shape fails. Best pick is already
+    64x64x64_sk4, so split-K is firing and is not enough -- wants larger split factors or the
+    narrow-K work.
+  * NARROW-N (N<=256): 38 of 42 pick 64x64, our NARROWEST tile. cuBLAS uses nvjet_sm90_tst_64x{8,
+    32,48}; the colleague ships BN=8/16/32. We are forced to over-provision N and waste it.
+
+These are kernel work, not dispatch work, and no table or tree can close them.
+
+## §H27z.44 OPEN ITEMS as of 2026-08-05 -- supersedes the §H27z.30 list
+
+Re-ranked against everything measured since. Items 1-3 of §H27z.30 are folded in and re-scored;
+the tn tile-coverage gap that led that list turns out to be one instance of the narrow-N gap below.
+
+### A. DISPATCH -- one item left, and the data for it is already in hand
+
+  A1. BUILD THE TIER-2 TREE. Fit to all 423 measured cases, emit as integer comparisons into
+      Bgemm_sm90_dispatch_table.h, keeping the exact table as tier 1 so measured shapes never
+      regress. Measured value: 50.24% -> 0.00% median selection loss on unseen shapes (5-fold CV),
+      p90 65.74% -> 16.34%. Fixes the 184 generic shapes currently stranded on the fallback.
+      NO GPU TIME NEEDED to build; one validation run to confirm. THIS IS NEXT.
+
+### B. KERNEL CAPABILITY -- what dispatch provably cannot fix (§H27z.43 ceiling analysis)
+
+  B1. NARROW-N TILES, BN = 8 / 16 / 32.  42 shapes with N<=256 are capped at 80.8% median because
+      64x64 is the narrowest tile we own -- 38 of those 42 pick it. cuBLAS uses
+      nvjet_sm90_tst_64x{8,32,48} here. The colleague's fork already ships BN=8/16/32, hardware-
+      validated across all three layouts including beta!=0, so this is a port with an existing
+      reference rather than new derivation.
+
+  B2. HUGE-K WITH SMALL OUTPUT.  All 6 shapes with K>=8192 sit at 46.5% median, worst class we
+      have; 512x768x50304 is 37.6%. Best available pick is already 64x64x64_sk4, i.e. split-K is
+      firing and is insufficient. Investigate larger split factors and the narrow-K tiers (B3).
+
+  B3. NARROW-K TILES, BK = 32 (64B swizzle) and BK = 16 (32B swizzle).  We only have BK=64. The
+      colleague has both, validated 39/39 across layouts incl. batch>1 and beta!=0. Lets K values
+      that are multiples of 16/32 but not 64 avoid padding entirely, and is a candidate lever for
+      B2.
+
+  B4. PADDED-SCRATCH FALLBACK for shapes the gate still refuses (N or K not a multiple of 8).
+      The colleague's dispatch_padded_helper pads A/B/C, runs a well-tuned kernel, copies back.
+      PORT THE IDEA, NOT THE CODE: his version cudaMallocs/frees per call and synchronises every
+      time -- back it with a cached grow-only arena like our own Splitk_workspace.cuh instead.
+
+### C. CORRECTNESS AND SAFETY
+
+  C1. 128x144 with CLUSTER_M==2 -- a RACE, deterministic for 3 of 4 affected configs (3/3 runs)
+      and intermittent for the fourth (1/3). memcheck reports ZERO invalid accesses while the same
+      run returns maxRelErr 10,332, so it is synchronisation, not addressing. Next tool is
+      synccheck/racecheck, NOT memcheck. CORROBORATED INDEPENDENTLY: the colleague's fork removed
+      its own cluster/coopB routing from production TWICE after "unspecified launch failure"
+      crashes with unconfirmed root cause, and his v2 rewrite deadlocked on its first hardware run
+      despite compiling clean. Isolated correctness PASS has now failed as evidence of stability
+      in two separate codebases.
+
+  C2. 128x112 with 2x2 and 1x4 -- silently WRONG on every shape (maxRelErr 31,798 with zero
+      memcheck errors). Probably a different bug from C1: 1x4 has CLUSTER_M=1, which does not
+      match C1's rule.
+
+  C3. REFUSE C1/C2 CONFIGS AT THE API BOUNDARY until fixed. They return garbage rather than
+      failing. Nothing dispatches to them today -- 2-D clusters win 0 of 225 and cost 0.0000% to
+      exclude -- so this is not urgent, but "produces silent garbage if called directly" is not an
+      acceptable end state for a BLAS.
+
+  C4. TN M-ALIGNMENT CONFLICT, unresolved between two codebases. His dispatcher states TN hard-
+      fails at cuTensorMapEncodeTiled for any M not a multiple of 64. We measured M%8 sufficient,
+      with 3000x3000x1024 passing TN across all ~250 configs (3000 = 46.875 x 64). Two claims both
+      described as hardware-confirmed that directly contradict. One small isolated test settles
+      it, and both codebases' ragged-M and padding logic depend on the answer.
+
+### D. HOUSEKEEPING
+
+  D1. split-K gating still chooses S from occupancy alone and never consults memory. One case in
+      the Qwen sweep needs 159.45 GB on a 141 GB device; it now declines cleanly (§H27z.27) but
+      the gate should clamp S against a budget rather than discover the problem at allocation.
+  D2. `--full-verify` is a dead no-op flag since verification moved to the GPU.
+  D3. TELL THE COLLEAGUE: his split-K scratch is a `static` inside a template
+      (Bgemm_sm90_warpspecialized_template.cuh, s_sk_scratch), which is exactly the per-
+      instantiation cache-explosion bug we hit and fixed in Splitk_workspace.cuh (§H27z.27). It is
+      harmless today because only one config uses split-K, and will reproduce our failure the
+      moment a second one is added.
+
+### E. EXPLICITLY DECIDED AGAINST
+
+  E1. Porting the colleague's wave-utilisation cost model. Measured head-to-head on our own data
+      (§H27z.43): his 8.20% median vs our tree's 0.00%. His is genuinely good and far better than
+      what we ship today, but a hand-tuned cascade needs re-calibration whenever it is wrong --
+      his own file records thresholds being silently relaxed without measurement and later
+      reverted. Revisit only if our tree proves inadequate on shapes far from the measured set.
+  E2. Chasing BM=320 or multi-CTA-per-SM occupancy for BN>=128. Closed by SASS evidence from
+      CUTLASS, DeepGEMM, ThunderKittens and cuBLAS's own compiled kernels: 1 CTA/SM with a deep
+      pipeline is the target operating point. The colleague's own 320x128 attempt is checked in
+      as Sm90Config_320x128x64_FAILED_DO_NOT_USE.
