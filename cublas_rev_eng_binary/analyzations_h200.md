@@ -10979,11 +10979,12 @@ the tn tile-coverage gap that led that list turns out to be one instance of the 
 
 ### A. DISPATCH -- one item left, and the data for it is already in hand
 
-  A1. BUILD THE TIER-2 TREE. Fit to all 423 measured cases, emit as integer comparisons into
-      Bgemm_sm90_dispatch_table.h, keeping the exact table as tier 1 so measured shapes never
-      regress. Measured value: 50.24% -> 0.00% median selection loss on unseen shapes (5-fold CV),
-      p90 65.74% -> 16.34%. Fixes the 184 generic shapes currently stranded on the fallback.
-      NO GPU TIME NEEDED to build; one validation run to confirm. THIS IS NEXT.
+  A1. [DONE 2026-08-05, §H27z.45] BUILD THE TIER-2 TREE. Fit to all 423 measured cases, emit as
+      integer comparisons into Bgemm_sm90_dispatch_table.h, keeping the exact table as tier 1 so
+      measured shapes never regress. Measured value: 50.24% -> 0.00% median selection loss on
+      unseen shapes (5-fold CV), p90 65.74% -> 16.34%. Fixed the 184 generic shapes that were
+      stranded on the fallback. Shipped and validated; tree_nn/tree_nt/tree_tn are live in
+      Bgemm_sm90_dispatcher.cu behind the tier-1 exact lookup.
 
 ### B. KERNEL CAPABILITY -- what dispatch provably cannot fix (§H27z.43 ceiling analysis)
 
@@ -11006,6 +11007,20 @@ the tn tile-coverage gap that led that list turns out to be one instance of the 
       The colleague's dispatch_padded_helper pads A/B/C, runs a well-tuned kernel, copies back.
       PORT THE IDEA, NOT THE CODE: his version cudaMallocs/frees per call and synchronises every
       time -- back it with a cached grow-only arena like our own Splitk_workspace.cuh instead.
+
+  B5. [FIXED + HARDWARE-VALIDATED 2026-08-06, §H27z.46] THE C7519/C7520 WARNINGS on 64x320.
+      Needed TWO changes, not the one §H27z.19 anticipated: the wgmma_n_pick cascade now prefers a
+      symmetric chunk split over widest-first, AND sw_pick_symmetric_mn now ranks candidate swizzle
+      atoms by the resulting wgmma width instead of by atom width (the cascade fix alone regressed
+      64x448 from 4 wide chunks to 14 narrow ones, and an over-broad version also moved 128x192).
+      Warnings 48 -> 0, ASYMMETRIC tiles 3 -> 0, 742 of 787 kernels byte-identical in SASS with the
+      45 changed being exactly 64x320's 15 cluster variants x 3 layouts. Also removed the
+      duplicated cascade inside Sm90WorkGrid that this fix would otherwise have had to be applied
+      to twice. VALIDATED ON H200: 153/153 PASS at maxRelErr 0.00000 (17 cluster variants x 3
+      layouts x 3 shapes). NOT cosmetic after all -- holding the swizzle at SW64 and varying only
+      the split measured symmetric 5+5 at 362.84 TFLOPS vs asymmetric 3+2 at 312.89, i.e. +16.0%,
+      so the serialisation was costing real throughput. The warning is deliberately NOT suppressed;
+      C7520 stays as the canary for future tiles.
 
 ### C. CORRECTNESS AND SAFETY
 
@@ -11033,6 +11048,29 @@ the tn tile-coverage gap that led that list turns out to be one instance of the 
       described as hardware-confirmed that directly contradict. One small isolated test settles
       it, and both codebases' ragged-M and padding logic depend on the answer.
 
+### C-bis. FOUND AND FIXED 2026-08-06 (see §H27z.47-.51) -- kept here so the list stays complete
+
+  [FIXED] BLUBLAS_HAS_SM90 was never defined when libblublas is built inside BluTrain, so the whole
+          SM90 routing block was preprocessed out and a Hopper card silently ran SM89 Ada kernels.
+  [FIXED] The strideC gate was missing its `batch > 1` condition, so every backward weight-gradient
+          (which passes strideC=0 for a 2-D tensor) was declined by SM90 and sent to SM89.
+  [FIXED] blublasCreate never initialised is_sm89 or sm_count -- undefined behaviour on a hot
+          dispatch path, with the kernel choice decided by uninitialised heap.
+  [FIXED] The grouped threadblock raster dropped output tiles whenever GROUP_ROWS did not divide
+          grid_y, leaving them unwritten and full of recycled allocator memory. Present identically
+          in BF16/SM89, FP16 and FP32/SM86; now one shared common/Gemm_block_swizzle.cuh.
+
+### C-ter. OPEN IN BLUTRAIN, NOT IN OUR BLAS -- next session (2026-08-07)
+
+  T1. beta SHADOWING in MatmulBackward.cu:585/594. The bf16 grad_B path declares a local
+      `beta = __float2bfloat16(0.0f)`; the need_reduction branch passes b_beta_b correctly but the
+      else branch passes that local, discarding the caller's beta_b. Latent only because
+      LinearBackward allocates grad_weight fresh each call so beta_b is 0. NEEDS A REPRODUCER.
+  T2. MISSING bf16 FALLBACKS. `!grad_a_done` covers float and fp16; `!grad_b_done` covers float
+      only. If supported_for_fast_path is ever false for bf16 the gradient is never written -- the
+      same silent-garbage class as the raster bug. Not currently hit, since cuBLAS shares the gate
+      and works. NEEDS A REPRODUCER before it is called a live bug.
+
 ### D. HOUSEKEEPING
 
   D1. split-K gating still chooses S from occupancy alone and never consults memory. One case in
@@ -11056,3 +11094,996 @@ the tn tile-coverage gap that led that list turns out to be one instance of the 
       CUTLASS, DeepGEMM, ThunderKittens and cuBLAS's own compiled kernels: 1 CTA/SM with a deep
       pipeline is the target operating point. The colleague's own 320x128 attempt is checked in
       as Sm90Config_320x128x64_FAILED_DO_NOT_USE.
+
+---
+
+## §H27z.46 THE C7519/C7520 WARNINGS IN THE BLUTRAIN BUILD: §H27z.19's PREDICTION, CONFIRMED (2026-08-06)
+
+Building libblublas.so inside BluTrain surfaces a wall of ptxas warnings. They are not new and they
+are not a BluTrain problem -- this is the same build noise the standalone repo has produced since
+§H27z.19, now simply visible because the BluTrain build echoes full compiler output. Recording it
+here so the next person who sees it does not re-diagnose it from scratch.
+
+### What ptxas is saying
+
+    (C7519) warpgroup.arrive is injected ... by compiler to allow use of registers in GMMA
+    (C7520) Potential Performance Loss: wgmma.mma_async instructions are serialized due to
+            program dependence on compiler-inserted WG.AR in divergent path
+
+C7519 is the cause and C7520 is its consequence. ptxas cannot prove the accumulator registers feeding
+a `wgmma.mma_async` are dead across a branch, so it inserts a `warpgroup.arrive` (WG.AR) to force the
+lifetime to be correct. That injected barrier then sits in a divergent path, and every subsequent
+wgmma has to order against it -- so the async MMAs that should overlap get serialized instead.
+
+### It is one tile, and only one
+
+Every warning in the build carries the same mangled template suffix:
+
+    Sm90WarpspecConfigILi64ELi320ELi64E...
+                       BM=64  BN=320  BK=64
+
+against the parameter order at Bgemm_sm90_warpspecialized_template.cuh:83-87. Nothing else in the
+library warns. The instantiations that do warn span all three layouts (Sm90Layout0/1/2 = NN/NT/TN)
+and the whole cluster grid (1x1, 1x2, 1x4, 2x1, 2x2, 2x4, 4x1, 4x2), which is why the count looks
+alarming -- it is one tile multiplied out across every variant we compile, not many broken tiles.
+
+### Why 64x320 specifically, and why 128x320 is clean
+
+Straight from §H27z.19, written when the tile was added and before any of this was observed:
+
+  - 320 = 5 x 64, so at wgmma_n=64 the tile is 5 N-chunks. Five is ODD.
+  - With BM=64 there is a single M-atom, so the two consumer warpgroups must split over N:
+    3 chunks to one, 2 to the other. ASYMMETRIC -> divergent control flow -> C7519/C7520.
+  - With BM=128 there are 2 M-atoms, so the split happens over M and BOTH warpgroups walk all 5
+    chunks. Symmetric, no divergence, no warnings. This is why 128x320 is silent while 64x320 is
+    not, despite identical chunk counts.
+  - sw_pick_symmetric_mn cannot rescue it: the widest-first cascade lands on wn=64 (which divides
+    320 and passes every grain check) before it can ever reach wn=32, which WOULD give 10 chunks
+    and a symmetric 5/5 split.
+
+§H27z.19 also called the asymmetry out in advance and noted it should show up in exactly this way,
+with C7520 as a build-time canary. The build log is the confirmation.
+
+### Runtime cost today: ZERO -- measured, not assumed
+
+64x320 is compiled but unreachable. Checked against the shipped dispatcher:
+
+  - it appears in NONE of the three dispatch enums (Cfg_nn 20 values, Cfg_nt 21, Cfg_tn 21);
+  - it wins 0 of the 423 measured tier-1 entries;
+  - no tier-2 tree leaf returns it.
+
+By contrast 128x320 IS dispatchable and does win real shapes (e.g. NN 4096x2560x1024 at 579.0 TF,
+NN 4096x3584x512 at 444.7 TF, TN 1024x4096x128 at 134.9 TF). So the tile the warnings are about was
+built, benchmarked, and rejected by measurement -- which is the system working. The only live cost
+is compile time and log noise.
+
+### THE FIX -- implemented 2026-08-06, warnings 48 -> 0
+
+Two compounding causes, and BOTH had to be fixed. Finding only the first is why §H27z.19 filed this
+as "needs a cascade change" and left it: a cascade change alone does not work.
+
+  1. `wgmma_n_pick_free` was widest-first, so it returned wn=64 before it ever considered wn=32.
+     It now scans the same widest-first candidate list but returns the first SYMMETRIC candidate,
+     falling back to widest-legal when nothing is symmetric. Widest-legal is exactly the old
+     answer, so the fallback path is the old behaviour verbatim.
+
+  2. Even with (1), wn=32 was ILLEGAL for MN-major B: `nchunk_ok` requires wn % N_GRAIN == 0, and
+     SW128 has N_GRAIN=64. The swizzle had to drop to SW64 (N_GRAIN=32) for 32 to be legal at all.
+     `sw_pick_symmetric_mn` was already meant to do this -- it probes SW128/SW64/SW32 asking "does
+     this atom give a symmetric split" -- but it could never discriminate, because it asked that
+     question via the widest-first picker, which returned the same wn=64 for every atom. Fixing
+     (1) is what made the existing swizzle search start working.
+
+Result: 64x320 goes SW128/wn=64/5 chunks/3+2 ASYMMETRIC -> SW64/wn=32/10 chunks/5+5 symmetric in
+NN and TN, and wn=64 -> wn=32 in NT (B is K-major there, N_GRAIN=1, so no swizzle change needed).
+
+TWO REGRESSIONS WERE CAUGHT BY THE PROBE AND FIXED BEFORE ANY OF THIS SHIPPED. Both were cases of
+the new preference being applied too broadly, and neither would have been visible without a
+before/after table -- they are the reason this section exists rather than a one-line diff:
+
+  - 64x448 NN/TN went wn=112 (4 chunks) -> wn=32 (14 chunks). Both symmetric, but 14 narrow MMAs
+    for 4 wide ones is a bad trade made purely to keep a wider swizzle. Cause: sw_pick_symmetric_mn
+    ranked candidates by ATOM width and took the widest atom that reached symmetry, which was safe
+    only while the picker returned the same wn for every atom. It now ranks by the resulting wn and
+    uses atom width only to break ties. 64x448 returns to SW32/wn=112; 64x320 stays on SW64.
+  - 128x192 NN/TN went SW128/wn=64 -> SW64/wn=96. Under an M-split EVERY wn is symmetric, so the
+    ranking had nothing to rank on and simply started preferring whichever atom admitted the widest
+    wn -- relocating a tile that never had a divergence problem and whose dispatch-table entries
+    were all measured at the old geometry. sw_pick_symmetric_mn now short-circuits for M-split and
+    reproduces the pre-fix expression exactly.
+
+Also folded in: `Sm90WorkGrid` had its own verbatim COPY of the cascade, carrying a comment saying
+the two "MUST change together or they will silently diverge". This fix is precisely the change that
+would have been applied to one and not the other -- swizzle selection previews the free version
+while the kernel compiles against the member version, so a divergence would have produced a tile
+whose chosen atom width and chosen chunk width disagreed. WorkGrid now calls the free functions;
+there is one definition and no lockstep left to maintain.
+
+### Acceptance evidence (all local, no H200 required)
+
+  - COMPILE-TIME PROBE over all 17 shipped tiles x 3 layouts, before vs after. The diff is exactly
+    three lines -- 64x320 NN, NT, TN. Every other tile is identical in split axis, swizzle,
+    N_GRAIN, WGMMA_N, NCHUNKS, per-warpgroup chunk counts and SMEM_BYTES. ASYMMETRIC count 3 -> 0
+    across the whole library.
+  - PTXAS WARNINGS: 16 per layout before (48 total), 0 after. Every one of the 48 carried the
+    Li64ELi320ELi64E mangled suffix, confirming §H27z.19's prediction that the class is detectable
+    at build time and lands on exactly one tile.
+  - SASS IDENTITY on the real kernels, offsets and byte encodings stripped: 787 kernels compiled
+    (nn 256 / nt 275 / tn 256), 742 byte-identical, 45 changed. The 45 are exactly the 15 cluster
+    variants of 64x320 in each of the 3 layouts. Zero unexpected changes; no kernel appeared or
+    disappeared.
+  - RESOURCES for 64x320: 168 registers before and after, 16 barriers before and after, 0 spill
+    stores / 0 spill loads, SMEM_BYTES 188416 unchanged (H200 cap 232448).
+
+STILL REQUIRED BEFORE THIS CAN BE TRUSTED IN PRODUCTION: numerical validation on H200. Everything
+above proves the derivation moved exactly where intended and nothing else moved; it does NOT prove
+the 10-chunk 5/5 geometry computes the right answer. 64x320 is not reachable from any dispatch path
+(it wins 0 of 423 measured entries and appears in no enum), so the risk to the training run is nil
+either way, but the tile must be exercised directly before the geometry is considered validated.
+
+### RESOLVED 2026-08-06: 153/153 PASS, bit-exact. The kernel was never wrong; the test command was.
+
+Final hardware result for 64x320, after a genuinely clean rebuild and with the harness invoked
+correctly: 153 PASS / 0 FAIL across all 17 cluster variants x 3 layouts x 3 shapes, every one at
+maxRelErr exactly 0.00000.
+
+AND THE FIX IS A REAL SPEEDUP, not just a warning cleanup. The bisection probes isolated it by
+holding the swizzle fixed at SW64 and varying only the split:
+
+    64x320 nn, 4096x2560x1024      symmetric 5+5, wn=32   362.84 TFLOPS
+                                   asymmetric 3+2, wn=64  312.89 TFLOPS      -> +16.0%
+
+So the C7519/C7520 serialisation was costing real throughput on this tile, which retires the
+"cosmetic, zero runtime cost" framing recorded earlier in this section. (The third probe, SW32 with
+wn=32, came in at 202.30 -- worst of the three, exactly as §H22 predicts: a 16-element atom needs
+20 TMA issues per stage instead of 10.)
+
+### How two H200 runs reported FAIL on a correct kernel -- the harness trap, now closed
+
+Both failing runs were invoked as `--tile=64x320 --shape=...` with NO `--layout`. That is the
+precise broken invocation §H27z.29 documents in test_bgemm_sm90_matrix.cu: dR is a SINGLE reference
+buffer, the reference loop runs `for li in 0..2` writing cuBLAS's result into it, so an unpinned
+shape leaves dR holding whichever layout ran LAST -- li=2, nt. Every nn and tn config is then diffed
+against an nt reference. H27z.29 recorded the exact fingerprint: "the two nt ones reported PASS and
+all six nn/tn ones reported FAIL with maxRelErr 18,848 to 313,576".
+
+Observed here: nn 24,880 / tn 29,071 / nt PASS. Inside that band, same pattern.
+
+THE TELL, and it is worth remembering because it is diagnostic on its own: three bisection probes
+with genuinely different geometry -- SW64/wn64, SW64/wn32, SW32/wn32 -- produced BIT-IDENTICAL
+maxRelErr while reporting clearly different TFLOPS (312.89 / 362.84 / 202.30). Different kernels
+cannot converge on the same wrong answer. Identical error across differing implementations means
+the error is not in the implementations: all three were computing the CORRECT result and all three
+were being compared against the SAME wrong reference. That single observation is what broke the
+case open after static analysis had already (correctly) exonerated nchunk_term, the ks*16*AW_B
+k-step, the descriptor leading/stride fields, boxDim[0]=atom and the chunk indexing.
+
+H27z.29 fixed this only on the path where --layout is passed, leaving the trap fully armed on the
+most natural invocation. Closed permanently: an unpinned --shape is now EXPANDED into one pinned
+shape per layout, each carrying its own reference, so the tool cannot be driven into the broken
+state at all. --cases rows and --layout pins already set only_layout and are untouched.
+
+  LESSON. A harness that can silently compare against the wrong reference is more dangerous than a
+  broken kernel, because it manufactures confident, quantitative, reproducible evidence for a
+  defect that does not exist. It cost two H200 cycles and three probe kernels here. When a fix is
+  followed by a failure, the harness invocation belongs in the suspect list beside the code -- and
+  a known trap documented in the same file should be checked FIRST, not after the code has been
+  exhaustively re-derived.
+
+### [SUPERSEDED by the section above -- kept for the reasoning trail] The first H200 run FAILED.
+
+  CAUSE 1 -- STALE BUILD, structural and now fixed. BluTrain/Tensor-Implementations/Makefile, the
+  Makefile that actually produces libblublas.so, had NO -MMD -MP and no `-include *.d`: its objects
+  depended only on their .cu/.cpp. Essentially the entire SM90 GEMM lives in a .cuh, so a
+  header-only change like this one rebuilt NOTHING while `make` reported success. The failure mode
+  is worse than plain staleness: whatever host-side translation units DO get recompiled compute TMA
+  descriptors from the NEW header while the device kernels still carry the OLD geometry, so
+  descriptors and kernels disagree and results are wrong everywhere. The standalone BluBridge-BLAS
+  Makefile already carries this fix and its own comment records the identical failure (kota's
+  Makefile shipped the `-include *.d` line while never generating the .d files); the BluTrain tree
+  simply never got it. Added DEPFLAGS := -MMD -MP to TENSOR_CXXFLAGS/TENSOR_NVCCFLAGS/
+  BLAS_CXXFLAGS/BLAS_NVCCFLAGS plus the two `-include` lines. This is the third time a stale build
+  has cost real debugging time in this repo, and the first time the cause has been removed rather
+  than worked around.
+
+  CAUSE 2 -- AN UNVERIFIED CHANGE THE ACCEPTANCE EVIDENCE DID NOT COVER. The probe checked
+  WGMMA_N, NCHUNKS, the per-warpgroup split, swizzle, N_GRAIN and SMEM_BYTES. It did NOT check the
+  TMA load box, which is ALSO derived from the swizzle atom via
+  chunked_box_width(raw_width, sw_atom_elems(B_SWIZZLE)) -- and BN=320 is the only tile in the
+  library whose raw width exceeds the 256 cap, so it is the only tile that chunks at all:
+
+      64x320 NN/TN   B load box  64 x 5 issues  ->  160 x 2 issues     (SW128 -> SW64)
+      64x320 NT      B load box  64 x 5 issues  ->   64 x 5 issues     (K-major B, swizzle unmoved)
+
+  160 satisfies every constraint that is actually written down -- 160 <= 256, 160 % 32 == 0 so no
+  chunk boundary lands mid-atom, and LOAD_BOX_WIDTH*MN_CHUNKS == 320 == MN_ROWS holds -- but
+  MN_CHUNKS==2 at box 160 is a geometry no build has ever executed, and "satisfies the constraints
+  I can find" is exactly the class of claim this file exists to distrust. It has to be measured.
+
+  THE LESSON, recorded because it generalises: a compile-time probe proves only what it prints.
+  Deriving the list of columns from "what did I change" (the chunk split) rather than from "what is
+  downstream of the thing I changed" (everything that consumes sw_atom_elems) is how a verification
+  pass can be thorough, produce a clean SASS identity proof, and still miss a live change. The
+  probe now prints the load box too; the correct discipline is to enumerate consumers of the
+  modified quantity FIRST and make the probe cover all of them.
+
+Not done, and deliberately: the warning is NOT suppressed. C7520 remains our only free build-time
+detector for asymmetric N-split and §H27z.19 relies on it as a canary for future tiles.
+
+Open item B5 in §H27z.44 is closed by this.
+
+---
+
+## §H27z.47 THE BLUTRAIN 1.7B INTEGRATION: FOUR REAL BUGS, AND WHY EACH ONE HID THE NEXT (2026-08-06)
+
+The day's goal was to run BluTrain's 1.7B production config on our BLAS and get an honest
+throughput number against cuBLAS. It instead surfaced four genuine defects, three of them ours.
+None was visible in a build log and none was caught by any existing test. This section records the
+whole chain, because the ORDER matters: each bug masked the one behind it, and fixing them in the
+wrong order would have looked like no progress at all.
+
+### The starting symptom
+
+    cuBLAS   : trains. step 0 norm 21.5496, loss falls 11.23 -> 9.13
+    blublas  : step 0 norm NaN, "ERROR: NaN/Inf loss at step 1", abort
+
+and, decisively, the FORWARD losses were BIT-IDENTICAL between the two (train 11.231575, val
+11.247252 to six decimals). A forward pass that agrees exactly while the gradient norm is NaN
+localises the fault to backward before a single line of kernel code is read. That one observation
+saved the whole day from being spent in the forward path.
+
+### The four bugs
+
+  BUG 1 -- BLUBLAS_HAS_SM90 WAS NEVER DEFINED WHEN BUILDING INSIDE BLUTRAIN.
+  Bgemm_dispatcher.cu wraps its SM90 routing block AND the extern declarations it needs in
+  `#ifdef BLUBLAS_HAS_SM90`. The standalone Makefile defines it via ARCH_DEFINES; the BluTrain
+  Tensor-Implementations Makefile never did. The SM90 sources still compiled and still landed in
+  libblublas.so -- their symbols and even their debug strings are in the .so -- but the only code
+  that CALLS them was preprocessed away. No link error, because the declarations live inside the
+  same ifdef. Result: a build that succeeds, produces correct answers, and silently runs the
+  legacy path on a Hopper card.
+    FIX: BLAS_ARCH_DEFINES derived from the already-detected SM_ARCH, folded into BLAS_CPPFLAGS.
+    GUARD: the `blas` target now prints its arch defines, or a loud "*** NONE ***".
+    GUARD: tools/verify_blutrain_wiring.sh checks the define exists.
+
+  BUG 2 -- THE strideC GATE WAS MISSING ITS `batch > 1` CONDITION.
+      if (batch > 1 && sA != M*K) ...   // gated
+      if (batch > 1 && sB != K*N) ...   // gated
+      if (            sC != M*N) ...    // NOT gated  <-- bug
+  A batch stride is the distance between consecutive matrices; at batchCount==1 there is no next
+  matrix and 0 is what a caller naturally passes. BluTrain passes exactly that -- MatmulBackward.cu
+  computes `s_gb = (b_ndim >= 3) ? grad_b_strides[b_ndim-3] : 0` and Linear flattens [B,T,H] to
+  2-D. So every backward weight-gradient was REJECTED by SM90 and sent to the legacy path. Forward
+  GEMMs carry a real strideC (33554432 = 16384*2048), are accepted, and are correct -- which is
+  precisely why the forward loss matched cuBLAS bit for bit while the gradient norm was NaN.
+    SAFE BECAUSE: the kernel never reads the caller's strideC. The launcher builds C's descriptor
+    from its own (uint64_t)M*N. The guard only ever existed to reject a BATCH layout that disagrees
+    with that packed assumption, and at batch 1 there is no batch layout to disagree about.
+
+  BUG 3 -- is_sm89 AND sm_count WERE NEVER INITIALISED (undefined behaviour).
+      struct blublasContext *ctx = new struct blublasContext;   // default-init: INDETERMINATE
+      ctx->deviceId = 0; ctx->stream = 0;                       // the other two never set
+  Both are read on the hot dispatch path (Bgemm_dispatcher.cu:222, bgemm_tensor_core.cu:183), so
+  which kernel variant ran was decided by whatever was in that heap block. Fresh OS pages are
+  usually zeroed, which is why it consistently read false -- but that is not a guarantee, and a
+  recycled allocation makes it genuinely nondeterministic.
+    FIX: value-initialise with `new ...()` so any member added later is zeroed too, then query the
+    device. Matched EXACTLY against 8.9, because the dispatchers treat the flag as "is Ada", not
+    "at least Ada" -- an H200 at 9.0 must read false.
+
+  BUG 4 -- THE GROUPED THREADBLOCK RASTER SILENTLY DROPPED OUTPUT TILES. See §H27z.53.
+
+### Where "SM80" came from, since we have no SM80 module
+
+    int sm_ver = is_sm89 ? 89 : 80;
+
+`is_sm89` is an exact match for compute 8.9; an H200 is 9.0, so it read false and the ladder fell
+to the branch labelled 80. There IS no SM80 module -- the arch dirs are SM89, SM90, SM100, SM103
+and FP32/SM86 -- and BOTH branches of that ternary call kernels from the SM89 module. The flag only
+picks WHICH SM89 variant. `80` is a misleading variable name, nothing more. The kernels were still
+compiled -gencode arch=compute_90a,code=sm_90a, so they ran as sm_90 binaries executing Ada-
+generation algorithms: WMMA + cp.async, BK=32, no wgmma, no TMA, no clusters, and none of the
+423-entry dispatch table or the tier-2 trees.
+
+cuBLAS was never affected by any of this: with WITH_BLUBLAS=0, MatmulBackward.cu's `#else` branch
+calls cublasGemmEx directly and never touches our dispatcher, our handle or our is_sm89. The cuBLAS
+baseline was always genuine Hopper; only ours was degraded.
+
+## §H27z.48 THE INSTRUMENTATION, AND THE ONE THAT WAS BUILT WRONG FIRST
+
+Reading source had run out by this point -- split-K workspace exhaustion, the known-broken 2-D
+cluster configs, tier-2 selection, the beta==0 C-read and a two-stream race on the thread_local TMA
+cache had all been eliminated by inspection (descriptors are __grid_constant__ and passed by value,
+so an async kernel holds its own copy). Three env-gated switches were added to make the RUNNING
+TRAINER report facts instead:
+
+    BLUBLAS_SM90_TRACE=1    log every shape the SM90 dispatcher sees
+    BLUBLAS_SM90_DISABLE=1  decline everything, forcing the legacy path -- one decisive bit
+    BLUBLAS_NAN_CHECK=1     scan A and B before each GEMM and C after, at the public funnel
+
+TWO OF THE THREE WERE BUILT WRONG ON THE FIRST ATTEMPT, and both mistakes are worth recording
+because they are the same mistake in different clothing: an instrument that cannot distinguish two
+hypotheses is not an instrument.
+
+  TRACE v1 logged ACCEPTS ONLY, and sat after every guard. When it reported "TOTAL accepted: 0" it
+  could not tell "never called" from "called on every GEMM and declined every one" -- two states
+  with completely different causes. v2 returns the DECLINE REASON from a single predicate that is
+  also the real decision, so the trace prints what the guards actually decided rather than a second
+  copy that could drift.
+
+  NAN_CHECK v1 tested only isnan||isinf. A buffer can be finite and astronomically large -- recycled
+  allocator memory reinterpreted as bf16 routinely is -- and with K=16384 an fp32 accumulation of
+  1e20-scale operands overflows to Inf LEGITIMATELY. v1 would have printed "inputs were CLEAN" and
+  accused a kernel that did correct arithmetic on garbage. v2 also reports max|value| per operand
+  and the |a|*|b|*K bound against bf16's 3.39e38 ceiling.
+
+That second upgrade is what cracked the case. The abort read:
+
+    [blublas NAN ORIGIN] tn M=5632 N=2048 K=16384 batch=1 alpha=1 beta=0
+      lda=5632 ldb=2048 ldc=2048   strideA=0 strideB=0 strideC=0
+      A: nan=0 max|a|=13.25        B: nan=0 max|b|=2.25306e-05
+      worst-case |a|*|b|*K = 4.891e+00   (bf16 max ~3.39e38)
+      VERDICT: inputs are finite AND well-scaled -- this GEMM CREATED the NaN.
+
+Three facts in one block: the leading dimensions are exactly packed (so ld is not the bug), the
+magnitudes are 38 orders below overflow (so the NaN is manufactured, not arithmetic), and
+strideC=0 (which is what connected it to bug 2).
+
+## §H27z.49 THE GROUPED RASTER DROPPED OUTPUT TILES -- root cause of the training NaN
+
+Bgemm_core_template.cuh:79, replicated verbatim in FP16/Hgemm_core_template.cuh and
+FP32/SM86/Sgemm_core_template.cuh:
+
+    const int sw = max(1, min(grid_y, 8));
+    const int bx = (block_id / sw) % grid_x;
+    const int by = (block_id % sw) + (block_id / (grid_x * sw)) * sw;
+
+It assumes every band is exactly `sw` M-tiles tall. The LAST band is only `grid_y % sw` tall
+whenever sw does not divide grid_y, and the arithmetic then walks a band taller than the rows
+actually remaining: bx advances too slowly, runs out of block_ids before reaching grid_x, and the
+right-hand tiles of the final band are NEVER ASSIGNED TO ANY BLOCK.
+
+No crash, no error code, no wrong arithmetic -- the tiles are simply never written and keep whatever
+the caching allocator left there. Zeroed memory looks like a correct answer; recycled memory is
+garbage that becomes NaN the moment it is used.
+
+    down-wgrad  tn 5632x2048x16384, BM=256 BN=128
+        grid 16 x 22, sw = 8, 22 % 8 = 6
+        352 tiles needed, 328 computed, 24 NEVER WRITTEN (bx 12..15, by 16..21)
+
+WHY IT HID FOR WEEKS. Every other GEMM in this model has M=2048 -> grid_y=8 -> 8 % 8 == 0 and is
+covered exactly. Only `down` has M=5632 -> grid_y=22. The 50M configuration had grid_y=2 with
+sw=2, also exact. So precisely one layer out of six, in one model size, was ever affected.
+
+WHY THE OFFLINE TESTS MISSED IT. test_bgemm_sm90_dispatch_validate.cu memsets C to zero before the
+GEMM, so unwritten tiles read back as clean zeros and matched the reference within the +0.5
+absolute tolerance. The one test that WOULD have caught it -- the b0-nan sub-test, which pre-fills C
+with NaN -- called the SM90 entry point directly and so never exercised the SM89 path at all. It
+could not even reach it: production passes strideC=0, which bug 2's gate rejected.
+
+FIX: one shared common/Gemm_block_swizzle.cuh, because three copies of a bug is not three bugs, it
+is one bug with three chances to be missed on the next edit. The correction is a single line --
+`const int rows = min(sw, grid_y - first)` -- sizing the last band by the rows actually remaining,
+which makes the map a bijection onto [0,grid_x) x [0,grid_y). Verified exhaustively over ten shapes
+including degenerate 1x1, sub-tile and tall-and-wide: every tile covered exactly once, zero
+duplicates. The old code also dropped 588 tiles on 5632x50304. GROUP_ROWS stays a per-dtype tuning
+knob (8 / 8 / 16) and the fix is correct for any value, including ones that do not divide grid_y.
+
+TEST FIX, equally important: test_bgemm_sm90_beta.cu now calls the PUBLIC API with strideC=0 -- the
+convention MatmulBackward.cu actually uses -- instead of the internal SM90 entry. A test that does
+not use the production calling convention is not testing production.
+
+## §H27z.50 MEASURED RESULT after all four fixes
+
+1.7B production config (d_model 2048, 36 layers, GQA 16/4, ffn 5632, vocab 50304, weight tying ON,
+B x T = 4 x 4096, grad_accum 64, 1,726,376,960 parameters), single H200, steps 2-8 steady state:
+
+    cuBLAS                       28,282 tok/s     37.0 s/step
+    blublas (strideC fix only)   26,415 tok/s     93.4% of cuBLAS
+    blublas (+ raster fix)       26,532 tok/s     93.8% of cuBLAS
+
+Correctness against cuBLAS across steps 0-8: losses agree to <= 8.1e-4, gradient norms to ~0.02 on
+values up to 183.3, step-0 norm 21.5497 vs 21.5496. Both runs reproduce the same trajectory
+including the step-2 spike to 12.585 and the descent to 9.39 by step 8. The residual is reduction-
+order drift, not error.
+
+THE 60% FIGURE FROM THE 50M RUN IS RETRACTED as a measurement of our work. That run was executing
+SM89 Ada-era kernels, because bug 1 had the SM90 module preprocessed out. It was never a Hopper
+number. The honest first measurement of the SM90 module end-to-end is the 93.8% above, and it is
+consistent with the 88.2% median measured directly on this model's 15 GEMM shapes (§H27z.47's shape
+sweep), the end-to-end figure being higher because non-GEMM time dilutes the gap.
+
+CAVEAT ON THE THROUGHPUT NUMBER: the box is shared and a colleague's job was live on the other H200
+throughout. 93.4% -> 93.8% across two runs of functionally identical code is the noise floor. Treat
+93-94% as the measurement, not 93.8 specifically.
+
+## §H27z.51 STATE AT END OF DAY, and what is genuinely still open
+
+FIXED AND VERIFIED TODAY:
+  1. BLUBLAS_HAS_SM90 undefined in BluTrain          -> arch defines printed; 87,668 accepts
+  2. strideC gate missing `batch > 1`                -> training runs, norm finite
+  3. is_sm89 / sm_count uninitialised (UB)           -> value-init + device query
+  4. grouped raster dropped tiles (BF16/FP16/FP32)   -> b0-nan on SM89 returns 0 NaN
+
+NO KNOWN DEFECT remains on any path the trainer exercises. That is not the same as "no bugs": the
+§H27z.44 C1/C2 entries are still real. 128x144 with CLUSTER_M==2 is a race and 128x112 with 2x2 or
+1x4 is silently wrong. Both are UNREACHABLE from dispatch -- they win 0 of 423 measured cases and
+appear in no enum and no tree leaf -- so nothing routes to them, but the kernels exist and return
+garbage if called directly. Walled off, not repaired. C3 (refuse them at the API boundary) is still
+the right permanent answer.
+
+OPEN, AND NOT OURS -- both in BluTrain's MatmulBackward.cu, to be investigated 2026-08-07:
+
+  BUG 5. beta SHADOWING, lines 585 and 594. The bf16 grad_B path declares a LOCAL
+     `const __nv_bfloat16 alpha = ..., beta = __float2bfloat16(0.0f);`
+  then the need_reduction branch correctly passes `b_beta_b` while the else branch passes that
+  hardcoded local `beta`, silently discarding the caller's beta_b. Latent today because
+  LinearBackward allocates grad_weight fresh on every call, so beta_b is 0 and the two agree. It
+  breaks the moment anything accumulates in place.
+
+  BUG 6. MISSING bf16 FALLBACKS. `if (!grad_a_done)` handles float and fp16; `if (!grad_b_done)`
+  handles float ONLY. If supported_for_fast_path is ever false for a bf16 tensor the gradient is
+  never written and the buffer keeps its previous contents -- the same silent-garbage class as bug
+  4. Not currently hit, because cuBLAS's branch shares the same fast-path gate and cuBLAS works, so
+  the gate must be true for these shapes. Needs a reproducer before it can be called a live bug.
+
+Neither has a reproducer yet, and neither should be reported as fact until one exists.
+
+TOOLING ADDED TODAY, all default-off and free in production:
+  BLUBLAS_SM90_TRACE=1   every shape the SM90 dispatcher sees, with ACCEPT or the decline reason
+  BLUBLAS_SM90_DISABLE=1 decline everything; splits "is it SM90" in one run
+  BLUBLAS_NAN_CHECK=1    scans A/B before and C after every GEMM at the public funnel, reports
+                         max|value| and the overflow bound, aborts on the first genuine creation
+  examples/test_bgemm_sm90_beta.cu   beta 0 / 0.5 / 1, including beta=0 with C pre-filled NaN,
+                         now through the PUBLIC API so it exercises whichever path routing picks
+  data/blutrain_1p7b_shapes.tsv      the 15 GEMM shapes this model actually issues
+  BluTrain Makefile: header dependency tracking (-MMD -MP + -include), so a .cuh change rebuilds
+  BluTrain Makefile: TRAIN_RUNNER ?= _gautam_runner, so nvidia-smi distinguishes our job from a
+                     colleague's on the shared box
+
+THE METHODOLOGICAL LESSON, recorded because it generalises past this repo: every one of today's
+four bugs was invisible in a build log and passed every existing test. Three were found only by
+instrumenting the running system, and the one found by reading (bug 2) had already been proposed
+and WRONGLY DISMISSED earlier the same day, because it was checked against the forward shapes --
+which carry a real strideC -- instead of the backward ones. Checking a hypothesis against the wrong
+subset is indistinguishable from disproving it.
+
+---
+
+## §H27z.52 PLAN: BASELINE, PROFILE, SWEEP, CLOSE THE GAP (2026-08-07)
+
+Goal: get our BLAS on par with or ahead of cuBLAS on the 1.7B production workload, and be able to
+prove the delta against a frozen starting point rather than against memory.
+
+### The framing question this plan answers first
+
+We are at 93.8% of cuBLAS end-to-end and 88.2% median on the 15 GEMM shapes. Those two numbers
+disagree, and the gap between them is the non-GEMM time -- attention, RMSNorm, SwiGLU, the
+optimizer, the loss. NOBODY HAS MEASURED THAT FRACTION. It decides whether this whole effort is
+worth doing: if GEMMs are 60% of step time, closing the entire 12% GEMM gap buys ~7% end to end;
+if they are 90%, it buys ~11%. nsys is the only thing that answers it, which is why profiling comes
+before optimisation rather than after.
+
+### PHASE 0 -- freeze the baseline (no new runs needed)
+
+Everything below is compared against these, permanently, in test_reports/baseline_1p7b.md:
+
+    end-to-end, 1.7B production config, single H200, steps 2-8 steady state
+      cuBLAS    28,282 tok/s   37.0 s/step
+      blublas   26,532 tok/s   39.6 s/step   93.8% of cuBLAS
+      correctness: losses within 8.1e-4, grad norms within 0.02, same curve incl. step-2 spike
+
+    standalone, the 15 GEMM shapes this model issues (test_reports/blutrain_1p7b_shapes.tsv)
+      median 88.2% of cuBLAS, p10 76.8%, p90 103.8%, 3 shapes already beat cuBLAS
+      weakest: wK-dgrad 76.8%, wK-wgrad 73.4%  (both narrow-N = 512)
+
+CAVEAT recorded with the numbers: the box is shared. 93.4% vs 93.8% across two runs of functionally
+identical code is the noise floor, so the baseline is "93-94%", not "93.8%".
+
+### PHASE 1 -- nsys the real training run, both backends
+
+Two captures, WITH_BLUBLAS=0 and =1, same config, same GPU. What comes out:
+
+  1. GEMM share of total GPU time            <- decides the value of everything after this
+  2. every kernel each backend launches, with count and total time
+  3. cuBLAS's kernel names, which encode its tile choice (nvjet_..._<TILE>_...)
+  4. anything unexpected -- a kernel we did not know was running, or a shape we did not predict
+
+Reuses tools/nsys_capture.sh's proven mechanics: --stats=true (because --stats=false emits NO
+sqlite and every downstream query silently returns nothing -- already burned us once), report
+cuda_gpu_kern_gb_sum for name+grid+block+time, and parsing by HEADER NAME not column index.
+
+### PHASE 2 -- per-shape kernel identity, controlled
+
+nsys on the trainer gives kernel totals but not a clean shape->kernel map, because one kernel serves
+several shapes. So this phase runs the 15 shapes standalone, one at a time, and records for each:
+what cuBLAS launched, what we launched, and the TFLOPS of both. tools/nsys_kernel_compare.sh already
+does exactly this for a shape list; it needs pointing at the 1.7B list.
+
+Output: a table of shape -> (cuBLAS kernel + tile, our config, ratio). This is what tells us WHICH
+tile cuBLAS thinks is right for the shapes we lose on.
+
+### PHASE 3 -- full variant sweep, and the fork in the road
+
+Run ALL 247 registered configs against each of the 15 shapes and record TFLOPS. 247 x 15 = 3,705
+measurements, Test-2 scale, minutes not hours on one GPU.
+
+This splits the problem cleanly, and the answer decides all remaining work:
+
+    IF the best config we ALREADY OWN beats cuBLAS on a shape
+        -> the kernel is fine and the DISPATCHER is picking wrong.
+           Fix = add these 15 shapes to the tier-1 measured table. Cheap, no new kernels.
+           Note 13 of the 15 are currently tier-2 tree picks, not measured entries, so this is
+           the likely outcome for several of them.
+
+    IF no config we own beats cuBLAS on a shape
+        -> we are genuinely missing a kernel shape, and only then does Phase 4 apply.
+
+Doing Phase 3 BEFORE writing any new kernel is the whole point: implementing a variant to fix a
+dispatcher bug would be wasted work, and we have made that mistake in this repo before.
+
+### PHASE 4 -- only for shapes Phase 3 proves we cannot win
+
+For each losing shape, decode cuBLAS's tile from its kernel name (Phase 2), compare against the 17
+base tiles we own, implement what is missing, validate for correctness first and speed second, then
+re-measure against the Phase 0 baseline.
+
+### BLOCKERS FOUND WHILE RESEARCHING THIS, and how each is handled
+
+  B1. bluscript.cpp parses ONLY --config=<path> (line 118). There is no --steps override, so a
+      short profiling run needs its own YAML. Reducing global_batch cuts grad_accum and therefore
+      the number of launches, WITHOUT changing a single GEMM shape -- shapes depend on
+      mini_batch x context and the model dims, not on how many micro-steps accumulate. So a
+      profiling config is safe for kernel identity and keeps the capture small.
+
+  B2. BluTrain/Makefile:299 and :308 both `rm -f $(TRAIN_RUNNER)` after the run, so the binary is
+      gone before it can be profiled. This is also why a Ctrl-C'd run leaves the binary behind.
+      Needs either a keep flag or a dedicated nsys target.
+
+  B3. A full-length profile is not viable: 64 grad-accum micro-steps x ~650 GEMMs x 36 layers is
+      roughly 41,000 launches PER STEP, and nsys writes every one. Hence B1's reduced config.
+
+  B4. nsys presence on the box is unverified -- only nsight-COMPUTE (ncu) was seen in the include
+      paths. Check `which nsys` before planning around it; if it is missing, Phase 1 needs it
+      installed, and Phases 2-4 can proceed without it.
+
+### WHAT IS DELIBERATELY NOT IN THIS PLAN
+
+No kernel is written before Phase 3 says one is needed. No baseline is re-measured under nsys --
+profiling overhead makes those numbers incomparable, so Phase 0's figures come from clean runs and
+the nsys captures are used only for kernel identity and time SHARE.
+
+## §H27z.53 PHASE 1 EXECUTED: nsys ON THE 1.7B RUN, BOTH BACKENDS (2026-08-07)
+
+Two captures of the same 10-step 1.7B production run on one H200, MODE=production,
+`bluscript_config_profile.yaml` (10 steps, warmup 1, global_batch 65536 -> grad_accum 4), the only
+difference being WITH_BLUBLAS=1 vs =0. Both report `Number of parameters: 1726376960`, both load the
+same 3 train + 1 val shards, both produce the same loss curve. Artifacts in
+`profiling_reports/nsys_train_{blublas,cublas}/` (nsys-rep + sqlite + 4 stats tables + run.log) and
+the derived tables in `profiling_reports/analysis/`.
+
+### The four things that had to be solved before any number meant anything
+
+**1. Grid dimensions do NOT encode the shape.** Both libraries launch persistent grids: ours is
+132x1x1 (= SM count), cuBLAS's is 2x66x1 (= 132 with a 2x1 cluster). Every GEMM in the run, from
+16384x512x2048 to 16384x50304x2048, has the SAME grid. So `cuda_gpu_kern_gb_sum`'s GridXYZ column,
+which §H27z.52 Phase 1 was going to lean on, carries no shape information at all here. Recorded
+because the report LOOKS like it should work.
+
+**2. The launch counts match exactly, which makes 1:1 pairing legal.** 34,720 `bgemm_sm90_kernel`
+launches and 34,720 `nvjet_*` launches. Same host code, same config, same data -> launch #i in one
+run is the same call site as launch #i in the other. No shape inference needed to compare.
+
+**3. Ordering by START TIME is wrong.** First attempt paired by wall-clock order and produced
+ragged group sizes (697, 715, 3623, 4348) that no fixed call-site mapping can generate. Cause: in
+the blublas run 8,680 GEMMs execute on stream 16 while everything else is on stream 7, so wall-clock
+order is not program order. Re-pairing on `correlationId` -- which CUPTI assigns in API call order --
+gives groups that are all exact multiples of 40. That is the check that the alignment is right;
+a slipped alignment cannot produce clean multiples.
+
+**4. The launch count decomposes exactly, which proves the segmentation.** Anchoring on cuBLAS's
+`192x192_64x3_2x1_v_coopB_NNN` (80 instances, the LM-head forward) the gaps between anchors are
+EXACTLY 217 (x40) and 651 (x39). 217 = 36 layers x 6 fwd GEMMs + 1 LM head; 651 = 217 + 434 where
+434 = 36 x 12 + 2. And 80 x 217 + 40 x 434 = 34,720 = the observed total, to the launch. So there
+are 80 forward passes (40 train micro-batches + 40 val) and 40 backward passes, and every launch's
+call site is known by position. This is what §H27z.52's Phase 2 was going to need a separate
+standalone run for -- it is not needed; the trainer capture already carries it.
+
+### RESULT 1 -- the two runs do the same work everywhere except the GEMMs
+
+    GPU kernel time     blublas 34.025 s     cuBLAS 31.117 s     +2.908 s  (+9.3%)
+      GEMM              blublas 14.179 s     cuBLAS 11.474 s     +2.705 s  <- 93% of the delta
+      non-GEMM          blublas 19.846 s     cuBLAS 19.643 s     +0.203 s  (+1.03%)
+
+All 37 non-GEMM kernels have IDENTICAL launch counts across the two runs -- zero mismatches -- and
+the +1.03% is spread proportionally over all of them (gqa_v62 +1.7%, convert_type +1.0%,
+strided_copy +2.6%, gqa_bwd +0.3%), which is clock/memory-contention drift, not a work difference.
+This is the isolation the comparison needed: the ONLY thing that differs is the GEMM.
+
+GEMM is **41.7% of our GPU kernel time** and 36.9% of cuBLAS's. That answers §H27z.52's framing
+question: closing the entire GEMM gap is worth roughly 8% end to end, not 12%.
+
+### RESULT 2 -- we run at 80.8% of cuBLAS on GEMM, not 88%
+
+    total GEMM FLOPs in the capture     9.050 PFLOP
+    blublas   14.179 s   ->  638 TFLOPS   64.5% of the 989.4 TFLOPS H200 bf16 dense peak
+    cuBLAS    11.461 s   ->  790 TFLOPS   79.8% of peak
+    ours = 80.8% of cuBLAS, 2,718 ms lost over 10 steps
+
+Cross-checked with a median-of-population estimate instead of totals (immune to outliers and to the
+contention described in RESULT 5): 81.3%. The two agree, so the headline is not an artifact of a
+few slow launches.
+
+This is WORSE than the 88.2% median from the standalone sweep, and the reason is weighting: the
+standalone median treats a 58 us K-projection and a 5.7 ms LM head as equal, while the real workload
+is dominated by the shapes we happen to be worst on.
+
+### RESULT 3 -- the per-call-site table (full version in profiling_reports/analysis/)
+
+Ranked by time lost. Top 8 of 21 call sites = 79% of the entire deficit.
+
+    call site        M      N      K   l    n | our us  cuB us  ours% | ourTF cuBTF | lost ms  %tot
+    gate_up-fwd  16384  11264   2048  nn 2880 | 1300.0   974.6  75.0% |   581   776 |   930.4 34.2%
+    gate_up-wgrad 2048  11264  16384  tn 1440 | 1171.8   960.9  82.0% |   645   787 |   305.1 11.2%
+    down-fwd     16384   2048   5632  nn 2880 |  505.8   435.2  86.0% |   747   868 |   186.2  6.9%
+    wQ-dgrad     16384   2048   2048  nt 1440 |  229.0   177.7  77.6% |   600   773 |   174.6  6.4%
+    attnOut-fwd  16384   2048   2048  nn 2880 |  222.7   167.5  75.2% |   617   821 |   154.8  5.7%
+    wQ-fwd       16384   2048   2048  nn 2880 |  221.6   168.7  76.1% |   620   815 |   146.3  5.4%
+    down-dgrad   16384   5632   2048  nt 1440 |  594.8   495.4  83.3% |   635   763 |   144.0  5.3%
+    lm_head-fwd  16384  50304   2048  nn   80 | 5727.0  4326.4  75.5% |   589   780 |   112.0  4.1%
+    ... 13 more, each <3%
+
+The worst RATIOS are the narrow-N shapes -- wK/wV-wgrad (2048x512x16384 tn) at 58.6%/59.8% and
+wK/wV-dgrad at 74.3%/65.5% -- consistent with §H27z.44's open narrow-N item and with the standalone
+sweep's p10. But they are only 7.2% of the deficit combined, because they are small. Optimising by
+ratio would have sent us at the wrong shapes.
+
+### RESULT 4 -- only 1 of the 15 shapes reaches the tier-1 measured table
+
+Evaluated by transpiling `kTable_{nn,nt,tn}` and `tree_{nn,nt,tn}` out of
+`Bgemm_sm90_dispatch_table.h` and running the real logic over the 15 shapes:
+
+    TIER-1 hits: 1/15   (wK-fwd 16384x512x2048 nn -> NN_256x128x64_1x2_h_rs2)
+    TIER-2 tree: 14/15
+
+§H27z.52 estimated "13 of the 15"; the measured value is 14. The tables cover K in
+{128,1024,2048,4096,8192,50304} for TN and never contain a 16384-deep K with these M,N, so every
+wgrad in the model misses.
+
+**The dispatcher source predicts the nsys-observed kernel in 15/15 shapes.** Source -> tier-1/tier-2
+decision -> config -> the kernel nsys actually recorded, all the way through. The dispatcher is
+doing exactly what it is written to do; the question is only whether what it is written to do is
+right.
+
+The single clearest suspicion: `tree_nn` returns **NN_128x128x64** for any NN shape with M*N >
+2.77e6, K <= 2289 and N > 8567. Both gate_up-fwd (N=11264) and lm_head-fwd (N=50304) land there, and
+those are our two worst NN results (75.0% and 75.5%). cuBLAS picks a **192x192** tile for both. We
+own `NN_192x192x64_1x2_v` and have never measured it on these shapes. That is one table entry, not a
+new kernel -- and it is 38.3% of the total deficit.
+
+### RESULT 5 -- the benchmark is NOT symmetric, and it favours us
+
+`BluTrain/Tensor-Implementations/src/Kernels/cuda/matmul/MatmulBackward.cu` contains two complete
+and separate implementations, `#ifdef WITH_MYBLAS` (lines 3-701, selected by WITH_BLUBLAS=1) and
+`#else` (lines 702-1441, cuBLAS). They do not schedule the same way:
+
+  - the BluBLAS branch creates a secondary non-blocking stream (line 63), runs grad_A on the
+    caller's stream and grad_B on the secondary one, and fences with an event fork/join
+    (lines 498-499, 668-669) so dgrad and wgrad OVERLAP
+  - the cuBLAS branch has ZERO references to a secondary stream -- grep count is 0 across all 740
+    of its lines -- and issues both through `cublasSetStream(handle, stream)` on the one stream
+
+nsys confirms it from the other side: 4 `cudaStreamCreateWithFlags` in the blublas run vs 3 in the
+cuBLAS run; 8,680 GEMMs on stream 16 in the blublas run vs zero non-stream-7 kernels in the cuBLAS
+run; 17,517 `cudaStreamWaitEvent` vs 157. The 8,680 is exactly the number of wgrad calls
+(6 per layer x 36 x 40 backward passes + 40 LM head).
+
+Measured worth of that overlap: union-of-intervals GPU busy is 33.517 s for blublas against 34.025 s
+of summed kernel time, so **508 ms is hidden**. For cuBLAS union busy equals summed time to the
+nanosecond -- 31.117 s both ways, zero overlap available to it.
+
+So the end-to-end 94% is flattered by ~0.5 s per 10 steps of scheduling that the cuBLAS path
+structurally cannot use. The per-kernel 80.8% is unaffected by this and is the honest number for
+comparing the two BLAS libraries. Both are reported; neither replaces the other.
+
+### RESULT 6 -- the ~1K tok/s drop versus yesterday is fully accounted for, nothing regressed
+
+    yesterday, clean run, production cfg   26,532 vs 28,282   93.81%
+    today, under nsys, profiling cfg       25,605 vs 27,206   94.11%   (+0.30 pp)
+
+The RATIO moved +0.3 pp, i.e. our position improved slightly. Both absolute numbers fell together,
+from two causes that hit both backends: nsys instrumentation of ~155k launches per run, and
+grad_accum 4 instead of the production value, which amortises the fixed per-step optimizer cost
+(adam 15.3 ms + grad-norm 13.2 ms + scale 13.1 ms + cast 3.7 ms = 45.3 ms, 1.77% of our step) over
+16x fewer tokens -- worth ~1.66 pp on its own. Nothing regressed; the two runs are simply not
+comparable in absolute terms to Phase 0's clean baseline, exactly as §H27z.52 said they would not be.
+
+### WHAT THIS CHANGES IN THE PLAN
+
+  - Phase 2 (standalone per-shape kernel identity) is DONE, out of the Phase 1 capture. It does not
+    need its own run.
+  - Phase 3's sweep no longer needs to be 247 configs x 15 shapes uniformly. 8 call sites carry 79%
+    of the deficit and 6 distinct shapes carry 74%. Sweep those first, at full config coverage.
+  - The first thing to test is the cheapest: NN_192x192x64_1x2_v on 16384x11264x2048 nn and
+    16384x50304x2048 nn, against the tree's current NN_128x128x64. If it wins, two tier-1 rows
+    recover 38% of the gap with no kernel work.
+  - RESULT 5 must be stated with every end-to-end number we publish from here on.
+
+## §H27z.54 COMPLETE MATMUL INVENTORY FOR THE 1.7B RUN, DERIVED THREE WAYS (2026-08-07)
+
+§H27z.53 established the method. This is the full inventory, with every count derived independently
+from the model source and then reconciled against nsys, plus two corrections to §H27z.53.
+
+Full tables: `profiling_reports/analysis/full_matmul_report.txt`. Reproduce with
+`tools/nsys_train_gemm_pair.py`.
+
+### Derivation 1 -- from the model source, no profiling involved
+
+`train/production/bluscript.cpp` defines the block: `CausalGQA` holds `wQ, wK, wV, wO` and
+`SwiGLUFFN` holds `gate_up, down`, all `nn::Linear(in, out, bias=false, Bfloat16)`. `NN.cpp:134`
+allocates `weight` as `[in_features, out_features]` and `NN.cpp:161-168` returns
+`autograd::matmul(input, weight)` when there is no bias. So a Linear is a plain NN GEMM
+`Y[M,out] = X[M,in] @ W[in,out]`, its dgrad is NT (`dX = dY @ W^T`) and its wgrad is TN
+(`dW = X^T @ dY`). The LM head is `autograd::matmul(x_bf, w_t_bf)` on the tied embedding transpose.
+
+With d_model 2048, 16q/4kv heads x 128, ffn 5632 (gate_up out = 2*5632 = 11264), vocab 50304 and
+M = B*T = 4*4096 = 16384:
+
+      7 forward call sites   wQ wK wV wO gate_up down lm_head
+     14 backward call sites  each of the 7 x {dgrad, wgrad}
+     21 call sites, 15 DISTINCT SHAPES (5 NN, 5 NT, 5 TN -- wQ and wO share a shape, wK and wV share a shape)
+
+     per forward pass  = 36 x 6 + 1   = 217 GEMMs
+     per backward pass = 36 x 12 + 2  = 434 GEMMs
+     80 forward passes (40 train micro-batches + 40 val) and 40 backward passes
+     -> 80*217 + 40*434 = 34,720 GEMM launches
+
+### Derivation 2 -- from nsys
+
+34,720 `bgemm_sm90_kernel` launches in the blublas capture and 34,720 `nvjet_*` in the cuBLAS
+capture. Anchor gaps exactly 217 and 651. **All three numbers agree to the launch.**
+
+Per call site, nsys count == source-derived count in **21/21**, and each call site resolves to
+exactly ONE kernel on each side -- no call site is served by two configs.
+
+### Derivation 3 -- from the dispatcher source
+
+Transpiling `kTable_*` and `tree_*` and running them on the 15 shapes reproduces the nsys-observed
+kernel **15/15** (§H27z.53). Tier split: **1 TIER-1** (16384x512x2048 nn, wK/wV forward), **14 TIER-2**.
+
+### CORRECTION 1 to §H27z.53 -- the backward call order
+
+§H27z.53's per-site table labelled the two 512-wide backward pairs and the second 2048-wide pair by
+assuming strict reverse-creation order (wV, wK, wQ). That is WRONG. Tracing program order around the
+attention backward in the blublas capture:
+
+    ... rmsnorm-bwd, NT 128x256_cbox, TN 256x128         <- wO backward (2048-wide)
+    ... attn drowsum, ATTENTION-BACKWARD, dq cast
+    ... NT 128x256_cbox, TN 64x128                       <- a 512-wide projection (wK or wV)
+    ... NT 128x256_cbox, TN 256x128                      <- wQ (2048-wide)
+    ... NT 128x256_cbox, TN 64x128                       <- the other 512-wide projection
+
+So the order is down, gate_up, wO, [attention], {K|V}, wQ, {V|K} -- Q sits BETWEEN the two 512-wide
+projections, not after both. The tell that caught it: the dispatcher gives TN_64x128x64 only for
+2048x512x16384 and TN_256x128x64_1x2_h_rs2 only for 2048x2048x16384, so a label that puts 64x128 on
+wQ-wgrad contradicts the dispatcher and must be wrong. Which of wK/wV is first is NOT determinable
+from this data -- they are the same shape -- so they are recorded as kvA/kvB rather than guessed.
+§H27z.53's NUMBERS were unaffected (the shapes were right); only two labels were.
+
+### CORRECTION 2 to §H27z.53 -- two call sites are inflated by our own stream contention
+
+Mean/median ratio per call site: 1.00x at 19 of 21, but **wQ-dgrad 1.31x** (32.8% of its runtime
+overlapped by stream-16 wgrad work) and **kvB-dgrad 1.29x** (38.2% overlapped). cuBLAS is 1.00x at
+all 21 because its backward is single-stream. Correcting those two to n x median:
+
+    ours 14.179 s as measured -> 14.042 s contention-corrected;  cuBLAS 11.461 s unchanged
+    ours = 80.8% as measured, 81.6% contention-corrected
+
+Net worth of the two-stream backward to us: +508 ms hidden, -137 ms contention = **~371 ms in our
+favour** over 10 steps. Both figures stay on the record; 80.8% is what the run paid, 81.6% is the
+kernel-quality number.
+
+### THE 15 SHAPES, ranked by time lost (call sites merged)
+
+     #      M      N      K lay tier   launch |  ours ms  cuB ms  ours% | ourTF cuBTF | lost ms  %gap
+     1  16384  11264   2048  nn  T2      2880 |   3742.4  2812.0  75.1% |   582   774 |   930.4 34.2%   gate_up-fwd
+     2   2048  11264  16384  tn  T2      1440 |   1692.1  1387.0  82.0% |   643   785 |   305.1 11.2%   gate_up-wgrad
+     3  16384   2048   2048  nn  T2      5760 |   1282.4   981.3  76.5% |   617   807 |   301.1 11.1%   wQ-fwd, wO-fwd
+     4  16384   2048   2048  nt  T2      2880 |    751.6   518.7  69.0% |   527   763 |   233.0  8.6%   wO-dgrad, wQ-dgrad  (contention-inflated)
+     5  16384   2048   5632  nn  T2      2880 |   1464.5  1278.3  87.3% |   743   852 |   186.2  6.9%   down-fwd
+     6  16384   5632   2048  nt  T2      1440 |    860.6   716.6  83.3% |   632   760 |   144.0  5.3%   down-dgrad
+     7  16384  50304   2048  nn  T2        80 |    458.3   346.3  75.6% |   589   780 |   112.0  4.1%   lm_head-fwd
+     8  16384   2048    512  nt  T2      2880 |    262.5   158.8  60.5% |   377   623 |   103.7  3.8%   kvA/kvB-dgrad
+     9   2048    512  16384  tn  T2      2880 |    227.2   135.3  59.5% |   436   732 |    92.0  3.4%   kvA/kvB-wgrad
+    10   2048   2048  16384  tn  T2      2880 |    558.0   480.5  86.1% |   709   824 |    77.6  2.9%   wO-wgrad, wQ-wgrad
+    11  16384    512   2048  nn  T1      5760 |    338.9   265.5  78.3% |   584   745 |    73.4  2.7%   wK-fwd, wV-fwd
+    12  16384   2048  11264  nt  T2      1440 |   1420.8  1348.9  94.9% |   766   807 |    71.9  2.6%   gate_up-dgrad
+    13   5632   2048  16384  tn  T2      1440 |    761.0   725.7  95.4% |   715   750 |    35.4  1.3%   down-wgrad
+    14   2048  50304  16384  tn  T2        40 |    185.6   155.4  83.7% |   727   869 |    30.3  1.1%   lm_head-wgrad
+    15  16384   2048  50304  nt  T2        40 |    172.9   150.9  87.3% |   781   895 |    22.0  0.8%   lm_head-dgrad
+                              TOTAL     34720 |  14178.9 11461.0  80.8% |   638   790 |  2717.9
+
+9.050 PFLOP of GEMM. Ours 638 TFLOPS = 64.5% of the 989.4 TFLOPS H200 bf16 peak; cuBLAS 790 = 79.8%.
+
+### BY VARIANT -- we cover 34,720 launches with 6 kernels, cuBLAS uses 8
+
+    OURS                            launches  total ms  %GEMM
+      256x128x64_1x2_h                 14440    4716.1   33.3%   8 call sites
+      128x128x64_1x1_v                  2960    4200.6   29.6%   gate_up-fwd, lm_head-fwd
+      256x128x64_1x2_v                  1480    1877.7   13.2%   gate_up-wgrad, lm_head-wgrad
+      128x256x64_1x1_v_cbox128          7200    1874.8   13.2%   all 5 dgrad sites
+      128x256x64_1x1_v                  5760    1282.4    9.0%   wQ-fwd, wO-fwd
+      64x128x64_1x1_v                   2880     227.2    1.6%   kvA/kvB-wgrad
+
+    cuBLAS                          launches  total ms  %GEMM
+      192x192_64x3_1x2_h_coopB_NNN      2880    2812.0   24.5%   gate_up-fwd
+      256x128_64x4_1x2_h_coopA_NNT     14400    2525.1   22.0%   all 5 NN except gate_up and lm_head
+      256x128_64x4_1x2_h_coopA_TNT      7240    2177.3   19.0%   6 dgrad sites
+      192x192_64x3_2x1_v_coopB_NTN      1440    1387.0   12.1%   gate_up-wgrad
+      128x256_64x4_2x1_v_coopA_NTN      4360    1361.5   11.9%   4 wgrad sites
+      192x192_64x4_2x1_v_coopB_TNN      1440     716.6    6.3%   down-dgrad
+      192x192_64x3_2x1_v_coopB_NNN        80     346.3    3.0%   lm_head-fwd
+      128x128_64x6_1x2_h_splitK_NTT     2880     135.3    1.2%   kvA/kvB-wgrad  (+2880 splitKreduce, 13.3 ms)
+
+Two structural observations. **cuBLAS reaches for 192x192 on exactly the four sites we lose most on**
+(gate_up-fwd, gate_up-wgrad, down-dgrad, lm_head-fwd = 1,491 ms of the 2,718 ms gap, 54.9%) and we
+never emit a 192x192 tile anywhere in the run. **cuBLAS uses split-K** on the narrow-N wgrad
+(2048x512x16384) where we use a plain 64x128; we emit SPLIT_K=1 on all 34,720 launches. Those are
+the two capability gaps the numbers point at -- both are configs we already own
+(`NN_192x192x64_1x2_v`, and split-K variants exist in the enum), so Phase 3 should measure them
+before anything is written.
+
+### NOT BLAS -- attention matmuls are fused and never reach us
+
+QK^T and PV live inside `gqa_v62` (2880 launches, 1485.3 ms) and `gqa_backward_v26_kv` (1440
+launches, 4397.8 ms -- the single largest kernel in the run). Identical launch counts in both
+builds; the BLAS choice cannot touch them. Any future "make training faster" work has to treat
+attention as its own budget line, not as part of the GEMM gap.
+
+## §H27z.55 PHASE 3 EXECUTED: FULL CARTESIAN SWEEP ON THE 15 SHAPES, AND BOTH HYPOTHESES DIED (2026-08-07)
+
+`./examples/t2_run.sh blutrain1 test_reports/blutrain_1p7b_cases.tsv` -- 781 (config,layout) registry
+entries against the 15 shapes, 3,905 runs after layout filtering, 180 s wall, 0 crashes.
+Raw: `h27z_test2/blutrain1.{tsv,log}`.
+
+    nn: 254 distinct configs x 5 shapes      17 base tiles swept: 64x64 64x128 64x320 64x448
+    nt: 273 distinct configs x 5 shapes      128x64 128x112 128x128 128x144 128x168 128x176
+    tn: 254 distinct configs x 5 shapes      128x192 128x256 128x320 192x128 192x192 256x128 320x128
+                                             x every cluster / raster / swizzle / split-K variant
+
+The 60 non-PASS rows are all `FAILSKIP`: the four known-broken `128x112x64` 2x2/1x4 configs
+(§H27z.44 C2) x 15 shapes. No new breakage.
+
+**A trap that would have voided the run.** `--cases` parses a 5th column as `only_cfg` (TEST 1
+config pinning). `blutrain_1p7b_shapes.tsv` carries `-` in column 5, so passing it directly would
+have pinned a config literally named `-`, swept ZERO configs per shape, and still printed
+`cases: 15 loaded`. A 4-column `blutrain_1p7b_cases.tsv` was cut for the sweep.
+
+**Split-K's 1.19 maxRelErr is not a bug.** The criterion is `bad==0` where
+`bad = count(|a-b| > 0.05*|b| + 0.5)`; maxRelErr is reported but not the gate. 1.19 is relative
+error on near-zero output elements (cancellation), which the +0.5 absolute floor correctly
+tolerates. Split-K shows it and the dense tiles do not because split-K reorders accumulation.
+
+### BOTH §H27z.54 HYPOTHESES WERE WRONG
+
+    HOW OFTEN EACH FAMILY WINS ITS SHAPE (15 shapes)
+       8x  256x128x64_1x2_h_rs2      <- the actual answer
+       2x  192x192x64_1x2_v
+       1x each  128x256x64_1x2_v | 128x176x64 | 64x128x64 | 256x128x64_1x2_h_sw64 | 256x128x64_1x2_v
+
+**192x192 wins 2 of 15, not the 4 predicted.** §H27z.54 reasoned "cuBLAS reaches for 192x192 on
+exactly the four sites we lose most on" -- true as an observation about cuBLAS, useless as a
+prediction about us. It wins lm_head-fwd and gate_up-wgrad and nothing else.
+
+**Split-K wins 0 of 15.** Our sk configs run at 28-37% of cuBLAS on every TN shape. This is the
+second time in this file a cuBLAS-imitation argument lost to measurement (§H27z.44's TN 128x128
+rule was the first, at ~9% median).
+
+**The winner is a config we already owned and already used for 5 of the 15 shapes.**
+
+### RESULT -- 9 shapes improve, 6 already optimal
+
+    shape             now ms   gain  proj ms   saves  new tier-1 entry
+    gate_up-fwd       3742.4  1.171   3195.1   547.3  256x128x64_1x2_h_rs2
+    down-dgrad         860.6  1.208    712.3   148.3  256x128x64_1x2_h_rs2
+    wQ/wO-fwd         1282.4  1.099   1166.8   115.6  256x128x64_1x2_h_rs2
+    wQ/wO-dgrad        751.6  1.127    666.7    84.9  256x128x64_1x2_h_rs2
+    gate_up-wgrad     1692.1  1.041   1625.2    66.9  192x192x64_1x2_v
+    lm_head-fwd        458.3  1.077    425.7    32.6  192x192x64_1x2_v
+    wK/wV-dgrad        262.5  1.079    243.3    19.2  128x176x64
+    lm_head-dgrad      172.9  1.050    164.6     8.3  256x128x64_1x2_h_sw64 (NOT REACHABLE, see below)
+    wQ/wO-wgrad        558.0  1.003    556.2     1.8  128x256x64_1x2_v
+    6 others                                    0.0  dispatcher already optimal
+
+    GEMM 14,179 ms -> 13,154 ms, saves 1,025 ms = 37.7% of the 2,718 ms gap
+    80.8% -> 87.1% of cuBLAS;  638 -> 688 TFLOPS
+
+So Phase 3's fork resolves as **dispatcher problem for 9 shapes, genuine kernel gap for 1**. Zero
+new kernel code for the 9.
+
+### `rs2` IS NOT A RULE, IT IS 15 MEASURED ROWS
+
+It wins 8 shapes and sits at 100% of optimum on 12 of 15, but it is catastrophic on the two narrow
+ones: **32.6% on wK/wV-wgrad** (optimum 72.4%) and **65.2% on wK/wV-dgrad** (optimum 83.3%).
+Promoting it to a tree rule would lose more than it gains. This goes in tier-1 as exact keys.
+
+### THE ONE GENUINE CAPABILITY GAP -- 2048x512x16384 tn (wK/wV-wgrad)
+
+We already pick our best and it is 72.4%. Top 6 configs, all 64-wide tiles:
+
+    64x128x64         498 TF  72.4%       cuBLAS: 128x128_64x6_1x2_h_splitK_NTT  687 TF
+    128x64x64         463 TF  67.4%
+    64x128x64_1x2_v   458 TF  66.6%   ... nothing bigger than 128 in either dim survives N=512
+
+cuBLAS wins by running **split-K on a 128x128 tile**. Ours exists only on 64x64 and yields 252 TF.
+Phase 4 item, and a specific one: split-K on a real tile, not a new tile shape.
+
+### STRUCTURAL FINDING -- the dispatcher can select ~8% of what we build
+
+    Cfg enum (dispatch-reachable):  nn 20,  nt 21,  tn 21
+    sweep registry (measurable):    nn 254, nt 273, tn 254
+
+`256x128x64_1x2_h_sw64` wins lm_head-dgrad at 708 TF but has no `Cfg_nt` entry, no extern decl and
+no `call_nt` case, so the table cannot name it. Best reachable is `256x128x64_1x2_h_rs2` at 674 TF
+-- 4.8% worse, 8.3 ms of the 1,025 ms. Pinned the reachable one; the sw64 wiring is a separate,
+low-value task. The general point matters more than this instance: **Test 2 can measure winners the
+dispatcher is structurally unable to choose**, so every future sweep must filter candidates through
+the enum before claiming a gain.
+
+### WHAT WAS CHANGED
+
+`Bgemm_sm90_dispatch_table.h` only, +18 -4: 14 new rows and 1 refreshed
+(16384x512x2048 nn kept `NN_256x128x64_1x2_h_rs2`, 623.6 -> 627.2 TF), sizes 143/143/137 ->
+147/148/142. **`lookup()` is a binary search, so the tables MUST stay sorted by (M,N,K)** --
+appending would silently corrupt lookups for existing keys. Re-verified after the merge: all three
+sorted, sizes matching, zero duplicate keys. The first attempt regenerated every row and dropped the
+original `// TF` comments (440 insertions); it was reverted and redone preserving untouched lines
+verbatim.
+
+### NOT YET PROVEN -- do not quote the end-to-end number
+
+The sweep is STANDALONE: one shape at a time, hot L2, uncontended workspace. The training run is
+none of those, and §H27z.29 already caught our leaked split-K arena inflating a standalone "win" to
+288%. Concretely, lm_head-wgrad measures 102.3% of cuBLAS standalone but 83.7% inside the training
+run. So 87.1% is a projection from ratios among OUR OWN configs applied to nsys-measured times, and
+the end-to-end estimate (94.1% -> 96-98%) is arithmetic, not a measurement. Confirming it needs
+`test_bgemm_sm90_dispatch_validate` on
+`test_reports/blutrain_1p7b_dispatch_expected.tsv` (correctness AND selection) followed by a fresh
+pair of nsys captures re-run through `tools/nsys_train_gemm_pair.py`.
+
+### §H27z.55b DISPATCH VALIDATION RESULT -- wiring correct, the one SLOW is a false positive
+
+`./build/test_bgemm_sm90_dispatch_validate test_reports/blutrain_1p7b_dispatch_expected.tsv`
+
+    15 correct, 0 WRONG RESULT, 0 NOT TAKEN, 14 selection ok, 1 SELECTION SUSPECT
+
+Correctness and gate acceptance are clean on all 15: the dispatcher takes every shape (no
+`sm90_decline_reason` rejection) and matches cuBLAS numerically everywhere.
+
+**The SLOW case cannot be a selection failure.** For `2048x50304x16384 tn` the OLD path was
+`tree_tn`, and `tree_tn(2048,50304,16384)` returns `TN_256x128x64_1x2_v` -- the SAME config the new
+tier-1 row pins. This shape is one of the six that were already optimal; its dispatch did not change,
+so the identical kernel ran before and after. Verified by transpiling and evaluating the tree, not
+by inspection.
+
+The cause is harness-to-harness variance on big, low-repetition shapes. cuBLAS measured on the very
+same 15 shapes moves **-10.6% to +0.3%** between the sweep and the validator, and the SLOW shape's
+cuBLAS is itself -5.5%. Our -8.1% sits inside that band; the 8% selection tolerance is tighter than
+the noise floor here. NOT loosening the tolerance -- the source-level argument above is stronger
+evidence than any threshold, and relaxing a gate to turn a test green is how a real selection bug
+gets hidden later.
+
+**DO NOT QUOTE the validator's "median 97.7% of cuBLAS, 4 beat".** Its cuBLAS numbers are
+systematically lower on the big shapes, and the shapes scoring >97% are exactly the ones where
+cuBLAS measured lowest. Same-harness, using the sweep for both sides:
+
+    before (tree picks)     median 86.8% of cuBLAS
+    after  (tier-1 picks)   median 87.3%          <- the MEDIAN barely moves
+    validator (same picks)  median 97.7%          <- harness artefact, not a gain
+
+The median barely moving is expected and not a problem: the 1,025 ms comes from a few large call
+sites (gate_up-fwd alone is 547 ms) while the median shape gains almost nothing. The win is
+TIME-WEIGHTED. Any future report must say which of the two it is quoting.
+
+Still unproven: the end-to-end number. Next is a fresh pair of nsys captures through
+`tools/nsys_train_gemm_pair.py`, compared against §H27z.53/.54's 14.179 s / 80.8% / 2,718 ms gap.
