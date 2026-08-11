@@ -13435,16 +13435,90 @@ config anywhere showed even rounding drift, over four complete shapes (512x512x2
 1x4, 4x1, 2x4, 4x2) and every raster swizzle (rs2/rs4/rs8) across all three layouts. Those rows ARE
 the decode. Also 0.00000 at full 16384x2048x5632 scale.
 
-**3. Tensor active -- the deciding metric.** `192x192x64_1x2_v_rs8` on `16384x2048x5632 nn`,
-10 kernel instances:
+**3. Tensor active -- MEASURED, but NOT yet a valid before/after. RETRACTED as a delta.**
 
-| | before (§H27z.82) | after | cuBLAS |
-|---|---|---|---|
-| tensor active | 81.64 % | **92.85 %** (min 92.61, max 92.97) | 91.87 % |
+`192x192x64_1x2_v_rs8` on `16384x2048x5632 nn`, 10 kernel instances, post-change:
 
-**+11.21 points, and ~1 point ABOVE cuBLAS.** The predicted chain held exactly: runtime divide ->
-MUFU -> tile index pinned to the vector datapath -> contends with HGMMA for issue slots. Remove the
-divide and the contention goes.
+    tensor active   92.85 %   (min 92.61, max 92.97)
+    clean timing    700.1 / 666.3 / 702.1 TF   vs cuBLAS 822.8 / 822.9 / 824.0   = 81-85 % cuB
+
+I first reported this as "81.64% -> 92.85%, now above cuBLAS". **That comparison is invalid and is
+withdrawn.** §H27z.82's 81.64% / 91.87% / 5.24 ms / 4.64 ms were measured on
+`192x192x64_1x2_v` (SW=0, NO raster swizzle) at **16384x50304x2048** (lm_head-fwd). The run above
+used a DIFFERENT config (`_rs8`, SW=3) at a DIFFERENT shape (16384x2048x5632, a ~0.54 ms site, not
+a 5.24 ms one). Neither axis matches, so the two numbers are not comparable in either direction.
+
+The error is worth recording because it is the exact trap this campaign keeps hitting: a metric
+that moves in the hoped-for direction is not evidence unless the comparator is held fixed. The
+92.85 % is a real measurement of a real kernel; it simply has no baseline attached to it yet.
+
+### THE VALID A/B -- RUN, and the honest answer is ~1 %, not the ~11 % projected
+
+`192x192x64_1x2_v` at `16384x50304x2048 nn` (the exact §H27z.82 config and shape), current build vs
+a HEAD~1 rebuild, same idle GPU, same session, back to back. Build identity proven by bracketing
+both runs with the MUFU gate: BEFORE = 3986, AFTER = 0, RESTORED = 0.
+
+    ncu, 10 kernel instances each        BEFORE            AFTER             delta
+    gpu__time_duration          5.683 ms (sd 0.016)  5.624 ms (sd 0.017)   -1.04 %
+    tensor active                82.50 % (sd 0.069)   83.40 % (sd 0.047)   +0.90 pts
+
+Ranges barely touch (5.66-5.71 vs 5.61-5.66) and the sds are tiny, so the ~1 % is REAL. The
+3-sample wall-clock bench points the other way (657.3 -> 635.8 TF) but has sd 29.0 against a single
+695.51 outlier -- no statistical power, and it is not read as evidence in either direction.
+
+**THE PROJECTION WAS WRONG BY ~10x, and this is the finding, not a footnote.** §H27z.83 predicted
+tensor active would go 81.64 % -> ~92 % and close the lm_head-fwd gap. Measured: +0.90 points and
+-1.04 % duration. The uniform-datapath mechanism IS real and reproducible -- removing MUFU moves
+tensor occupancy consistently, with clean separation at sd < 0.07 -- but it is a MINOR term. It is
+not what separates us from cuBLAS.
+
+**The baseline the projection rested on does not reproduce.** §H27z.82 recorded 5.24 ms / 81.64 %
+for the pre-change kernel; the ACTUAL pre-change build measures 5.68 ms / 82.50 % today on the same
+config, shape and GPU. cuBLAS moved too: 4.64 ms recorded vs ~4.26-4.34 ms today. The two sessions
+were never comparable. METHODOLOGICAL RULE going forward: never project a delta from a number
+recorded in a different session -- rebuild the comparator and measure both in one sitting. Every
+before/after in this campaign that spans sessions is suspect for the same reason.
+
+### WHERE THAT LEAVES lm_head-fwd
+
+Still ~20 % behind (635.8 TF vs cuBLAS 789.1 TF in the same runs), and now with SIX hypotheses
+measured and eliminated as the primary cause: DRAM bandwidth, L2 hit rate, shared-memory bank
+conflicts, tile shape, the epilogue, and the uniform datapath. Tensor active 83.40 % vs cuBLAS's
+91.87 % -- ~8.5 points still unexplained. That negative result is worth as much as a fix: it says
+the remaining gap is in something none of these instruments has yet pointed at.
+
+### THE ONE MEASUREMENT THAT SPLITS THE REMAINING GAP IN TWO -- do this next
+
+We know OUR tensor active today (83.40 %). We do NOT know cuBLAS's tensor active today -- 91.87 %
+comes from the session that does not reproduce, and after the retraction above it must not be used
+again. Capturing both kernels from ONE process (as §H27z.82 did) decides which of two very
+different problems we have:
+
+  * cuBLAS ~91 % today  -> our tensor pipe sits IDLE more. A stall/scheduling problem: coopB,
+    pingpong, pipeline depth.
+  * cuBLAS ~83 % today  -> our pipe is as busy as theirs and still produces ~20 % less, i.e. each
+    ACTIVE cycle does less work. A wgmma shape/efficiency problem, an entirely different fix.
+
+    CUDA_VISIBLE_DEVICES=<idle> ncu --kernel-name-base mangled -k regex:"bgemm_sm90_kernel|nvjet" \
+      --metrics sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active,\
+    gpu__time_duration.sum,sm__inst_executed_pipe_tensor.sum \
+      ./build/test_bgemm_sm90_matrix --cfg=192x192x64_1x2_v --shape=16384x50304x2048 --layout=nn
+
+`sm__inst_executed_pipe_tensor.sum` is the discriminator: if cuBLAS issues FEWER tensor
+instructions for the same FLOPs, it is using a larger/more efficient wgmma shape and that alone
+would explain the residual.
+
+AFTER THAT, the largest known STRUCTURAL difference left: our SASS captures show cuBLAS running
+`nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coopB_TNN` at these sites -- `2x1_v` WITH coopB. We pin
+`1x2_v` and have no coopB at all (listed as an undone structural variant alongside pingpong). It is
+the only remaining candidate the six eliminated hypotheses do not cover, and it sits inside step 3
+(match cuBLAS's variants across the call sites) rather than being a new detour.
+
+### VERDICT ON THE CHANGE: KEEP
+
+Correct (4128 PASS, every non-split-K case bit-exact 0.00000), 0 MUFU across 889 kernels, 26,888
+fewer static instructions, ~1 % faster, no regression on any shape or config measured. Worth
+keeping on its merits. NOT worth a performance claim beyond ~1 %.
 
 A caution recorded before the run, now resolved: the STATIC aggregate uniform share barely moved
 (10.79% -> 11.16% over the whole NN TU). That aggregate was diluted across 292 kernels of which
@@ -13452,10 +13526,10 @@ most are not rs8; the dynamic per-kernel measurement is what carries the signal.
 counts were the right gate for "is the division gone" and the WRONG instrument for "did the
 datapath move".
 
-**4. Duration -- NOT yet measured.** `5.24 ms x (81.64/92.85) = 4.61 ms` against cuBLAS's measured
-4.64 ms is a PROJECTION from the occupancy ratio, not a measurement, and is not to be quoted as a
-result. The TFLOPS printed under ncu (1.86) is meaningless -- kernel replay destroys timing. A
-clean timed run on an idle GPU, then the trainer end-to-end, are the outstanding steps.
+**4. Duration -- not yet measured on the right site.** The `5.24 x (81.64/92.85) = 4.61 ms`
+projection is void along with the comparison it rested on. The TFLOPS printed under ncu (1.86) is
+meaningless -- kernel replay destroys timing. Outstanding: the valid experiment above, then the
+trainer end-to-end.
 
 ### PRE-EXISTING FAILURES SURFACED BY THIS SWEEP -- neither caused by this change
 
