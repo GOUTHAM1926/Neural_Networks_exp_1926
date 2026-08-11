@@ -12087,3 +12087,1352 @@ TIME-WEIGHTED. Any future report must say which of the two it is quoting.
 
 Still unproven: the end-to-end number. Next is a fresh pair of nsys captures through
 `tools/nsys_train_gemm_pair.py`, compared against §H27z.53/.54's 14.179 s / 80.8% / 2,718 ms gap.
+
+## §H27z.56 MEASURED: THE TIER-1 ROWS LAND, 94.3% -> 96.4% END TO END (2026-08-07)
+
+Third capture, `NSYS_OUT=nsys_train_blublas_after2`, after the vendored-copy fix. cuBLAS side
+unchanged from §H27z.53 and reused as the reference.
+
+### THE TWO WASTED CAPTURES, AND THE BUG THAT CAUSED THEM
+
+Captures 1 and 2 showed an IDENTICAL kernel mix -- all eight configs, every launch count equal to
+the pre-change run, zero 192x192. The change had validated 15/15 and done nothing.
+
+Cause: **BluTrain does not build the BLAS at the repo root.**
+`Tensor-Implementations/Makefile:16` sets `BLAS_DIR := BluBridge-BLAS`, a RELATIVE path resolving
+to a second complete copy of the library nested inside BluTrain, and `libblublas.so` is compiled
+from that tree. 266 tracked files, byte-identical to the repo root except -- before the fix --
+exactly one file: the dispatch table.
+
+So both statements were true simultaneously:
+  - `test_bgemm_sm90_dispatch_validate` links the REPO-ROOT build -> saw the new table -> 15/15
+  - the trainer links the NESTED build -> still 143/143/137 -> same kernels as before
+
+Every freshness check I ran pointed the wrong way and confirmed the wrong thing: `git pull` said up
+to date (it was), the dispatcher `.o` was newer than the header I compared it against (the
+repo-root one, not the one it depends on), and the `.d` grep matched -- on the nested path.
+Dependency tracking was working correctly the whole time, on the other file.
+
+**The signal that should have ended this in one step: the validator passing 15/15 while the
+trainer's kernel mix did not move by a single launch.** Two artefacts disagreeing that completely
+cannot be built from the same source. Recorded as a diagnostic rule: when a validated change has
+zero runtime effect, check WHICH BINARY consumed it before checking whether the build was fresh.
+
+### RESULT -- every one of the 21 call sites improved, none regressed
+
+    call site          M     N     K  l     n |  BEFORE   AFTER    saved | b%cuB a%cuB | kernel change
+    gate_up-fwd    16384 11264  2048 nn  2880 |  3742.4  3242.4  +500.0 | 75.1% 86.7% | 128x128_c1x1v -> 256x128_c1x2h
+    gate_up-wgrad   2048 11264 16384 tn  1440 |  1692.1  1621.5   +70.6 | 82.0% 85.5% | 256x128_c1x2v -> 192x192_c1x2v
+    lm_head-fwd    16384 50304  2048 nn    80 |   458.3   395.0   +63.3 | 75.6% 87.7% | 128x128_c1x1v -> 192x192_c1x2v
+    wO-fwd         16384  2048  2048 nn  2880 |   642.7   598.2   +44.6 | 75.9% 81.6% | 128x256_c1x1v -> 256x128_c1x2h
+    wQ-fwd         16384  2048  2048 nn  2880 |   639.6   598.4   +41.2 | 77.1% 82.4% | 128x256_c1x1v -> 256x128_c1x2h
+    down-dgrad     16384  5632  2048 nt  1440 |   860.6   830.8   +29.8 | 83.3% 86.2% | 128x256_cb    -> 256x128_c1x2h
+    down-fwd       16384  2048  5632 nn  2880 |  1464.5  1435.1   +29.4 | 87.3% 89.1% | (unchanged)
+    wO-dgrad       16384  2048  2048 nt  1440 |   320.2   306.7   +13.5 | 81.8% 85.4% | 128x256_cb    -> 256x128_c1x2h
+    kvB-dgrad      16384  2048   512 nt  1440 |   155.3   141.9   +13.4 | 51.1% 55.9% | 128x256_cb    -> 128x176_c1x1v
+    kvA-dgrad      16384  2048   512 nt  1440 |   107.3    94.4   +12.9 | 74.1% 84.2% | 128x256_cb    -> 128x176_c1x1v
+    wQ-dgrad       16384  2048  2048 nt  1440 |   431.5   419.9   +11.6 | 59.5% 61.2% | 128x256_cb    -> 256x128_c1x2h
+    (10 more, each < 10 ms)
+    TOTAL                               34720 | 14178.9 13305.1  +873.7 | 80.8% 86.1% | cuBLAS 11461.0
+
+    GEMM        14.179 s -> 13.305 s     638 -> 680 TFLOPS   (64.5% -> 68.8% of the 989.4 peak)
+    vs cuBLAS   80.8%    -> 86.1%        gap 2718 ms -> 1844 ms
+    GPU kernel  34.025 s -> 32.974 s
+
+### END TO END -- the number that matters
+
+    steady state (steps 6-9, like for like)
+      before   25,606 tok/s   94.27% of cuBLAS   2559.4 ms/step
+      after    26,182 tok/s   96.39% of cuBLAS   2503.1 ms/step
+      cuBLAS   27,163 tok/s
+
+    +2.25% throughput, +2.12 pp against cuBLAS, -56.2 ms/step
+
+§H27z.55 projected 56-102 ms/step and 96.2-98.0%, flagging the low end as likely because the sweep
+is standalone. Actual: **56 ms/step, 96.4%** -- the bottom of the range, for the reason predicted.
+Losses also moved toward cuBLAS (step 9 train 9.817209 -> 9.803998, cuBLAS 9.791660), consistent
+with different tiles changing accumulation order.
+
+### THE STANDALONE SWEEP RANKS WELL AND PREDICTS BADLY
+
+Per-shape, predicted saving vs delivered:
+
+    gate_up-fwd     predicted 546 ms   actual 500 ms    91%
+    gate_up-wgrad   predicted  67 ms   actual  71 ms   106%
+    lm_head-fwd     predicted  33 ms   actual  63 ms   193%
+    kv-dgrad        predicted  19 ms   actual  26 ms   137%
+    wQ/wO-fwd       predicted 116 ms   actual  86 ms    74%
+    wQ/wO-dgrad     predicted  85 ms   actual  25 ms    30%
+    down-dgrad      predicted 148 ms   actual  30 ms    20%   <- worst miss
+    TOTAL           predicted 1015 ms  actual 813 ms    80%
+
+down-dgrad is the instructive one. The sweep measured the OLD config (`128x256_cbox128`) at 72.2%
+of cuBLAS standalone, but in the training run that same config was already achieving 83.3%. The
+sweep was pessimistic about what we were replacing, so most of the predicted headroom never
+existed. **Direction was right on 9 of 9; magnitude was within 2x on only 5 of 9.** Use the sweep
+to choose configs, never to forecast a number -- forecast only from an nsys capture.
+
+### WHERE THE REMAINING 1,844 ms SITS
+
+    gate_up-fwd    430 ms  23.3%   86.9%   biggest single item, still
+    gate_up-wgrad  234 ms  12.7%   85.4%
+    wQ-dgrad       163 ms   8.8%   78.2%   contention-inflated, see below
+    down-fwd       157 ms   8.5%   87.5%
+    down-dgrad     114 ms   6.2%   86.7%
+    attnOut-fwd    110 ms   6.0%   81.1%
+    wQ-fwd         105 ms   5.7%   81.7%
+    kvA+kvB-wgrad   86 ms   4.7%   ~61%    the genuine kernel gap
+    ... 13 more
+
+This is now a different KIND of gap. Before, 9 shapes were running a config that was not the best
+we owned. Now all 15 run the measured best, so what remains is our kernels genuinely being slower
+than cuBLAS's on these shapes -- not a dispatch problem. Closing it needs kernel work, not table rows.
+
+### CONTENTION IS NOW THE WORST %cuB IN THE RUN
+
+kvA-dgrad and kvB-dgrad are the SAME shape running the SAME kernel, yet 84.2% vs 55.9%. wQ-dgrad
+and wO-dgrad likewise: 61.2% vs 85.4%. The difference is BluTrain's two-stream backward -- the
+second of each pair overlaps stream-16 wgrad work. Unchanged by this work: still 8,680 wgrad
+launches on stream 16, 499 ms hidden (was 508 ms).
+
+Worth noting the configs were chosen by a sweep that measured them UNCONTENDED. The best config
+for a call site that runs alongside a concurrent wgrad may not be the best config in isolation, and
+nothing we have measured so far can see that difference. Open question, not a claim.
+
+### STATE
+
+    DONE   sweep, 15 tier-1 rows, dispatch validation, vendored-copy sync, end-to-end re-measure
+    OPEN   1. 2048x512x16384 tn at ~61% -- needs split-K on a 128x128 tile (Phase 4)
+           2. BLAS_DIR vendoring -- two copies of 266 files, hand-synced, cost two captures today
+           3. contention-aware config choice for the 4 dgrad sites that overlap wgrad
+           4. 256x128x64_1x2_h_sw64 unreachable from Cfg_nt (worth ~8 ms, needs enum+extern+case)
+
+## §H27z.57 PIPELINE DEPTH: AN UNVERIFIED HYPOTHESIS, RECORDED BEFORE TESTING (2026-08-08)
+
+Recorded as a HYPOTHESIS, not a finding. Nothing here has been tested; the experiment that would
+settle it is specified at the end and has NOT been run.
+
+### The arithmetic, which IS established
+
+Our pipeline depth is auto-derived, so the kernel name never shows it (`LOAD_PIPE_DEPTH` prints as
+`(int)0` = derive). All 271 registered aliases pass 0; no config in the registry forces a depth,
+so no measurement we have ever taken varies depth independently of tile.
+
+    STAGE_BYTES     = (BM+BN)*BK*2
+    STORE_BUF_BYTES = BM*BN*2                    <- full output tile, ADDED to the stage budget
+    LOAD_PIPE_DEPTH = (232448-1024 - STORE_BUF_BYTES) / STAGE_BYTES
+
+    tile      stage B   store B   OURS   cuBLAS
+    256x128    49152     65536      3       4
+    128x256    49152     65536      3       4
+    192x192    49152     73728      3       3
+    128x128    32768     32768      6       6
+
+Confirmed against the captures' own smem figures, which match the formula to the byte:
+
+    ours   256x128   214016 B = 3 stages (147456) + full-tile store (65536) + 1024 static
+    cuBLAS 256x128   213188 B = 4 stages (196608) + only 16580 for epilogue and barriers
+    ours   192x192   222208 B = 3 stages (147456) + full-tile store (73728) + 1024
+    cuBLAS 192x192   188604 B = 3 stages (147456) + 41148
+
+**Same total smem, opposite allocation.** cuBLAS buys stages and stages its epilogue in chunks; we
+buy a full-tile epilogue buffer and lose a stage. Registers are IDENTICAL on both sides (168 per
+thread, every kernel, both libraries), so registers are not a differentiator here.
+
+### THE HYPOTHESIS (untested)
+
+"We are a stage short on 256x128 and 128x256 (11 call sites, 43.8% of our GEMM time) because the
+epilogue buffer eats the smem; chunking the epilogue like cuBLAS would give a 4th stage and recover
+some of the gap."
+
+### EVIDENCE ALREADY AGAINST IT -- which is why this is not being implemented yet
+
+1. **Same tile AND same stage count, gap survives.** On the shapes where cuBLAS picks 192x192 it
+   runs 3 stages and so do we: ours 620 TF vs 782 (gate_up-fwd, 79.3%), 624 vs 744 (lm_head-fwd,
+   83.8%). Equal depth, still 16-21% behind.
+2. **The same depth deficit gives opposite outcomes.** gate_up-dgrad and wO-fwd both run our
+   256x128/3 against cuBLAS's 256x128/4 -- identical tile, identical 3-vs-4 gap -- and land at
+   95.3% and 81.6%. A single cause cannot produce that spread.
+3. **Shallow tiles beat deep ones.** On gate_up-fwd, 128x320 at depth 2 reaches 70.2% while
+   128x176 at depth 4 gets 57.4% and 128x144 at depth 5 gets 53.4%.
+
+The depth-vs-TFLOPS correlation over 16 tiles is -0.44 to -0.54, but it is CONFOUNDED and must not
+be quoted as evidence either way: depth is a deterministic function of BM and BN, so smaller tiles
+mechanically get deeper pipes and are slower for unrelated reasons. The sweep cannot separate them.
+
+### THE EXPERIMENT THAT WOULD SETTLE IT (not yet run)
+
+Register `256x128x64_1x2_h_rs2` with `_LOAD_PIPE_DEPTH` forced to 2, and compare against its
+natural 3 on the top shapes. Depth 4 CANNOT be tested without touching the epilogue first --
+`4*49152 + 65536 = 262144 > 231424`, so the existing static_assert fires. 2-vs-3 answers it by
+symmetry:
+
+    2 == 3   -> depth is saturated in this range, a 4th stage buys nothing, the epilogue rewrite
+                is dead work, and the real target is coopB / pingpong
+    2 <  3   -> depth is on the critical path and reclaiming the epilogue smem is worth doing
+
+Cost: two aliases, two registry lines, one rebuild, a short sweep on 4-5 shapes.
+
+### THE COMPETING EXPLANATION, also untested
+
+Our 192x192 is not a real odd-tile implementation. BM=192 fails the even-tile rule (WG_M=96 is not
+a multiple of 64), so it is handled by an asymmetric M-split deriving WGMMA_N=96 -- a workaround.
+cuBLAS's `coopB` is the proper warpgroup generalisation for odd-64-multiple tiles (192, 320), and
+both coopB and pingpong scheduling are already listed UNDONE in the SM90 roadmap. That, not depth,
+is the leading candidate for the same-tile-same-depth gap.
+
+## §H27z.58 ROLLBACK POINT: THE DISPATCHER AS IT STANDS, BEFORE THE SAME-VARIANT EXPERIMENT (2026-08-08)
+
+Recorded so the current state can be restored exactly if the next experiments go wrong.
+
+### The state being preserved
+
+    BluBLAS repo commit 9cbd369  "pin the 15 measured 1.7B winners into the SM90 tier-1 tables"
+                       0f0d8c6  "sync the tier-1 tables into BluTrain's vendored BLAS copy"
+    kTableSize_nn = 147   kTableSize_nt = 148   kTableSize_tn = 142
+    15 rows carry the marker "§H27z.55 1.7B"
+
+    MEASURED, end to end, 1.7B production config under nsys, single H200:
+      26,182 tok/s = 96.39% of cuBLAS (27,163)      step 2503.1 ms
+      GEMM 13.305 s = 86.1% of cuBLAS (11.461 s)    680 TFLOPS vs 790
+      all 21 call sites improved vs the pre-pinning state, none regressed
+
+    THE 15 PINNED ROWS (shape -> config), all measured winners from the 3905-run sweep:
+      nn  16384x  512x 2048 -> NN_256x128x64_1x2_h_rs2      nt 16384x2048x  512 -> NT_128x176x64
+      nn  16384x 2048x 2048 -> NN_256x128x64_1x2_h_rs2      nt 16384x2048x 2048 -> NT_256x128x64_1x2_h_rs2
+      nn  16384x 2048x 5632 -> NN_256x128x64_1x2_h_rs2      nt 16384x2048x11264 -> NT_256x128x64_1x2_h_rs2
+      nn  16384x11264x 2048 -> NN_256x128x64_1x2_h_rs2      nt 16384x2048x50304 -> NT_256x128x64_1x2_h_rs2
+      nn  16384x50304x 2048 -> NN_192x192x64_1x2_v          nt 16384x5632x 2048 -> NT_256x128x64_1x2_h_rs2
+      tn   2048x  512x16384 -> TN_64x128x64                 tn  2048x11264x16384 -> TN_192x192x64_1x2_v
+      tn   2048x 2048x16384 -> TN_128x256x64_1x2_v          tn  5632x 2048x16384 -> TN_256x128x64_1x2_h_rs2
+      tn   2048x50304x16384 -> TN_256x128x64_1x2_v
+
+To restore: `git checkout 0f0d8c6 -- src/.../Bgemm_sm90_dispatch_table.h BluTrain/.../Bgemm_sm90_dispatch_table.h`
+(BOTH copies -- see §H27z.56 for why the vendored duplicate matters).
+
+### MEASURED COST of switching every site to cuBLAS's variant
+
+Derived from the 3905-run sweep, using our own TFLOPS on cuBLAS's config vs on our current pick:
+
+    GEMM 13305 ms -> 15667 ms   (+2362 ms, +17.8%)      86.1% -> 73.2% of cuBLAS
+    worst regressions: gate_up-wgrad +631 ms (0.720x), gate_up-fwd +588 ms (0.847x),
+                       gate_up-dgrad +240 ms, down-fwd +227 ms, down-dgrad +174 ms
+    smallest:          lm_head-dgrad +5 ms, wQ/wO-fwd +13 ms each
+
+Every one of the 21 sites gets SLOWER. There is no site where cuBLAS's config beats our own pick
+in our implementation.
+
+### TWO FEATURES THAT CANNOT BE MATCHED TODAY
+
+  1. **Stages.** cuBLAS runs 4 on 256x128 and 128x256; we derive 3 and physically cannot reach 4
+     (`4*49152 + 65536 = 262144 > 231424`, the static_assert fires) until the epilogue buffer is
+     chunked. Affects 13 of 21 sites.
+  2. **Split-K on 128x128.** cuBLAS uses it on 2048x512x16384; our split-K exists ONLY on 64x64 in
+     all three layouts. Affects 2 of 21 sites.
+
+So "identical in every feature" is unreachable for 15 of 21 sites regardless of dispatcher changes.
+
+### UNRESOLVED, AND IT GATES THE WHOLE COMPARISON
+
+cuBLAS's suffix proves the row-major/column-major operand swap: our NN -> its NN?, our NT -> its
+TN?, our TN -> its NT? (C = A*B row-major == C^T = B^T*A^T column-major). If its BMxBN is stated in
+those swapped coordinates, then its `256x128` is our `128x256`, and the tile-match count in
+§H27z.54's table flips from 13-of-21 to 4-of-21.
+
+This cannot be settled from the captures: cuBLAS launches a persistent 2x66 grid, so grid dims
+carry no tile information, and every shape in this model happens to give the same tile count under
+either reading. **Settle it before pinning any tile**: run M=16384,N=256 and M=256,N=16384 under
+nsys and check whether the chosen tile mirrors. Pinning the wrong orientation would invalidate the
+entire experiment.
+
+## §H27z.59 STRATEGY: CLOSE THE GAP VARIANT BY VARIANT, ON IDENTICAL CONFIGURATIONS (2026-08-08)
+
+### The decision, and the reasoning behind it
+
+The gap is NOT a missing-variant problem. §H27z.55 proved we own 5 of the 6 variants cuBLAS uses,
+and that running cuBLAS's own choice makes us SLOWER than our tuned choice on every one of the 21
+sites. So the remaining gap is in how fast our implementation of a given tile runs.
+
+**Therefore: hold the configuration constant and debug the implementation.** For each cuBLAS
+variant, build the identical configuration in our kernel, measure the head-to-head, find the
+inefficiency with ncu, fix it, re-measure.
+
+**The dispatcher is NOT changed during this work.** It stays at the §H27z.58 rollback point
+(96.39% end to end, 86.1% GEMM). The whole campaign runs standalone. Pinning cuBLAS's variants
+into the dispatcher was considered and REJECTED: it was measured to cost 86.1% -> 72.4% and buys
+no information, because the 3905-run sweep already measured our TFLOPS on cuBLAS's exact config
+for every shape. Debug standalone, keep the shipping path fast.
+
+### CORRECTION that reshaped the target list
+
+cuBLAS is called with swapped operands in BOTH the harness and BluTrain
+(`cublasGemmEx(handle, opB, opA, N, M, K, ...)` — GenMatmul.cu:945/953/987/995, MatmulBackward.cu
+:481/601, test_bgemm_sm90_matrix.cu:639). **cuBLAS's M is our N.** So its BMxBN is our BNxBM, its
+cluster CXxCY is our CYxCX, and its raster v is our h.
+
+§H27z.54's table compared the names literally and was wrong for every non-square tile:
+
+    tile identical   13/21 -> 4/21      cluster 10/21 -> 7/21
+    raster identical 15/21 -> 6/21      stages   5/21 (unaffected)     ALL FOUR 0/21 (unchanged)
+
+The material consequence: **on 11 of 21 sites cuBLAS runs the TRANSPOSE of our tile** — 128x256
+where we run 256x128 — and those 11 sites are 43.8% of our GEMM time. We were never running
+cuBLAS's tile there at all.
+
+### THE SIX TARGETS, in the agreed working order (by number of call sites)
+
+    #  cuBLAS variant (OUR coords)   stg  sites  launches  %launch   our ms   %GEMM   same-variant %
+    1  128x256_2x1_v                  4     11    21,640    62.3%    5,513    41.4%   69.6-78.9%
+    2  256x128_1x2_h                  4      4     4,360    12.6%    1,481    11.1%   85.6-94.2%
+    3  192x192_1x2_h                  3      2     1,520     4.4%    2,017    15.2%   69.7-86.3%
+    4  128x128_2x1_v + splitK         6      2     2,880     8.3%      221     1.7%   57.0%
+    5  192x192_2x1_v                  3      1     2,880     8.3%    3,242    24.4%   71.1%
+    6  192x192_1x2_h                  4      1     1,440     4.1%      831     6.2%   77.2%
+                                            21    34,720     100%   13,305     100%
+
+NOTE ON THE ORDER: this is ordered by CALL SITES, as agreed. By TIME it would differ — target #5
+is a single site but 24.4% of GEMM, more than #2+#3+#4 combined. Recorded so the choice is a
+deliberate one and can be revisited after #1 lands.
+
+### WHY THE 4-STAGE AND SPLIT-K WORK IS IN SCOPE, not optional
+
+Both are prerequisites for building the targets at all, not side quests:
+
+**4 stages is required for target #1.** 128x256 has stage=(128+256)*64*2=49152 and
+store=128*256*2=65536, so we derive depth 3 while cuBLAS runs 4. We physically cannot build
+cuBLAS's #1 variant today; the static_assert fires. Same blocker on target #2 (256x128).
+FIX: the epilogue already chunks its TMA store over C_BOX_N, but the BUFFER holds every chunk
+(`[NCHUNK][BM][C_BOX_N]` = the full tile). Hold 1-2 chunks instead. At C_BOX_N=32
+double-buffered: 2*128*32*2 = 16384 -> depth (231424-16384)/49152 = 4.37 -> 4 stages, matching
+cuBLAS with store/compute overlap preserved. The real work is the tma_store_wait discipline so a
+chunk buffer is never rewritten before its store retires.
+
+**Split-K on 128x128 is required for target #4.** It is a REGISTRATION gap only: `_SPLIT_K` is a
+template parameter on every config, `splitk_begin`/`splitk_end` are constexpr and tile-agnostic,
+and the workspace is a shared fp32 arena. Only the `BLUBLAS_SM90_CFG_FOREACH_SPLITK` X-macro is
+limited, listing 64x64x64_sk2/sk4/sk8 and nothing else — because split-K was added in §H27z.9 for
+low-K/small-N shapes where the natural tile is tiny.
+Do NOT read our split-K measuring 28-37% of cuBLAS as "split-K is bad": that is the 64x64 TILE
+being bad. cuBLAS pairs split-K with 128x128 and gets 687 TF where our best is 498.
+
+**This also finally settles §H27z.57.** Depth is welded to tile shape in the auto-derivation, so no
+measurement has ever isolated it. Building 128x256_2x1_v at depth 3 (today) and again at depth 4
+(after the epilogue fix), same shape, same everything else, IS the isolated depth experiment.
+
+### METHOD PER TARGET
+
+  1. build the identical configuration standalone (register the variant if absent)
+  2. measure the head-to-head on the largest shape that uses it
+  3. ncu both kernels, same shape: SOL compute vs memory, warp stall reasons, tensor-pipe active %,
+     dram__bytes.sum, L2 hit rate, and shared bank conflicts SPLIT BY op_ld/op_st (tools/
+     ncu_capture.sh already does this split — built for the same question in §H27y.12)
+  4. fix what the metrics implicate, re-measure, record before/after
+  5. only then move to the next target
+
+Existing tooling gap found: `examples/qwen_shape_blublas.cu` is NT-only and knows 7 base tiles with
+no cluster/raster variants, so it cannot run 128x256x64_2x1_v on an NN shape. Use
+`test_bgemm_sm90_matrix --cfg=<name> --shape=MxNxK --layout=<l>` with ncu kernel-name filters
+instead; its iteration count is adaptive (TARGET_MS/probe_ms clamped to MIN_IT..MAX_IT) so ncu
+needs a name filter rather than a fixed --launch-skip.
+
+### FIRST TARGET
+
+`128x256_2x1_v` on `16384x2048x5632 nn` (down-fwd) — 1,435 ms site, our 128x256x64_2x1_v measures
+566 TF against cuBLAS's 814 TF = **69.6% on identical tile, cluster and raster**. That 30% gap,
+with configuration held constant, is the thing to explain.
+
+## §H27z.61 DESIGN: THE EPILOGUE BUFFER IS WHY WE ARE A PIPELINE STAGE SHORT (2026-08-10)
+
+Research only -- NOTHING implemented yet. This section is the "understand it completely first" step.
+
+### THE QUESTION
+
+cuBLAS runs 4 pipeline stages on 256x128 and 128x256; we derive 3 and physically cannot reach 4
+(`4*49152 + 65536 = 262144 > 231424`). Both have the same 232448-byte budget. Where does cuBLAS
+find the room, and can we do the same?
+
+### ANSWER 1 -- CUTLASS (include/cutlass/epilogue/collective/)
+
+The epilogue stages a SUB-TILE of the CTA tile, multi-buffered, never the whole tile:
+
+    class EpilogueTile_,                      // (EPI_TILE_M, EPI_TILE_N)
+    static_assert(CTA_M % EPI_TILE_M == 0);
+    static_assert(CTA_N % EPI_TILE_N == 0);
+    make_shape(EPI_TILE_M, EPI_TILE_N, StagesC)   // C smem
+    make_shape(EPI_TILE_M, EPI_TILE_N, StagesD)   // D smem
+
+`EpilogueTileAuto` for the COOPERATIVE schedule (which is what we are) -- sm90_builder.inl:115-121:
+
+    tile_m = min(128, CTA_M)
+    tile_n = gcd(min(32, CTA_N), CTA_N)
+    StagesD = min(EpiTiles, 2)                     // double buffered
+    StagesC = ReuseSmem ? max(min(EpiTiles,4), StagesD+1) : ...
+
+There is also a `ReuseSmemC` flag that ALIASES D onto C's buffer, halving it again. Note the kernel-
+level `TensorStorage` is a STRUCT, not a union (sm90_gemm_tma_warpspecialized_cooperative.hpp:175-180)
+-- so CUTLASS also ADDS epilogue to mainloop. It wins purely by making the epilogue small.
+
+For a 256x128 CTA tile in bf16: EPI_TILE = 128x32, 2 stages -> 128*32*2*2 = **16,384 bytes**.
+
+### ANSWER 2 -- DeepGEMM (independent codebase, same conclusion)
+
+    STORE_BLOCK_N          = kSwizzleCDMode / sizeof(cd_dtype_t);   // the SWIZZLE ATOM width
+    SMEM_CD_SIZE_PER_STAGE = STORE_BLOCK_M * STORE_BLOCK_N * sizeof(cd_dtype_t);
+    SMEM_CD_SIZE           = SMEM_CD_SIZE_PER_STAGE * kNumTMAStoreStages;
+
+Same structure -- sub-tile x stages -- reached by a DIFFERENT derivation: DeepGEMM ties the N width
+to the swizzle mode (SW128 / 2 bytes = 64 bf16 elements) where CUTLASS uses gcd(32, CTA_N). Both are
+small and multi-staged. DeepGEMM places smem_cd FIRST and the A/B stages after it; we place ours
+last. Purely cosmetic -- both are additive.
+
+ThunderKittens: no matmul kernel present in our checkout, so no third data point from it.
+
+### ANSWER 3 -- cuBLAS's own measured shared memory (the cross-validation)
+
+From the nsys captures, `launch__shared_mem_per_block` for cuBLAS's 256x128_64x4 kernel is
+**213,188 bytes**. Subtracting its 4 stages: 213188 - 4*49152 = **16,580 bytes** left for the
+epilogue plus barriers.
+
+**CUTLASS's formula predicts 16,384. cuBLAS measures 16,580.** Within 200 bytes. This is no longer
+a hypothesis -- we know what cuBLAS is doing, confirmed from two open sources and one measurement.
+
+### WHY OURS IS THE OUTLIER
+
+    Config::STORE_BUF_BYTES = BM * BN * 2;      // THE WHOLE OUTPUT TILE
+
+and it is laid out `[BN/C_BOX_N][BM][C_BOX_N]` -- every chunk resident at once, both consumer
+warpgroups sharing it with disjoint chunk ranges. The template comment says why:
+
+    "Single-buffered epilogue store tile (no double buffer in v1 -- see plan's 'not required
+     for v1' tuning list; correctness first)."
+
+A deliberate v1 simplification that was never revisited. It costs 65,536 bytes on 256x128 -- 28.3%
+of the entire budget, 4x what cuBLAS spends -- and that is exactly the 4th stage.
+
+### THE DESIGN THAT FOLLOWS
+
+    EPI_TILE_M  = 128       CUTLASS's min(128, CTA_M). Also equals our per-warpgroup row range on
+                            M-split tiles (WG_M = BM/2 = 128), so each warpgroup owns its own slots
+                            and the buffer-contention problem disappears.
+    EPI_TILE_N  = 64        DeepGEMM's swizzle-atom rule, which is exactly our existing
+                            sw_atom_elems(SW128) = 64 bf16 elements. Fewer, larger TMA stores than
+                            CUTLASS's 32, and it reuses swizzle machinery we already have.
+    EPI_STAGES  = 2         Both references double-buffer.
+    STORE_BUF   = 128 * 64 * 2 * 2 = 32,768 bytes     (16,384 if we follow CUTLASS's N=32)
+
+Resulting depths, (231424 - 32768) / STAGE_BYTES:
+
+    tile      stage B   today   NEW   cuBLAS
+    256x128    49152      3      4      4     MATCH
+    128x256    49152      3      4      4     MATCH
+    128x128    32768      6      6      6     MATCH
+    192x192    49152      3      4      3     we would EXCEED cuBLAS
+    128x176    38912      4      5      -
+    64x128     24576      8      8      -
+
+Both N=64 and N=32 reach 4 on the tiles that matter, so the design is not sensitive to that choice.
+
+### WHAT ACTUALLY CHANGES IN OUR KERNEL
+
+  1. `Config::STORE_BUF_BYTES`: `BM*BN*2` -> `EPI_TILE_M * EPI_TILE_N * 2 * EPI_STAGES`
+  2. `SmemL::LOAD_PIPE_DEPTH`: formula UNCHANGED, it simply gets more room
+  3. `c_buf` / `store_smem` layout: `[NCHUNK][BM][C_BOX_N]` -> `[EPI_STAGES][EPI_TILE_M][EPI_TILE_N]`
+  4. epilogue loop: today it writes EVERY chunk, then issues every TMA store, then waits once
+     (`tma_store_commit(); tma_store_wait<0>()`). It becomes, per (m_chunk, n_chunk):
+     write slot[i%2] -> `tma_store_fence()` -> store -> commit, with `tma_store_wait<EPI_STAGES-1>()`
+     BEFORE reusing a slot.
+  5. chunking gains an M dimension -- today we always write all BM rows; EPI_TILE_M=128 means BM=256
+     walks M in 2 chunks as well as N.
+  6. make `_LOAD_PIPE_DEPTH` real at the same time (currently DEAD -- see §H27z.57), so depth
+     becomes forceable and therefore verifiable rather than inferred.
+
+### RISKS, and how each is handled
+
+  - **Silent corruption.** Reusing a slot before its TMA store retires gives right answers most of
+    the time and wrong ones under timing pressure. This is THE risk. The `tma_store_wait<N-1>()`
+    placement is the whole correctness argument and must be reviewed as such.
+  - **The zeroed-C validation trap** (§H27z.48/.49): a harness that memsets C cannot see unwritten
+    output regions. Validate with C pre-filled NaN and beta=0, which is what
+    examples/test_bgemm_sm90_beta.cu already does.
+  - **Residue shapes.** Chunking now masks in M as well as N; non-divisible M/N is where this breaks.
+  - **More, smaller TMA stores** could cost more than the extra stage buys.
+  - **192x192 would go to 4 stages where cuBLAS uses 3.** Might be better, might not -- measurable.
+
+### VALIDATION BEFORE ANY PERF CLAIM
+
+  1. bit-exact vs cuBLAS on all 15 shapes x 3 layouts
+  2. the full 250-config matrix test -- every tile and cluster, since the indexing change touches all
+  3. the beta=0 / NaN-prefilled-C test for unwritten regions
+  4. residue shapes with non-divisible M and N
+  5. only then measure, and report before/after per §H27z.58's rollback baseline
+
+### HONEST CAVEAT, restated
+
+§H27z.57 records evidence that depth may not be the binding constraint at all: on the two 192x192
+sites where our stage count ALREADY equals cuBLAS's, we still run at 73-92%. This design is
+well-grounded and matches three independent sources, but "we will match cuBLAS's smem layout" is not
+the same claim as "this closes the gap". Making `_LOAD_PIPE_DEPTH` real first (item 6) lets us test
+depth 2 vs 3 in an hour and find out before committing to the full restructure.
+
+## §H27z.63 CHUNKED EPILOGUE -- COMPLETE DESIGN, ALL FIVE UNKNOWNS RESOLVED (2026-08-10)
+
+§H27z.61 established WHAT cuBLAS does. This is the full mechanical design for doing it here, with
+every open question closed BEFORE any code is written. Fault 2 (stmatrix) is deliberately out of
+scope for this change and stays as §H27y.10 left it.
+
+### V1 -- which chunk does a lane's accumulator value belong to?  SOLVED: it is compile-time
+
+Our fragment mapping (derived from cute::SM90::GMMA::CLayout_64xN, template :2419):
+
+    row = t1 + 8*v1 + 16*t2      t1=(lane>>2)&7, t2=lane>>5, v1=(reg>>1)&1
+    col = 2*t0 + v0 + 8*v2       t0=lane&3,      v0=reg&1,   v2=reg>>2
+
+Because `2*t0 + v0 <= 7`, every lane's column stays inside the 8-wide group chosen by v2 alone:
+
+    chunk = col / EPI_TILE_N = (8*v2) / EPI_TILE_N = (reg_idx>>2) / (EPI_TILE_N/8)
+
+**Chunk membership is a function of the REGISTER INDEX, never the lane.** So the write loop splits
+into contiguous compile-time register ranges -- no lane-dependent predicate, no divergence, no
+wasted iterations. This was the one part expected to be hard and it is not.
+    EPI_TILE_N=32, WGMMA_N=128 -> 4 chunks, r ranges [0,16) [16,32) [32,48) [48,64)
+CONSTRAINT this exposes: EPI_TILE_N must divide WGMMA_N (not merely BN), and be a multiple of 8.
+
+### V2 -- buffer size and the depth it buys
+
+    STORE_BUF_BYTES = EPI_STAGES * BM * EPI_TILE_N * 2
+    256x128, EPI_TILE_N=32, EPI_STAGES=2 -> 2*256*32*2 = 32768
+    depth = (231424 - 32768)/49152 = 4.04 -> 4        == cuBLAS's stage count
+
+### V3 -- the TMA descriptor.  SOLVED: it already does the right thing
+
+C_BOX_N is already a real knob (C_BOX_N_OVERRIDE), the descriptor is built ONCE per launch with
+boxDim = C_BOX_N, and the store loop ALREADY issues one TMA per C_BOX_N chunk. Existing asserts
+cover the legality: C_BOX_N <= 256, C_BOX_N % 8 == 0 (so C_BOX_N*2 % 16 == 0, cuda.h:23809), and it
+must divide both warpgroups' N widths. EPI_TILE_N=32 satisfies all of them.
+**So the store side needs no change at all** -- only C_BOX_N must be pinned to EPI_TILE_N, and the
+buffer index changed from `ch_global*BM` to `(ch_global % EPI_STAGES)*BM`.
+
+### V4 -- synchronisation.  This is the entire correctness argument
+
+Today: write everything -> `barrier_sync(g,128)` -> `tma_store_fence()` -> lane 0 issues all stores
+-> `tma_store_commit()` -> `tma_store_wait<0>()`.
+
+Our `tma_store_wait<N>` is `cp.async.bulk.wait_group.READ N`, which retires when the smem SOURCE has
+been read -- exactly the guarantee needed to reuse a slot, and cheaper than waiting for the
+destination write to land. Per-chunk the order becomes:
+
+    for ch in chunks:
+        if (ch >= EPI_STAGES) {
+            if (lane_in_wg == 0) tma_store_wait<EPI_STAGES-1>();   // ISSUER waits
+            barrier_sync(g, 128);                                  // propagate to the other 127
+        }
+        write chunk ch into slot (ch % EPI_STAGES)
+        barrier_sync(g, 128)
+        tma_store_fence()
+        if (lane_in_wg == 0) { for a: store; tma_store_commit(); }
+    if (lane_in_wg == 0) tma_store_wait<0>()
+
+**The barrier after the wait is NOT optional.** Lane 0 issues and waits, but all 128 threads write.
+Without it the other 127 race ahead and overwrite a slot the TMA engine is still reading -- which
+produces correct output most of the time and corrupt output under timing pressure. That is the same
+signature as the grouped-raster bug (§H27z.49) that passed every test we had, so it is the one line
+to review hardest.
+
+### V5 -- residue and the asymmetric split.  No new masking needed
+
+Bounds are enforced by the C descriptor's real (M,N,batch) extents (§H27y.16 rank-3 map), not by
+arithmetic in the epilogue, and chunking does not change the coordinates handed to it -- each chunk
+still stores at (c_col + ch_global*C_BOX_N, c_row). The asymmetric-split guard `cc >= my_c_nchunks`
+becomes the outer loop's bound instead of a `continue`. The accumulator-side guard
+`nc >= my_nchunks` is unchanged.
+
+### WHAT IS ACTUALLY EDITED
+
+  1. Config: STORE_BUF_BYTES conditional on EPI_TILE_N          [DONE, flag defaults off]
+  2. Config: pin C_BOX_N = EPI_TILE_N when chunking
+  3. tighten the assert from BN%EPI_TILE_N to WGMMA_N%EPI_TILE_N
+  4. epilogue: outer chunk loop, register range per chunk, slot index, per-chunk fence/store/commit
+  5. epilogue: the wait+barrier before slot reuse (V4)
+
+EPI_TILE_N=0 leaves every existing config byte-identical -- the same contract SPLIT_K=1 and the
+0/0 register split rely on, and the reason this ships as a knob rather than an edit in place.
+
+### VALIDATION REQUIRED BEFORE ANY NUMBER IS QUOTED
+
+  1. full 250-config matrix, all three layouts -- the index change touches every tile
+  2. C pre-filled NaN with beta=0 (examples/test_bgemm_sm90_beta.cu) -- a memset-zero harness
+     CANNOT see unwritten output regions, which is exactly how §H27z.49 survived
+  3. residue shapes, M and N both non-divisible
+  4. batch > 1 -- the rank-3 descriptor path
+  5. only then measure, against §H27z.58's rollback baseline
+
+## §H27z.64 EDIT 4b PRE-ANALYSIS -- the split-K interaction, and a free win it exposes (2026-08-10)
+
+Worked through before writing 4b. Three confirmations and one finding that was not in §H27z.63.
+
+### CONFIRMED 1 -- the chunk predicate is compile-time, verified against the real definitions
+
+    wg_ch_start = (nchunk0 * WGMMA_N) / C_BOX_N          (template :3318, exact by construction)
+    ch          = tile_col / C_BOX_N,  tile_col = (nchunk0+nc)*WGMMA_N + col
+
+With C_BOX_N == EPI_TILE_N and R = WGMMA_N/EPI_TILE_N:
+
+    ch - wg_ch_start = nc*R + v2/(EPI_TILE_N/8)          v2 = reg>>2
+
+`nc` and `v2` are both unrolled loop indices, so `if (ch != wg_ch_start + epi_ch) continue;` is
+resolved entirely at compile time -- the non-matching iterations are deleted, not predicated. No
+divergence, no runtime cost. This is the same property §H27z.63 V1 derived, now checked against the
+actual expressions rather than the layout formula alone.
+
+### CONFIRMED 2 -- the pre-epilogue barrier is OUTSIDE the chunk loop
+
+`barrier_sync(g, THREADS_PER_WARPGROUP)` at :3304 sits before `c_buf`/`wg_ch_start`/`my_c_nchunks`,
+and 4a's loop opens after them. Correct: that barrier means "accumulators are final", which is a
+once-per-tile fact, not once-per-chunk.
+
+### CONFIRMED 3 -- EPI_NCHUNK must be the compile-time MAX, not the per-warpgroup count
+
+`my_c_nchunks = (g==0) ? C_NCHUNK0 : C_NCHUNK1` is a RUNTIME value under an asymmetric split, so it
+cannot bound an unrolled loop. Mirror what the existing store loop already does: bound the loop by
+`C_NCHUNK0` (the compile-time max) and skip with `if (epi_ch >= my_c_nchunks) continue;`.
+
+### NEW FINDING -- split-K x chunking must be FORBIDDEN, and split-K wastes a buffer today
+
+Under `USE_SPLIT_K` the epilogue writes raw fp32 partials straight to the global workspace and
+`continue`s (§H27z.14); **c_buf is never written at all**. Two consequences:
+
+  1. Wrapping that path in a chunk loop would re-execute the workspace stores EPI_NCHUNK times.
+     Same values, so still CORRECT -- but N times the global traffic, and silent. Chunking is
+     meaningless for a path that never uses the buffer. `static_assert` the combination off rather
+     than leave a correct-but-wasteful configuration reachable.
+
+  2. **STORE_BUF_BYTES is dead weight whenever SPLIT_K > 1.** The buffer is allocated and never
+     touched, and it is subtracted from the pipeline budget, so every split-K config has been
+     running a shallower pipeline than it needed to for no reason:
+         64x64  sk*   stage 16384  store 8192   depth 13 -> 14 if the dead buffer is dropped
+         128x128 sk*  stage 32768  store 32768  depth  6 ->  7
+         256x128 sk*  stage 49152  store 65536  depth  3 ->  4      <- a whole stage, free
+     This is a one-line change (`STORE_BUF_BYTES = USE_SPLIT_K ? 0 : ...`) with no epilogue rewrite
+     at all. It does not help the 1.7B model, which runs SPLIT_K=1 on all 34,720 launches, so it is
+     not a priority -- but it is worth knowing that our split-K configs measuring 28-37% of cuBLAS
+     (§H27z.55) were partly handicapped by a buffer they never use. Any future split-K measurement
+     should drop it first, or the numbers understate what split-K can do.
+
+### 4b, FINAL FORM
+
+    EPI_NCHUNK = USE_CHUNKED ? WGrid::C_NCHUNK0 : 1
+    static_assert(!(USE_CHUNKED && USE_SPLIT_K))
+    per chunk:  if (epi_ch >= my_c_nchunks) skip
+                write: if (ch != wg_ch_start + epi_ch) continue
+                buffer index: chunking ? (epi_ch % EPI_STAGES) : ch
+                store: cc restricted to epi_ch, same slot index
+                tma_store_wait<0>() KEPT -- fully serialised, no recycling yet
+    4c then relaxes the wait to <EPI_STAGES-1> plus the barrier. That single line is the only place
+    slot recycling can go wrong, and isolating it is the whole point of splitting 4b from 4c.
+
+### §H27z.64b CORRECTION -- Stage 1 is EPI_TILE_N = WG_N_WIDTH0, not BN
+
+§H27z.63's ladder said the identity stage sets EPI_TILE_N = BN. That is wrong on any tile whose
+warpgroups split along N rather than M. Evaluated from the real constexpr chain (sw_pick_symmetric_mn
+-> B_SWIZZLE -> N_GRAIN -> wgmma_n_pick_free), not assumed:
+
+    tile      B_SWIZZLE  N_GRAIN  SPLIT_M  WGMMA_N     EPI_TILE_N=BN legal?
+    256x128        128       64    true       128           yes  (BN == WGMMA_N)
+    128x256        128       64    true       256           yes
+    128x128        128       64    true       128           yes
+    192x192         64       32    FALSE       96           NO   (96 % 192 != 0)
+
+192x192 has MATOMS = 192/64 = 3, so SPLIT_M = (3 % 2 == 0) is false and the tile splits along N with
+WGMMA_N = 96, one 96-wide chunk per warpgroup. EPI_TILE_N must divide WGMMA_N (§H27z.63 V1), so 192
+is illegal there and edit 2's assert would have failed the build.
+
+CORRECTED RULE: the identity stage wants C_NCHUNK0 == 1, i.e. **EPI_TILE_N = WG_N_WIDTH0**, which is
+BN when SPLIT_M and WGMMA_N when the split is along N. Per tile: 256x128 -> 128, 128x256 -> 256,
+128x128 -> 128, 192x192 -> 96.
+
+EPI_TILE_N = 32 divides all four WGMMA_N values, so Stage 3 was never at risk -- only the identity
+stage needed fixing. Recorded because "EPI_TILE_N = BN" reads as obviously correct and is not.
+
+## §H27z.65 STAGE 3 PROVEN AND MEASURED -- and the baseline it was measured against was wrong (2026-08-10)
+
+### §H27z.65.1 The three-stage ablation result
+
+Each stage was built, run and ablated separately, as designed in §H27z.63. Medians of 3, one config
+per process, clocks locked at 1620 MHz. All 48 runs bit-exact (maxRelErr 0.00000); spread inside a
+config as tight as 0.02%.
+
+    shape             lay | control  ep128s1  ep64s2  ep32s2 | cuBLAS | %cuB before -> after
+    16384x2048x2048   nn  |  629.40   629.91  640.04  676.80 |  753.3 | 84.0 -> 89.8
+    16384x11264x2048  nn  |  638.62   638.35  644.82  691.49 |  765.7 | 83.5 -> 90.1
+    16384x2048x2048   nt  |  632.32   631.27  645.59  673.77 |  752.3 | 84.0 -> 89.6
+    16384x5632x2048   nt  |  635.43   635.92  644.23  679.99 |  751.9 | 84.3 -> 90.3
+
+    +7.35% average, ~+6 points of cuBLAS.
+
+The ladder does what it was built to do -- it ATTRIBUTES the gain instead of just reporting it:
+
+  - ep128s1 == control on all four. One chunk, no shrink, same 215,040 B. The chunk loop, the slot
+    indexing and the extra wait cost NOTHING. Hypothesis from Stage 1, now measured.
+  - ep64s2 = +1.5%. Two chunks, still 215,040 B, still 3 stages. No extra pipeline stage exists, so
+    this increment is purely the epilogue overlapping its own store with the next chunk's drain.
+  - ep32s2 = +5.7% ON TOP. The only config that reaches 231,424 B and a 4th stage. This increment
+    IS the 4th stage.
+
+Shared memory per block, read from the binary rather than derived:
+    256x128x64_1x2_h          215,040   (3 stages)
+    256x128x64_1x2_h_ep64s2   215,040   (3 stages -- control, identical as designed)
+    256x128x64_1x2_h_ep32s2   231,424   (4 stages -- matches cuBLAS's stage count)
+
+### §H27z.65.2 Structural proof in SASS, not run counts
+
+The user's standard was explicit: not "it passed N runs" but proof. cuobjdump on the shipped .so,
+kernel `..Li0ELi1ELi32ELi2EE` (RASTER_SWIZZLE 0, SPLIT_K 1, EPI_TILE_N 32, EPI_STAGES 2).
+
+Instruction census, against what a 4-chunk 2-slot pipeline must contain:
+    UTMASTG        8   = 4 chunks x 2 row-halves          (predicted 8)
+    UTMACMDFLUSH   4   = one commit per chunk             (predicted 4)
+    DEPBAR SB0     5   = 4 chunk waits + 1 final drain    (predicted 5)
+    FENCE.VIEW     5   = 4 chunk fences + 1 prologue      (predicted 4 + prologue)
+
+Addresses laid end to end give the whole loop:
+
+    DEPBAR SB0,1  0x1740   chunk0 wait (nothing in flight yet -- vacuous, correct)
+      STS -> slot0 (0x30000)
+      FENCE 0x3570 -> UTMASTG 0x3670,0x3710 -> UTMACMDFLUSH
+    DEPBAR SB0,1  0x3740   retires chunk0
+      STS -> slot1 (0x34000)
+      FENCE 0x5430 -> UTMASTG 0x5530,0x55d0 -> UTMACMDFLUSH
+    DEPBAR SB0,1  0x5600   retires chunk1
+      ... (chunks 2,3) ...
+    DEPBAR SB0,0  0x9340   final drain
+
+Three things only SASS could establish:
+
+1. The slot stride is literally in the addresses: 0x34000 - 0x30000 = 0x4000 = 16,384 =
+   BM * EPI_TILE_N * 2 = 256*32*2. Within a slot, 0x35000 is +0x1000 = 64 rows x 64 B, the
+   `row0 + a*64` term. The buffer is laid out exactly as designed.
+2. THE DEPBAR IS INSIDE A PREDICATED REGION. `@P0 BRA 0x7490` at 0x72c0 jumps the other 127 threads
+   PAST the wait -- that is `if (lane_in_wg == 0) tma_store_wait<>()` compiled literally. On its own
+   that is a bug. `BAR.SYNC.DEFER_BLOCKING R2, 0x80` at 0x74a0, one instruction after `BSYNC B0`
+   reconvergence and before any STS, is what makes lane 0's wait mean anything to the other 127.
+   It was not hoisted and not dropped. This was the actual risk: ptxas cannot see that the copy
+   engine reads that buffer.
+3. The wait count is right: `DEPBAR.LE SB0, 0x1` = at most 1 outstanding = tma_store_wait<EPI_STAGES-1>
+   with EPI_STAGES=2. After committing chunk N there are <=2 in flight (N-1, N); the wait retires
+   N-1; the next STS targets slot (N+1)%2 = the slot N-1 used. The buffer being overwritten is
+   exactly the one whose store just finished. Correct by construction, no slack.
+
+STS came in at 128 where fragment arithmetic says 64 (128 rows x 128 cols / 128 threads = 128 fp32
+= 64 packed stores). The doubling is two mutually exclusive write paths (an `FSETP.NEU ... RZ` beta
+test at 0x74b0). The proof that they are alternatives and not both live: the SYNC instructions are
+NOT doubled -- 5 DEPBAR, 4 fences, 4 commits, 8 UTMASTG, all exactly the 4-chunk count. Two live
+sets of writes would need 8 store pairs to move them.
+
+### §H27z.65.3 Sanitizers -- and a 296,020-error number that means nothing
+
+    512x256x256     racecheck  control 0 / ep32s2 0
+                    synccheck  control 0 / ep32s2 0
+                    initcheck  control 131,072 / ep32s2 131,072  (identical -> pre-existing)
+    4096x2048x2048  racecheck  control 296,020 / ep64s2 296,020 / ep32s2 296,020
+
+The large-shape number looks alarming and is not a defect. racecheck models __syncthreads, not
+mbarrier and not the async proxy, so in a warp-specialised kernel it flags every producer-write /
+consumer-read pair in the mainloop. The proof it is instrumentation and not a race: the count is
+IDENTICAL to the unit across three configs with three different epilogue structures. A genuine
+timing-dependent race would move. Recorded so nobody re-discovers it and panics.
+
+### §H27z.65.4 Correctness battery
+
+  residue, 3 layouts x 4 shapes         24/24 PASS, all maxRelErr 0.00000
+  batch 4 and 8, 3 layouts x 3 shapes   18/18 PASS, all bit-exact
+  full config matrix @ 4096x2048x2048   nn 267 + nt 286 + tn 267 = 820/820 PASS, 0 FAIL
+
+The residue set was chosen to hit the chunked path specifically:
+  4088x2040x1016  none of 4088/256, 2040/128, 1016/64 is integral -- residue on all three axes
+  4088x2056x1016  N residue = 8 columns, SMALLER than one 32-wide chunk. Chunk 0 partially valid,
+                  chunks 1-3 have NO valid columns -- the only shape that exercises the
+                  `epi_ch >= my_c_nchunks` skip. Bit-exact on all three layouts.
+  520x264x136     small, few CTAs, residue on all axes
+
+Gains are LARGER on residue shapes (+8 to +18%) than on aligned ones (+7.4%) -- the epilogue is a
+bigger share of runtime when tiles are partially filled. 520x264x136 gains most, +18.5%.
+
+The 820/820 matters for a reason unrelated to chunking: the edits touched SHARED code every config
+compiles through (DERIVED_PIPE_DEPTH, STORE_BUF_BYTES, C_BOX_N), and making the previously-dead
+_LOAD_PIPE_DEPTH parameter real changed how EVERY config derives its depth. 820/820 says the change
+is inert for the 266 configs that do not opt in.
+
+### §H27z.65.5 THE MISTAKE: all of the above was measured against a config we do not ship
+
+Every number in §H27z.65.1-4 compares against Sm90Config_256x128x64_1x2_h. The 1.7B trainer does not
+run that. The 15 tier-1 pins (§H27z.55) use **_rs2** on 9 of 15 call sites, plus 192x192_1x2_v (2),
+128x256_1x2_v (1), 256x128_1x2_v (1). Raster swizzle reorders CTA->tile mapping and therefore changes
+L2 residency IN THE EPILOGUE -- the exact region being modified. +7.35% over _h was never a
+prediction of what pinning the chunked variant buys.
+
+This was avoidable. The pinned configs were established in §H27z.55 and re-confirmed in this
+session's own call-site table before the ablation started. Cost: the whole measurement had to be
+rebuilt against the real baselines (§H27z.65.6).
+
+### §H27z.65.6 First composition data -- and chunking is NOT a universal win
+
+Four sites measured against their REAL pinned baselines (n=1 each, from correctness runs -- these
+are DIRECTIONAL only, the median-of-3 run is queued):
+
+    call site      shape             lay | base cfg              base    chunked  delta  | %cuB
+    gate_up-fwd    16384x11264x2048  nn  | 256x128_1x2_h_rs2    651.16   695.27   +6.8%  | 85.1 -> 90.6
+    gate_up-dgrad  16384x2048x11264  nt  | 256x128_1x2_h_rs2    785.74   799.08   +1.7%  | 96.2 -> 97.9
+    lm_head-dgrad  16384x2048x50304  nt  | 256x128_1x2_h_rs2    796.59   810.97   +1.8%  | 97.0 -> 96.5
+    lm_head-wgrad  2048x50304x16384  tn  | 256x128_1x2_v        827.10   789.22   -4.6%  | 97.1 -> 93.9
+
+Two conclusions, both new:
+
+1. **rs2 and chunking COMPOSE.** They do not fight. gate_up-fwd, the shallow-K site, gains +6.8% on
+   top of rs2's own gain.
+2. **Chunking REGRESSES deep-K sites.** lm_head-wgrad at K=16384 loses 4.6%. This is consistent with
+   everything else observed: epilogue cost scales as 1/K, so at K=16384 the epilogue is a tiny
+   fraction of runtime and the per-chunk waits are pure overhead that the freed stage cannot repay.
+   The sites already sitting at 96-98% of cuBLAS are exactly the ones with nothing left to win.
+
+CONSEQUENCE FOR THE DISPATCHER: the answer is per-site, not global. Chunked variants must be pinned
+on the shallow-K call sites and NOT on the deep-K ones. tools/h27z65_bank_fault1.sh emits a per-site
+PIN/KEEP verdict for exactly this reason.
+
+### §H27z.65.7 Three harness/robustness defects found as side effects
+
+1. **TMA requires 16-byte-aligned global strides, and we do not check.** 4095x2047x1023 was chosen as
+   a "residue" shape -- every dimension odd, so at bf16 every candidate leading dimension (4094,
+   2046, 8190 bytes) is unaligned and `cuTensorMapEncodeTiled` returns invalid argument. ALL 267
+   configs failed it with maxRelErr exactly 1.0 (output all zeros). Odd dimensions are not tile
+   residue; they are TMA-illegal, a different and harder class.
+2. **Encode failure returns success with a zero-filled output.** The path prints
+   `[BluBridge SM90] cuTensorMapEncodeTiled: invalid argument (1)` and then exits 0 with C untouched.
+   A caller that does not scrape stdout -- BluTrain, for instance -- silently trains on zeros. This
+   is the failure class that survives every test suite: `grep -c FAIL` reads clean. NOT YET FIXED;
+   the encode result must propagate as an error and unaligned leading dimensions should be rejected
+   up front. Logged as an open item.
+3. **`make` does not build the test binary.** `all: lib` only. Worse, `make tests` pipes each compile
+   through `grep -v warning` and ends with `|| true`, so a compile failure is swallowed and a STALE
+   binary is left in place. Use `make build/test_bgemm_sm90_matrix` (the pattern rule), which fails
+   loudly.
+
+## §H27z.66 THE N-SPLIT CROSS-WARPGROUP OVERWRITE (2026-08-10)
+
+### §H27z.66.1 Symptom
+
+Combining chunking with the real pinned baselines produced one broken variant:
+
+    192x192x64_1x2_v_ep32s2  nn  16384x50304x2048  FAIL  maxRelErr 51984.32422
+    192x192x64_1x2_v_ep32s2  tn  2048x11264x16384  FAIL  maxRelErr 86230.58594
+
+Errors in the tens of thousands -- garbage output, not a tolerance miss. Every other chunked variant
+was bit-exact on the same run.
+
+### §H27z.66.2 Root cause
+
+`c_buf` is ONE buffer SHARED by both warpgroups, tiling the full BM*BN space between them. What keeps
+them apart depends entirely on how the tile is split:
+
+    SPLIT_M  (BM/64 even):  row0 = g*WG_MATOMS*64. WG0 writes c_buf rows 0..BM/2-1, WG1 rows
+                            BM/2..BM-1. One BM-tall slot serves both; they never share a byte.
+    N-split  (BM/64 odd):   row0 == 0 for BOTH. Each writes ALL BM rows and they differ only in
+                            COLUMN. The UNCHUNKED path keeps them apart by indexing c_buf with the
+                            GLOBAL chunk index (cbuf_ch = ch), and the two warpgroups own disjoint
+                            global chunk ranges.
+
+The chunked path replaced that global index with `epi_slot = epi_ch % EPI_STAGES` -- a WARPGROUP-LOCAL
+number. Under SPLIT_M that is harmless. Under an N-split both warpgroups collapse onto slots {0,1}
+and, sharing every row, overwrite each other at identical addresses. The store side (`sbuf_ch`) had
+the identical collapse.
+
+The pass/fail split is EXACTLY SPLIT_M -- a complete correlation, not a plausible story:
+
+    variant                  BM/64  SPLIT_M          result
+    256x128 rs2 / v            4    even -> M-split  PASS
+    128x256 v                  2    even -> M-split  PASS
+    192x192 v                  3    ODD  -> N-split  FAIL
+
+### §H27z.66.3 Why §H27z.64b did not catch it
+
+§H27z.64b already established that 192x192 is N-split with WGMMA_N=96. It drew the DIVISIBILITY
+conclusion from that fact ("EPI_TILE_N must divide WGMMA_N, so 192 is illegal, 32 is fine") and
+closed with "Stage 3 was never at risk". The premise was correct and present; the second consequence
+of the same fact -- that an N-split also means the two warpgroups SHARE every row of the store
+buffer -- was not drawn. Recorded because the failure was not missing information.
+
+There is a related trap in the C-store loop: a comment argues no cross-warpgroup barrier is needed
+"because the two warpgroups' [wg_ch_start, wg_ch_start+my_c_nchunks) ranges are DISJOINT by
+construction". That was true while cbuf_ch == ch. Chunking silently removed the premise the comment
+depends on. The bug was not a missing barrier -- it was an invariant deleted somewhere else.
+
+### §H27z.66.4 Fix
+
+Config gains EPI_WG_SLOTSETS: under an N-split each warpgroup gets its own set of EPI_STAGES slots;
+under SPLIT_M it is 1 and nothing changes.
+
+    static constexpr bool EPI_SPLIT_M     = (MATOMS % 2 == 0);           // == WGrid::SPLIT_M
+    static constexpr int  EPI_WG_SLOTSETS = EPI_SPLIT_M ? 1 : NUM_CONSUMER_WARPGROUPS;
+    STORE_BUF_BYTES = EPI_WG_SLOTSETS * EPI_STAGES * BM * EPI_TILE_N * 2;
+
+    const int epi_slot_wg = Config::EPI_SPLIT_M ? epi_slot : (g * Config::EPI_STAGES + epi_slot);
+    cbuf_ch = USE_CHUNKED ? epi_slot_wg : ch;          // write side
+    sbuf_ch = USE_CHUNKED ? epi_slot_wg : ch_global;   // store side, must match
+
+Config derives EPI_SPLIT_M from its own MATOMS because STORE_BUF_BYTES is needed before WGrid exists.
+A `static_assert(Config::EPI_SPLIT_M == SPLIT_M)` in WGrid pins them together -- if they ever drift,
+the buffer is sized for one layout and indexed for the other, which is this bug again.
+
+### §H27z.66.5 Proof the fix cannot regress the validated variants
+
+Argued AND proved. Under SPLIT_M, EPI_WG_SLOTSETS is a compile-time 1 and epi_slot_wg is a
+compile-time-resolved ternary yielding epi_slot -- so the codegen should be untouched. Verified
+rather than asserted: compiled HEAD and the fix locally with nvcc 13.0, dumped SASS for the
+already-validated 256x128 ep32s2 NN kernel from both objects and diffed.
+
+    old: 3072 instructions
+    new: 3072 instructions
+    IDENTICAL - zero codegen change
+
+The 820/820, 24/24 and 18/18 results therefore stand without re-running.
+
+### §H27z.66.6 EPI_TILE_N=32 does not pay on 192x192 -- ep16s2 does
+
+Carrying 32 over from the 256x128 result would have shipped a variant that buys only the overlap.
+With the N-split fix (EPI_WG_SLOTSETS=2):
+
+    STAGE_BYTES = (192+192)*64*2 = 49152      DYNAMIC_BUDGET = 231424
+    unchunked : 192*192*2    = 73728  ->  (231424-73728)/49152 = 3.21 -> 3 stages
+    ep32s2    : 2*2*192*32*2 = 49152  ->  (231424-49152)/49152 = 3.71 -> 3 stages   NO GAIN
+    ep16s2    : 2*2*192*16*2 = 24576  ->  (231424-24576)/49152 = 4.21 -> 4 stages   <-- pays
+
+16 is legal on all three counts: 16%8==0, WGMMA_N(96)%16==0, BN(192)%16==0. WGMMA_N=96 is not an
+assumption -- kWgmmaNCand is {256,176,168,144,128,112,96,64,32} and the N-split picker requires
+BN/wn >= 2, so 96 is the largest legal choice; the build confirms it.
+
+Both are registered so the run separates "overlap only" (ep32s2) from "overlap + 4th stage"
+(ep16s2) on this tile, the same way ep64s2 vs ep32s2 separated them on 256x128 -- rather than
+assuming the 256x128 answer transfers to a tile with a different split mode.
+
+### §H27z.66.7 Measurement-harness bug worth recording
+
+tools/h27z65_bank_fault1.sh initially matched verdict lines with the regex "  (PASS|FAIL|CRASH) ".
+The shape column is %-16s, so a 16-character shape FILLS the field and leaves ONE space, not two.
+That silently dropped exactly the six biggest call sites -- 16384x11264x2048, 16384x50304x2048,
+16384x2048x11264, 16384x2048x50304, 2048x11264x16384, 2048x50304x16384 -- reporting them as "no
+verdict" when they had passed. Now matched by FIELD ($4=="PASS"), verified against real output to
+reject the header ($4=="status"), the summary line ($4=="FAIL," -- comma), "ALL PASS - full SM90..."
+($4=="full"), "MATRIX TEST FAILED" and the encode-error line. Old regex caught 2 of 5 test lines;
+field match catches 5 of 5.
+
+Also: the script aborted the entire run on any correctness failure, which would have thrown away the
+measurement for eleven working sites because one variant was broken. A broken candidate now disables
+its own site only.
+
+## §H27z.67 POSITION ON THE ROADMAP (2026-08-10)
+
+The plan is four items. Where each stands:
+
+    1. depth-4 / free the pipeline stage (Fault 1)   IMPLEMENTED, PROVEN, NOT YET BANKED
+    2. Fault 2 -- stmatrix write path                 NOT STARTED
+    3. match cuBLAS's 6 variants across 21 sites      NOT STARTED
+    4. split-K                                        NOT STARTED
+
+Fault 1 is correct and fast but delivers ZERO to the trainer today: the chunked variants are
+registered configs, not dispatch-table rows, and the per-site PIN/KEEP verdicts are not yet
+measured (median-of-3 run queued for 2026-08-11). Trainer remains at 96.39% end to end,
+86.1% GEMM, 680 TFLOPS (§H27z.56).
+
+Immediate next step, one run: tools/h27z65_bank_fault1.sh -> per-site verdicts -> pin the winners
+into Bgemm_sm90_dispatch_table.h (RE-SORT, do not append: the table is binary-searched by lookup()
+and appended rows are silently unfindable, §H27z.55b) -> re-measure the trainer.
+
+Then Fault 2: the STS write path is 224,990 bank conflicts against cuBLAS's 5, and 2.11x the
+instruction count (§H27y.10). stmatrix / SM90_U32x4_STSM_N is the fix. It should be measured on top
+of the config we intend to SHIP, not on a baseline we do not use -- the §H27z.65.5 mistake, not
+repeated.
+
+Split-K stays last of the four. It fixes wave quantization on low-K shapes; this model's GEMMs are
+K=2048..50304, so it is needed for completeness but will not move the 1.7B number the way Fault 2
+will. Recorded as a deliberate ordering decision, not an omission.
+
+Open items carried forward:
+  - cuTensorMapEncodeTiled failure returns success with a zero-filled C (§H27z.65.7 item 2)
+  - BLAS_DIR vendoring: BluTrain compiles BluTrain/Tensor-Implementations/BluBridge-BLAS/src, not
+    the repo root. Must be synced before any end-to-end number means anything.
+  - STORE_BUF_BYTES = 0 under split-K would give split-K configs a free stage
+  - 256x128x64_1x2_h_sw64 unreachable from Cfg_nt
+  - fence-vs-barrier ordering: we do barrier->fence, CUTLASS/DeepGEMM do fence->barrier
+  - 131,072 pre-existing initcheck errors; 4 pre-existing compiler warnings
+
+## §H27z.71-73 FAULT 2 GRIP: it is NOT "add stmatrix", it is a LAYOUT change (2026-08-11)
+
+Q's instruction was full understanding before any code, nothing assumed without proof. Four
+independent probes later the answer is different from what §H27y.10 recorded, and the difference
+matters: adopting stmatrix on our current buffer would have bought exactly nothing.
+
+### §H27z.71 stmatrix semantics -- spec, then hardware
+
+PTX ISA 9.3 sec 9.7.15.5.16, verified locally (ptx_docs/ptx_isa_9.3.txt):
+  - `.x4`: threads 0-7 supply the eight ROW START addresses of matrix 0, 8-15 matrix 1, and so on.
+  - Data: "a group of four threads stores an entire row"; register r_m of EVERY thread carries
+    matrix m. So thread t holds row t/4, columns 2*(t%4) and 2*(t%4)+1.
+  - Row addresses must be 16-byte aligned. Requires sm_90 or higher.
+  - Two DIFFERENT groupings of the same 32 lanes: address by t/8, data by t/4. That is the part
+    prose alone does not make obvious, and Figure 107 is an image, so it was measured.
+
+examples/probe_stmatrix.cu -- one warp, unique code per (thread, register, half), addresses per the
+spec table, read the 16x16 grid back. Result: 0 unwritten, 0 mismatches of 256. Emits
+STSM.16.M88.4, the same opcode cuBLAS uses.
+
+CONSEQUENCE: the wgmma fp32 accumulator layout ALREADY matches. From wgmma_frag_rowcol,
+t = t0 + 4*t1 + 32*t2 and reg_idx = v0 + 2*v1 + 4*v2:
+    row = t1 + 8*v1 + 16*t2      col = 2*t0 + v0 + 8*v2
+so within a warp thread t holds row t/4, cols 2*(t%4) and +1 -- exactly stmatrix's fragment.
+NO REGISTER SHUFFLE IS NEEDED. The bf16x2 pairs the epilogue already packs go straight into r0..r3.
+
+### §H27z.72 stmatrix ALONE buys nothing -- the swizzle is the mechanism
+
+examples/probe_stsm_banks.cu, on the real geometry (128 rows x 32 cols bf16 = one warpgroup's half
+of a 256x128 tile through the ep32s2 buffer). Three variants, byte-identical output enforced before
+any timing is quoted:
+
+    variant                 conflicts/iter    time     vs A
+    A  STS,  linear              192         3.230 ms  1.00x
+    B  STSM, linear              192         3.217 ms  1.00x
+    C  STSM, XOR-swizzled         64         1.636 ms  1.97x
+
+B == A TO THE UNIT (3,840,000 both over 20k iterations) and to within 0.4% on time, despite B
+issuing 4x fewer store instructions. So this store is purely bank-conflict bound and the
+instruction count is invisible here.
+
+§H27y.10 framed the finding as "ours 144 STS / zero STSM vs cuBLAS 414 STSM" and concluded the
+instruction was the gap. IT IS NOT. The gap is the smem LAYOUT. Bank arithmetic, now confirmed by
+measurement:
+    linear, C_BOX_N=128 : row stride 256 B -> (row*64)%32 = 0        -> 32-way
+    linear, C_BOX_N=32  : row stride  64 B -> (row*16)%32 in {0,16}  -> 16-way
+    XOR-swizzled, 64 B rows                                          -> still 64 conflicts
+A 64-byte row is only 4 granules, so the XOR can take 4 values while an m8n8 store spans 8 rows;
+rows 0 and 4 collide whatever the xor. A conflict-free layout NEEDS a 128-byte row.
+
+CUTLASS corroborates the mechanism: sm90_get_epilogue_smem_swizzle_layout_atom() routes C/D through
+ss_smem_selector, the SAME swizzled-atom selector used for mainloop operands (SW128 -> SW64 -> SW32
+-> INTER by width). CUTLASS's cooperative EpilogueTileAuto picks tile_n = gcd(min(32,CTA_N),CTA_N)
+= 32, i.e. SW64 -- so CUTLASS is NOT the model to copy here; cuBLAS is wider.
+
+### §H27z.73 what cuBLAS actually does, decoded from its SASS
+
+sweep_results_cublas/sass/shape_99_M4096_N11008_K2048.sass, identical in all ~24 copies:
+
+    LOP3.LUT R169, R21, 0x7,  RZ, 0xc0    ; r = lane % 8          (row)
+    SHF.R.U32.HI R23, RZ, 0x3, R21        ; m = lane >> 3         (matrix / column block)
+    IMAD     R168, R169, 0x9, RZ          ; r * 9
+    LOP3.LUT R23,  R168, R23, RZ, 0x3c    ; (r*9) XOR m           0x3c IS XOR
+    IMAD.SHL R23,  R23, 0x10, RZ          ; * 16 bytes
+    STSM.16.M88.4 [R23+UR32], R24
+
+r*9 = r*8 + r, and r < 8 so the fields are disjoint: r*9 = (r*8) | r. Therefore
+
+    granule = row*8 + (row XOR m)      granule = 16 B, 8 granules per row = 128 B rows
+
+Three independent cross-checks that this reading is right:
+  1. The address range of that formula over r,m in 0..7 is granules 0..63 = 1024 B, and the SASS
+     warp stride is EXACTLY 0x400: `UIMAD.U32 UR32, UR26, 0x400, UR32` with UR26 = warp id.
+     The warp stride IS the tile size.
+  2. F2FP = 1656 = 414 * 4 EXACTLY -- every STSM.x4 consumes precisely four
+     F2FP.BF16.F32.PACK_AB results, confirming the 4-register grouping.
+  3. The base decodes to a real config: UMOV UR32, 0x30400 = 197,632 = 4*49,152 + 1,024, and
+     (192+192)*64*2 = 49,152. A 4-stage 192x192x64 mainloop plus 1 KB of mbarriers. The address
+     map reconstructs the kernel, so it is not a coincidental fit.
+Warpgroup stride is 0x2000 = 8192 = 2 slots x 4 warps x 1024, i.e. DOUBLE-BUFFERED.
+
+### §H27z.73b SWIZZLE_128B is that permutation -- measured
+
+cuda.h documents SWIZZLE_128B only as "Swizzle 16B chunks within 128B span" with boxDim[0]*elemSize
+<= 128 (so <= 64 bf16 -- exactly cuBLAS's width). That is consistent with, but does not pin, the
+function. examples/probe_tma_swizzle.cu fills smem LINEARLY (sm[i]=i), TMA-stores it with
+SWIZZLE_128B, and reads gmem -- so gmem[r][c] holds the smem index the copy engine fetched:
+
+    row 0 -> g^0    row 1 -> g^1    row 2 -> g^2   ...   row 7 -> g^7
+
+0 mismatches of 512 elements against (r*8 + (r XOR c/8))*8 + c%8. Part 2 writes smem THROUGH that
+formula and requires gmem to come back logical: 0 wrong of 512. So STSM can write it and TMA reads
+it back correctly.
+
+### THE DESIGN THIS PROVES, and what it costs
+
+                              ours (192x192)      cuBLAS (192x192)
+    epilogue row              32 bf16 = 64 B      64 bf16 = 128 B
+    swizzle                   none                XOR by row
+    buffer shape              BM = 192 rows       8 rows PER WARP
+    epilogue smem             73,728 B            16,384 B
+    mainloop stages           3                   4
+    bank conflicts            192                 5
+
+cuBLAS gets a WIDER row AND a SMALLER buffer, because it stages 8 rows per warp instead of all BM.
+Budget check for us: 4 stages of 192x192x64 = 196,608 against a 231,424 budget leaves 34,816, and a
+cuBLAS-shaped epilogue is 8*128*4 warps*2 wg*2 slots = 16,384. It FITS WITH ROOM, on both the
+192x192 and 256x128 families (same STAGE_BYTES). So this layout delivers the 4th stage AND
+conflict-free stores AND uses less shared memory than we use today -- strictly better than what
+§H27z.63's EPI_TILE_N=32 achieved. EPI_TILE_N=32 solved the right problem the wrong way.
+
+CORRECTION TO CARRY FORWARD. §H27z.71 concluded "8 consecutive accumulator registers -> one
+stmatrix.x4". That holds for the 16 rows x 16 cols arrangement probe 1 used. cuBLAS uses 8 rows x
+32 cols -- its four matrices are column blocks m=0..3 at rows 0-7, so v2 = m and the registers are
+    r0..r3 = acc[2*v1 + 16j + {0,4,8,12}]   (each paired with +1 for v0)
+stride 4, not consecutive. Still no shuffle. Adopting cuBLAS's tile shape REQUIRES cuBLAS's
+grouping; mixing the two silently transposes each 32-column block.
+
+STILL UNKNOWN, and cheap to settle before coding: the probe used an 8-row box. The XOR is over 3
+bits, so a taller box presumably repeats with period 8 (granule = row*8 + ((row%8) XOR g)), which
+would let one TMA store cover more than 8 rows and cut the store count. Not tested, therefore not
+assumed -- extend probe_tma_swizzle.cu to R=16 before relying on it.
+
+### §H27z.73c EXHAUSTIVE PROBE RESULTS -- and three things I had wrong (2026-08-11)
+
+Q's instruction: not one thing left unsure, test every vertical. examples/probe_tma_swizzle.cu,
+nine tests, ONE PROCESS EACH (an illegal access is a sticky CUDA error -- the first run had test 2
+walk off the end of smem and every later test inherited the dead context, hiding all real results).
+
+    test                                                       result
+    1  SWIZZLE_128B permutation at box height 8/16/32/64        PASS  0/512, 0/1024, 0/2048, 0/4096
+    2  narrow box 32x8 under SWIZZLE_128B                       PASS  0/256
+    3  narrow box 16x8 under SWIZZLE_128B                       PASS  0/128
+    4  SWIZZLE_64B  box 32x8                                    formula corrected (see below)
+    5  SWIZZLE_32B  box 16x8                                    formula corrected (see below)
+    6  SWIZZLE_NONE control                                     linear (harness compared it to the
+                                                                swizzled prediction -- my bug)
+    7  rank-3 descriptor (batch axis) + SWIZZLE_128B            PASS  0/512
+    8  STSM -> swizzled smem -> TMA -> gmem                     PASS  0/512   <-- the real path
+    9  residue: box 64x8 over a 40x5 matrix                     PASS  0/200 in-bounds
+
+BANK CONFLICTS on the real path (ncu, same metric as §H27y.10's 224,990):
+    STS  through the swizzle : 0
+    STSM through the swizzle : 0
+against 192/iteration on our current LINEAR layout, and cuBLAS's 5. The swizzled layout is
+conflict-free, not merely as good as cuBLAS.
+
+THREE CORRECTIONS.
+
+(1) "stmatrix alone buys nothing" (§H27z.72) is true only on a LINEAR layout. Test 8 timing:
+        STS  through swizzle : 0.570 ms
+        STSM through swizzle : 0.295 ms   1.93x
+    On the linear buffer STSM was worth 0% (192 vs 192 conflicts, 3.230 vs 3.217 ms). On the
+    swizzled buffer it is worth 1.93x. Once the swizzle removes the conflicts the bottleneck moves
+    to instruction issue, and STSM issues 4x fewer stores. CORRECT ORDER: swizzle first, THEN
+    stmatrix. Either alone leaves most of the win on the table.
+
+(2) The SW64/SW32 permutations are NOT row % SPAN. Measured:
+        SW64, 32x8 : rows 0,1 -> g^0 ; rows 2,3 -> g^1 ; rows 4,5 -> g^2 ; rows 6,7 -> g^3
+        SW32, 16x8 : rows 0-3 -> g^0 ; rows 4-7 -> g^1
+    i.e. SW64 xors by (row>>1)&3 and SW32 by (row>>2)&1. This reconciles with CUTLASS's
+    Swizzle<B,M,S>: with M=3 (16 B granule at bf16) and S=3 the hardware xors the B bits at
+    offset-bit 6 into the B bits at offset-bit 3, and the row's bit position moves with the row
+    width. UNIFIED RULE, matching all three modes:
+        granule ^= (row >> (3 - log2(SPAN))) & (SPAN - 1)          SPAN = granules per row
+    SPAN 8 -> row&7 ; SPAN 4 -> (row>>1)&3 ; SPAN 2 -> (row>>2)&1.
+
+(3) The 8-row period holds at EVERY box height. Rows 8-11 reproduce rows 0-3 exactly at R=16, and
+    R=32/64 pass too. So the epilogue may TMA out 64 rows in ONE store; it does not have to issue
+    one store per 8 rows. That removes the concern that cuBLAS's tile shape would multiply our
+    store count.
+
+CONSTRAINT FOUND. A box narrower than the swizzle span is legal but the smem row STAYS the full
+span: a 32-column box under SWIZZLE_128B still occupies a 128 B row, using 4 of 8 granules, so half
+the shared memory is wasted. Relevant to 192x192, whose WGMMA_N is 96 -- it needs SW64, or padding
+to 128 B, not a naive SW128.
+
+FAULT 2 IS NOW FULLY SPECIFIED. Every link measured, nothing inferred:
+    stmatrix semantics                     PTX spec + hardware probe   §H27z.71
+    accumulator layout matches, no shuffle probe + wgmma_frag_rowcol    §H27z.71
+    swizzle is the mechanism, not STSM     192/192/64 measured          §H27z.72
+    cuBLAS's layout row*8+(row^g)          decoded from their SASS      §H27z.73
+    SWIZZLE_128B == that permutation       0/512 both directions        §H27z.73b
+    period, narrow box, 64B/32B, rank-3,
+    residue, STSM->TMA, 0 conflicts        nine tests above             §H27z.73c
+
+## §H27z.82 THE REAL GAP AT lm_head-fwd IS L2 REUSE AND THE TILE SCHEDULER, NOT THE EPILOGUE (2026-08-11)
+
+Two days of epilogue work at this site produced between -18.7% and +0.4%. This section is why.
+
+### §H27z.82.1 Measured, ours vs cuBLAS, SAME shape and SAME harness
+
+16384x50304x2048 nn, ncu, our 192x192x64_1x2_v pin against the nvjet kernel from the same run:
+
+    metric                ours        cuBLAS
+    gpu__time_duration    5.24 ms     4.64 ms
+    dram__bytes          10.12 GB     4.16 GB     <- 2.43x MORE
+    lts__t_sector_hit     66.23 %     87.37 %
+    tensor active         81.64 %     91.87 %
+    smsp__inst_executed   1.057 B     486 M       <- 2.18x MORE
+    waves/SM              1           1
+
+Mandatory traffic is A 67 MB + B 206 MB + C 1648 MB = 1.92 GB, so cuBLAS moves 2.2x the minimum
+and we move 5.3x. Removing C's unavoidable write, A/B re-read is 2.51 GB for cuBLAS against
+8.47 GB for us, from a naive no-reuse figure of ~35 GB: they recover 93% of the available reuse,
+we recover 76%. At 10.12 GB over ~3 TB/s that is ~3.4 ms of a 5.24 ms kernel spent on memory,
+while cuBLAS at 4.16 GB is compute-bound. THIS SITE IS L2-LIMITED, NOT EPILOGUE-LIMITED, which is
+the whole reason every epilogue change measured between -18.7% and +0.4% here.
+
+### §H27z.82.2 AND BANK CONFLICTS ARE NOT THE DIFFERENTIATOR -- §H27y.10 OVER-GENERALISED
+
+Same shape, same harness:
+    ours (192x192_1x2_v_swz64r64)     18,813 conflicts    6.62 ms
+    cuBLAS (192x192_64x3_2x1_v_coopB) 2,427,881 conflicts 4.62 ms
+cuBLAS has 129x MORE bank conflicts than us and is 1.43x FASTER. §H27y.10's "224,990 vs 5" was a
+DIFFERENT kernel at a DIFFERENT shape; generalising it drove the entire Fault-2 line, and that was
+a mistake. Bank conflicts cost real but small time (measured -4.2% at fixed geometry, §H27z.74) and
+are not what separates us from cuBLAS.
+
+### §H27z.82.3 cuBLAS's TILE SCHEDULER, reverse-engineered from its SASS
+
+sweep_results_cublas/sass/shape_102_M4096_N13696_K5120.sass,
+nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coopB_TNN, first ~120 instructions:
+
+    S2UR UR5, SR_CTAID.Y                  ; linear cluster index
+    UIMAD.WIDE.U32 UR16, UR5, UR15, URZ   ; 64-bit multiply by a MAGIC number
+    USHF.R.U32     UR11, UR17, UR15, URZ  ; take the HIGH word, shift
+    UIMAD.U32      UR14, UR11, UR15, UR5  ; n - q*d  (negated divisor)
+
+That is reciprocal ("magic number") division, and the sequence appears at least FOUR times chained,
+i.e. a >=4-level div/mod decomposition of the CTA index -- grouped/swizzled rasterization.
+
+THE DIVISORS ARE KERNEL PARAMETERS. Every one is loaded from constant memory:
+    c[0x0][0x340] [0x344] [0x348] [0x34c]      c[0x0][0x218] [0x21c] [0x220] [0x224]
+    c[0x0][0x228] [0x22c] [0x230] [0x234]      c[0x0][0x238] [0x23c]
+one {divisor, magic, shift} triple per stage. So cuBLAS computes its traversal parameters ON THE
+HOST, PER LAUNCH, and retunes the tile order for every (M,N,K). Zero division instructions on the
+device.
+
+### §H27z.82.4 OURS: naive runtime division, in the per-tile loop
+
+decode_mega_tile() uses plain `/` and `%` on RUNTIME divisors (mega_grid_m/n, per_grp, gsize).
+SASS proof -- the float-reciprocal division sequence is present in both paths:
+
+    kernel                      I2F  F2I  MUFU
+    192x192_1x2_v    (SW=0)      5    5    5
+    192x192_1x2_v_rs2 (SW=1)     6    6    6
+
+I2F -> MUFU.RCP -> F2I is what nvcc emits for a runtime integer divide, ~15-20 instructions each,
+and we pay 5-6 of them PER TILE inside the persistent loop. cuBLAS pays ~3 instructions per div/mod.
+
+WORSE, our grouped path is more expensive than the ungrouped one BEFORE delivering any benefit:
+    int gsize = slow_ex - group*S; if (gsize > S) gsize = S; if (gsize < 1) gsize = 1;
+    slow = group*S + (idx % gsize);   fast = idx / gsize;
+gsize is DATA-DEPENDENT (clamped per group), so its divisor changes every iteration and a magic
+number cannot be precomputed for it even in principle -- which is why SW=1 emits SIX divisions
+against SW=0's five. cuBLAS avoids this entirely by choosing a group size host-side that divides
+evenly, so nothing needs clamping.
+
+### §H27z.82.5 MANDATORY CHECK -- applies to every variant, now and future
+
+decode_mega_tile is a SINGLE SHARED template function; every config calls it, so this is one fix,
+not per-variant work. Until it is done, and for any future scheduler/index code:
+
+  * NO RUNTIME `/` OR `%` IN A PER-TILE OR PER-ITERATION PATH. A runtime divisor compiles to
+    I2F/MUFU.RCP/F2I. Verify with:
+        cuobjdump -sass <obj> | grep -c "MUFU"     # must be 0 in the tile loop
+  * Divisors that depend on the SHAPE must be turned into host-computed {divisor, magic, shift}
+    triples and passed as kernel parameters -- the cuBLAS pattern above.
+  * Divisors that depend on LOOP STATE (our gsize) are a design error: choose a decomposition
+    whose divisors are loop-invariant, as cuBLAS does.
+  * Compile-time constant divisors are fine -- ptxas turns those into shifts already.
+
+NOT YET DONE. Recorded here so it is a checked property rather than something rediscovered.
+
+---
+
+## §H27z.83 RECIPROCAL DIVISION IN THE TILE DECODE -- host-built magic numbers, MUFU 6 -> 0 (2026-08-11)
+
+WHY THIS, AND WHY IT IS NOT "just fewer instructions". §H27z.82 left one hypothesis standing after
+DRAM, L2, bank conflicts, tile shape and the epilogue were all measured and eliminated. The
+instruction mix against cuBLAS's 192x192 kernel on the same shape:
+
+```
+                   MUFU   I2F   F2I    IMAD(vector)  UIMAD(uniform)   uniform share
+ours                 6     6     6         388             63             17.6 %
+cuBLAS               0     0     0         414           1702             37.9 %
+```
+
+cuBLAS issues ~4x more integer multiply-adds in absolute terms and is still faster, so the cost is
+not the arithmetic -- it is WHICH DATAPATH the arithmetic runs on. nvcc lowers a RUNTIME integer
+divide to `I2F -> MUFU.RCP -> F2I`, and MUFU has no uniform-datapath form. One runtime divide
+therefore pins the tile index, and everything derived from it, to the VECTOR datapath where it
+competes with HGMMA for issue slots. Our 113 `R2UR` instructions are the visible symptom: values
+computed on the vector path being shuttled back into uniform registers.
+
+WHERE THE 6 CAME FROM. Exactly three runtime divisors existed, each reached from two sites
+(producer warpgroup + consumer warpgroup), and nvcc CSEs each `/` + `%` pair into one reciprocal:
+
+| divisor | expression | sites | reciprocals |
+|---|---|---|---|
+| `mega_grid_m * mega_grid_n` | `task_id % / /` -> (batch, mega_tile) | 2 | 2 |
+| `per_grp = S * fast_ex` | `mega_tile / per_grp` -> group | 2 | 2 |
+| `gsize` | `idx % gsize`, `idx / gsize` | 2 | 2 |
+
+= 6, which is exactly what ncu counted. Every OTHER `/` and `%` in the tile loop divides by a
+COMPILE-TIME constant (`CLUSTER_M`, `CLUSTER_SIZE`, `LOAD_PIPE_DEPTH`, ...); ptxas already turns
+those into shifts or its own magic numbers and they never produce MUFU.
+
+THE FIX, AND WHY IT IS HOST-SIDE. Algorithm is CUTLASS `fast_math.h find_divisor()/fast_divmod()`
+verbatim (`find_log2` rounds UP, which is what keeps `mul` inside 32 bits). It is built on the HOST
+and passed as a kernel parameter, NOT computed on device, for two reasons:
+  * the magic number needs a 64-bit divide, which nvcc lowers to a long software routine -- building
+    it on device would trade 6 MUFU for something worse;
+  * cuBLAS's `ULDC` instructions are loads from the constant/param bank, i.e. cuBLAS already
+    received these constants from its host side. CUTLASS does the same -- `FastDivmod` is always
+    host-constructed. So host-side is the pattern the SASS evidence actually points at.
+
+Two divisors then disappear entirely rather than becoming magic numbers:
+  * `group = mega_tile / (S * fast_ex) == (mega_tile / fast_ex) >> SW`, because integer division
+    composes for non-negative operands and `S` is a compile-time power of two. One reciprocal
+    (`md.fast`) now serves both the SW==0 and SW>0 paths.
+  * `gsize` takes exactly TWO values over a whole launch: `S` for every full raster-swizzle group,
+    and a fixed tail for the last one. `gsize == S` is the common case and reduces to a mask and a
+    shift for free; the tail is one more host-built reciprocal (`md.tail`).
+
+PROVEN BEFORE ANY GPU RUN. Two independent local proofs, no H200 needed:
+
+1. EXHAUSTIVE EQUIVALENCE, old decode vs new, over RASTER {0,1} x SW {0..4} x cluster
+   {1x1,1x2,2x1,2x2} x grid shapes x every tile: **128,690,120 combinations, 0 mismatches**, and the
+   task_id split matched at every point. Two claims the patch relies on were audited rather than
+   assumed: the tail path is genuinely exercised (7.9M tiles) and `gsize` equalled `md.tail` every
+   time, and the old `if (gsize < 1) gsize = 1;` clamp NEVER fired -- it was dead code, so dropping
+   it changes nothing.
+
+2. SASS DIFF, sm_90a, same flags as the Makefile, whole NN variants TU (292 kernels):
+
+```
+opcode      BEFORE     AFTER     delta
+MUFU          1298         0     -1298      <- primary criterion
+I2F           1298         0     -1298
+F2I           1298         0     -1298
+ULDC          3423      6241     +2818      <- magic numbers now arrive from the param bank
+IMAD         75851     67853     -7998
+UIADD3       33971     30624     -3347
+R2UR         20083     17609     -2474      <- fewer vector->uniform shuttles
+total instr 601952    575064    -26888  (-4.5 %)
+```
+
+   Per-kernel MUFU before was {4: 170 kernels, 5: 106, 6: 10, 7: 4, 0: 2}; after it is **0 for all
+   292**. The 6-MUFU group is the `rs8` class ncu measured, so this ties directly to §H27z.82. The
+   two `splitk_reduce` kernels are BYTE-IDENTICAL before and after (3016 SASS lines each) -- they
+   never decode tiles, and confirm no collateral change. TN, NT and the dispatcher TUs also build
+   clean at 0 MUFU.
+
+WHAT IS NOT YET PROVEN, and must not be quoted until measured on the H200: the DYNAMIC uniform
+share (17.6% -> ?), tensor active (81.64% -> ?), kernel duration, and numerical correctness of the
+267-config matrix. Static counts prove the division is gone; they do NOT prove the datapath
+actually moved or that it got faster. Validation order stays: MUFU, then uniform share, then tensor
+active, then duration -- duration last.
+
+SCOPE. `decode_mega_tile` is one shared function, so the change lands on every SM90 variant at
+once; only the 3 divisors above and one launcher line were touched. **SM103 (Blackwell) still
+carries the same naive pattern** -- 39 sites across `Bgemm_sm103_cluster_template.cuh` (10),
+`Bgemm_sm103_bf16_NN_cluster.cu` (11), `Bgemm_sm103_bf16_TN_cluster.cu` (9) and
+`Bgemm_sm103_bf16_NT_cluster.cu` (9), in a separate template with a different shape
+(`mn_tile % grid_n`, `new_tile_idx % total_mn_tiles`). NOT changed here: it needs B300 validation,
+and this campaign is H200. Recorded as an open item, not silently skipped.
+
+MANDATORY CHECK FOR EVERY NEW VARIANT (per the standing rule): any new kernel must have
+`cuobjdump -sass <obj> | grep -c MUFU` == 0. A non-zero count means a runtime integer divide leaked
+into the tile path and pinned it to the vector datapath.
