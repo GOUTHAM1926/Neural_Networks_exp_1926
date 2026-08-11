@@ -13419,11 +13419,60 @@ total instr 601952    575064    -26888  (-4.5 %)
    never decode tiles, and confirm no collateral change. TN, NT and the dispatcher TUs also build
    clean at 0 MUFU.
 
-WHAT IS NOT YET PROVEN, and must not be quoted until measured on the H200: the DYNAMIC uniform
-share (17.6% -> ?), tensor active (81.64% -> ?), kernel duration, and numerical correctness of the
-267-config matrix. Static counts prove the division is gone; they do NOT prove the datapath
-actually moved or that it got faster. Validation order stays: MUFU, then uniform share, then tensor
-active, then duration -- duration last.
+### MEASURED ON H200 (2026-08-11) -- HYPOTHESIS CONFIRMED
+
+Validation ran in the stated order, duration last.
+
+**1. MUFU gate, shipped library.** Scoped to the SM90 GEMM kernels, because libmyblas.so also
+contains FP32 SM89/SM86 kernels whose MUFU are legitimate float reciprocals (an unscoped
+`grep -c MUFU` prints 4698 and reads as a failure):
+
+    sm90 gemm kernels : 889      MUFU in them : 0      MUFU elsewhere : 4698 (expected)
+
+**2. Correctness.** 4128 PASS, and EVERY non-split-K case had maxRelErr EXACTLY 0.00000 -- not one
+config anywhere showed even rounding drift, over four complete shapes (512x512x256, 1024x1024x512,
+2048x2048x1024, 1024x1024x256 batched) x 877 configs, covering every cluster shape (1x2, 2x1, 2x2,
+1x4, 4x1, 2x4, 4x2) and every raster swizzle (rs2/rs4/rs8) across all three layouts. Those rows ARE
+the decode. Also 0.00000 at full 16384x2048x5632 scale.
+
+**3. Tensor active -- the deciding metric.** `192x192x64_1x2_v_rs8` on `16384x2048x5632 nn`,
+10 kernel instances:
+
+| | before (§H27z.82) | after | cuBLAS |
+|---|---|---|---|
+| tensor active | 81.64 % | **92.85 %** (min 92.61, max 92.97) | 91.87 % |
+
+**+11.21 points, and ~1 point ABOVE cuBLAS.** The predicted chain held exactly: runtime divide ->
+MUFU -> tile index pinned to the vector datapath -> contends with HGMMA for issue slots. Remove the
+divide and the contention goes.
+
+A caution recorded before the run, now resolved: the STATIC aggregate uniform share barely moved
+(10.79% -> 11.16% over the whole NN TU). That aggregate was diluted across 292 kernels of which
+most are not rs8; the dynamic per-kernel measurement is what carries the signal. Static instruction
+counts were the right gate for "is the division gone" and the WRONG instrument for "did the
+datapath move".
+
+**4. Duration -- NOT yet measured.** `5.24 ms x (81.64/92.85) = 4.61 ms` against cuBLAS's measured
+4.64 ms is a PROJECTION from the occupancy ratio, not a measurement, and is not to be quoted as a
+result. The TFLOPS printed under ncu (1.86) is meaningless -- kernel replay destroys timing. A
+clean timed run on an idle GPU, then the trainer end-to-end, are the outstanding steps.
+
+### PRE-EXISTING FAILURES SURFACED BY THIS SWEEP -- neither caused by this change
+
+  * **128x112 tile aborts on BATCHED shapes**, `unspecified launch failure`. §H27z.44 C2 already
+    lists 128x112 2x2/1x4 as known-broken; this sweep adds **2x4_v and 2x4_h** at `1024x1024x256b`
+    and **1x2_v** at `520x1032x264b` (the §H27y.18 M-residue batched shape). Deterministic in the
+    FAMILY, not in which member trips: successive runs failed on 1x4_h, then 2x4_v, then 2x4_h,
+    then 1x2_v -- because each run put the previous one on the skip list. A methodological note
+    worth keeping: progressively skip-listing a failing config family creates a false impression of
+    randomness. 128x112 has zero dispatcher value (median rank 168th), so this is a
+    library-correctness item, not a blocker.
+  * **`128x128x64_2x1_v_sk8` LAUNCHERR** at `1024x1024x512 tn`, after passing 4x earlier in the
+    same run. Unresolved; the §H27y.18 producer tail was explicitly NOT claimed closed (cuBLAS has
+    a second UCGABAR_ARV/WAIT pair we lack). Open item.
+
+Neither touches decode_mega_tile: sk2/sk4 share the identical signature, the identical mega_div and
+the identical decode, and passed on the same shape and layout moments before.
 
 SCOPE. `decode_mega_tile` is one shared function, so the change lands on every SM90 variant at
 once; only the 3 divisors above and one launcher line were touched. **SM103 (Blackwell) still
