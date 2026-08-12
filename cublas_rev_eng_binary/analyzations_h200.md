@@ -13887,7 +13887,119 @@ manipulate-and-observe control.
                              not a pure direction, so the original question is malformed. And it
                              has ZERO measured effect on duration here, so it gates nothing.
 
+### §H27z.89b WHAT OUR h/v PHYSICALLY ARE -- and why we must NOT change them
+
+The raster name-mapping is unanswerable, but the practical question behind it ("are we using the
+right raster?") IS answerable, and the answer is yes.
+
+**Our letters, verified against hardware counters rather than the source comment.** Hypothesis from
+the definition at the tile-decode site, tested on the 56 h27z88 captures:
+
+    v = M-fastest : reuses B down a column, RE-READS A once per n-column -> cheap when A is SMALL
+    h = N-fastest : reuses A across a row,  RE-READS B once per m-row    -> cheap when B is SMALL
+
+Prediction "the winner is whichever re-reads the smaller operand" holds on **12 of 12 shapes where
+the two rasters differ**. The other 2 (2048x512x16384, 16384x512x2048) measured v == h EXACTLY
+(84/84 and 71/71 MB, both at ~1.00x minimum) -- ties where the whole working set fits, not
+counterexamples. Examples: 2048x11264x16384 has A=67MB B=369MB -> v wins 707 vs 2,030; 16384x2048x2048
+has A=67MB B=8MB -> h wins 78 vs 283.
+
+**cuBLAS's letter is NOT the same kind of object** and cannot be mapped onto ours: §H27z.88 proved
+its walk is GROUPED (below both pure-walk bounds on 6 shapes; 1.00x minimum traffic on four). A
+pure-direction label and a grouped-walk label do not correspond.
+
+**DECISION: change nothing.** Our dispatcher's raster choice already matches the physical rule on
+13 of 13 shapes where the raster appears in the config name -- and it FLIPS correctly, picking v on
+exactly the three shapes where A is the smaller operand (16384x50304x2048 nn, 2048x11264x16384 tn,
+2048x50304x16384 tn) and h on the other ten. Those pins came from measured sweeps; the tables
+independently rediscovered the physics without anyone deriving it. Re-labelling our v/h to chase
+cuBLAS's naming would copy a label for a mechanism we do not share and would break 13 correct pins
+for zero gain.
+
+**The one real gap that remains here:** grouped rasterization coverage. We own `rsN` on only two
+config families (256x128_1x2_h, 192x192_1x2_v) and the dispatcher already uses `_rs2` on 9 of 15
+sites. Porting it wider has NO PROVEN VALUE yet -- §H27z.89 showed duration flat across rs2/4/8/16
+on both shapes tested. It would need a shape where memory actually binds, and none has been found.
+
 ### NEXT
 
 The compute path at gate_up-fwd, where tile, stages and memory are now all matched: instruction
 mix and warp-stall reasons, ours vs nvjet, same process, same shape.
+
+---
+
+## §H27z.90 cuBLAS's TILE ORDER IS NOT OBSERVABLE ON THIS STACK -- proven, with a positive control (2026-08-12)
+
+Closing the last open field of the mapping (raster) the only way that would have been exact: read
+cuBLAS's tile visitation order directly instead of inferring it. Both available routes are dead,
+each for a specific and verifiable reason. Recorded so nobody re-attempts this.
+
+### ROUTE 1 -- NVBit: BLOCKED BY THE DRIVER
+
+Requirements, from the NVBit README: SM <= 12.1 (sm_90 fine), CUDA >= 12.0 (fine), **CUDA driver
+version <= 575.xx**. Every Verda box is on **580.126.09** -- five branches past the ceiling. It is
+a MAXIMUM not a minimum because NVBit patches undocumented driver internals; newer drivers break
+it. Latest release is 1.8 (Apr 2025) and the ceiling has not moved. Running it out of spec would
+forfeit the only reason to use it (certainty), so it was not attempted.
+
+### ROUTE 2 -- Compute Sanitizer public API: TOOL WORKS, GEMM IS INVISIBLE TO IT
+
+The supported equivalent, and better on paper: ships INSIDE the CUDA toolkit so it is version
+matched to the driver, and is Hopper-aware (TMA, wgmma, cluster barriers, DSMEM). A full tracer was
+built (tools/sanitizer_tma_trace): device patch + injection library + decoder.
+
+    instruction 3  GLOBAL_MEMORY_ACCESS      verify_kernel      -> 29,705 records (2.6 MB written)
+                                             bgemm_sm90_kernel  ->      0
+                                             nvjet_sm90_tst_... ->      0
+    instruction 35 BULK_COPY_SHARED_TO_GLOBAL  all three        ->      0
+    instruction 14 MEMCPY_ASYNC                all three        ->      0
+
+**verify_kernel is the positive control.** An ordinary CUDA kernel in the same process, same run,
+yielded 29,705 records. So injection, patch loading, per-context patching, callback data, the
+device buffer, the drain and the file write are ALL functional. The zeros are not a broken tool.
+
+**Root cause.** Both GEMMs do 100% of their global traffic through TMA *tensor* copies
+(`cp.async.bulk.tensor.2d.shared::cluster.global.tile`). That instruction appears in NONE of the 40
+`Sanitizer_InstructionId` values. The nearest, `SANITIZER_INSTRUCTION_BULK_COPY_GLOBAL_TO_SHARED`
+(30), is documented at sanitizer_patching.h:635 as `cp.async.bulk.shared::cluster.global` -- the
+NON-tensor form. There is no tensor-copy patch point.
+
+=> On sm_90 with CUDA 13 / driver 580, no supported instrumentation can observe a TMA-based GEMM's
+   operand fetches. This is a property of the tool set, not of our code.
+
+### SIX REAL DEFECTS FOUND WHILE GETTING THERE -- all in the tool, all recorded in-source
+
+  1. static-init-order crash: `__attribute__((constructor))` ran before the global std::string
+     objects were constructed -> segfault in std::string::_M_replace during dlopen. Backtrace named
+     it exactly. Fix: no constructor (the driver calls InitializeInjection itself after dlopen) and
+     POD globals only.
+  2. **--compile-as-tools-patch is MANDATORY** (API guide, "Writing a Patch"). Building the patch as
+     ordinary device code produced a fatbin that CONTAINED blublas_tma_cb -- cuobjdump even printed
+     `Function : blublas_tma_cb` -- but injecting it corrupted the patched kernel and crashed the
+     driver inside cuInit. **A symbol being present is NOT evidence the patch is valid.** An earlier
+     "-rdc=true" fix was treating the symptom of the missing flag.
+  3. patches are PER-CONTEXT: calling sanitizerAddPatchesFromFile on every module load (a GEMM run
+     loads many) is undefined per the header, and was the second driver crash.
+  4. every SanitizerResult was unchecked -- silent failure looked identical to "no data".
+  5. an async H2D copy sourced from a STACK local whose lifetime ended immediately.
+  6. drain relied on SYNCHRONIZE callbacks the harness never raised; needs LAUNCH_END + atexit.
+
+The tool is left in the tree in working order. It CAN trace any non-TMA kernel, which may be useful
+later (the reduce kernels, elementwise, attention paths).
+
+### WHAT THIS MEANS FOR THE RASTER QUESTION -- closed as unobtainable, and it does not matter
+
+    proven      cuBLAS does NOT do a pure walk (below both pure-walk bounds on 6 shapes, §H27z.88)
+    proven      its memory fingerprint matches GROUPED rasterisation at group ~4-8 (§H27z.89)
+    proven      our v = M-fastest re-reading A, our h = N-fastest re-reading B (12/12, §H27z.89b)
+    proven      our dispatcher already picks the physically optimal raster on 13 of 13 shapes
+    proven      raster has ZERO measured effect on duration (spread 0.9% and 0.5% across rs2/4/8/16)
+    UNOBTAINABLE  the exact group size and orientation of cuBLAS's walk
+
+The remaining unknown is a labelling detail with no performance consequence, and the two tools that
+could close it are respectively blocked by a driver ceiling and by a missing patch point. Stop here.
+
+### NEXT
+
+The compute path at gate_up-fwd, where tile (192x192), stage count (both 3) and memory (ours BETTER
+than cuBLAS: 431 vs 538 MB, 89.6% vs 84.1% L2) are all matched and we are still 13% slower.
