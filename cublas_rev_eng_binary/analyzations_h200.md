@@ -13639,3 +13639,121 @@ epilogue, and the uniform datapath. On DRAM and L2 we are actually AHEAD of cuBL
 Next measurement is named in §H27z.83: one ncu capture of our kernel and the nvjet kernel from the
 SAME process, to get a current cuBLAS tensor-active number and split the remaining gap into
 "pipe idle more" versus "pipe less productive per active cycle".
+
+---
+
+## §H27z.86 THE cuBLAS->OURS MAPPING, FINALLY PROVEN -- and it flips the answer (2026-08-12)
+
+Settles the question §H27z.58 left open and §H27y.25 was written for. Two claims existed IN THE
+SAME TREE, in direct contradiction:
+
+    [A] tools/h27z85_step3.sh:20-23  "cuBLAS MxN == our NxM, cluster label unchanged"
+    [B] Bgemm_sm90_warpspecialized_template.cuh:677
+        "Cluster 2x1 + raster v is cuBLAS's 1x2_h translated into our coordinates (§H27z.59 swap)"
+
+**[B] IS CORRECT. [A] WAS MINE AND IT WAS WRONG.**
+
+### WHY BOTH EARLIER "PROOFS" WERE WORTHLESS -- the circularity trap
+
+[A] rested on an nsys run in which cuBLAS issued `nvjet_..._256x128_64x4_1x2_h_coopA_NNT` while we
+issued `bgemm_sm90_kernel<Sm90WarpspecConfig<128,256,64,1,2,...>>`. That proves NOTHING: the harness
+selects our config from `--tile=`/`--cluster=` (test_bgemm_sm90_matrix.cu:278, 410), so the kernel
+that ran is the one named on the command line. §H27z.19's 7/7 launch-count table has the identical
+defect and the doc already said so: *"the correspondence is by construction, not evidence."*
+
+**Rule: a mapping cannot be proven by an experiment in which we choose our side of the pair.**
+
+### TRAP 2 -- the persistent grid, which nearly produced a SECOND false proof
+
+Reading tile counts out of `Grid Size` in the 164 archived ncu captures gave "TRANSPOSE 6/6". It was
+an artifact. cuBLAS launches a PERSISTENT grid clamped to the SM count:
+
+    distinct grid tuples over 163 shapes and many different tiles:
+        (2,66,1) x134   (2,64,1) x25   (2,65,1) x2   (4,28,1) x1   (8,12,1) x1
+    M4096 N24576 320x128 -> (2,66,1)      M4096 N896 112x128 -> (2,66,1)
+
+2x66 = 132 = SM count. Identical grid for a 27x different N and a different tile. Those six "wins"
+were rows where the transpose prediction happened to equal 128, which IS the clamp value. Any row
+with grid in {128,130,132} carries ZERO information.
+
+### PROOF 1 -- THE TILE TRANSPOSES (grid, clamp-free rows only)
+
+`tools/tile_orientation.sh`, 3 repeats, kernel+grid identical across runs. Of its 14 rows, 11 are
+clamped at 128 and carry nothing. The **3 clamp-free rows all agree**, none contradict:
+
+    M      N     cuBLAS tile   grid   transpose-pred   direct-pred   verdict
+    64     4096  48x64         88     86 (->88)        128           TRANSPOSE
+    4096   64    64x48         88     86 (->88)        128           TRANSPOSE
+    448    2048  128x64        112    112 exact        128           TRANSPOSE
+
+86 -> 88 is the grid rounded up to a whole number of clusters (that kernel launches a 4-CTA
+cluster; 86 -> 88). So: **cuBLAS's first number is our N. Their AxB means our BM = B, BN = A.**
+
+### PROOF 2 -- THE CLUSTER AND RASTER ALSO SWAP (launch dims, 15/15, not inferrable-away)
+
+nsys records `clusterX/Y/Z` in CUPTI_ACTIVITY_KIND_KERNEL. Read directly from run_1.sqlite:
+
+    name cluster  raster   LAUNCHED cluster
+    1x2           h        (2,1,1)        <- name is TRANSPOSED w.r.t. the launch
+    2x1           v        (2,1,1)        <- name is DIRECT
+    1x4           h        (4,1,1)        <- TRANSPOSED
+    4x1           v        (4,1,1)        <- DIRECT
+
+Three facts, 15/15 kernels, zero exceptions:
+  1. EVERY cuBLAS cluster launch is 1-D `(S,1,1)`. Never 2-D.
+  2. `1x2_h` and `2x1_v` launch the IDENTICAL cluster. They are the same physical cluster; the name
+     writes the pair along the raster axis, so the raster letter tells you how to read it.
+  3. The name's cluster pair correlates PERFECTLY with the raster letter: every `h` is `1xS`, every
+     `v` is `Sx1`.
+
+We do the same thing: `clusterDim.x = CLUSTER_SIZE, y=1, z=1` (template.cuh:4439) with CLUSTER_M/N
+applied internally as `cluster_rank % CLUSTER_M`. Both sides launch 1-D clusters and interpret them
+in the kernel, so the comparison is apples to apples.
+
+### THE MAPPING
+
+    cuBLAS  AxB_<raster>   ->   our BM = B, BN = A            (tile transposes)
+                                cuBLAS 1x2_h  ==  our 2x1 raster v
+                                cuBLAS 2x1_v  ==  our 2x1 raster h
+    stages  cuBLAS 64xS    ->   S pipeline stages
+    layout  NN*->nn  TN*->nt  NT*->tn   (correlation from the trainer capture; H8.5 warns the
+                                         3rd letter is internal, so treat the 3rd letter as noise)
+
+### CONSEQUENCE 1 -- the perf table in §H27z.85 compared the WRONG counterparts
+
+It pinned our `128x256 c1x2` against cuBLAS `256x128_1x2_h`, whose real counterpart is our
+`128x256 c2x1 raster v`. Every row of that table is void as a like-for-like comparison. The
+correctness results (all bit-exact) stand; the %cuB numbers do not mean what the header said.
+
+### CONSEQUENCE 2 -- we have 4 of the 8, not 8 and not 5
+
+Recomputed under the corrected mapping, reading TEMPLATE ARGUMENTS not names, and including the 42
+macro-generated configs that a `using`-only grep misses (BLUBLAS_SM90_CFG_VH / _VH_PD, both of which
+pass only 9 template args so `_SPLIT_K` and `_EPI_TILE_N` always take defaults 1 and 0):
+
+    V1  128x128_1x2_h_splitK  -> our 128x128 c2x1 v 6stg tn splitK   128x128x64_2x1_v_sk2   HAVE
+    V2  128x256_2x1_v         -> our 256x128 c2x1 h 4stg tn          MISSING
+    V3  192x192_1x2_h         -> our 192x192 c2x1 v 3stg nn          192x192x64_2x1_v       HAVE
+    V4  192x192_2x1_v         -> our 192x192 c2x1 h 3stg nn          192x192x64_2x1_h       HAVE
+    V5  192x192_2x1_v         -> our 192x192 c2x1 h 3stg tn          192x192x64_2x1_h       HAVE
+    V6  192x192_2x1_v         -> our 192x192 c2x1 h 4stg nt          MISSING
+    V7  256x128_1x2_h         -> our 128x256 c2x1 v 4stg nn          MISSING
+    V8  256x128_1x2_h         -> our 128x256 c2x1 v 4stg nt          MISSING
+
+**ALL FOUR GAPS ARE ONE THING: there is no 4-stage config at cluster 2x1.** Proven mechanically --
+all 17 configs with `_EPI_TILE_N != 0` are cluster (1,2), zero at (2,1); all 10 with `_SPLIT_K > 1`
+are cluster (1,1) or (2,1), zero at (1,2). The 4th stage comes only from the chunked epilogue
+(§H27z.63), and the chunked epilogue was only ever ported to 1x2.
+
+Corroboration that this reading is right rather than another flip: V1's match is
+`128x128x64_2x1_v_sk2`, and the comment immediately above that config (template.cuh:677) already
+says it is cuBLAS's `1x2_h` in our coordinates. And it explains the §H27z.85 measurements: V6 came
+LAST at 81.6% and V2/V7/V8 sat mid-pack because we ran 3-STAGE kernels against cuBLAS's 4-stage --
+a missing pipeline stage, not an unexplained bottleneck.
+
+### WHAT TO BUILD -- one feature, four variants
+
+Port the chunked epilogue to cluster 2x1: `256x128x64_2x1_h_ep32s2`, `192x192x64_2x1_h_ep32s2`,
+`128x256x64_2x1_v_ep32s2`. Every knob already exists; only the (cluster, chunked) combination was
+never instantiated. Re-run §H27z.85 against the CORRECTED pin list afterwards -- the numbers taken
+before this section are not comparable.
