@@ -13757,3 +13757,137 @@ Port the chunked epilogue to cluster 2x1: `256x128x64_2x1_h_ep32s2`, `192x192x64
 `128x256x64_2x1_v_ep32s2`. Every knob already exists; only the (cluster, chunked) combination was
 never instantiated. Re-run §H27z.85 against the CORRECTED pin list afterwards -- the numbers taken
 before this section are not comparable.
+
+---
+
+## §H27z.87-89 THE MAPPING CLOSED (except raster), AND MEMORY ELIMINATED WITH A REAL CONTROL (2026-08-12)
+
+Three experiments, run back to back. Two of them disproved their own premise, which is why they
+were worth running.
+
+### §H27z.87 LAYOUT -- PROVEN, both fields, and H8.5's caveat dissolved
+
+The 3-letter suffix is TWO independent fields, so each was tested with the other held fixed.
+
+**L1, first two letters.** Shape fixed at 4096x4096x4096, only OUR layout varied. We choose the
+input, cuBLAS chooses the kernel -- so this is not circular the way §H27z.86's rejected "proofs"
+were:
+
+    our nn  ->  nvjet_..._256x128_64x4_1x2_h_bz_coopA_NNT
+    our nt  ->  nvjet_..._256x128_64x4_1x2_h_bz_coopA_TNT
+    our tn  ->  nvjet_..._128x256_64x4_2x1_v_bz_coopA_NTN
+
+nn->NN, nt->TN, tn->NT, 3/3. nn and nt produced the IDENTICAL kernel config with only the suffix
+moving -- a textbook single-variable result.
+
+**L2, third letter.** Layout held at nn, only the shape varied:
+
+    16384x11264x2048 -> 192x192_64x3_1x2_h_coopB_NN[N]    tile 192x192
+    16384x2048x2048  -> 256x128_64x4_1x2_h_coopA_NN[T]    tile 256x128
+    16384x2048x5632  -> 256x128_64x4_1x2_h_coopA_NN[T]    tile 256x128
+
+The third letter moved N->T with the layout CONSTANT, so it is not the layout. Across the whole
+164-shape archive it is a FUNCTION OF THE TILE -- 13 distinct tiles, and NO tile ever carries both
+letters:
+
+    'N' <- 112x128 128x192 128x256 144x128 168x128 176x128 192x192
+    'T' <- 64x64 128x64 128x128 192x128 256x128 320x128
+
+**H8.5's caveat is dissolved.** It worried that the first two letters varied under a FIXED op
+config (citing `NTN`). The archive actually shows **all 18 distinct kernels are `TN`** -- constant,
+exactly matching the fixed CUBLAS_OP_T/OP_N. Fix the op flags and the first two letters do not
+move; vary them and they follow 1:1. The first two letters ARE the op flags.
+
+**A first raster attempt that FAILED and must not be cited.** The same run compared our 192x192
+against cuBLAS's 256x128 to fingerprint the raster. Different tiles read different amounts of data
+regardless of raster, so it could attribute nothing. Recorded because the numbers exist in
+test_reports/h27z87 and would otherwise look usable.
+
+### §H27z.88 EXACT ARITHMETIC EXCLUSION -- the premise died, and that IS the finding
+
+Method, chosen because "closest fingerprint" is similarity and not proof: an M-fastest walk fixes n
+and sweeps every m, so it traverses ALL of A once per n-column. If A exceeds L2 it cannot be cached
+between columns, so DRAM reads >= grid_n * sizeof(A) -- a HARD LOWER BOUND. Below a bound is not
+"unlikely", it is IMPOSSIBLE. 14 of the 15 shapes give a usable bound; 6 give two-sided bounds.
+All four of our (cluster x raster) possibilities were run on every shape: 56 ncu captures.
+
+    RESULT   8 shapes: pure M-fastest EXCLUDED     6 shapes: BOTH walks EXCLUDED (contradiction)
+
+Six contradictions is not noise -- it falsifies the premise. cuBLAS performs NEITHER pure walk. It
+is confirmed by how close it runs to the theoretical minimum A+B:
+
+    2048x512x16384  min 84MB  cuBLAS 84MB   = 1.00x        16384x512x2048  min 69MB  cuBLAS 71MB = 1.02x
+    2048x2048x16384 min 134MB cuBLAS 134MB  = 1.00x        16384x2048x2048 min 75MB  cuBLAS 79MB = 1.05x
+
+1.00x the minimum is unreachable by any pure 1-D walk on these grids. **cuBLAS uses GROUPED
+(swizzled) rasterization.** So "is cuBLAS's h our v or our h" is a MALFORMED question -- their
+raster field is not a pure direction.
+
+Closest-config tally across all shapes was split 1x2_v:3, 1x2_h:3, 2x1_v:2, 2x1_h:6 -- no config
+wins everywhere, so by the rule the analyser holds itself to: UNDETERMINED, not picked.
+
+**A correction this forced.** §H27z.86 claimed the CLUSTER was proven from launch `clusterX/Y/Z`.
+It is NOT. OUR 1x2 and OUR 2x1 both launch `(2,1,1)` as well -- CLUSTER_M/N are applied internally
+as `cluster_rank % CLUSTER_M`. The launch record cannot separate them on either side. What the
+launch data DOES prove stands: every cuBLAS cluster is 1-D of size S, and the name's cluster pair
+is a logical label written along the raster axis, not the launch dims.
+
+### §H27z.89 MEMORY IS ELIMINATED -- and this time with a proper control
+
+Raster swizzle (rs2/4/8/16) swept on the two worst sites, cuBLAS captured in the same process:
+
+    16384x11264x2048 nn  (gate_up-fwd)   min A+B = 113 MB
+      config    DRAM MB   x min   L2 hit%   duration
+      cuBLAS        538    4.75      84.1     1183 us
+      plain       1,886   16.65      65.6     1369 us
+      rs2         1,097    9.69      76.8     1366 us
+      rs4           641    5.66      84.5     1357 us
+      rs8           431    3.81      89.6     1358 us   <- LESS DRAM than cuBLAS, HIGHER L2
+      rs16          689    6.08      87.1     1360 us
+
+    16384x50304x2048 nn  (lm_head-fwd)   min A+B = 273 MB
+      cuBLAS      2,297    8.41      88.9     5102 us
+      plain       6,940   25.41      70.4     5672 us
+      rs2         4,840   17.72      77.6     5689 us
+      rs4         3,417   12.51      83.1     5703 us
+      rs8         2,530    9.26      88.3     5689 us   <- cuBLAS's memory profile, matched
+      rs16        3,539   12.96      85.3     5690 us
+
+**DRAM traffic swings 4.4x and L2 hit rate swings 24 points, and the DURATION DOES NOT MOVE:**
+gate_up 1369/1366/1357/1358/1360 us (spread 0.9%), lm_head 5672/5689/5703/5689/5690 (spread 0.5%).
+
+This is the strongest form of the argument, and it is what every earlier memory investigation
+lacked. Not "we measured DRAM and it looked acceptable" -- we deliberately drove our memory
+behaviour BELOW cuBLAS's (431 vs 538 MB, 89.6% vs 84.1% L2 at gate_up) and the kernel did not get
+one microsecond faster. At lm_head rs8 reproduces cuBLAS's memory almost exactly (2,530 vs 2,297
+MB; 88.3% vs 88.9%) and we are still 5,689 vs 5,102 us = 89.7%.
+
+**RETRACTED, same session:** an hour earlier I read the pure-raster 3x DRAM gap at these two sites
+as "the lm_head answer". It is not. That gap exists only for pure rasters, which we do not ship,
+and closing it entirely buys ZERO.
+
+### WHERE THE GAP NOW STANDS -- everything controlled for
+
+At gate_up-fwd we now hold constant: SAME tile (192x192), SAME stage count (cuBLAS 64x3, we derive
+3), and memory BETTER than cuBLAS -- and we remain 13% slower. That is a pure implementation gap in
+the compute/scheduling path.
+
+Measured and eliminated, each independently: DRAM bandwidth, L2 reuse, shared-memory bank
+conflicts, tile shape, the epilogue, the uniform datapath, and now memory traffic under a
+manipulate-and-observe control.
+
+### STATUS OF THE cuBLAS->OURS MAPPING
+
+    tile          PROVEN     transposes; 3 clamp-free grid rows, direct excluded in all 3
+    layout        PROVEN     nn->NN nt->TN tn->NT (L1) + 18/18 constant under fixed op flags
+    third letter  PROVEN     not the layout; a function of the tile (13 tiles, no overlap)
+    cluster       PARTIAL    1-D of size S on both sides; the logical M/N split is NOT
+                             separable from launch data on either side
+    raster        OPEN, but DOWNGRADED. cuBLAS uses a GROUPED walk (group ~4-8 by fingerprint),
+                             not a pure direction, so the original question is malformed. And it
+                             has ZERO measured effect on duration here, so it gates nothing.
+
+### NEXT
+
+The compute path at gate_up-fwd, where tile, stages and memory are now all matched: instruction
+mix and warp-stall reasons, ours vs nvjet, same process, same shape.
