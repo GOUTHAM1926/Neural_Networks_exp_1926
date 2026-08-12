@@ -13559,3 +13559,83 @@ and this campaign is H200. Recorded as an open item, not silently skipped.
 MANDATORY CHECK FOR EVERY NEW VARIANT (per the standing rule): any new kernel must have
 `cuobjdump -sass <obj> | grep -c MUFU` == 0. A non-zero count means a runtime integer divide leaked
 into the tile path and pinned it to the vector datapath.
+
+---
+
+## §H27z.84 DAY LOG 2026-08-11 -- closing the §H27z.68-70 / .74-.81 documentation gap
+
+Written at end of day because the section numbers .68-.70 and .74-.81 were used in-session but the
+sections were never written. Everything below WAS measured today; the numbers come from the
+session's own runs rather than being re-derived here, so each should be reconciled against the raw
+logs in `test_reports/` and `h27z_*` before being quoted outside this file.
+
+### WHERE THE DAY STARTED (§H27z.67, end of 2026-08-10)
+
+    1. depth-4 / free the pipeline stage (Fault 1)   IMPLEMENTED, PROVEN, NOT YET BANKED
+    2. Fault 2 -- stmatrix write path                 NOT STARTED
+    3. match cuBLAS's 6 variants across 21 sites      NOT STARTED
+    4. split-K                                        NOT STARTED
+
+Trainer 96.39 % end to end, 86.1 % GEMM, 680 TFLOPS. Fault 1 was correct and fast but delivered
+ZERO, because the chunked variants were registered configs and not dispatch-table rows.
+
+### §H27z.68-70 STEP 1 BANKED -- fault 1 pinned into the dispatch table
+
+Per-site PIN/KEEP verdicts measured with `tools/h27z65_bank_fault1.sh`, median-of-3. A measurement
+error was caught and fixed first: the chunked configs were being compared against plain `_h`, but
+the trainer actually pins `_rs2` on 9 of 15 sites, so the whole comparison was against a baseline
+we do not ship. Re-run against the real baselines, 11 call sites won and were pinned (re-sorted
+into `Bgemm_sm90_dispatch_table.h`, not appended -- the table is binary-searched and appended rows
+are silently unfindable).
+
+    trainer   96.39 %  ->  97.60 % end to end        GEMM 86.1 % -> 89.3 %
+
+Durable rule that came out of it: chunked epilogues pay on M-SPLIT tiles and LOSE on N-SPLIT tiles.
+The discriminator is the split mode (`SPLIT_M = (BM/64) % 2 == 0`), not the tile size. Also fixed a
+real kernel bug found on the way -- the 192x192 N-split cross-warpgroup overwrite (maxRelErr
+51984), corrected with `EPI_WG_SLOTSETS` and proven zero-regression by a 3072-instruction identical
+SASS diff.
+
+### §H27z.71-73 STEP 1 FAULT 2 -- closed as a measured dead end
+
+Written up in full above. Summary: stmatrix is -2 % even when implemented exactly the way cuBLAS
+does it, and bank conflicts are not the bottleneck at all -- cuBLAS has 2,427,881 conflicts at
+lm_head-fwd and is still 1.43x faster than us with our 18,813. Two probes were built to settle it
+empirically rather than from the PTX prose: `examples/probe_stmatrix.cu` (0/256 mismatches, proved
+the register mapping needs no shuffle) and `examples/probe_stsm_banks.cu` (proved stmatrix alone
+buys nothing on a linear layout).
+
+### §H27z.74-.81 STEP 2 DONE -- split-K implemented, validated and pinned
+
+Strategy A: separate deterministic reduce pass, fp32 workspace, no atomics, alpha/beta applied
+exactly once in the reduce and never in the epilogue. `SPLIT_K` is a template knob whose `==1` path
+is byte-identical to before.
+
+    kv-wgrad   455 TF -> 607.6 TF        70.3 % -> 93.6 % of cuBLAS
+
+Pinned in the dispatch table. Worth roughly 58 ms of the ~1,400 ms GEMM deficit. Split-K's non-zero
+maxRelErr (0.0078 / maxAbsErr 0.125) is NOT a defect -- it is reordered accumulation, and the gate
+is `|a-b| <= tol*|b| + 0.5`, which it passes. `maxAbsErr` was added as a reported column today so
+small errors are visible instead of hidden behind the pass/fail threshold.
+
+The 4th-stage (chunked-epilogue) feature was also ported to 192x192 and 128x256 so the knob exists
+on every tile, per the standing "every feature is a validated template knob" rule.
+
+### STEP 3 STARTED -- and this is where the day ended
+
+§H27z.82 and §H27z.83 above. Six candidate causes for the ~20 % lm_head-fwd gap have now been
+measured and ELIMINATED: DRAM bandwidth, L2 hit rate, shared-memory bank conflicts, tile shape, the
+epilogue, and the uniform datapath. On DRAM and L2 we are actually AHEAD of cuBLAS (88.24 % L2,
+3.96 GB with `rs8`). Matching cuBLAS's tiles made us WORSE on 15 of 15 sites. 4-stage 192x192 was
+-7.8 %, and -18.7 % with swizzle.
+
+### STATUS AT END OF DAY
+
+    1. depth-4 / free the pipeline stage (Fault 1)   DONE, BANKED, trainer +1.21 pts
+    2. split-K                                       DONE, VALIDATED, PINNED
+    3. match cuBLAS's variants across the sites      IN PROGRESS -- 6 causes eliminated, gap open
+    4. cross-comparison tests -> final dispatcher     NOT STARTED
+
+Next measurement is named in §H27z.83: one ncu capture of our kernel and the nvjet kernel from the
+SAME process, to get a current cuBLAS tensor-active number and split the remaining gap into
+"pipe idle more" versus "pipe less productive per active cycle".
