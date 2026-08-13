@@ -14389,3 +14389,85 @@ timing-sensitive fault can hide from ~25 clean targeted runs.
 CUDA context and aborts the matrix suite at case 299 of 5766. Every correctness run between
 §H27z.97 and now silently covered 5% of the config space. All stmatrix configs unregistered; the
 `using` definitions stay, documented with their measured failure.
+
+
+## §H27za6b STEP-3 RE-SCORED AFTER THE BARRIER REMOVAL -- 90.8% -> 93.0% (2026-08-13)
+
+Plain build, no flags: cuobjdump reports MEMBAR.ALL.GPU x 0, so the flipped default reaches every
+config in the library. Re-ran the 15 step-3 shapes with the set-A pins.
+
+    variant  shapes   before    after    gain
+    V8            4    89.9%    94.6%   +4.7
+    V3            1    86.9%    91.2%   +4.3
+    V6            1    84.6%    87.5%   +2.9
+    V4            1    83.1%    85.4%   +2.3
+    V7            3    94.6%    96.9%   +2.3
+    V5            1    83.5%    84.9%   +1.4
+    V1            1    88.5%    89.0%   +0.5
+    V2            3    97.1%    95.8%   -1.3   <- one shape, see below
+    ALL 15       15    90.8%    93.0%   +2.2
+
+Seven of eight variants improved; twelve of fifteen shapes. Biggest single move: V8 at K=512,
+76.7% -> 91.1% (+14.4), which had been the worst shape in the whole table.
+
+V2's -1.3 is driven entirely by 2048x50304x16384 reading 99.6% -> 93.5%. cuBLAS's OWN number on
+that shape moved 799.8 -> 819.2 TF between the two runs, and it has swung 5-7% run-to-run all
+week. V2's other two shapes were flat and +2.2. Treat as noise, but re-measure before quoting V2
+as a regression.
+
+Set B improved by the same amount (A-B gap 2.7 -> 3.0 pts, control drift -0.2), which is the
+predicted result: the barrier was raster-independent, so it could not change the A-B relationship.
+
+**THE TARGET HAS MOVED.** Worst was V8 K=512 at 76.7% and the 192x192 family at 84.5%. Now the
+192x192 family (V3-V6) is the ONLY group under 90% -- V5 84.9, V4 85.4, V6 87.5, V3 91.2, mean
+87.3%. Everything else is 89-98%.
+
+## §H27za7 RACE HUNT, AND TEN PRE-EXISTING CONTEXT-KILLING CONFIGS (2026-08-13)
+
+Purpose: close the remaining coverage gap on the barrier removal. PRECISION was never at risk and
+cannot be -- a barrier does no arithmetic, and every comparison reported maxRelErr 0.00000, i.e.
+BIT-IDENTICAL, not merely close. The only real risk is a RACE, which presents as a wrong answer or
+a crash, never as a small drift.
+
+### TEN CONFIGS ABORT WITH A STICKY CUDA ERROR -- ALL PRE-EXISTING
+
+Auto-discovered one at a time (a sticky error destroys the context, so only one surfaces per run),
+using the ON arm, i.e. the UNMODIFIED code:
+
+    128x112x64_1x4_v    128x112x64_2x4_v    128x112x64_2x2_v    128x128x64_1x2_h_pd5
+    128x112x64_1x4_h    128x112x64_2x4_h    128x112x64_2x2_h    128x128x64_2x1_v_sk8
+    128x144x64_2x1_h    64x64x64_4x2_h
+
+NOT caused by the barrier change -- proven by the ON arm giving IDENTICAL results to OFF
+(2990 PASS / 20 FAIL, same abort point) before any skipping. The whole 128x112 family across four
+cluster shapes, plus pd5, sk8, 128x144_2x1_h and 64x64_4x2_h.
+
+### THEY ARE UNREACHABLE IN PRODUCTION -- three independent checks
+
+    in our 8 pinned variants?       0 of 10
+    reachable from the dispatcher?  0 of 10  (grep of Bgemm_sm90_dispatcher.cu: zero hits each)
+    present with the barrier ON?    10 of 10 -- pre-existing
+
+They are registered in the X-macro so the matrix test can exercise them; nothing in the dispatcher
+can select them, so no real workload reaches them. Near-misses worth noting: 128x128x64_2x1_v_sk8
+aborts while our V1 pin is 128x128x64_2x1_v_sk2, and 128x128x64_1x2_h_pd5 aborts while V1 is a
+different cluster entirely.
+
+### A SEPARATE PROBLEM THEY EXPOSE
+
+Even with all ten skipped the suite reaches only 4373 of 5712 cases, so more aborts remain. And
+the ON arm is NON-DETERMINISTIC: run 1 produced no summary (crash), run 2 gave 4234 PASS / 139
+FAIL on the same binary with the same skips. That instability exists WITH the barrier, so the
+barrier was never buying determinism.
+
+Consequence, independent of the barrier question: **nobody can fully validate this library today.**
+Ten context-killing configs plus a non-deterministic suite is its own work item. They should be
+FIXED or UNREGISTERED, not left as permanent skips.
+
+### WHAT REMAINS UNPROVEN
+
+Coverage is still short of 100%, and a timing-sensitive fault can hide from clean runs by
+definition. The barrier removal is a DEFAULT, not a deletion: -DBLUBLAS_SM90_PER_TILE_CLUSTER_SYNC=1
+restores the old behaviour in one rebuild, and the call sites and history stay in the source.
+Before this reaches the 1.7B training run it should have (a) the suite completing, and (b) a
+BluTrain end-to-end run with loss curves compared.
