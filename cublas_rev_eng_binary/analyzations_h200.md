@@ -14257,6 +14257,30 @@ uncut, and it is one run: same config, FIXED K, sweep M and N. If the 15 us scal
 it is per-tile; if flat, it is launch setup. That halves the search space instead of proposing a
 fifth knob.
 
+### §H27za0 THE ~15 us IS PER TILE, NOT PER LAUNCH -- measured, decisively
+
+Hold K fixed at 2048, swing the tile count 8x by varying M and N. tiles = (M/128)*(N/256), grid is
+persistent at 132 CTAs; all four keep tiles/CTA >> 1 so wave quantisation cannot confound it.
+
+    shape              tiles  tiles/CTA   ours us  cuBLAS us   DIFF us  DIFF/tile ns   %cuB
+    8192x2048x2048       512      3.9        95.4      89.7       5.7       11.1      94.0
+    16384x2048x2048     1024      7.8       189.2     176.2      13.1       12.8      93.1
+    32768x2048x2048     2048     15.5       380.0     348.1      32.0       15.6      91.6
+    16384x8192x2048     4096     31.0       774.1     711.5      62.7       15.3      91.9
+
+DIFF/tile is FLAT (11-15 ns) while DIFF scales 11x for an 8x tile increase. Ratio-of-ratios 1.376
+against 0.125 for the per-launch model. And %cuB degrades monotonically with tile count AT FIXED K
+(94.0 -> 91.6) -- which no earlier run could have shown, because every one of them held M and N
+constant at 16384x2048.
+
+**PERMANENTLY RULED OUT** (all paid once per launch, so they cannot scale with tiles): the
+cuTensorMap setup, the grid ramp, the 2x MEMBAR.ALL.GPU prologue cluster fence, the first tile's
+pipeline fill.
+
+Caveat on the record: 1.376 is slightly SUPER-linear, so a second smaller term probably grows
+faster than tile count -- plausibly L2 pressure, since C grows 34 MB -> 268 MB across the sweep.
+The per-tile term dominates but this is not a perfectly clean single effect.
+
 ### WHAT V8 STANDS AT
 
 `128x256x64_2x1_h_ep32s2` remains the pin, 90-91.5% mean over the four shapes, unchanged through
