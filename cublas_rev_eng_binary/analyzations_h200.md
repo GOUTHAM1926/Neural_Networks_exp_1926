@@ -14003,3 +14003,263 @@ could close it are respectively blocked by a driver ceiling and by a missing pat
 
 The compute path at gate_up-fwd, where tile (192x192), stage count (both 3) and memory (ours BETTER
 than cuBLAS: 431 vs 538 MB, 89.6% vs 84.1% L2) are all matched and we are still 13% slower.
+
+## §H27z.91-99 V8 IN DEPTH: THREE HYPOTHESES KILLED BY MEASUREMENT, AND THE REAL CAUSE (2026-08-13)
+
+Everything below is V8 only -- cuBLAS `nvjet_sm90_tst_256x128_64x4_1x2_h_bz_coopA_TNT`, layout nt,
+our `128x256x64_2x1_h_ep32s2`, four shapes 16384x2048x{512,2048,11264,50304}. Verified per shape
+from the nsys captures, not assumed: cuBLAS issues that ONE kernel on all four, we issue one config
+on all four, template args byte-identical across the four (§H27z.96 phase 1).
+
+### §H27z.95 THE RASTER MAPPING IS WRONG -- set A vs set B on one box
+
+Both pin sets run on the same box in one session, because the H200 changed (31.22.104.211 ->
+95.133.253.59) and a box change voids prior timings.
+
+    set A (raster by measurement)  MEAN 90.8%
+    set B (raster by the H27z.86 mapping)  MEAN 88.1%
+    A - B = +2.7 pts     CONTROL rows (identical config in both sets, 6 of 15) drift -0.6 pts
+
+The control bounds the noise at well under a point, so +2.7 is real. Per shape, set A picks the
+operand-reuse-optimal raster on 9 of 9 and wins on 8 (the 9th, K=512, ties -- too few k-iters for
+tile order to matter). **§H27z.86's `cuBLAS 1x2_h -> our v` name-mapping is therefore DISPROVED by
+measurement**: following it put us on the physically wrong walk and cost 5-8 pts per shape. Raster
+is now chosen by the §H27z.89b operand-size rule, which is verifiable, not by cuBLAS's letter,
+which §H27z.90 proved unobtainable. This is not "picking the fastest" -- it is matching cuBLAS's
+BEHAVIOUR (they are fast, so they walk efficiently too) instead of copying a label we cannot decode.
+
+### THE SHAPE OF THE V8 DEFICIT -- one number explains all four shapes
+
+    K        cuBLAS us    ours us    difference    %cuB
+    512         54.8       71.4        +16.5      76.8
+    2048       176.0      191.0        +15.0      92.1
+    11264      916.0      927.2        +11.1      98.8
+    50304     4304.3     4301.5         -2.7     100.1
+
+A FIXED ~15 us, not a percentage. Predicts 78.5 / 92.1 / 98.4 / 99.7 against measured 76.8 / 92.1 /
+98.8 / 100.1. Two of the four shapes have nothing to win -- we are at parity or ahead. Converting
+to ABSOLUTE TIME is what made this legible; four messages of ratio-chasing (1.75x instructions,
+45% barrier stall, 6.5x conflicts) could not explain a deficit that COLLAPSES with K, because every
+one of those ratios is CONSTANT with K.
+
+### §H27z.94 HYPOTHESIS 1 -- BANK CONFLICTS. DEAD.
+
+ncu showed shared-STORE conflicts at 6.5x cuBLAS on V8 (12,163 vs 2,153). The swizzled epilogue
+buffer (`EPI_SWIZZLE_BYTES=64`) was built for every pinned tile at cluster 2x1, each with an
+unswizzled twin so the ablation isolates the swizzle from the chunk width.
+
+    conflicts   12,127 -> ~173 on all four shapes      70x down, and 12x BELOW cuBLAS's own 2,153
+    duration    unchanged (+0.2 / -0.9 / -0.1 / -2.4 %)
+    correctness 14/14 bit-identical maxRelErr
+
+Removed the suspected cause ENTIRELY and nothing moved. Bank conflicts are eliminated as V8's
+bottleneck by manipulation, not by argument. Also: instructions ROSE by a constant +1,790 per shape
+(the XOR), so the swizzle is a trade, not a free win. On 192x192 it is actively harmful (-13 to
+-18%, and swz32ep16 -66%). NOT ADOPTED; the pins are unchanged. This reproduces §H27z.82's warning
+on our own 2x1 configs -- and I had re-run an experiment that section already settled, which is the
+mistake it exists to prevent.
+
+**The swizzle work was not wasted**: it established that the swizzle is FREE, which is the
+prerequisite for stmatrix (below).
+
+### §H27z.96 LOCALISING THE COST -- what the 99 captured metrics actually say
+
+Launch config, ours vs cuBLAS, K=2048: registers_per_thread 168/168, block_size 384/384, grid 132/
+132, cluster_size 2/2, shared_mem 215/214 KB, waves 1.00/1.00, occupancy_limit_registers 1/1,
+occupancy_limit_shared_mem 1/1 -- IDENTICAL on everything except:
+
+    launch__barrier_count         ours 16   cuBLAS 3
+    launch__occupancy_limit_barriers   4          21     (64 barriers per SM: 64/16=4, 64/3=21)
+
+Cause: `bar.sync %0` with the barrier id in a REGISTER (`g = wg_id`), so ptxas reserves all 16.
+cuBLAS uses immediates. NOT BINDING -- both sides are pinned to 1 block/SM by registers and smem,
+so the freed barrier resource buys nothing. Recorded as a parity defect, not a performance one.
+
+Stall decomposition (% of warp-active), the useful part:
+
+    shape   side     SYNC(bar+membar)  MEMORY(lg+sh+mio)  ISSUING   tensor%
+    K512    ours          52.0               24.2           11.5      57.9
+    K512    cuBLAS        23.6               42.7           22.0      75.2
+    K50304  ours          45.1               31.4           11.3      99.2
+    K50304  cuBLAS        32.2               30.9           27.8      99.6
+
+Our issue rate is PINNED at ~11.3% at every K; cuBLAS rises 22 -> 27.8%. cuBLAS is memory-throttled
+(mio_thr 10-16%) and we are NEVER (0.0%) -- they saturate the memory pipes, we do not.
+
+**BAR.SYNC count is NOT the problem**: cuBLAS issues 46 static BAR.SYNC to our 21 and stalls LESS.
+The only thing they never emit is MEMBAR, and membar was the one stall term that TRACKED the
+deficit (5.9/2.3/0.5/0.1% vs cuBLAS 0.0 on all four; collapses 59x as K grows, exactly as the
+deficit does, while barrier/lg_score/wait are flat). That correlation drove hypotheses 2 and 3.
+
+### §H27z.97 HYPOTHESIS 2 -- STMATRIX. DEAD, TWICE OVER.
+
+SASS showed, per epilogue chunk: ours `STS x2 + BAR.SYNC + MEMBAR.ALL.CTA + FENCE.VIEW.ASYNC.S`
+against cuBLAS's `STSM x2 + FENCE.VIEW.ASYNC.S`. STSM is warp-collective and internally ordered, so
+the theory was that plain STS is what forces the barrier and the membar.
+
+    every stmatrix config FAILED correctness on all four shapes
+
+Template line 3934 already said why: *"Converting to STSM is REAL outstanding work... the
+wgmma-fragment -> stmatrix register/address mapping must be derived and CuTe-verified, not
+guessed."* The code compiles and runs; the mapping was never finished. That comment sits 48 lines
+from a call site I did read, and I did not read it.
+
+**And the SASS disproves the mechanism regardless of the failure:**
+
+                    MEMBAR.CTA  MEMBAR.GPU  FENCE.VIEW  STS  STSM  BAR.SYNC
+    ep32s2              10          2           9       128    0      21
+    swz64r64stsm        10          2           9         0   16      21
+
+STSM replaced all 128 STS and the MEMBARs and BAR.SYNCs did not move. They are emitted
+unconditionally by our own `barrier_sync()` / `tma_store_fence()` calls, which do not care what
+store instruction preceded them. A WORKING stmatrix would not have removed them either.
+
+Also measured: `EPI_ROWS=64` (atom staging) costs -8.5% at K=512 and -5.0% at K=2048. That is the
+form the one previously-"validated" stmatrix config uses.
+
+### §H27z.98 HYPOTHESIS 3 -- FEWER MEMBARS. DEAD, and it made things WORSE.
+
+The fence cannot be made cheaper. Compiled in isolation on sm_90a (`fence_probe.cu`):
+
+    fence.proxy.async.shared::cta  (clobber or not) -> MEMBAR.ALL.CTA + FENCE.VIEW.ASYNC.S
+    fence.proxy.async              (generic)        -> MEMBAR.ALL.GPU + FENCE.VIEW.ASYNC.S
+
+EVERY writable form emits a MEMBAR, and CUTLASS uses the identical PTX (barrier.h:733,
+copy_sm90_tma.hpp:1217). cuBLAS's 184 bare FENCE.VIEW.ASYNC.S with ZERO MEMBAR is **not reachable
+from PTX** -- nvjet is emitted through NVIDIA's own path. So the only lever was issuing fewer:
+`EPI_TILE_N=64` halves the chunks, 8 -> 4.
+
+    MECHANISM WORKED   MEMBAR.CTA 10 -> 6, FENCE.VIEW 9 -> 5, BAR.SYNC 21 -> 13, instr 2104 -> 1984
+    membar stall FELL  5.9 -> 4.9 at K=512
+    PERFORMANCE        K512 77.9 -> 61.3% (-21.5%), MEAN 90.1 -> 85.7%
+
+We removed 40% of the MEMBARs and the worst shape got 21.5% SLOWER. ncu says why: sync stalls fell
+(barrier 47.1 -> 43.7, membar 5.9 -> 4.9) but MEMORY stalls rose (lg_score 21.9 -> 27.6, mio_thr
+0.0 -> 3.2) and tensor% fell 58.8 -> 52.0. Doubling the chunk doubles the store buffer (16 -> 32 KB)
+and leaves only 3 overlap opportunities against EPI_STAGES=2 instead of 7 -- the epilogue's own
+pipelining collapses faster than the fences save. **The membar correlation was not causal.**
+NOT ADOPTED. All numerics bit-identical (maxRelErr 0.00000) throughout, as expected for a staging
+change.
+
+### §H27z.99 THE ACTUAL CAUSE -- wgmma DESCRIPTOR CONSTRUCTION IN THE MAINLOOP
+
+All three dead hypotheses were in the EPILOGUE. The cost is in the MAINLOOP. From the instruction
+streams side by side (h27z96/03_sass), not from any counter:
+
+**cuBLAS, between consecutive wgmma -- MEDIAN GAP 2 INSTRUCTIONS:**
+
+    HGMMA.64  x128x16.F32.BF16 R24, gdesc[UR16], R24
+    UIADD3    UR16, UR16, 0x2, URZ        <- increment the descriptor
+    UIADD3    UR18, UR18, 0x2, URZ
+    HGMMA.64  x128x16.F32.BF16 R24, gdesc[UR16], R24
+
+Both adds are on the UNIFORM datapath. At a stage boundary they stay adds:
+`UIADD3 UR16,UR16,0x200` then `UIADD3 UR16,UR16,-0x6`.
+
+**OURS, per wgmma -- about 20 instructions, rebuilt from scratch:**
+
+    VIADD        R6, R8, 0x20              recompute the smem offset
+    LOP3.LUT     R6, R6, 0x3fc20, RZ       mask
+    SHF.R.U32.HI R6, RZ, 0x4, R6           shift
+    LOP3.LUT     R6, R6, 0x10000, RZ       OR the layout bits back in
+    R2UR         UR16, R6                  cross VECTOR -> UNIFORM
+    UMOV         UR19, 0x40000040
+    IMAD.MOV.U32 R7, RZ, RZ, 0x40000040
+    R2UR         UR17, R7                  cross VECTOR -> UNIFORM
+    HGMMA.64     x256x16.F32.BF16 R24, gdesc[UR16], R24
+    (plus the duplicated uniform chain: UIADD3 / ULOP3.LUT / USHF / ULEA, 28 per k-step)
+
+    per k-step   wgmma   overhead   total
+    ours            4       ~92        96
+    cuBLAS          8       ~16        24
+
+Roughly 70 of our 96 mainloop instructions are descriptor arithmetic; 4 are math. This IS the 1.75x
+dynamic instruction count, it explains the 8 R2UR per k-step, and it explains the uniform-datapath
+share gap (ours 17.1% vs cuBLAS 37.2%) -- they never leave the scalar path, we compute on the
+vector path and pay to cross.
+
+**Why this is consistent with the deficit collapsing at large K:** the overhead is always present
+but only COSTS time when the tensor pipe has slack. At K=50304 tensor% is 99.2 and the extra
+instructions issue in the wgmma's shadow for free; at K=512 tensor% is 57.9 and instruction issue
+becomes the limit. Same reason our issue rate is pinned at 11.3% while cuBLAS's rises to 27.8%.
+
+**Why it is recomputed:** the descriptor is an smem address plus layout bits, and across consecutive
+k-steps the address advances by a CONSTANT. Ours is derived from the stage base each iteration, so
+the compiler cannot prove the delta is constant through the `stage % DEPTH` wrap and rebuilds it.
+cuBLAS keeps it live in a uniform register and adds a constant, compensating at the wrap.
+
+STATUS: hypothesis 4, NOT YET TESTED. Unlike 1-3 this is not a counter correlation -- it is the
+instruction stream doing demonstrably different work for the same wgmma. That is a reason to take
+it seriously, not a reason to skip the measurement.
+
+### §H27z.99b HYPOTHESIS 4 -- DESCRIPTOR HOIST. IMPLEMENTED, AND IT KILLS THE WHOLE INSTRUCTION-COUNT THREAD.
+
+Implemented as `DESC_HOIST` (22nd template param, default false = byte-identical to what ships).
+Build the descriptor once per stage, then add a compile-time constant per k16 step, as cuBLAS does.
+Exactness argument: desc_encode(x) = (x & 0x3FFFF) >> 4 with the address in bits 0..13 and the next
+field at bit 16, so desc(base+off) == desc(base) + (off>>4) given (a) both 16-byte aligned (smem is
+__align__(1024), every offset a multiple of 16 B, static_asserted) and (b) base+off < 0x40000 so the
+mask cannot wrap (Hopper max CTA smem 227 KB). Both hold unconditionally.
+
+**STATIC SASS -- the algebra worked, but only partly:**
+
+    mainloop            per k-step   per wgmma   R2UR  VIADD  LOP3  SHF  UIADD3  ULOP3
+    ep32s2 (pin)             94        23.5        8     2      9    4      9      9
+    ep32s2_dh                80        20.0        8     0      6    1      6      6
+    cuBLAS                   24         2.0        0     -      -    -      2      -
+
+Address arithmetic collapsed as predicted (VIADD 2->0, SHF 4->1, LOP3 9->6). **R2UR UNCHANGED at 8**
+-- the hoist removes the arithmetic but cannot remove the vector->uniform CROSSING, because gdesc[]
+demands a uniform operand while our descriptor is built in vector registers (its chain starts at
+__cvta_generic_to_shared, which nvcc places on the vector path). cuBLAS pays zero crossings.
+
+**DYNAMIC -- 14% of the instructions gone, and NOTHING MOVED:**
+
+                  instructions             %cuB          tensor%        duration us
+    K512      20,976 -> 19,238   -8.3%   77.4 -> 77.3   58.8 -> 58.4    90.2 -> 90.1
+    K2048     57,981 -> 51,026  -12.0%   93.1 -> 92.2   84.6 -> 84.4   247.2 -> 247.6
+    K11264   280,013 -> 241,789 -13.7%   96.9 -> 96.8   96.7 -> 96.7     1.1 -> 1.1
+    K50304 1,220,536 -> 1,049,808 -14.0% 98.0 -> 97.0   99.3 -> 99.3     4.9 -> 4.9
+    MEAN                                  91.4 -> 90.8      maxRelErr 0.00000 on all four
+
+**INSTRUCTION COUNT IS NOT THE BOTTLENECK.** This does not merely kill hypothesis 4 -- it kills the
+entire "we execute 1.75x cuBLAS's instructions" line that motivated it. Reaching cuBLAS's exact
+count would buy nothing. Our warps are stalled ~88% of the time; the instructions were issuing in
+the gaps, free. Removing them frees capacity we were not using.
+
+NOT ADOPTED as the pin (-0.6 pts mean, K2048 -1.0%). Kept as a knob with a measured answer.
+
+### §H27z.99c WHY THE `LARGEST EXCESS STALL: barrier +18.33` LINE IS MISLEADING
+
+The stall table sorts by MAGNITUDE, not causality, and barrier is the largest gap in every V8 run.
+It is not the cost, and this run proves it twice:
+
+  1. The hoist removed 14% of instructions and barrier stall ROSE (46.9 -> 48.3 at K11264, 46.9 ->
+     48.4 at K50304) with duration unchanged. Take work away, warps reach the barrier sooner and
+     wait longer. **Barrier stall is ELASTIC -- it absorbs whatever slack is created.**
+  2. At K=50304: barrier stall 46.9% AND tensor-active 99.3% AND 98% of cuBLAS, simultaneously.
+     A 47% barrier stall coexists with near-perfect tensor utilisation.
+
+Same disqualifier as membar: barrier stall is FLAT across a 100x range of K (46.9 -> 48.4) while
+the deficit COLLAPSES (77% -> 98%). A constant cannot explain a collapsing effect. Also recall
+cuBLAS issues MORE BAR.SYNC than us (46 static vs 21) and stalls LESS. Do not chase this number.
+
+### THE ONE MEASUREMENT NEVER TAKEN
+
+All four V8 shapes are 16384x2048xK -- **identical M and N**, so identical tile count (1024), with
+only K varying. Nothing in any of this data can separate:
+
+    ~15 us paid ONCE per launch        (prologue, TMA descriptor setup, grid ramp)
+    ~15 us paid PER TILE x 1024        (~15 ns/tile of epilogue or scheduling overhead)
+
+Raised after §H27z.96 and deferred twice. After four dead hypotheses it is the only branch left
+uncut, and it is one run: same config, FIXED K, sweep M and N. If the 15 us scales with tile count
+it is per-tile; if flat, it is launch setup. That halves the search space instead of proposing a
+fifth knob.
+
+### WHAT V8 STANDS AT
+
+`128x256x64_2x1_h_ep32s2` remains the pin, 90-91.5% mean over the four shapes, unchanged through
+all three experiments. Every alternative built (swz64, swz64r64, swz64stsm, swz64r64stsm, ep64s2)
+measured worse or failed. The negative results are the value: bank conflicts, stmatrix and membar
+count are all closed by manipulation, so no one needs to try them again.
