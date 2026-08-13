@@ -14287,3 +14287,105 @@ The per-tile term dominates but this is not a perfectly clean single effect.
 all three experiments. Every alternative built (swz64, swz64r64, swz64stsm, swz64r64stsm, ep64s2)
 measured worse or failed. The negative results are the value: bank conflicts, stmatrix and membar
 count are all closed by manipulation, so no one needs to try them again.
+
+
+## §H27za1-a6 THE V8 BOTTLENECK FOUND: A PER-TILE CLUSTER BARRIER, AND IT WAS VESTIGIAL (2026-08-13)
+
+Seven hypotheses died before this one, and every single one was optimising AROUND a barrier none
+of us had noticed. Recording the whole arc, because the negative results are what made the
+positive one findable.
+
+### THE HYPOTHESES THAT DIED, and what each actually changed
+
+    1 bank conflicts   H27z.94  swizzled epilogue buffer   conflicts 12,127 -> 173 (70x, and 12x
+                                                           BELOW cuBLAS)      TIME UNCHANGED
+    2 stmatrix         H27z.97  EPI_USE_STSM               FAILED correctness; and SASS proved the
+                                                           barriers are emitted UNCONDITIONALLY so
+                                                           it would not have helped even if it ran
+    3 membar count     H27z.98  EPI_TILE_N 32 -> 64        MEMBARs -40%   TIME 21.5% WORSE
+                                                           (confounded: also doubled the buffer)
+    4 instruction cnt  H27z.99  hoist the wgmma descriptor dynamic instrs -14%  TIME UNCHANGED
+                                out of the k-loop          -> killed the CATEGORY, not one idea
+    5 grid geometry    H27za1   (132,1,1) -> (2,66,1)      grid verified changed; duration,
+                                                           tensor% and every stall IDENTICAL
+    6 epilogue fusion  H27za2   none -- tested the SASS     DISPROVED before any GPU run: both
+                                interleaving first          kernels are compute-then-store,
+                                                            0/83 cuBLAS stores near a wgmma
+    7 EPI_STAGES       H27za3   built, never run            superseded before it burned GPU time
+
+Two decompositions made the search tractable, both from data already on disk:
+    time  = a + b*K   ours a=16.6us b=0.08518   cuBLAS a=0.8us b=0.08555  -> SLOPES MATCH TO 0.4%
+    instr = a + b*K   ours a=8,642  b=24.09     cuBLAS a=4,782 b=14.11
+The mainloop computes at cuBLAS's rate. The entire deficit is a fixed intercept. And in the
+epilogue we execute 1.81x the instructions but take 21x the time -- 3.38 cycles/instruction
+against cuBLAS's 0.29. It was STALLING, not executing, which is why every instruction-count and
+conflict-count fix did nothing.
+
+### THE MEASUREMENT THAT FOUND IT -- PC sampling, after two tooling failures
+
+`--section SourceCounters` collected nothing usable; requesting the metrics DIRECTLY worked:
+    ncu --metrics smsp__pcsamp_sample_count,smsp__pcsamp_warps_issue_stalled_{barrier,membar,...}
+    ncu --import x.ncu-rep --page source --print-source sass --csv     <- --print-source IS REQUIRED
+ncu reports ABSOLUTE addresses; cuobjdump uses RELATIVE offsets. Without rebasing, every sample
+lands past the epilogue boundary and the region split reads a meaningless 100% epilogue.
+
+Rebased, K=64, 35,407 samples:
+    0x64c0  22.4%  UCGABAR_WAIT     0x0660  6.1%  ERRBAR
+    0x6460   3.2%  ERRBAR           0x06c0  2.2%  UCGABAR_WAIT      = 33.9% ON ONE CONSTRUCT
+
+That construct is `cluster_sync()` at template :3662 (producer) and :3890 (consumer), INSIDE the
+persistent tile loop: MEMBAR.ALL.CTA + MEMBAR.ALL.GPU + ERRBAR + CGAERRBAR + UCGABAR_ARV +
+UCGABAR_WAIT -- a DEVICE-SCOPE fence plus a cross-CTA rendezvous, PER OUTPUT TILE, in BOTH
+warpgroups. cuBLAS emits ZERO MEMBAR of either kind.
+
+### THE COST (§H27za4, V8 = 128x256x64_2x1_h_ep32s2, nt)
+
+    K       ON %cuB   OFF %cuB    gain
+    64       60.9      96.9      +58.9%
+    512      77.9      91.0      +17.2%
+    2048     93.1      96.5       +3.6%
+    11264    97.3      98.2       +0.8%
+    50304    93.4      93.5       +0.3%
+
+Monotonic in K = a fixed per-tile cost, matching §H27za0's independent 8x tile sweep (DIFF/tile
+flat at 11-15 ns while DIFF scaled 11x). maxRelErr 0.00000 in both arms throughout.
+
+### WHY IT IS SAFE TO DROP -- protocol, then measurement
+
+    stage/phase live OUTSIDE the tile loop (:3593, :3855) and are NEVER reset -- state is
+    continuous across tiles, exactly as cuBLAS carries it in uniform registers. There is no
+    "tile-boundary reset" to get wrong (a theory I proposed and the source disproved).
+    EMPTY_MBAR_ARRIVE_COUNT = WGs * (SHARE_M + SHARE_N - 1) = 4 for a 2x1 B-mc cluster, and
+    release_empty delivers exactly 4. A producer cannot refill a stage until every peer has
+    released it -- drift is already bounded per stage.
+
+    full suite ON vs OFF     2990 PASS / 20 FAIL, IDENTICAL, same abort point (3010 cases)
+    documented crash case    nn + A-multicast + large K + persistent, 5/5 PASS
+    wider sweep              5 A-mc configs x 2 large K = 10/10 PASS, including 1x4
+    tightest stress          1x4 cluster, K=50304, 10/10 PASS
+    cuBLAS                   same structure, zero fences
+
+### WHY THE ORIGINAL Xid 13 IS GONE
+
+§H14.6 added the barrier for an NN A-multicast crash; §H14.7 removed it on design grounds;
+§H27z.5 restored it because an Xid 13 "CTA Not Present" persisted. TWO cross-CTA multicast
+ADDRESSING bugs were found AFTER that restore -- the §H22 SW64 bug (a peer writing at TWICE the
+correct offset, hidden by the atom_w == BK == 64 coincidence at SW128) and the §H27z.4
+nchunk_term bug. Either produces corruption-under-load that a cluster barrier appears to fix by
+perturbing timing. The barrier was masking bugs that have since been root-caused.
+
+### ACTION AND RESIDUAL RISK
+
+BLUBLAS_SM90_PER_TILE_CLUSTER_SYNC default flipped 1 -> 0. A DEFAULT, not a deletion: rebuild
+with -D...=1 to restore it instantly; the call sites and history stay in the source.
+Honest caveat: the matrix suite still cannot complete (the 128x112 family and 128x128_2x1_v_sk8
+abort with sticky launch failures in BOTH arms), so coverage is 3010 of 5712, 53%. A
+timing-sensitive fault can hide from ~25 clean targeted runs.
+
+### SEPARATE BUG FOUND AND FIXED ALONG THE WAY (§H27za5)
+
+128x256x64_2x1_h_swz64stsm -- added by me in §H27z.97 with the stmatrix mapping known-unfinished
+(template :3934 says so) -- raises an ILLEGAL MEMORY ACCESS, which is STICKY: it destroys the
+CUDA context and aborts the matrix suite at case 299 of 5766. Every correctness run between
+§H27z.97 and now silently covered 5% of the config space. All stmatrix configs unregistered; the
+`using` definitions stay, documented with their measured failure.
