@@ -16357,3 +16357,57 @@ slope = 103% of the gap (per-k-iteration), DEPBAR 32.28% vs 9.77%, tensor pipe i
 **Falsifier:** if both skew arms sit inside the pin's range on V3, the drain is not the cost
 either, the 8-in-flight structure buys nothing on this kernel, and the mainloop-pipeline thread
 is **closed**. Say so plainly; do not reinterpret it as "needs deeper stages".
+
+### §H27zdb-RESULT — ADOPTED. +1.62 on V3, and the first change to move the predicted counter *and* the clock.
+
+GPU 3, `neat-book-falls-fin-03`, 20260818T135301Z, 7 reps, commit `7df2671`.
+
+**Phase 1 — V3 16384x11264x2048 nn, the decision**
+
+| config | %cuB | min | max | maxRelErr | |
+|---|---|---|---|---|---|
+| PIN `rs8_dh_ubd` | 94.21 | 93.6 | 94.5 | 0.00000 | |
+| `rs8_dh_ubd_skew` | 95.59 | 95.3 | 95.7 | 0.00000 | **ADOPT** |
+| `rs8_dw_skew` | **95.83** | 95.3 | 96.2 | 0.00000 | **ADOPT — pinned** |
+| `rs8_dw` (control) | 93.79 | 93.3 | 94.3 | 0.00000 | null/negative |
+
+Both skew arms' **min (95.3) clears the pin's max (94.5)** — ranges fully separated, the rule is met.
+**V3: 94.21 → 95.83, +1.62.**
+
+The control earns its place: `dw` *alone* is 93.79, slightly **below** the pin. The gain is SKEW,
+not the descriptor rewrite it rides on.
+
+**Phase 2 — the mechanism, confirmed rather than assumed**
+
+| | barrier | shortsb | mio_thr | issue% | tensor% | inst_total |
+|---|---|---|---|---|---|---|
+| PIN | 32.25 | 2.45 | 6.58 | 18.9 | 88.2 | 160,276,112 |
+| `dh_ubd_skew` | 23.10 | 1.33 | 6.90 | 21.8 | 88.9 | 183,312,853 |
+| `dw_skew` | 23.51 | 1.33 | 7.14 | 20.4 | 89.1 | 171,443,854 |
+| cuBLAS | 18.42 | 0.17 | 15.00 | 13.5 | 92.1 | 109,423,163 |
+
+**Barrier stall 32.25 → 23.10, −9.15 points**, closing ~66% of the distance to cuBLAS's 18.42.
+Short-scoreboard halved. This is precisely the counter the mechanism predicted, and it moved
+together with the time — the first time on this shape that both have moved at once.
+
+**Instruction count went UP 14% (160M → 183M) and it got FASTER.** That closes the
+instruction-count thread permanently: it was never the currency on this kernel. Recorded here
+because three separate efforts (§H27z.99b, §H27zb6, §H27zc2) were spent on it.
+
+**Phase 3 — transfer**
+
+| | PIN | +SKEW | verdict |
+|---|---|---|---|
+| V4 16384x50304x2048 nn | 92.81 [89.3, 95.5] | 93.40 [89.9, 97.1] | overlap — V4's ±3 drift, **no regression** |
+| V5 2048x11264x16384 tn | 83.01 [81.8, 83.6] | 83.21 [82.3, 83.8] | **NULL** |
+
+V5 is a genuine null and V5 at 83% is now the worst of the 192x192 family by 12 points —
+whatever holds it back is not the drain and not shared with V3.
+
+**Stated as unresolved, not glossed:** `dw_skew` and `dh_ubd_skew` are **not separated** from each
+other (both mins 95.3). `dw_skew` is pinned on its higher mean and 12M fewer dynamic
+instructions, but this evidence does not establish it is the better arm.
+
+**What remains on V3 — 4.17 points.** Barrier is still 23.10 vs 18.42, and tensor utilisation
+moved only 88.2 → 89.1 against cuBLAS's 92.1, so ~3 points of tensor idle survived. The drain
+was *a* cost worth 1.62; it was not all of it.
