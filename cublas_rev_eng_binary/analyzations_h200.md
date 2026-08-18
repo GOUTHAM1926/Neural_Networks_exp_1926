@@ -16411,3 +16411,74 @@ instructions, but this evidence does not establish it is the better arm.
 **What remains on V3 — 4.17 points.** Barrier is still 23.10 vs 18.42, and tensor utilisation
 moved only 88.2 → 89.1 against cuBLAS's 92.1, so ~3 points of tensor idle survived. The drain
 was *a* cost worth 1.62; it was not all of it.
+
+---
+
+## §H27zdc — the remaining gap is the CONSUMER draining its own wgmma. The producer is slack.
+
+GPU 3, 20260818T142748Z, V3 on the new pin: **95.79 [95.2, 96.2]**, ratio 1.0440 — §H27zdb reproduces.
+
+### The role split (PC samples attributed by code region, both kernels)
+
+| | OURS | cuBLAS |
+|---|---|---|
+| **PRODUCER region** | **34.11%** | **15.68%** |
+| — barrier wait | 26.20% (4 sites) | 6.55% + 3.75% sleep |
+| **CONSUMER region** | **63.47%** | **73.26%** |
+| — wgmma MATH | 19.59% | 38.82% (+6.97 = **45.79**) |
+| — DEPBAR drain | **21.44%** | **9.42%** |
+| — barrier wait | 5.52% | 5.57% |
+
+**cuBLAS spends 46% of its samples doing matrix math. We spend 20%.**
+
+### Two conclusions, the first reversing the obvious reading
+
+**1. The producer's 26.20% is SLACK, not cost.** The consumer's wait-for-FULL is 5.52% against
+cuBLAS's 5.57% — **identical to 0.05 points**. The producer is keeping up completely; it is simply
+idle ahead of the consumer. Making the producer faster buys nothing, and **mio_throttle is dead as
+a lead for the second time** (phase 3: V5 runs 5.96 with tensor% 97.4 yet sits at 83% cuB; V7/V8
+run ~0.00 and are our best shapes — it does not track %cuB at all).
+
+**2. The gap is the consumer draining its own wgmma: 21.44 vs 9.42.**
+
+### A methodology bug worth recording
+
+The first role-split run reported "no samples". Two causes, both mine:
+* the ncu `--page source` CSV is **two-level** — a kernel-name line, then the real
+  `("Address","Source",<metric>)` header, repeated per kernel. Reading line 1 as the header
+  yields zero rows.
+* it matched only `SYNCS.PHASECHK`, but **the stall lands on the branch that consumes the
+  predicate, not the instruction that produces it**. Our barrier waiting was sitting in the
+  "control flow" bucket (33.21% vs cuBLAS's 12.89%) the entire time — six `@!P1 BRA` sites
+  totalling 28.3%, all jumping into one outlined spin region. "Control flow" was never control flow.
+
+### Why the drain is still expensive — from the SASS
+
+Per pass the consumer issues 12 wgmma in two groups: **8** (atoms 1..2) at acquire, and **4**
+(atom 0) one pass later. SKEW bought the 8 a full pass to retire. The 4 still issue **immediately**
+before the `wait_group<0>` that covers them:
+
+```
+issue atom0 (4 wgmma) -> commit -> DEPBAR -> release        zero slack for those 4
+```
+
+**§H27zdc ACQ_FIRST** (slot 31) moves the stage acquire in between, so the consumer's wait-for-FULL
+overlaps atom 0 retiring instead of following it. SASS, no GPU: **102 → 100 instrs, R2UR 0, IMAD 0,
+8 still in flight, DEPBAR still `0x0`, REG:168 STACK:0.** Requires `LOAD_PIPE_DEPTH >= 3` (it holds
+two stages; at depth 2 the consumer owns every buffer and it **deadlocks**) — compile-time fallback,
+not a `static_assert`, because asserting pipe depth centrally is what broke the build in §H27zd8.
+
+**REJECTED ON CORRECTNESS:** `wait_group<1>` leaves atom 0's group outstanding across
+`release_empty(head_stage)`, so the producer may overwrite smem the wgmma is still reading. ptxas
+emits `DEPBAR.LE gsb0, 0x1` **faithfully** — an earlier note claiming ptxas overrides it was wrong,
+and it offers no protection.
+
+**Honest ceiling:** the slack ACQ_FIRST buys is bounded by the consumer FULL-wait, **5.52%** of
+samples — expect a fraction of that, not the 12-point DEPBAR gap. If flat, the drain is intrinsic
+wgmma latency that no reordering reaches, and the next lever must change the wgmma schedule itself.
+
+### Correction to §H27zdb-RESULT's arithmetic
+
+"Closing the tensor idle gives ~99%" holds **for V3** (1.0440 × 89.1/92.1 = 1.0100 → 99.0%) but is
+**not a general law**. V5 has tensor% 97.4 against cuBLAS's 98.6 — 1.2 points apart — yet sits at
+83.0% cuB. Tensor utilisation explains ~77% of V3's gap and almost none of V5's.
