@@ -16482,3 +16482,3571 @@ wgmma latency that no reordering reaches, and the next lever must change the wgm
 "Closing the tensor idle gives ~99%" holds **for V3** (1.0440 × 89.1/92.1 = 1.0100 → 99.0%) but is
 **not a general law**. V5 has tensor% 97.4 against cuBLAS's 98.6 — 1.2 points apart — yet sits at
 83.0% cuB. Tensor utilisation explains ~77% of V3's gap and almost none of V5's.
+
+---
+
+## §H27zde — V4 never drifted. Our benchmark harness measured four launches of the clock ramp.
+
+GPU 0, `dark-leaf-wilts-fin-03`, 20260819. **This invalidates measurement, not kernels.**
+
+### The observation
+
+V4 (16384×50304×2048 nn) swung **87.0 → 101.2 %cuB** on a bit-exact config — one rep beat cuBLAS
+outright, another lost by 13 points — while V3 (16384×11264×2048 nn) held ±0.5 on the same config,
+same box, same script. `maxRelErr` was 0.00000 on every rep at both extremes.
+
+### Candidate A — clocks. Real for V3, **not** V4's cause.
+
+| | %cuB spread | corr ours↔cuBLAS |
+|---|---|---|
+| V3 free | 4.4% | +0.72 |
+| V3 locked 1400 | **1.5%** | +0.99 |
+| V4 free | 16.8% | +0.10 |
+| V4 locked 1400 | 15.2% | −0.31 |
+
+Locking tightens V3's ratio nearly 3× because both kernels then track each other. It does almost
+nothing for V4. Worth adopting as method; not the answer here.
+
+V4's ratio is worse than **either** side (ours 9.3%, cuBLAS 9.7%) because the two are
+**uncorrelated** — independent noises compound in a ratio. That is arithmetic, not a mystery.
+
+### Candidate B — the timing window. **CONFIRMED.**
+
+`TARGET_MS = 20.0` ⇒ `iters = 20 / probe_ms`. V3 at 1.0 ms gets ~20 launches; V4 at 4.5 ms gets **4**.
+
+Window sweep on V4, clocks locked:
+
+| window | iters | ours CV | cuB CV | **%cuB spread** |
+|---|---|---|---|---|
+| 20 ms | ~4 | 2.56% | 4.25% | **12.8%** |
+| 100 ms | ~22 | 0.60% | 1.40% | **5.3%** |
+| 400 ms | ~88 | 0.40% | 0.38% | **2.5%** |
+
+Monotonic, 5×, both sides collapsing together.
+
+**Independent confirmation** — per-launch ncu timings, immune to the harness loop entirely:
+
+```
+V3   10 launches   spread 2.9%
+V4   10 launches   spread 1.6%     <- V4 is TIGHTER than V3
+```
+
+**V4 is one of our steadiest kernels.** The swing was manufactured by averaging four launches
+during the clock ramp.
+
+### Consequences
+
+1. **"V4 drifts ±3 on an IDENTICAL config" was never true.** It is asserted in
+   `h27zdb_skew.sh`, `h27zc2_ubd.sh`, `h27zbc_skew.sh`, `h27zb6_192_mainloop.sh`, `h27zd5_xfer.sh`
+   and was in `pins.sh`. Those scripts are left unedited — they are records of what was believed
+   when they ran; `tools/pins.sh` now carries the correction. **Every V4 number we have quoted
+   (94.41, 92.81, 92.20, 92.99) is noise**, and SKEW was never actually tested on V4.
+2. **At a proper window V4 and V3 are ordinary neighbours:** 92.39 vs 93.77.
+3. **Default `TARGET_MS` raised 20 → 100**; `BLUBLAS_BENCH_TARGET_MS` / `BLUBLAS_BENCH_MIN_IT` are
+   now runtime overrides. Export **400** for adoption decisions.
+4. **Absolute TFLOPS are not comparable across window settings.** A longer window is more sustained
+   full-power compute: V4's own time went 4897 → 5235 → 5469 µs (+11.7%) across the sweep. It hits
+   both sides about equally so `%cuB` survives. Record the window with any absolute number.
+5. **V3's adoptions survive.** V3 is ~1 ms so it always had ~20 iterations; the SKEW separation
+   (pin [93.8, 94.8] vs skew [95.7, 96.3]) stands. Anything decided on a kernel longer than ~2 ms
+   does not, and needs re-deciding at a 400 ms window.
+
+---
+
+## §H27zdh — V6: 84.53 → 95.14 (+10.61). The chunked epilogue costs more than the stage it buys.
+
+GPU 0, `dark-leaf-wilts-fin-03`, 20260819, 7 reps, `16384x5632x2048 nt`.
+
+### The result — ranges fully separated, far above the 4.4-point floor
+
+| config | %cuB | min | max | |
+|---|---|---|---|---|
+| `ep16s2` (THE PIN, depth 4 chunked) | 84.53 | 84.1 | 84.9 | |
+| `ep16s2_rs8_dh_ubd` | **75.09** | 74.8 | 75.5 | knobs make depth 4 **worse** |
+| `ep16s2_rs8_dh_ubd_skew` | 77.36 | 77.1 | 77.9 | |
+| `192x192x64_2x1_h` (depth 3 plain) | 93.96 | 93.5 | 94.6 | |
+| `..._h_rs8_dh_ubd` | 94.21 | 93.6 | 94.6 | |
+| **`..._h_rs8_dh_ubd_skew`** | **95.14** | **94.8** | **95.7** | **ADOPTED** |
+
+`[94.8, 95.7]` against `[84.1, 84.9]` — a 10-point separation with no overlap.
+
+### Why — and it is NOT that depth 4 is wrong
+
+cuBLAS runs depth 4 on this shape too (`nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coopB_TNN`). The
+difference is the **price each of us pays** for the 4th stage:
+
+| | instructions | spill | tensor% |
+|---|---|---|---|
+| ours, depth 4 (chunked epilogue) | 169,816,061 | 48 B | 78.5 |
+| ours, depth 3 | 87,416,800 | 0 | 88.9 |
+| **cuBLAS, depth 4** | **54,673,658** | **0** | **92.7** |
+
+We buy depth 4 by chopping the epilogue into 12 double-buffered 16-column chunks. cuBLAS buys it
+with an epilogue cheap enough not to need the smem at all — **18 `STSM.16.M88.4` against our
+144 `STS`** (§H27zdc). Our chunking costs 2× the instructions of depth 3 and a 200 B spill once
+`rs8`+`dh_ubd` are on, which is exactly why adding our knobs to it **regresses** 84.53 → 75.09.
+
+**So the adopted pin is the best AVAILABLE config, not the apples-to-apples match.** Matching
+cuBLAS means depth 4 *with an STSM epilogue*. That remains the open work.
+
+### The sample ledger — the remaining ~4.9 points
+
+| | ours % | cuBLAS % | excess |
+|---|---|---|---|
+| control flow | 34.51 | 10.17 | **+30.57** |
+| DRAIN wait | 26.37 | 10.64 | **+20.49** |
+| uniform addr math | 10.92 | 7.96 | +4.93 |
+| reg↔uniform move | 2.82 | 0.14 | +3.20 |
+| **WGMMA math** | **7.22** | **48.22** | **−39.70** |
+
+**cuBLAS spends 48% of its samples doing matrix math; we spend 7%.** As on V3, our "control flow"
+is the outlined barrier-spin branches (the role splitter matches `PHASECHK`, but the stall lands
+on the `BRA` that consumes the predicate), and `DEPBAR` is 22.09% against their 10.08%.
+
+### Counters
+
+| | barrier | shortsb | mio | issue% | tensor% |
+|---|---|---|---|---|---|
+| `ep16s2` (depth 4) | 28.18 | 2.80 | 3.06 | 35.1 | 78.5 |
+| `h_rs8_dh_ubd_skew` (depth 3) | 22.23 | 1.37 | 7.43 | 20.5 | 88.9 |
+| cuBLAS | 20.21 | 0.18 | 14.80 | 13.3 | 92.7 |
+
+### Corrections this run forced
+
+* "V6's 48 B spill is the blocker" — **wrong**. 45 of 46 spill ops are in the epilogue; the
+  blocker was the chunked epilogue's whole cost, of which the spill is one symptom.
+* "cuBLAS uses 3 stages so drop to depth 3" — **wrong reasoning, right action.** cuBLAS uses 4.
+  Depth 3 wins only because our depth-4 implementation is expensive.
+* V6's real baseline is **84.53**, not the 87.5 carried in older notes.
+
+---
+
+## §H27zdm — THE TENSOR IDLE WAS A TMA STORE DRAIN WE TOOK ONE TILE TOO EARLY. V3 99.44, V4 99.79, V6 98.53.
+
+GPU 0, `dark-leaf-wilts-fin-03`, 20260819, clocks locked, 7 reps, all bit-exact 0.00000.
+
+### The result
+
+| V | shape | this morning | now | gain |
+|---|---|---|---|---|
+| **V3** | 16384×11264×2048 nn | 91.30 | **99.44** [99.0, 100.0] | **+8.14** |
+| **V4** | 16384×50304×2048 nn | 91.08 | **99.79** [99.7, 99.9] | **+8.71** |
+| **V6** | 16384×5632×2048 nt | 84.80 | **98.53** [97.8, 99.2] | **+13.73** |
+| V5 | 2048×11264×16384 tn | ~83 | 82.46 | +1.42, mostly skew |
+
+### How it was found — tensor% is a SYMPTOM, not a cause
+
+| | tensor BUSY | tensor IDLE | cycles | wgmma |
+|---|---|---|---|---|
+| ours (V6, depth 3) | 745,550 | **93,089** | 838,639 | 7,925,760 |
+| cuBLAS (depth 4) | 740,230 | **58,292** | 798,522 | 7,925,760 |
+
+wgmma counts are **bit-identical** (verified on V3, V4 and V6), so tensor-busy cycles must match —
+and they do, 0.72% apart. **cuBLAS does not use the tensor cores more efficiently; they use them
+identically and have less dead time between uses.** The whole 40,117-cycle gap is **34,797 extra
+IDLE cycles = 1,780 per tile = 87% of it.**
+
+### The cause, in our own code with its own comment
+
+```cpp
+// "drain every outstanding store before this CTA moves to its next tile
+//  and starts overwriting c_buf again."
+tma_store_wait<0>();          // at the END of every tile
+```
+
+Correct reasoning, wrong placement. The next tile's **mainloop never touches `c_buf`** —
+`store_smem = smem_base + LOAD_PIPE_DEPTH * copy_size` sits past every A/B stage. Only the next
+tile's **epilogue** needs it. So the SM stalled on a store with **no wgmma able to issue**, once per
+tile, when it could have run a whole tile of k-iterations first.
+
+**`EPI_LATE_STORE_WAIT` (slot 32)** moves the wait to the top of the *next* epilogue, in front of
+the `barrier_sync` already there, same lane-0-waits-then-sync pattern as the chunk-recycling wait.
+The recycling `wait<EPI_STAGES-1>` is untouched — it guards slot reuse *within* a tile.
+
+### Confirmed by the arm where it did NOTHING
+
+| arm | epilogue | result |
+|---|---|---|
+| non-chunked (exposed `wait<0>` right after commit) | | 95.03 → **98.53** |
+| chunked (already pipelined via `wait<EPI_STAGES-1>`) | | 92.16 → 92.11, **flat** |
+
+The fix moves exactly the path that had the defect and leaves the already-correct path alone.
+
+### And it explains the whole campaign
+
+This doc recorded *"the 192x192 family (V3-V6) is the ONLY group under 90%"*. **The 192×192 family
+is the only NON-CHUNKED group.** V7/V8 (`128x256_swz64`) and V2 (`256x128_ep32s2`) are
+`EPI_TILE_N=32`, hence already pipelined, hence already at 96–98% for the whole campaign. The slow
+variants were precisely the ones paying a full TMA store drain every tile.
+
+### Why V5 gets nothing — quantified, not hand-waved
+
+| | k_iters/tile | tiles | tiles per SM | `_lsw` gain |
+|---|---|---|---|---|
+| V6 | 32 | 2,580 | 19.5 | +3.50 |
+| V3 | 32 | 5,074 | 38.4 | +3.58 |
+| V4 | 32 | 22,532 | 170.7 | +3.19 |
+| **V5** | **256** | **649** | **4.9** | **+0.00** |
+
+`_lsw` removes a per-**tile** cost. V5 has 8× the k-iterations per tile and 4× fewer tiles per SM,
+so there is almost nothing to recover. **V5's ~17.5-point deficit is not the epilogue, not the
+drain, and not shared with V3/V4/V6.** It is the next real target and is still unexplained.
+
+### Hypotheses killed on the way here
+
+| | candidate | verdict |
+|---|---|---|
+| R1 | redundant wgmma | **DEAD** — counts bit-identical on 3 shapes |
+| R2 | bank conflicts | **DEAD** — the fewest-conflict arm is 3.6% *slower* |
+| R3 | ping-pong | **DEAD** — needs 288 accumulator registers vs 232 available |
+| C | spin vs sleep | **DEAD twice** — flat on depth 3 and depth 4 |
+| D/E/F | FMUL / LDG / F2FP | **DEAD** — 2.26% / **0.00%** / 0.66% of samples |
+| — | depth 4 epilogue staging | **saturated at 3 stages** (ea32s4 regresses) |
+
+### §H27zdn — depth 4 is CLOSED. The epilogue cost is one MEMBAR per chunk, and the fence is not reachable from PTX.
+
+Chunk-count sweep at depth 4, V6, clocks locked, 7 reps, all bit-exact:
+
+| chunks | config | MEMBARs | %cuB | range |
+|---|---|---|---|---|
+| 1 | depth3 full-tile + `_lsw` | 1 | **98.56** | [97.9, 99.4] |
+| 2 | `ea96s1` (no STSM) | 2 | 96.37 | [96.0, 96.9] |
+| 4 | `ea48s2` (no STSM) | 4 | 94.54 | [94.4, 94.8] |
+| 6 | `ea32s3` (STSM) | 6 | 91.94 | [91.5, 92.3] |
+
+**Monotonic, ~2 points per chunk-doubling.** The 6-chunk arm has stmatrix and is still the worst —
+**STSM cannot compensate for chunk synchronisation.**
+
+**WHY, and it is a hard limit, not a missing knob.** cuBLAS's store loop, decoded from their SASS:
+
+```
+8x F2FP -> STSM -> 6x F2FP -> STSM -> FENCE.VIEW.ASYNC.S -> UTMASTG -> UTMACMDFLUSH
+                                   -> UIADD3 UR32, UR32, ±0x1000    (2-slot ping-pong, 4096 B each)
+```
+
+A **bare `FENCE.VIEW.ASYNC.S`** orders their STSM before the TMA. Ours is a `MEMBAR.ALL.CTA +
+FENCE.VIEW.ASYNC.S` pair: **ours 15 MEMBARs, cuBLAS 0.** §H27z.98 already measured with
+`fence_probe.cu` that **every writable PTX form** of `fence.proxy.async*` emits a MEMBAR, and that
+**CUTLASS uses the identical PTX**. cuBLAS's bare fence is emitted through NVIDIA's internal nvjet
+path, below PTX. **Not a technique available to us or to CUTLASS.**
+
+So the only lever is FEWER fences = fewer chunks, and **1 chunk is the floor.** Depth 4 forces
+chunking (34,816 B left cannot hold a 73,728 B full-tile buffer, nor 6 resident slots at 49,152 B),
+so depth 4 is structurally capped ~6.6 points below depth 3 on this tile.
+
+**Depth 3 is therefore the OPTIMUM for anything compiled through PTX, not a workaround.** The
+residual ~1 point on V6 is the single unavoidable MEMBAR. Closed.
+
+### §H27zdo — the MEMBAR is a PTX-surface gap, not a "codegen privilege". 11 spellings enumerated.
+
+§H27z.98 tested three `fence.proxy.async*` forms and concluded the bare fence was unreachable.
+That was right but under-evidenced, and "cuBLAS gets a codegen privilege" was the wrong framing —
+we use the same `ptxas`. Full enumeration on sm_90a, each fence placed between a shared-memory
+write and a `cp.async.bulk.tensor` store so it cannot be optimised away:
+
+| PTX spelling | MEMBAR | SASS |
+|---|---|---|
+| `fence.proxy.async.global` | **NONE** | `FENCE.VIEW.ASYNC.`**`G`** |
+| `fence.proxy.async.shared::cta` | `MEMBAR.ALL.CTA` | `FENCE.VIEW.ASYNC.`**`S`** |
+| `fence.proxy.async.shared::cluster` | `MEMBAR.ALL.GPU` | `FENCE.VIEW.ASYNC.S` |
+| `fence.proxy.async` | `MEMBAR.ALL.GPU` | `FENCE.VIEW.ASYNC.S` |
+| `fence.acq_rel.cta` | `MEMBAR.ALL.CTA` | — |
+| `fence.acq_rel.cluster` | `MEMBAR.ALL.GPU` | — |
+| `fence.sc.cta`, `membar.cta` | `MEMBAR.SC.CTA` | — |
+| `fence.proxy.alias` | `MEMBAR.SC.GPU` + `SC.SYS` | — |
+| `bar.warp.sync` | NONE | — |
+| (no fence) | NONE | — |
+
+**Exactly one bare-fence spelling exists — and it is the WRONG PROXY.** Our hazard is `STSM`
+(generic proxy) writing **shared** memory that the TMA engine (async proxy) then reads;
+`.global` orders global accesses and does not cover it. Using it would be a silent
+correctness bug of the same class as the `stsm_lane_off` address bug (§H27za5: wrong answers on
+299 of 5766 cases, no crash). **Not adopted.**
+
+**Correct statement:** every spelling with the shared-memory semantics we need emits a MEMBAR;
+the only bare one has the wrong semantics. cuBLAS's bare `FENCE.VIEW.ASYNC.S` has no PTX spelling.
+CUTLASS is subject to the identical gap (`barrier.h:733` uses `fence.proxy.async.shared::cta`).
+
+**Cost of that gap, measured:** MEMBAR count correlates with %cuB at **~0.83 points each**
+(1→98.56, 3→96.37, 6→94.54, 9→91.94, near-perfectly linear). Depth 3 needs 1; depth 4 needs ≥3.
+
+---
+
+## §H27zdp — DECISION: pin depth 3 + `_lsw`. Depth 4 reached 96.37 and is PARKED, not abandoned.
+
+### The decision, and why it is deliberate
+
+**PINNED: depth 3 + `_lsw`** on all four 192×192 shapes. It is the best measured config everywhere.
+
+**PARKED FOR LATER WORK: depth 4.** It reached **96.37** (V6, `ea96s1_rs8_dh_ubd_skew_lsw`,
+2 chunks) from a starting point of 84.80 — **+11.57 in one session** — and it is the config that
+actually matches cuBLAS's structure (`nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coopB_TNN` is 4 stages).
+
+**We are therefore NOT apples-to-apples on stage count, and that is a conscious, recorded choice:**
+depth 3 wins on the clock today, so it ships; depth 4 remains the research target because it is the
+matching structure and because its remaining deficit is now a single quantified term.
+
+### Scope of every number — do not generalise these
+
+| what | variant | shape | layout |
+|---|---|---|---|
+| **ALL depth-4 numbers** | **V6 only** | **16384×5632×2048** | **nt** |
+| `_lsw` transfer | V3, V4, V5, V6 | one shape each | nn/nn/tn/nt |
+
+The 192×192 family is **4 of the 15 shapes**, one per variant. `96.37` is **one shape**, and it is
+*worse* than the 98.53 that same shape already has on depth 3.
+
+### Depth-4 progression, V6 (all one shape)
+
+| config | chunks | MEMBARs | %cuB |
+|---|---|---|---|
+| `ep16s2` (the original pin) | 6 | 9 | 84.80 |
+| `+ STSM` (`ep32s1stsm`) | 6 | 9 | 90.37 |
+| `+ atom-staged 2/3/4 stages` | 6 | 9 | 91.74 / 92.20 / 91.74 |
+| `ea48s2 + lsw` | 4 | 6 | 94.54 |
+| **`ea96s1 + lsw`** | **2** | **3** | **96.37** |
+| *depth 3 + lsw, for reference* | *1* | *1* | *98.56* |
+
+### What depth 4 still needs — the parked work
+
+`%cuB` tracks MEMBAR count at **~0.83 points each**, near-perfectly linear
+(1→98.56, 3→96.37, 6→94.54, 9→91.94). Depth 4 needs **≥3** MEMBARs because it forces chunking
+(34,816 B left holds neither a 73,728 B full-tile buffer nor 6 resident slots), so it is
+**structurally ~1.7 points behind depth 3 until the fence problem is solved.**
+
+cuBLAS on V6: **0 MEMBAR, 12 bare `FENCE.VIEW.ASYNC.S` costing 0.06% of the kernel in total** —
+they fence *more finely than us*, one per store, and pay nothing. Our coarse chunking is a forced
+adaptation to an expensive primitive, not a design preference.
+
+**Blocked on:** no PTX spelling emits a bare shared-proxy fence. 11 enumerated (§H27zdo); the only
+bare one is `fence.proxy.async.global`, wrong proxy, would be a silent correctness bug.
+
+**To revisit later:** newer PTX/ptxas versions, `cp.async.bulk` completion mechanisms that avoid an
+explicit fence, or a tile shape where `WGMMA_N` admits a 1-chunk depth-4 epilogue.
+
+### §H27zdp-CORRECTION — cuBLAS uses 3 STAGES on three of the four 192×192 shapes. Only V6 gets 4.
+
+Captured per shape (h27zdl / h27zdc / h27zdh phase 4, all on the current box):
+
+| V | shape | layout | cuBLAS kernel | stages | ours | matching? | %cuB |
+|---|---|---|---|---|---|---|---|
+| **V3** | 16384×11264×2048 | nn | `..._192x192_64x3_1x2_h_bz_coopB_NNN` | **3** | 3 | ✅ | **99.44** |
+| **V4** | 16384×50304×2048 | nn | `..._192x192_64x3_2x1_v_bz_coopB_NNN` | **3** | 3 | ✅ | **99.79** |
+| **V5** | 2048×11264×16384 | tn | `..._192x192_64x3_2x1_v_bz_coopB_NTN` | **3** | 3 | ✅ | **82.46** |
+| V6 | 16384×5632×2048 | nt | `..._192x192_64x4_2x1_v_bz_coopB_TNN` | **4** | 3 | ❌ | 98.53 |
+
+**The stage count tracks the LAYOUT:** NNN/NTN → 3 stages, TNN → 4 stages.
+
+**This corrects §H27zdp.** Depth 3 is apples-to-apples on V3, V4 and V5 — those are genuine
+matched-structure results, not workarounds. **Only V6 is a structural mismatch**, so the parked
+depth-4 work is worth ~1.5 points on ONE of fifteen shapes.
+
+**And it reframes V5.** V5 runs the IDENTICAL structure to cuBLAS — 192×192, 3 stages, 2×1
+cluster, `_v` raster — and is **17 points behind**. No structural excuse: it is a pure
+implementation gap on a config we already match, and it is now the largest and cleanest target
+in the campaign.
+
+For reference, V7/V8 draw `..._256x128_64x4_1x2_h_bz_coopA_{NNT,TNT}` (4 stages, coopA).
+
+---
+
+## §H27zdq — V5 is a DIFFERENT DISEASE. V6 lags on IDLE TIME; V5 lags on EXTRA WORK.
+
+GPU 0, `dark-leaf-wilts-fin-03`, 20260819. V5 = 2048×11264×16384 tn,
+pin `192x192x64_2x1_v_rs8_dh_ubd_skew_lsw`, **82.46%**.
+
+### V5 IS apples-to-apples — no structural excuse
+
+| axis | cuBLAS | ours | match |
+|---|---|---|---|
+| kernel | `nvjet_sm90_tst_192x192_64x3_2x1_v_bz_coopB_NTN` | — | — |
+| tile | 192×192×64 | 192×192×64 | ✅ |
+| stages | **3** | **3** | ✅ |
+| cluster | 2×1 | 2×1 | ✅ |
+| raster | v | v | ✅ |
+| wgmma | `HGMMA.64x96x16.F32.BF16 .tnspA.tnspB` | **identical** | ✅ |
+| coopB | yes | not implemented | ❌ |
+
+### THE CAUSE: we do ~20% more tensor work
+
+| | tensor_instr | tensor BUSY cycles | tensor% | total cycles |
+|---|---|---|---|---|
+| ours | 17,399,808 | 1,784,815 | 98.36 | 1,814,581 |
+| cuBLAS | 16,220,160 | 1,486,439 | 98.58 | 1,507,812 |
+| | **+7.3%** | **+20.1%** | | **+20.4%** |
+
+**Both are 98.4% tensor-bound, so V5 is purely tensor-throughput-limited.** Cycle ratio 1.2035 vs
+tensor-busy ratio 1.201 — they agree to 0.3%, so **the entire 17.5-point gap is extra tensor work.**
+
+It splits:
+* **+7.3% more wgmma instructions.** M padding 2048→2112 (3.1%) + N 11264→11328 (0.6%) = 3.7%.
+  **~3.5% is beyond padding and UNEXPLAINED.**
+* **+11.9% more tensor cycles per wgmma instruction** (1.201 / 1.0727) — **the bigger half, and
+  the wgmma shape is IDENTICAL**, so the same instruction is costing us more.
+
+### V6 vs V5 — the two lags are different and must not be conflated
+
+| | **V6 = IDLE LAG** | **V5 = EXTRA-WORK LAG** |
+|---|---|---|
+| tensor BUSY vs cuBLAS | **identical** (0.72%) | **+20.1%** |
+| tensor% | 88.9 vs 92.7 | 98.4 vs 98.6 |
+| root cause | TMA store drain taken one tile early | ~20% more tensor work |
+| `_lsw` fix | **+3.50** | **+0.00** |
+| fixed? | **yes, 84.80 → 98.53** | **no** |
+
+This is exactly why the fix that carried V3/V4/V6 to 98.5–99.8 was worth **zero** on V5.
+
+### Killed on V5 specifically
+
+| candidate | verdict | evidence |
+|---|---|---|
+| load imbalance / few tiles per SM | **DEAD** | imbalance 1.3% ours vs 1.1% cuBLAS, grid 132 both |
+| wave quantisation | **DEAD** | 649/(5×132) = 98.3%, 1.7% |
+| padding alone | **insufficient** | 3.7% of a 20% gap |
+| `_lsw` (per-tile store drain) | **DEAD** | +0.00; V5 has 256 k-iters/tile and 4.9 tiles/SM |
+| different wgmma shape | **DEAD** | identical `64x96x16 .tnspA.tnspB` both |
+
+### Sample census (by samples, not static counts)
+
+| | ours | cuBLAS |
+|---|---|---|
+| HGMMA | 22.35% | **53.41%** |
+| BRA | **26.11%** | 8.21% |
+| WARPGROUP (DEPBAR) | 22.32% | 9.36% |
+| hottest | 2 × `DEPBAR` at 10.99 + 10.96 | `HGMMA` 14.41 |
+
+### Open on V5 — the next two questions, in size order
+
+1. **Why does an identical `HGMMA.64x96x16 .tnspA.tnspB` cost us 11.9% more tensor cycles?**
+   Candidates: the smem swizzle the descriptor selects, or operand behaviour on the doubly-
+   transposed path. No measurement yet.
+2. **Where is the ~3.5% of extra wgmma beyond padding?**
+
+**V5 needs no structural change** — it already matches cuBLAS's config. It just has to stop doing
+20% more work than that config requires.
+
+---
+
+### §H27zdt — the producer TIGHT-SPIN. NULL. Slot 28 measured for the first time since §H27zc7.
+
+PC sampling on V5 (`profiling_reports/h27zdq/pcsamp`) made this the prime suspect BY ADDRESS. The
+four hottest instructions in the whole kernel are one per pipeline stage:
+
+    idx 2415  5.68%   idx 2583  5.86%   idx 2743  6.03%   idx 2903  6.33%   = 23.90% TOTAL
+
+each the back-edge of `mbarrier_wait_impl<0>`'s tight spin after a failed
+`SYNCS.PHASECHK.TRANS64.TRYWAIT P1, [UR8], R5`. All four address a CLUSTER-PEER (DSMEM) barrier —
+proven by `S2UR SR_CgaCtaId` + `ULEA UR8, UR9, UR8, 0x18` feeding the TRYWAIT. cuBLAS has the SAME
+four TRYWAIT sites and sleeps instead, paying 0.01%: `NANOSLEEP.SYNCS 0xc350`.
+
+MEASURED (n=7, 100 ms window), TICKS=50000 = cuBLAS's exact hint, with an `_h` CONTROL arm:
+
+    V5_base    min 80.20  med 84.20  max 86.30
+    V5_tk50k   min 83.50  med 84.80  max 86.60      +0.6
+    V5_tk12k   min 79.90  med 81.40  max 84.80      -2.8
+    V3_base    min 93.30  med 96.40  max 98.90
+    V3_tk50k   min 95.10  med 96.90  max 99.90      +0.5   <-- SAME as V5
+
+The control did its job: `_tk50k` moves V5 and V3 by the same amount, so it is a small general
+effect, not V5's cause. **The spin time is SLACK** — the producer is ahead and waiting, and
+sleeping through the wait buys nothing.
+
+METHODOLOGICAL CORRECTION THAT COST US TWICE TODAY: **PC-sample share is not wall-clock cost.**
+A spinning producer occupies its ~1/3 warp-slot share of the samples whether or not it is on the
+critical path; cuBLAS's sleeps and drops to 8%. Reading 23.90% as "cost" was wrong, and the same
+error was repeated later reading `issue_active` as evidence that instructions cost time.
+
+### §H27zdt-b — THE HARNESS NOISE IS cuBLAS'S, NOT OURS. Use BLUBLAS_BENCH_TARGET_MS=400.
+
+Decomposing the same runs into our TFLOPS vs the implied cuBLAS TFLOPS:
+
+    at 100 ms      OUR TFLOPS spread   cuBLAS spread   %cuB spread
+    V5             597-617   3.22%     709-752  6.08%   6.4 pts
+    V3             673-687   2.00%     686-721  5.09%   6.6 pts
+
+Our kernels are 2-3x STEADIER than the reference they are scored against. The harness times cuBLAS
+FIRST, from cold clocks, so cuBLAS eats the ramp and every %cuB inherits its swing. At 400 ms the
+cuBLAS reference tightens to 1.3% (684-693) and our baseline to 1.4 points. **Every A/B from here
+uses 400 ms.** Effects under ~6 points were never measurable at 100 ms — which retroactively puts
+`rs8` +2.27, `dh_ubd` +0.77 and `SKEW` +1.62 below the floor they were measured at.
+
+### §H27zdu — V5's WASTED TILE COLUMN. ADOPTED. 82.20 -> 92.80, the campaign's joint-largest win.
+
+`sm__inst_executed_pipe_tensor.sum / 24576` (= 256 k_iters x 96) is an EXACT CTA-tile count:
+
+    ours    17,399,808 / 24576 = 708.0 = 12 x 59
+    cuBLAS  16,220,160 / 24576 = 660.0 = 11 x 60
+    real work                    649   = 11 x 59
+
+Both divide exactly, and 708/660 = 1.0727 reproduces the measured tensor-instruction ratio to four
+decimals. M=2048 gives ceil(2048/192) = 11 M-tiles, an ODD count. At ~line 3799
+
+    mega_grid_m = (grid_m + CLUSTER_M - 1) / CLUSTER_M = ceil(11/2) = 6
+
+so `block_row = mega_row*CLUSTER_M + cluster_local_m` reaches 11 while valid rows are 0..10, and
+there is NO bounds guard anywhere in the file (grep `block_row >=`, `>= grid_m`, `A_x >= M`:
+nothing). The phantom CTA runs a full 192x192 tile at A_x = 2112 >= M; real-dim TMA descriptors
+zero-fill it, it multiplies zeros, and its store is dropped out of bounds.
+
+**maxRelErr stays 0.00000, so the waste is numerically INVISIBLE and no correctness test could ever
+have caught it.** The code already flagged the gap at ~line 3796: "Partial last cluster row/col ...
+not handled yet -- callers use aligned shapes (flagged follow-up)".
+
+FIX = cluster the LONG axis, which needs no odd-tile support at all. Padding the axis with 59 tiles
+wastes one short column (11 tiles, 1.7%); padding the axis with 11 wastes one long row (59, 9.1%).
+Same cluster size, 5x less waste. cuBLAS does exactly this — its grid is 11 x 60. Switching the pin
+from `2x1_v` to `1x2_v` changes only CLUSTER_M/CLUSTER_N; multicast re-gates itself
+(NEEDS_A = MC_A && CLUSTER_N>1, NEEDS_B = MC_B && CLUSTER_M>1), so 2x1 runs B-multicast and 1x2
+runs A-multicast, both already-validated paths.
+
+VERIFIED, tensor counter: 1x2 reads EXACTLY 16,220,160 — bit-identical to cuBLAS.
+MEASURED, n=7, 400 ms, RANGES SEPARATED (old max 83.30 < new min 91.80), bit-exact:
+
+    2x1_v   %cuB  81.90 / 82.20 / 83.30    TFLOPS med 568.91
+    1x2_v   %cuB  91.80 / 92.80 / 93.70    TFLOPS med 639.54
+    1x2_h   %cuB  91.30 / 92.80 / 93.70    TFLOPS med 636.53     (raster is irrelevant here)
+
+BEAT THE FORECAST (+7.3% work -> +12.4% TFLOPS) because of WAVE QUANTISATION on top:
+708 CTAs / 132 SMs = 5.36 -> 6 waves, the last 36% full; 660 / 132 = 5.00 exactly. Always check
+both the work and the wave count.
+
+V5 was the ONLY one of the 15 shapes with an odd clustered-axis tile count — V3/V4/V6 86,
+V7/V8 128, V1/V2 16/8/22, all even — which is precisely why it was the only laggard.
+
+CAVEAT ON THE OLD V5 WORK: all eleven earlier V5 hypotheses were A/B-tested against a baseline
+carrying this 12.4% penalty, at the 100 ms window whose floor was 6 points. They are NOT reliably
+dead and should be re-run on 1x2 at 400 ms before being cited.
+
+### §H27zdv — CAUSE #2 as stated: we execute 1.92x cuBLAS's instructions. Diagnosis correct, lever WRONG.
+
+With the tensor pipe at 98.4% of peak in BOTH kernels (98.36 vs 98.58), the 2x1-era runtime
+decomposed exactly:
+
+    1.0727 (more tensor work, fixed by H27zdu) x 1.1250 (lower SM throughput) = 1.2068
+    measured cycles ratio                                                       1.2051
+
+RE-MEASURED ON THE FIXED 1x2 CONFIG:
+
+                                        ours          cuBLAS      ratio
+    tensor instructions           16,220,160     16,220,160      1.0000   <- IDENTICAL
+    cycles elapsed                 1,530,965      1,517,122      1.0091
+    tensor % of peak                   97.93          98.66      0.9926
+    sm throughput % of peak            96.32          97.19      0.9910
+    total instructions           181,089,308    103,828,293      1.7441
+
+WHERE THE EXCESS LIVES (`--section SourceCounters`, exact per-address execution counts, not samples):
+
+    opcode          ours       cuBLAS        excess   %gap
+    UMOV      35,058,540    3,229,402    31,829,138   35.2%
+    ULOP3     13,505,184        8,052    13,497,132   14.9%   <- 1677x
+    BRA       15,868,712    3,983,208    11,885,504   13.1%
+    ULEA       7,399,656            0     7,399,656    8.2%   <- cuBLAS ZERO
+    USHF       6,820,176       33,836     6,786,340    7.5%
+    UIMAD      7,131,960      445,368     6,686,592    7.4%
+    SYNCS      9,391,480    3,484,870     5,906,610    6.5%
+
+`UMOV+ULOP3+ULEA+USHF+UIMAD` = 66.2M = 73% of the excess, all uniform-datapath address arithmetic.
+`ULOP3` is the descriptor mask `& 0x3FFFF` and `USHF` the `>>4` — i.e. `desc_encode`. cuBLAS
+executes 8,052 and 33,836 of those in the ENTIRE kernel: **they never encode a descriptor inside
+the loop, they only add to one.** Region split: consumer k-loop 143.8M (73.7%), producer 31.5M,
+epilogue 19.3M — 60.7M of the 66M descriptor math is in the consumer loop.
+
+Second bucket, previously unexamined: **cuBLAS executes ZERO BSSY, ZERO BSYNC, ZERO SEL, ZERO ULEA.**
+Those are the branch-reconvergence stack; their absence means no intra-warp divergence in the hot
+path at all. We execute 4.6M. That matches §H27zdi's ledger where `control flow 35.92% vs 10.17%`
+was the largest single category.
+
+ALSO SETTLED: **we STALL LESS than cuBLAS** — 73,614 vs 83,628 not-issued samples. We are not
+stall-bound. We are doing more work.
+
+ROOT: the pipeline stage is a RUNTIME index. The SASS shows a mod-3 by magic constant every
+iteration, in both consumer loops:
+
+    UIMAD.WIDE UR16, UR4, 0x55555556   /   ULEA.HI   /   UIMAD UR4, UR17, -0x3, UR4
+
+and a runtime `stage` forces the descriptor offsets, the barrier addresses (rebuilt from
+`SR_CgaCtaId` 42,240 times in the producer) and the divergence that follows.
+
+### §H27zdw — DESC_RING: carry the descriptors instead of deriving them. BOTH VARIANTS WORSE. REJECTED.
+
+Reasoning was: a loop-carried value cannot be rematerialised, so carry the descriptor and walk it
+by a literal. Local zero-GPU SASS, k-loop instructions per body:
+
+    dw (existing)              104 / 101      UMOV 12
+    DESC_RING 64-bit carry     114 / 122      + SEL/ISETP/IMAD with NO U prefix = vector datapath
+    DESC_RING low-word carry   110 / 113      UMOV 27
+
+v1 fell off the uniform datapath on the 64-bit select. v2 followed CuTe (`reg32_[0] += off`,
+`reg32_[1]` untouched) and stayed uniform, but reassembling `up | lo` into an aligned UR pair at
+each use cost more `UMOV` than the derivation saved. **Rejected; not committed.**
+
+The failure named the real answer: dw's `a_desc_tile + ((st*copy_size)>>4)` is ALREADY optimal when
+`st` is constant — it folds to one UIADD3, cuBLAS's entire descriptor cost. The defect was never
+the derivation, only that `st` is runtime.
+
+### §H27zdy — KLOOP_UNROLL: `stage` as a compile-time literal. SASS TARGET MET, WALL CLOCK NULL.
+
+`STAGE_SPECIALISE` had the right goal and resolved `st` with a RUNTIME if-chain (`stage_dispatch`,
+called twice per k-iteration under SKEW), paying more than the literal saved: +30.7% executed
+instructions, k-loop 264/361. Unrolling gives the same literals with no dispatch and no carried
+state.
+
+`stage`/`phase` CANNOT be reset per tile — `phase` is the LAP PARITY and every barrier's hardware
+parity depends on the carry — so the loop ALIGNS to the ring first (at most D-1 runtime iterations
+of k_iters), then runs D literal bodies, then a residue.
+
+FIRST CUT WROTE `stage = S` INSIDE THE BODY and reproduced §H27zdb's exact failure: R2UR 0 -> 48 per
+k-loop, the multi-definition `stage` phi. The literal bodies do not need it; only align/residue
+track `stage`, at their own call sites.
+
+RESULT, local sm_90a SASS (main unrolled loop, HGMMA=36 = three bodies):
+
+    baseline        117 instrs / body
+    dw              101
+    dw + UNROLL      63          <- cuBLAS is 68.  R2UR=1, IMAD=6
+    zero hits for 0xc000 (stage*copy_size) and 0x55555556 (mod-3) in the main loop
+
+and the body is now cuBLAS's shape exactly — one base plus literal offsets:
+
+    UMOV      UR29, 0x40000040          descriptor upper word, once per body
+    UIADD3.64 UR20, UR28, 0x1800        LITERAL (stage 2 folded: 2*0xc00)
+    HGMMA ... UIADD3.64 +0x1880 ... HGMMA ... +0x1900 ... HGMMA ... +0x1980 ... HGMMA
+
+VALIDATED BIT-EXACT on all three residue classes (k_iters%3 = 0, 1, 2), 6/6 PASS maxRelErr 0.00000:
+K = 16384, 2048, 11264, 50304, 5632, 512.
+
+MEASURED (n=7, 400 ms):
+
+                        instructions   x cuBLAS      %cuB min/med/max      TFLOPS med
+    baseline           181,038,325       1.7437     92.10 / 92.80 / 94.10     639.09
+    dw                 161,495,666       1.5554     91.40 / 93.00 / 93.80     640.74
+    dw + unroll        150,494,640       1.4495     92.10 / 93.50 / 94.40     643.78
+    cuBLAS             103,826,000
+
+Instruction saving was 11.0M, not the 51M predicted from `38 x 673,200 x 2` — the main unrolled
+loop does not carry as large a share of executions as the per-body count implies.
+
+### §H27zdz — CONCLUSION: INSTRUCTION COUNT IS NOT V5'S LEVER. Three cuts, no movement.
+
+    dw            -20.5M    ->  null
+    dw + unroll   -11.0M    ->  null  (+0.7 median, ranges 92.10-94.40 vs 92.10-94.10)
+    total         -30.5M  = -16.9% of the kernel's instructions
+    wall clock:   92.80 -> 93.50
+
+The power/clock theory (1.74x instructions -> more power -> 1557 vs 1582 MHz achieved, measured
+with `--clock-control none`) predicted a real but small effect. A 17% cut failing to move anything
+measurable is strong evidence against it being the lever. **Do not spend more time reducing
+instruction count on V5.**
+
+What remains unexplained is the 1.9% extra cycles, and it does not trace to instruction count.
+That is a fresh investigation.
+
+TOOLING BUILT TODAY — `box_src/sassloop.sh`, a LOCAL zero-GPU sm_90a SASS harness. Local nvcc is
+13.0 V13.0.88, identical to the box, and the probe reproduces the box's kernel exactly (3416 static
+instructions, matching the SourceCounters export) in ~1 second per build. Both DESC_RING variants
+were killed in about two minutes of local iteration with no GPU time at all. Use it before any
+future k-loop change.
+
+TWO ncu TRAPS RE-CONFIRMED: `-c N` captures cuBLAS ONLY (the harness times cuBLAS first) — use
+`-k regex:bgemm_sm90_kernel`; and ncu LOCKS the clock by default, so cycle ratios there are not
+wall-clock ratios (0.91% vs ~7%) — use `--clock-control none` when the clock itself is the question.
+
+
+---
+
+### §H27ze — ALL 15 SHAPES MEASURED, and the apples-to-apples audit. Median 95.0%.
+
+First full coverage. Before this, four shapes had a number and eleven did not: V3/V4/V6 were
+measured on `dark-leaf-wilts-fin-03` (a box that no longer exists), V7/V8's "96-98%" was ONE
+family note in pins.sh covering seven shapes, and V1 + V2/V2b/V2c had never been run at all.
+
+GPU 1, `deep-ball-purrs-fin-03`, n=7, 400 ms, every shape PASS maxRelErr 0.00000:
+
+    V1   2048x512x16384    tn   86.30 / 87.40 / 88.30    565.42  vs  648.01
+    V2   2048x2048x16384   tn   93.50 / 94.50 / 95.20    705.81  vs  744.72
+    V2b  5632x2048x16384   tn   93.40 / 94.50 / 94.80    650.98  vs  689.85
+    V2c  2048x50304x16384  tn   89.20 / 91.00 / 93.10    665.94  vs  729.97
+    V3   16384x11264x2048  nn   95.40 / 96.90 / 97.50    658.79  vs  679.62
+    V4   16384x50304x2048  nn   94.70 / 97.10 / 98.20    657.48  vs  677.01
+    V5   2048x11264x16384  tn   92.40 / 93.80 / 95.50    652.79  vs  698.99
+    V6   16384x5632x2048   nt   94.70 / 95.50 / 95.80    648.58  vs  680.38
+    V7   16384x2048x2048   nn   96.20 / 96.90 / 97.40    676.81  vs  697.61
+    V7b  16384x2048x5632   nn   93.80 / 94.70 / 97.30    681.66  vs  720.98
+    V7c  16384x512x2048    nn   91.80 / 95.70 / 96.90    651.91  vs  683.29
+    V8   16384x2048x512    nt   90.40 / 93.20 / 97.00    550.41  vs  591.77
+    V8b  16384x2048x2048   nt   95.60 / 96.20 / 98.00    674.80  vs  701.90
+    V8c  16384x2048x11264  nt   94.50 / 95.10 / 95.60    694.19  vs  730.03
+    V8d  16384x2048x50304  nt   94.00 / 95.00 / 95.90    692.45  vs  729.13
+
+Median 95.00. Best V4 97.10, worst V1 87.40. **V3/V4/V6 do NOT reproduce the 99.44 / 99.79 /
+98.53 peaks** — they land on 96.90 / 97.10 / 95.50, i.e. the 100 ms pins.sh figures, confirming
+those 99s were the 20 ms window §H27zde flagged. Six of fifteen have a spread over 3 points
+(V2c 3.9, V4 3.5, V5 3.1, V7b 3.5, V7c 5.1, V8 6.6) so their medians are not trustworthy to
++-1; the pattern fits short kernels (V8 K=512, V7c N=512).
+
+APPLES-TO-AUDIT, phase 2, the cuBLAS kernel captured per shape for the first time on V1/V2/V7/V8:
+
+    V1    ours 128x128 2x1 v sk2      cuBLAS 128x128 64x6 1x2 h splitK NTT
+    V2*   ours 256x128 2x1 h          cuBLAS 128x256 64x4 2x1 v coopA  NTN
+    V3    ours 192x192 2x1 h          cuBLAS 192x192 64x3 1x2 h coopB  NNN
+    V4    ours 192x192 2x1 h          cuBLAS 192x192 64x3 2x1 v coopB  NNN
+    V5    ours 192x192 1x2 v          cuBLAS 192x192 64x3 2x1 v coopB  NTN
+    V6    ours 192x192 2x1 h          cuBLAS 192x192 64x4 2x1 v coopB  TNN
+    V7*   ours 128x256 2x1 h          cuBLAS 256x128 64x4 1x2 h coopA  NNT
+    V8*   ours 128x256 2x1 h          cuBLAS 256x128 64x4 1x2 h coopA  TNT
+
+I FIRST READ THIS AS "10 of 15 shapes have a transposed tile" AND THAT WAS WRONG. The mapping is
+already on record, confirmed live by nsys 2026-08-12: **cuBLAS tile MxN == our tile NxM** (operand
+swap), and layout NN*->nn, TN*->nt, NT*->tn. Applying it: **tile matches 15/15 and layout matches
+15/15.** Cluster/raster are GROUP 2 and explicitly NOT matchable (four proofs; the name-mapping
+was disproved by §H27z.95, raster-by-measurement 90.8% vs by-name 88.1%) — I proposed re-pinning
+on raster on 2026-08-18 and was corrected, and nearly did it again here. coopA/coopB closed by
+H12.5. The ONE real GROUP-1 gap is STAGE COUNT: V3/V4/V5 match at 3, V6 is 3 vs 4 (parked at
+96.37), and V2/V7/V8 are 3 vs 4 across ten shapes, blocked by the full-tile epilogue buffer.
+Note also the rollback record: pinning cuBLAS's own variants at all 21 sites measured
+86.1% -> 73.2%, every site slower — matching more fields is a DIAGNOSTIC, not a route to speed.
+
+### §H27zf — V5's latency hypothesis (e949a2c) REFUTED, and depth 4 re-confirmed dead.
+
+e949a2c proposed V5 was latency-bound on global memory and needed MORE prefetch depth, on the
+strength of a stall breakdown — the only V5 hypothesis ever backed by a counter rather than an
+inference. Re-run on the CORRECTED 1x2 baseline the signature survives almost unchanged:
+
+    stall             ours   cuBLAS   delta   | 2x1-era delta
+    long_scoreboard  27.99   14.31   +13.68   | +12.33
+    barrier          25.35   21.07    +4.28   |  +3.90
+    wait             12.88    9.29    +3.59   |  +2.42
+    short_scoreboard  2.92    0.04    +2.88   |  +1.37
+    mio_throttle      5.23   15.28   -10.05   |  -9.09
+
+so the phantom column was not causing it. But the K-sweep kills the explanation. Same config,
+same M and N, only K varying, so ONLY the working set moves:
+
+    K       working set   long_scoreboard   L2 hit%   %cuB
+    512        13 MB          29.36          94.13    96.90
+    2048       52 MB          29.62          87.08    96.70
+    4096      104 MB          30.08          84.41    93.50
+    8192      208 MB          29.67          83.54    93.40
+    16384     416 MB          28.15          80.29    93.20
+
+**long_scoreboard is FLAT across a 32x working-set change** and is still 29.36 at K=512 where
+94% of accesses hit L2 and DRAM traffic is negligible. A stall identical when there is almost no
+DRAM latency to cover is not caused by DRAM latency. L2 hit moved 94->80 as designed, so the
+experiment worked; the stall simply does not follow it.
+
+DEPTH 4, now on a correct baseline (all prior V5 depth-4 numbers were taken through the phantom
+column): ea32s2stsm 93.20 med against baseline 92.60 with ranges overlapping (+0.6), ea8s2 85.30
+(-7.3). Dead.
+
+### §H27zg — WHAT V5 ACTUALLY HAD: it moved 2.27x the bytes it needed. L2 locality.
+
+The K-sweep's real finding is in the DRAM column. Ideal = (2048+11264)*K*2, every byte once:
+
+    K        ideal      measured    ratio    mio_throttle
+    512      13.0 MB     13.2 MB    1.01x     9.41
+    2048     52.0 MB     86.5 MB    1.66x     6.26
+    4096    104.0 MB    228.6 MB    2.20x     5.47
+    8192    208.0 MB    460.3 MB    2.21x     5.15
+    16384   416.0 MB    943.3 MB    2.27x     5.23
+
+The re-read ratio steps up exactly where %cuB falls off, and mio_throttle falls with it while
+cuBLAS holds 15.28 — their pipe is busy doing useful work, ours was idle AND wasteful.
+**At K=2048, V3/V4's K, this same config scores 96.70, level with V3 96.90 and V4 97.10:
+V5's entire deficit is a function of K.**
+
+RASTER_SWIZZLE sweep (LOG2 supergroup size, 0..4 => groups of 1..16), V5, DRAM measured:
+
+    group  1   672.1 MB  1.616x   %cuB 95.50   L2hit 84.43
+    group  2   723.1 MB  1.738x   %cuB 94.60   L2hit 82.74
+    group  4   821.0 MB  1.974x   %cuB 93.80   L2hit 81.69
+    group  8   953.0 MB  2.291x   %cuB 93.60   L2hit 80.65   <- was pinned
+    group 16  1215.4 MB  2.922x   %cuB 92.20   L2hit 77.34
+
+Monotonic in both columns. Raster direction also confirms the documented rule: v 937.6 MB vs
+h 1189.5 MB, v re-reading A (67 MB) rather than B (369 MB).
+**cuBLAS on the same shape reads 900.7 MB (2.165x) at L2hit 73.19** — so at rs1 we move 25% FEWER
+bytes than cuBLAS and are STILL ~4.5 points behind. Traffic was one real cost, not the last one.
+No prior report had this: h27zdq's ncu csvs carry 0 dram/L2 columns.
+
+### §H27zh — the right supergroup is a FUNCTION OF K, and the sign flips.
+
+rs8 was adopted because §H27zc4 measured it +2.27 on V3. Both that and H27zg are true, and the
+mechanism requires it: the group decides how many tiles share a cached operand panel, and
+panel = 192*K*2 bytes. rs1 vs rs8 on all four 192x192 shapes, REPS=9:
+
+    V   K       arm   %cuB min/med/max        DRAM read    x ideal   L2hit
+    V3  2048    rs1   87.80 / 89.70 / 90.50   1687.1 MB   15.622x   73.77
+    V3  2048    rs8   95.20 / 96.10 / 97.30    430.2 MB    3.983x   92.09   rs8 by 6.4
+    V4  2048    rs1   89.40 / 90.70 / 91.10   9276.3 MB   35.609x   71.05
+    V4  2048    rs8   96.40 / 97.50 / 98.40   2425.8 MB    9.312x   89.96   rs8 by 6.8
+    V6  2048    rs1   94.10 / 95.20 / 96.50    244.7 MB    2.845x   85.50
+    V6  2048    rs8   94.40 / 95.70 / 96.70    255.0 MB    2.965x   84.95   tie
+    V5  16384   rs1   93.80 / 95.00 / 96.90    676.5 MB    1.626x   85.24   rs1 by 0.9
+    V5  16384   rs8   93.30 / 94.10 / 94.70    932.5 MB    2.242x   81.47
+
+Same knob, opposite sign. V6 is a genuine tie — its N=5632 keeps the working set small either way.
+CORRECTION TO A CLAIM I MADE: V1/V2/V7/V8 already run RASTER_SWIZZLE=0 (= group 1) and were never
+affected; I had assumed they were on rs8 without checking. Only the 192x192 family pins rs8.
+V5 PINNED TO rs1: +1.9 and +0.9 across two runs, ranges overlapping at REPS=9, so ~1 point of
+time — but -27.5% DRAM, reproduced.
+
+### §H27zi — rs8 IS the optimum at K=2048. The knob is closed, and there is a LAW.
+
+rs2/rs4/rs8/rs16 on V3 and V4, REPS=9:
+
+    V3  group   2      4      8 ✓    16          V4  group   2      4      8 ✓    16
+        DRAM  1008.2  601.1  454.0  687.2 MB         DRAM  5511.3 4028.7 3033.0 3995.6 MB
+        %cuB   92.60  94.60  96.30  93.80            %cuB   93.90  95.90  97.60  96.20
+
+Both metrics, both shapes, U-shaped with the minimum on group 8. rs16 is worse. Pins unchanged.
+
+**THE LAW.** Combining with V5's optimum of group 1 at K=16384:
+
+    K= 2048   panel 0.79 MB   optimum group  8   ->  8 x 0.79 = 6.3 MB
+    K=16384   panel 6.29 MB   optimum group  1   ->  1 x 6.29 = 6.3 MB
+
+optimum group x panel = a constant ~6.3 MB, i.e. **optimal group ~= 16384 / K**. It predicts 8 at
+K=2048 (measured, three shapes) and 1 at K=16384 (measured). The walk should keep ~6.3 MB of
+operand panel live regardless of shape. TODAY IT IS HARDCODED PER CONFIG — this belongs in the
+dispatcher as a formula.
+
+CAVEAT ON THE BYTE FIGURES: DRAM read is NOT fully deterministic. V4 rs8 read 2425.8 MB in H27zh
+and 3033.0 MB here, same config and shape, 25% apart; V3 rs8 moved 430.2 -> 454.0 (5%). Cache
+state carries between runs. The SHAPE of the curves is consistent across both runs and that is
+what these conclusions rest on; individual byte figures should not be quoted to three digits.
+
+### §H27zj — PROCESS: the day's work was nearly lost, and the workflow is now fixed.
+
+2026-08-19's V5 work (the 1x2 cluster fix, KLOOP_UNROLL, the tk/dw/ss arms, the pins.sh update and
+§H27zdt-dz) was applied directly to the working tree on `dark-leaf-wilts-fin-03`. Nothing was
+committed, the box was released overnight, and the new box cloned origin/main at e949a2c with all
+of it absent. Root cause: **there was no local checkout of the daily-work repo** — it is at
+`/home/blu-bridge016/Downloads/BLUBLAS/BLUBLAS_kota/BluBridge-BLAS` (origin GOUTHAM1926/blublas),
+NOT under Neural_Networks_exp_1926, which holds only this doc and no src/.
+Recovered from local copies; the template md5 f26ca08e and header 956312c9 matched the box's
+pre-edit state exactly, so the restore was clean.
+**STANDING RULE FROM NOW ON: edit in the LOCAL repo, push from local, pull on the server. Never
+edit or push from the box.** A Verda working tree is scratch space that can vanish without notice.
+Also re-confirmed: a box change voids absolute timings (cuBLAS medians ~697.9 here vs ~687 on the
+old box) but %cuB carries across, and V5's fix reproduced at +10.30 against +10.60.
+
+
+### §H27zn — V1 DIAGNOSED. Same tile, same BK, same 6 stages, same split-K — and we drain the wgmma pipeline every k-iteration while cuBLAS keeps 8 alive.
+
+`tools/h27zn_v1.sh`, GPU 1, `deep-ball-purrs-fin-03`, 20260820T134812Z, **clocks locked 1200 MHz**,
+commit `c19692c`. Shape V1 `2048x512x16384 tn`, pin `128x128x64_2x1_v_sk2`, 64 base tiles on 132 SMs.
+
+#### PHASE 1 — the split-K factor, and a maxRelErr that is NOT a defect
+
+    arm          CTAs  waves   %cuB x5                        status
+    2x1_v          64   0.48   54.5 53.9 54.7 54.5 53.9       PASS  err=0.46579
+    2x1_v_sk2     128   0.97   89.9 90.1 89.9 89.5 90.3       PASS  err=0.00000
+    2x1_v_sk4     256   1.94   80.7 80.8 80.6 80.7 80.5       PASS  err=0.15920
+    2x1_v_sk8     512   3.88   66.7 67.1 66.2 66.7 66.6       PASS  err=0.16265
+
+`sk2` at 0.97 waves is the operating point; the §H27z.12 rule predicts exactly S=2 here
+(`floor(132/64) = 2`) and the curve confirms it. More splitting is monotonically worse.
+
+**The 0.466 / 0.159 / 0.163 figures are not errors and nothing needs porting.** §H27z.79 already
+settled this in the harness itself: the PASS rule is `|a-b| <= tol*|b| + 0.5`, and the *reported*
+`maxRelErr` switches to an ABSOLUTE difference below `|b| <= 1e-3`:
+
+    float rel = (fabsf(b) > 1e-3f) ? d/fabsf(b) : d;
+
+So those numbers are absolute differences on near-zero outputs — the reduction-order noise that
+comment was written to name. `sk2` reading exactly `0.00000` is the informative one: it means our
+k-partition is **bit-identical to cuBLAS's**, which independently corroborates that cuBLAS also
+splits this shape by 2 (confirmed below from its kernel name).
+
+CORRECTION to a statement made earlier the same day: split-K **is** ported on 128x128 —
+`128x128x64_2x1_v_sk2` is the shipped pin. The rollback memo's "split-K exists only on 64x64"
+is stale, in the same way its stage-4 claim was.
+
+#### PHASE 2 — the ledger. Everything matches except the clock.
+
+    metric                                          ours        cuBLAS     ratio
+    sm__inst_executed_pipe_tensor.sum            524,288       524,288    1.0000
+    dram__bytes_read.sum                      83,917,824    83,912,192    1.0001
+    launch__waves_per_multiprocessor                0.97          0.97    1.0000
+    launch__occupancy_limit_warps                      5             5    1.0000
+    sm__cycles_elapsed.avg                        83,423        75,625    1.1031   <-- the gap
+    sm__pipe_tensor_cycles_active .pct             82.28         90.99    0.9043
+    sm__throughput .pct_of_peak                    76.18         84.03    0.9066
+    smsp__inst_executed.sum                   13,601,328     4,711,842    2.8866
+    stall barrier                                  27.39         23.85    1.1484
+    stall wait                                     17.44         10.17    1.7148
+    stall short_scoreboard                          4.48          0.62    7.2258
+    stall long_scoreboard                          24.20         50.61    0.4782
+    stall mio_throttle                              0.01          2.39    0.0042
+    lts__t_sector_hit_rate.pct                     67.27         49.48    1.3595
+
+Identical tensor work, identical DRAM, identical waves, identical occupancy limit. **The whole
+10.3% is our tensor unit standing idle.** (Caveat: the ledger profiles the GEMM kernel only, so
+the split-K reduce is excluded on both sides.)
+
+#### PHASE 3 — the census. One instruction owns a third of our stalls.
+
+Not-issued stall samples, by opcode, as a percentage of each kernel's own total (2,853 ours vs
+4,008 theirs — only percentages are comparable):
+
+    ours                                        cuBLAS
+    BRA                     31.90  long_sb 94%  NANOSLEEP.SYNCS      44.99  long_sb 100%
+    WARPGROUP.DEPBAR.LE     30.35  barrier 100% WARPGROUP.DEPBAR.LE  26.45  barrier 100%
+    ULEA                     7.19  short_sb 78% HGMMA.64              8.08  wait 77%
+    UIADD3                   4.80               BRA                   6.64
+    HGMMA.64                 2.87               UIADD3                2.35
+
+Our mainloop is `idx186..251` — **66 instructions, exactly 4 of them HGMMA** — and it ends:
+
+    idx249   HGMMA.64x128x16.F32.BF16 R24, gdesc[UR16].tnspA.tnspB, R24, gsb0
+    idx250   WARPGROUP.DEPBAR.LE gsb0, 0x0        exec 131,072   866 samples = 30.35%, 100% barrier
+    idx251   BRA  (back-edge)
+
+We commit 4 wgmma and immediately wait for **all** of them, then run ~62 scalar instructions
+rebuilding descriptors with the tensor pipe idle, 128 times per CTA with nothing to overlap it
+(0.97 waves — there is no second tile on the SM to fill the hole).
+
+Drain frequency, from executed counts: **ours 524,288 HGMMA / 131,072 DEPBAR = one drain per 4
+wgmma. cuBLAS ≈ 524,288 / 65,536 = one per 8.**
+
+#### THE APPLES-TO-APPLES CHECK, AND WHY IT REMOVES THE LAST EXCUSE
+
+cuBLAS's kernel name on this shape decodes completely:
+
+    nvjet_sm90_tst_128x128_64x6_1x2_h_bz_splitK_NTT
+                   └tile─┘ └BK×STAGES┘ └cluster┘ └split-K┘
+
+`64x6` = BK 64, **6 stages**. Ours, from a compile-time probe of `Sm90SmemLayout::LOAD_PIPE_DEPTH`
+(`STAGE_BYTES = (128+128)*64*2 = 32,768`, `STORE_BUF = 128*128*2 = 32,768`,
+`(231,424 − 32,768)/32,768 = 6.06`):
+
+    V1       128x128            ours depth 6   cuBLAS 128x128_64x6   MATCH
+    V2 fam   256x128 ep32s2     ours depth 4   cuBLAS 256x128_64x4   MATCH
+    V3-V6    192x192            ours depth 3   cuBLAS 192x192_64x3   MATCH
+    V7/V8    128x256 swz64      ours depth 4   cuBLAS 128x256_64x4   MATCH
+
+and `1x2_h` is our `2x1_v` under the §H27z.59 swap. **Tile, BK, stage depth, cluster and split-K
+all match.** Depth is therefore *not* a lever to find here — it is already equal, and cuBLAS still
+holds 8 wgmma across its back-edge at that same depth while we hold zero. The difference is purely
+how the loop is built.
+
+The `64xN` decoder is NOT new -- §H18-era already recorded "cuBLAS runs 320x128 at 64x3, 256x128
+at 64x4, 192x128 at 64x5, 128x128 at 64x6". What is new is that we now MATCH all of them.
+
+I briefly flagged a 256x128 stage mismatch here. **It is wrong and is withdrawn.** A compile probe
+of `Sm90SmemLayout::LOAD_PIPE_DEPTH` gives:
+
+    256x128x64_2x1_h_ep32s2  (V2 pin)   depth 4     cuBLAS 256x128_64x4   MATCH
+    256x128x64_2x1_h         (twin)     depth 3     -- the UNCHUNKED value
+
+`ep32s2` sets `STORE_BUF = 2*256*32*2 = 32,768` against the unchunked `256*128*2 = 65,536`, so
+`(231,424 - 32,768)/49,152 = 4.04 -> 4`. Buying that 4th stage is the entire purpose of the chunked
+epilogue, and it is why the V2 pin carries `_ep32s2`. Reading the unchunked number and attributing
+it to the pin was my error.
+
+**This closes both items §H27z listed under "TWO FEATURES THAT CANNOT BE MATCHED TODAY":**
+
+    1. Stages -- "cuBLAS runs 4 on 256x128 and 128x256; we derive 3 and physically cannot reach 4
+       until the epilogue buffer is chunked. Affects 13 of 21 sites."
+       CLOSED. Chunked epilogue shipped; 256x128 ep32s2 = 4, 128x256 swz64 = 4.
+    2. Split-K on 128x128 -- "our split-K exists ONLY on 64x64. Affects 2 of 21 sites."
+       CLOSED. 128x128x64_2x1_v_sk2 is the shipped V1 pin, bit-exact against cuBLAS.
+
+So there is **no structural mismatch left on any of the 15 shapes** -- tile, BK, stage depth,
+cluster and split-K all match. Whatever remains on V1 and V8 is loop construction, not structure.
+
+#### WHY THE KNOWN REMEDY IS UNAVAILABLE HERE
+
+`WGMMA_SKEW` is the one change ever measured to move this counter (§H27zdb: barrier 32.25 → 23.10,
+V3 +1.62). It is **statically illegal** on V1:
+
+    static_assert(!SKEW || MAX_ATOMS >= 2, ...)     // template line 4317
+
+`MATOMS = BM/64 = 2`, `SPLIT_M = (MATOMS % 2 == 0) = true`, so each of the two consumer warpgroups
+owns exactly **one** m64 atom and there is nothing to carry across the back-edge. The same is true
+of the 128x256 tile (V7/V8 family). That is why the SKEW win never reached V1 or V8 — not because
+it was untried, but because their tiles cannot express it.
+
+Note this is NOT sufficient to explain the lag on its own: the V7 family is also `MAX_ATOMS == 1`
+and sits at 98–100%. V1 and V8 remain **two different diseases** — V1 is single-wave and
+mainloop-bound; V8 has K=512, i.e. 8 k-iterations per CTA, and is intercept-bound.
+
+#### STATUS
+
+Cause established with proof. Fix not yet designed — every adjacent form is on the dead list
+(§H16.7 `wait_group<1>`+deferred release −10 to −12% **at depth 3**; §H27zbA `WGMMA_ROTATE` ptxas
+C7517 compile kill; §H27zbB commit-per-atom no-op; §H27zdb descriptor rewrite alone null-to-negative
+and the instruction-count thread closed by a change that raised instructions 14% and got faster).
+Next step is a structured read of cuBLAS's own 128x128_64x6 SASS to recover the device that lets
+them keep 8 in flight, then a knob built to that shape. Falsifier fixed in advance: `stall_barrier`
+must fall from 27.39 and tensor-pipe-active must rise from 82.28. If wall clock moves without those
+two counters moving, the mechanism is wrong and the thread closes.
+
+STILL UNDOCUMENTED, carried forward: §H27zk (knob port), §H27zl (V2 diagnostic), §H27zm
+(UNIFORM_A_DESC), and the locked-clock findings from §H27zq/zv/zw.
+
+### §H27zo — V1 ROOT CAUSE, read out of cuBLAS's SASS: they give BOTH m64 atoms to ONE consumer warpgroup. We split them across two, and that is what makes our drain unoverlappable.
+
+Decoded from `profiling_reports/h27zn/nvjet.src.csv` (1,200 addresses, per-address executed counts
+and stall samples) against our own. No GPU time; the capture already existed.
+
+#### THE COUNT THAT SETTLES IT
+
+    kernel   loop-body instrs   HGMMA/body   DEPBAR/body   HGMMA per drain
+    cuBLAS            40             8            1              7.94
+    ours              66             4            1              4.00
+
+    cuBLAS body exec 54,784 = 128 CTAs x 4 warps x 107 iters   -> ONE consumer warpgroup
+    ours   body exec 131,072 = 128 CTAs x 8 warps x 128 iters  -> TWO consumer warpgroups
+    (cuBLAS's second body, exec 10,752 x 8 HGMMA, runs the remaining 21: 107 + 21 = 128 = k_iters)
+
+Every cuBLAS DEPBAR is `gsb0, 0x0` — **a full drain to zero, exactly like ours**. §H27zbA was right
+that the wait DEPTH is not the difference. What differs is how much work sits between drains.
+
+#### THEIR BODY, ANNOTATED
+
+    177  WARPGROUP.ARRIVE
+    178  HGMMA.64x128x16 R24, gdesc[UR16].tnspA.tnspB, R24, !UP1   <- accumulator R24 = atom 0
+    179  UIADD3 UR16, UR16, 0x80          <- descriptor advanced by ONE uniform add (CuTe form)
+    180  UIADD3 UR18, UR18, 0x80
+    181/184/187  HGMMA R24 (+2 UIADD3 each)
+    188  WARPGROUP.DEPBAR.LE gsb0, 0x0    <- 22.23% of their samples. drains ATOM 0 only
+    189  @P1  SYNCS.ARRIVE.TRANS64 [R7+UR14]   <- RELEASE; UR14 += 0x8 at idx208 => LAGGED BY ONE
+    190  @!P0 SYNCS.PHASECHK.TRANS64.TRYWAIT   <- acquire
+    192  WARPGROUP.ARRIVE
+    196  HGMMA R88, ...                   <- accumulator R88 = atom 1, DIFFERENT output tile
+    199/202  HGMMA R88
+    205  HGMMA R88, ..., gsb0             <- committed, NOT waited on
+    206  UIADD3 UR16, UR16, -0x200        <- descriptor wrap
+    211  BRA (back-edge)                  <- atom 1's FOUR ARE STILL IN FLIGHT
+
+Atom 1's four wgmma are drained by the NEXT iteration's idx188, so the back-edge, the loop
+bookkeeping and atom 0's four wgmma all overlap that wait. `R24` and `R88` are the two 64x128
+output atoms of the 128x128 tile — one warpgroup owns both.
+
+#### WHY WE CANNOT DO THE SAME TODAY
+
+    template line 308:  static constexpr int NUM_CONSUMER_WARPGROUPS = 2;   // HARDCODED
+
+BM=128 over 2 consumer warpgroups gives each warpgroup ONE m64 atom. With one atom there is
+nothing to leave in flight: the 4 wgmma we issue are exactly the 4 that must retire before the
+stage can be released. Hence 4 per drain, 0 across the back-edge, and the tensor pipe idle for the
+~62-instruction scalar tail of every iteration.
+
+**This is also the true reason `WGMMA_SKEW` is locked out.** `static_assert(!SKEW || MAX_ATOMS>=2)`
+does not fail because 128x128 is too small — it fails because we hand its two atoms to two
+different warpgroups. cuBLAS keeps both, so it has the atom to carry. The V7/V8 128x256 tile is in
+exactly the same position.
+
+#### THE DEFERRED RELEASE IS REAL, AND ITS PRICE IS THE STAGE DEPTH
+
+idx189 releases the stage whose mbarrier is at `[R7+UR14]` with `UR14` advancing one barrier per
+iteration — the release trails the consumption by one stage. That is precisely §H16.7's
+"wait_group<1> + release deferred across a stage", measured at **-10 to -12% ON 192x192 AT DEPTH 3**,
+where it surrenders one buffer of three. On the 128x128 tile the depth is **6** (§H27zn), so the
+same trade surrenders one of six. The form was never wrong; it was priced at the wrong depth.
+
+#### THE FIX, AND WHY IT IS NOT A DEAD FORM
+
+Make `NUM_CONSUMER_WARPGROUPS` a template knob (default 2 = byte-identical to today) and set it to
+1 on the 128x128 tile. That yields `WG_MATOMS = 2`, which does two things at once:
+
+  1. doubles wgmma-per-drain from 4 to 8, and
+  2. makes `WGMMA_SKEW` LEGAL — and SKEW is the already-built, already-validated mechanism that
+     carries atom 0 across the back-edge. It is *exactly* the structure decoded above, and it is
+     the one change ever measured to move this counter (§H27zdb, V3 barrier 32.25 -> 23.10, +1.62).
+
+So the fix is not a new mainloop idea. It is a structural knob that makes an EXISTING validated
+mechanism reachable on this tile. Against the dead list: it is not `wait_group<N>` (the drain stays
+`wait_group<0>` at the bottom); not `WGMMA_ROTATE` (nothing moves position); not commit-per-atom;
+not a descriptor rewrite; and not the retracted k-loop unroll (§H27zb9 retracted that on 192x192
+where "both k-loops are 12 HGMMA" — here ours is 4 and theirs is 8, so the asymmetry is real).
+
+Budget check: `PRODUCER_REGS + NUM_CONSUMER_WARPGROUPS*CONSUMER_REGS <= 512` gives 40 + 232 = 272
+with one consumer, well inside the limit; NUM_THREADS drops 384 -> 256. `EMPTY_MBAR_ARRIVE_COUNT`,
+`EPI_WG_SLOTSETS` and the `BM % NUM_CONSUMER_WARPGROUPS` assert are already written in terms of the
+constant, so they follow automatically. `SPLIT_M`/`WGrid` is where the real work is: it assumes two
+warpgroups to split between.
+
+Falsifier unchanged from §H27zn: `stall_barrier` must fall from 27.39, tensor-pipe-active must rise
+from 82.28, and HGMMA-per-DEPBAR must rise from 4.00. Gate is `tools/h27zo_v1_gate.sh`.
+
+### §H27zo-RESULT — the structural prediction was EXACT (4.00 → 8.00 per drain) and the stated falsifier FAILED. Kernel cycles −5.44%, but barrier stall went UP, and sk4's reduce ate the gain.
+
+GPU 1, `deep-ball-purrs-fin-03`, 20260820T153807Z, clock-locked 1200 MHz, 7 reps, commit `4f1ac1d`.
+Shape V1 `2048x512x16384 tn`. Arms reach WG_MATOMS=2 via BM=256; waves held at 0.97 by sk4.
+
+#### PHASE 3 — the structural prediction, EXACT
+
+    cfg                          HGMMA     DEPBAR  per-drain   DEPBAR %smp
+    128x128x64_2x1_v_sk2 (pin)  524288    131072      4.00        30.76%
+    256x128x64_2x1_v_sk4        524288     65536      8.00        35.45%
+    256x128x64_2x1_h_sk4        524288     65536      8.00        33.16%
+    256x128x64_2x1_v_sk4_skew   524288     66560      7.88        31.57%
+    256x128x64_2x1_h_sk4_skew   524288     66560      7.88        36.12%
+    cuBLAS (§H27zo)             524288    ~65536     ~7.94        26.45%
+
+§H27zo predicted that WG_MATOMS=2 would put 8 wgmma between drains, matching cuBLAS. It does,
+to the instruction. The `_skew` arms read 7.88 because SKEW's peel adds its own drain.
+
+#### PHASE 2 — the falsifier. ONE of the two predicted counters moved; the other moved BACKWARDS.
+
+    metric                        pin       v_sk4    ratio     v_sk4_skew   ratio    cuBLAS
+    sm__cycles_elapsed.avg      83610.53   79059.38  0.9456     79559.14   0.9515   75625
+    tensor pipe active pct         81.94      86.93  1.0609        86.34   1.0537   90.99
+    smsp__inst_executed.sum     13600356    9608424  0.7065     11689948   0.8595   4711842
+    stall_barrier                  27.35      33.51  1.2252        33.57   1.2274   23.85
+    stall_long_scoreboard          24.38      27.70  1.1362        27.34   1.1214   50.61
+    stall_short_scoreboard          4.47       3.45  0.7718         2.60   0.5817    0.62
+    stall_wait                     17.41      16.17  0.9288        13.95   0.8013   10.17
+    dram__bytes_read.sum       83915008   83927808  1.0002     83931136   1.0002   identical
+
+The falsifier written into `tools/h27zo_v1_gate.sh` BEFORE the run was: *stall_barrier must fall
+from 27.39 and tensor-pipe-active must rise from 82.28.*
+
+    tensor pipe active   81.94 -> 86.93   +4.99 points   PREDICTED, and it happened
+    stall_barrier        27.35 -> 33.51   +6.16 points   PREDICTED TO FALL. IT ROSE.
+
+**Recorded as a failed prediction, not reinterpreted.** The mechanism story in §H27zo said the
+drain was expensive because nothing overlapped it, so spreading 8 wgmma across it would make the
+waiting cheaper. That is wrong. Halving the drain COUNT doubles what each drain waits for: DEPBAR's
+share of samples went UP (30.76% -> 35.45%) even though there are half as many DEPBARs. Fewer,
+longer drains — total barrier time did not fall.
+
+The 5.44% cycle gain is therefore NOT from the drain. The other things that moved with it are
+instructions (-29.4%), short-scoreboard (-1.02) and wait (-1.24). Which of those is causal is NOT
+established by this run.
+
+#### PHASE 1 — end to end, the arms are all SLIGHTLY WORSE, and the reduce is why
+
+    cfg                          mean     min     max   maxRelErr
+    128x128x64_2x1_v_sk2 (pin)  90.37   90.10   90.80    0.00000
+    256x128x64_2x1_v_sk4        89.99   89.70   90.50    0.15920
+    256x128x64_2x1_h_sk4_skew   89.64   89.20   90.00    0.15920
+    256x128x64_2x1_v_sk4_skew   89.61   88.50   90.00    0.15920
+    256x128x64_2x1_h_sk4        89.57   88.50   90.50    0.15920
+
+Every arm's range overlaps the pin's; nothing is adopted. **The GEMM kernel got 5.44% FASTER and
+the end-to-end number got WORSE**, because the ncu ledger profiles `bgemm_sm90_kernel` only and
+excludes the split-K reduce. sk4 writes and reduces FOUR fp32 partial sets against sk2's two, and
+that pass is not in the ledger (nor is `dram__bytes_write`, which was not captured — an omission).
+§H27zn already measured the same curve on the pin's own tile: sk2 90.1, sk4 80.7, sk8 66.7.
+The maxRelErr 0.15920 is the §H27z.9 near-zero artifact, identical to §H27zn's sk4 value.
+
+#### SKEW IS NOT THE LEVER HERE, AND THAT IS A CLEAN RESULT
+
+`v_sk4` 89.99 vs `v_sk4_skew` 89.61; `+skew` also ADDS 2.08M instructions (9.61M -> 11.69M) and
+costs 0.5 points of tensor-pipe. The 8-per-drain came from WG_MATOMS=2 **alone**. SKEW does buy
+short_sb (3.45 -> 2.60) and wait (16.17 -> 13.95), but not time. So §H27zdb's V3 win does not
+transfer to this shape, and the SKEW lockout on BM=128 is NOT what was costing V1.
+
+#### WHAT THIS DOES AND DOES NOT LICENSE
+
+CONFOUNDED, and it must be said plainly: these arms change tile (128x128->256x128), atoms per
+warpgroup (1->2), split factor (2->4) and pipeline depth (6->3) ALL AT ONCE. The 5.44% cycle gain
+cannot be attributed to atoms-per-warpgroup by this run. A 256x128 tile has different L2 behaviour
+and a different epilogue, and either could account for it.
+
+There is no cheaper isolation available: the only single-variable test is 128x128 at sk2 with
+NUM_CONSUMER_WARPGROUPS=1, which IS the refactor. So the refactor is **supported but not proven**.
+Extrapolating the kernel-cycle ratio alone (83610 -> 79059 against cuBLAS's 75625) would put V1 at
+~95.6% if the gain carried and the reduce cost did not — an extrapolation, not a measurement, and
+it assumes the gain comes from the atoms and not the tile.
+
+STATUS: V1 stays at **90.37%** on cuBLAS's own tile. §H27zo's structural reading of cuBLAS's SASS
+stands (verified: 8 wgmma per drain, two accumulators, lagged release). §H27zo's *causal* claim —
+that the drain's cost is what the extra wgmma relieve — is REFUTED by its own falsifier.
+
+### §H27zp — V1's CAUSE, from a CLOSED cycle budget: the gap IS tensor-pipe idle, and idle tracks our executed instruction count. Model validated OUT-OF-SAMPLE to +0.2%.
+
+No new measurement. Derived from the h27zn ledger and the h27zo phase-2 run, both clock-locked
+1200 MHz, plus the per-address SourceCounters already captured for both kernels.
+
+#### STEP 1 — the decomposition is checkable, and it checks out
+
+All three kernels execute the SAME 524,288 HGMMA, so `tensor_busy = cycles x tensor_active_pct`
+MUST be equal across them. It is:
+
+    kernel                    cycles   tensor%   tensor_busy      idle
+    ours pin 128x128 sk2      83,611    81.94%        68,510    15,100
+    ours     256x128 sk4      79,059    86.93%        68,726    10,333
+    cuBLAS   128x128 sk2      75,625    90.99%        68,811     6,814
+                              tensor_busy spread = 0.44%
+
+A 0.44% spread across three different kernels is what licenses the rest. `cycles = 68,700 + IDLE`.
+
+#### STEP 2 — the entire deficit is idle. There is no third term.
+
+    cycle gap ours vs cuBLAS   7,985
+    idle  gap ours vs cuBLAS   8,286
+    ratio predicted from tensor% alone 1.1104   vs measured cycle ratio 1.1056
+
+#### STEP 3 — idle tracks EXECUTED INSTRUCTIONS, and the model PREDICTED an independent run
+
+    kernel               instrs        idle   idle/instr
+    ours pin        13,600,356      15,100     1.110e-3
+    ours sk4         9,608,424      10,333     1.075e-3
+    cuBLAS           4,711,842       6,814     1.446e-3
+
+Build the model on {pin, cuBLAS} only, then predict the 256x128_sk4 arm from its instruction count:
+
+    instruction ratio sk4/pin        0.7065
+    predicted idle   10,668   measured 10,333   err +3.2%
+    predicted cycles 79,178   measured 79,059   err +0.2%
+
+**That is out-of-sample.** It also REINTERPRETS §H27zo-RESULT: yesterday's 5.44% gain was never the
+drain. The drain change happened to cut 29.4% of instructions and the cycles followed the
+instructions. That is why `stall_barrier` moved the WRONG way while the time still improved.
+
+Extrapolating to cuBLAS's instruction count: our cycles -> 73,742 against their 75,625. Instruction
+count alone MORE than accounts for the whole 10.3% gap.
+
+#### STEP 4 — why this does NOT contradict §H27zdz ("instruction count is not the lever")
+
+Two conditions must COINCIDE: many instructions per HGMMA, and a low wave count so nothing else on
+the SM hides them. Wave counts computed from the pins over 132 SMs:
+
+    shape  tiles  waves   locked%  WG_MATOMS   note
+    V1       128   0.97     90.4       1       the ONLY shape with BOTH
+    V2       128   0.97    ~98.9       2       equally single-wave, but 8 wgmma/drain already
+    V7c      256   1.94     98.1       1       1 atom/WG but twice the exposure
+    V5       649   4.92     99.7       3       §H27zdz's three cuts were HIDDEN here, as measured
+    V3     5,074  38.44     99.7       3
+    V4    22,532 170.70     99.9       3
+
+§H27zdz stands as written for V5. It simply does not generalise to a 0.97-wave shape, and V1 is
+the only one of the fifteen that is both single-wave and WG_MATOMS==1. Instructions per HGMMA:
+ours 15.5, cuBLAS 4.0.
+
+#### WHAT THIS KILLS
+
+  - "the DRAIN is the cost"                 -- §H27zo's causal claim. Already refuted by its own
+                                               falsifier; now also explained (idle followed the
+                                               instruction cut, not the drain count).
+  - "WGMMA_SKEW is the lever"                -- measured worse on V1 (89.61 vs 89.99).
+  - "BK=128" and "NUM_CONSUMER_WARPGROUPS=1" -- NOT justified as such. They are two expensive ways
+                                               to cut instructions per HGMMA; cheaper ones exist
+                                               and have never been tried on this tile.
+
+#### THE UNTESTED GROUND, and it is embarrassing how large it is
+
+**No 128x128 config has ever carried a descriptor knob.** Enumerated the registry: of 26 registered
+128x128 variants, not one has `_dh`, `_uad`, `_dw` or `_ss`. Every descriptor knob was validated
+bit-exact ONLY on 192x192 and 256x128 -- i.e. only on shapes at >= 4.9 waves, exactly where this
+budget says they must read null. And they did (§H27zdb: `rs8_dw` control 93.79 vs 94.21 pin on V3).
+
+Five arms registered on V1's own pin, compile-verified on tn/nn/nt:
+
+    128x128x64_2x1_v_sk2_dh            DESC_HOIST alone
+    128x128x64_2x1_v_sk2_uad           UNIFORM_A_DESC alone (the SPLIT_M counterpart of _ubd)
+    128x128x64_2x1_v_sk2_dh_uad        both -- analogue of the proven 192x192 _dh_ubd
+    128x128x64_2x1_v_sk2_dh_dw         DESC_WALK, the CuTe one-add form cuBLAS uses (UIADD3 +0x80)
+    128x128x64_2x1_v_sk2_dh_dw_uad     walk + uniform-A
+
+`UNIFORM_B_DESC` is deliberately absent: guarded on `!SPLIT_M`, and 128x128 IS SPLIT_M, so it would
+be an exact duplicate of the base -- the §H27zc2-ADOPT audit near-miss. `DESC_WALK` requires
+`DESC_HOIST` (template line 624).
+
+FALSIFIER, fixed before the run: the budget predicts cycles fall in PROPORTION to the instruction
+cut. So `smsp__inst_executed.sum` must fall AND `sm__cycles_elapsed.avg` must fall by
+`0.0011 x (instructions removed)`. If instructions fall and cycles do NOT, the idle-tracks-
+instructions model is wrong for V1 and this whole section is retracted, not reinterpreted.
+
+### §H27zq — V1's CAUSE, located exactly: the distance from wgmma COMMIT to the DEPBAR that waits on it. Ours 1 instruction, cuBLAS 39 with four HGMMA issued between. §H27zp RETRACTED.
+
+Derived entirely from captures already on disk (h27zn SourceCounters for both kernels, h27zo
+phase 2). No GPU time.
+
+#### RETRACTION FIRST
+
+§H27zp claimed idle tracks executed instruction count and pre-registered the falsifier. The run
+(h27zo, GPU 0, clock-locked 1200, all rows LOCK HELD) refuted it:
+
+    arm          instr%    cyc%   predicted  measured    ERR
+    dh            84.6%   98.2%      82,741    83,669   -1.1%
+    uad           94.7%  104.8%      84,361    89,278   -5.5%
+    dh_uad        71.6%  102.4%      80,671    87,268   -7.6%   cut 28.4% of instrs, got SLOWER
+    dh_dw         88.5%  100.3%      83,371    85,463   -2.4%
+    dh_dw_uad     65.0%   99.0%      79,606    84,313   -5.6%   biggest cut, 1% gain
+
+3 of 5 miss by >3%. **§H27zp is retracted, not reinterpreted.** Its sk4 "out-of-sample" hit at
++0.2% was coincidence -- that arm changed structure too. A second STATIC metric was then tried and
+also failed: loop-top-to-first-HGMMA distance is 57 for BOTH the pin and `_dh`, yet `_dh` is +1.33.
+Two static metrics dead. The difference is DYNAMIC, which is why only PC sampling resolves it.
+
+#### THE METRIC THAT DOES SEPARATE THEM
+
+Distance from the `gsb0` commit to the DEPBAR that waits on that group:
+
+    cuBLAS  commit idx205 -> back-edge -> 23 instrs -> HGMMA #1-4 issued -> DEPBAR idx188
+            = 39 instructions and FOUR HGMMA ISSUES between commit and wait
+    ours    commit idx249 -> DEPBAR idx250
+            = 1 instruction, ZERO HGMMA
+
+Both kernels' DEPBAR is their single biggest stall (theirs 891 smp = 64.4% of the loop body; ours
+866 = 60.1%). The difference is not the wait, it is what is queued behind it. When cuBLAS's DEPBAR
+stalls, four freshly issued wgmma are already pending, so the tensor pipe keeps working. When ours
+stalls, nothing is pending.
+
+#### THE MEASURED CONSEQUENCES, on both sides of the pipeline
+
+                            cuBLAS                        ours
+    acquire (TRYWAIT)   idx190, 0 samples, NO SPIN     idx196+197, 287 samples, @!P0 BRA <self>
+    release             idx189, 0 samples, right       end of body, after a full drain
+                        after the drain
+    producer            NANOSLEEP, 43.3% of samples    tight spin on EMPTY barriers, 23.6%
+                        = it has SLACK                 = it cannot run ahead
+
+Causal chain, every link measured: we commit and drain back-to-back -> the buffer is released at
+the very end of the body -> the producer never gets ahead and spins on empty barriers -> the
+consumer's acquire then finds data not ready (287 samples, long_sb) -> the tensor pipe idles.
+cuBLAS's release lands a full iteration earlier in effect, so its producer has slack and its
+acquire NEVER stalls -- zero samples on it.
+
+This independently reproduces §H27zb9's reading, which was correct.
+
+#### WHY THE KNOWN FIX IS BLOCKED -- narrower than "it does not work"
+
+Recompiled WGMMA_ROTATE on V1's OWN tile (128x128x64_2x1_v_sk2_dh, local, no GPU):
+
+    WROT=0   0ea0 DEPBAR sits 1 instruction after the commit at 0e90      1 DEPBAR
+    WROT=1   0c20 DEPBAR MOVED TO THE TOP OF THE LOOP, ahead of the       3 DEPBAR
+             acquire at 0db0  -- THE ROTATION ITSELF WORKS --
+             but ptxas then injects 1190 and 1320 right after the commit
+
+So §H27zbA's "+2 DEPBARs, compile-only kill" reproduces exactly on this tile (not tile-specific),
+but the reason is specific: ptxas C7517, *"warpgroup.wait is injected by compiler to allow use of
+registers defined by GMMA"*. Something in our loop TAIL reads the accumulator registers between the
+commit and the rotated drain, so ptxas must make it safe. cuBLAS's only reader between its commit
+and its drain is another HGMMA, and wgmma->wgmma accumulator ordering is free in hardware.
+
+That turns a dead end into a bounded local question: WHICH statement in the loop tail triggers the
+injection. Candidates to bisect, all zero-GPU: the `wgmma_fence()` at the top of the next pass, the
+`prev_stage = stage` carry, the stage/phase advance, and the `acc[][][]` array's liveness across
+the back-edge.
+
+#### THE ONE MEASURED GAIN SO FAR
+
+    128x128x64_2x1_v_sk2         90.50  [89.90, 91.20]  1200 MHz HELD
+    128x128x64_2x1_v_sk2_dh      91.83  [91.20, 92.50]  1200 MHz HELD   +1.33
+    128x128x64_2x1_v_sk2_uad     86.63  [86.00, 87.20]  HARMFUL, -3.87
+
+`_dh` moves three independent measures together: %cuB +1.33, cycles 85,199 -> 83,669 (-1.8%),
+tensor-pipe 81.27 -> 82.65, maxRelErr 0.00000. It misses the adoption rule by one hundredth --
+its min 91.20 exactly equals the pin's max 91.20 -- so it needs more reps, not a new idea.
+`UNIFORM_A_DESC` is harmful on this tile and must not be pinned here.
+
+### §H27zr-RESULT — V1 ADOPTED: 90.51 → 91.69, +1.18, on the paired+null instrument. And the instrument's own NULL is −0.01, which validates the campaign's method for the first time.
+
+GPU 0, `quick-home-speaks-fin-03`, 21 reps, 400 ms window, clock-locked 1200 MHz,
+**clock sampled DURING the run: mean 1200, min 1200, LOCK HELD**. Commit `647b687`.
+
+    arm            mean      min      max      (unpaired blocks, the old view)
+    PIN_A         90.51    89.90    91.20
+    NULL_B        90.50    89.90    91.30
+    DH            91.69    90.80    92.50
+    DH_DW_UAD     91.14    90.50    91.80
+
+    PAIRED against PIN_A -- per-rep difference, so drift common to a rep cancels
+    arm          mean_d     sd_d    min_d    max_d   verdict
+    NULL_B        -0.01     0.54    -1.30     1.20   <- NULL CONTROL, identical binary
+    DH            +1.18     0.60    +0.20    +2.40   believable
+    DH_DW_UAD     +0.62     0.54    -0.40    +1.40   believable
+
+    RESOLUTION FLOOR = |null mean| + null SD = 0.56 points
+
+**`min_d = +0.20`: 21 of 21 paired reps had `_dh` faster. Not one negative.** +1.18 against a 0.56
+floor with SE 0.13 is ~9 sigma. **V1 pin moves to `128x128x64_2x1_v_sk2_dh`.**
+
+#### THE METHODOLOGICAL RESULT, which outlives V1
+
+Two things this settles that were previously unknown:
+
+1. **The protocol's null bias is −0.01 with SD 0.54.** §H27zdf was written because nobody had ever
+   checked whether the measurement method manufactures differences between identical binaries. It
+   does not. Every adoption in this campaign above ~1.7 points is safe; SKEW's +1.62 is ~3x the
+   floor and survives.
+
+2. **`min > max` is the WRONG rule below the per-launch spread, and no rep count fixes it.**
+   `_dh` is real at 9 sigma, yet the sequential-block gate reported "ranges overlap" at 7 reps
+   (91.20 vs 91.20, an exact tie) AND at 15 reps (91.00 vs 91.20, worse). More reps make a min/max
+   range WIDER, never narrower. The rule is valid only when the effect exceeds the spread -- it did
+   for SKEW (+1.62 vs 1.1) and cannot for V1 (+1.18 vs 1.40). Caveat now written into
+   `tools/h27zo_v1_gate.sh`, and `tools/h27zdf_paired.sh` is parameterised for any shape/arm set.
+
+#### WHAT IS NOW CLOSED ON V1, and what is not
+
+    DEAD, do not re-test          evidence
+    UNIFORM_A_DESC                -3.87 points, raises short_scoreboard 43%
+    WGMMA_SKEW                    89.61 vs 89.99; and MAX_ATOMS==1 makes it illegal anyway
+    WGMMA_ROTATE 1/2              ptxas C7517 injects 2 extra DEPBARs, 1 -> 3, re-verified on THIS tile
+    instruction count as a lever  §H27zp refuted: dh_uad cut 28.4% of instrs and got SLOWER
+    static pre-HGMMA distance     pin and _dh are BOTH 57, yet _dh is +1.18
+
+    STILL OPEN, and it is the real cause (§H27zq)
+    commit -> drain distance      ours 1 instruction / 0 HGMMA; cuBLAS 39 instructions / 4 HGMMA.
+                                  Consequences measured on both ends: their acquire has ZERO stall
+                                  samples and no spin loop, their producer NANOSLEEPs with slack;
+                                  ours spins 287 samples on acquire and its producer spins 23.6%
+                                  on empty barriers. The rotation that would fix it is blocked by
+                                  ptxas, not by design -- WROT=1 DOES move the DEPBAR to the loop
+                                  top (0c20, ahead of the acquire) and ptxas then re-injects two.
+                                  Next: bisect which loop-tail statement triggers C7517.
+
+V1: **90.51 -> 91.69**. Remaining gap to cuBLAS ~8.3 points, and it is the commit->drain distance.
+
+### §H27zs / §H27zt — V1's gap is 80.8% SLOPE. Our mainloop idles 34.8 cycles per k-iteration; cuBLAS's idles ZERO. And the rotation that fixes it was never blocked by ptxas — it was blocked by our own runtime guard.
+
+#### §H27zs — the attribution, measured instead of assumed
+
+Every prior V1 analysis assumed the gap was in the mainloop. Never tested. V1 is 0.97 waves, so
+prologue/epilogue amortise over nothing and could have been a large share. Method: hold M=2048
+N=512, sweep K, fit `cycles = INTERCEPT + SLOPE * k_iters` for BOTH kernels in the same sweep.
+
+The tool prints cuBLAS's kernel name per K, and that mattered -- **cuBLAS switches kernel outside
+a narrow window**, so most of the sweep is not comparable:
+
+    K=2048/4096/8192   nvjet 64x128_64x8_2x1_v_bz_NTN          (different tile, no splitK)
+    K=16384, 24576     nvjet 128x128_64x6_1x2_h_bz_splitK_NTT  <- V1's actual kernel
+    K=32768            nvjet 128x192_64x5_2x1_v_bz_coopB_splitK
+    K=49152            nvjet 128x256_64x4_2x1_v_bz_coopA_splitK
+
+Fitting ONLY the two matched points (exact line, and it reproduces the measured gap exactly):
+
+    ours    cycles = 10,200 + 570.48 * k_iters
+    cuBLAS  cycles =  8,891 + 527.58 * k_iters
+
+    SLOPE     excess  5,492 cycles   80.8% of the gap   (42.9 cycles per k-iteration)
+    INTERCEPT excess  1,309 cycles   19.2%
+    total             6,801  ==  measured 83,222 - 76,421 = 6,801
+
+**The mainloop assumption was right, and now it is measured.** Per iteration:
+
+    kernel   tensor_busy/iter   slope    idle/iter
+    ours          535.7         570.5      +34.8
+    cuBLAS        533.5         527.6       -5.9   (zero within fit error)
+
+**cuBLAS's mainloop never idles. Ours idles 34.8 cycles every k-iteration, 128 times.** 34.8 is
+the length of our 31-instruction pre-first-HGMMA phase at ~1 IPC -- the same phase PC sampling put
+at 31.0% of loop stalls (§H27zq). cuBLAS's equivalent phase is 6 instructions AND runs with four
+wgmma still in flight, so it is completely hidden.
+
+PRIZE, quantified: matching the slope gives 10,200 + 527.58*128 = 77,730 vs cuBLAS 76,421 =
+**98.3%**. Closing the 1,309-cycle intercept on top of that is the remaining ~1.7 points.
+Caveat: a two-point fit has no residual to check. It reproduces the measured gap exactly and the
+contaminated 4-point fit agreed qualitatively (88.7% slope), but a third matched K would confirm.
+
+#### §H27zt — the WGMMA_ROTATE "compile-only kill" was OURS, not ptxas's
+
+§H27zbA recorded WGMMA_ROTATE dead because ptxas emitted C7517 *"warpgroup.wait is injected by
+compiler to allow use of registers defined by GMMA"* and DEPBAR went 1 -> 3, i.e. the rotation
+ADDED waits. Re-tested on V1's own tile today and it reproduced exactly -- so the record was
+right. But the CAUSE was misattributed. It is this:
+
+    auto drain_prev = [&]() {
+        if (WROT != 0 && prev_stage >= 0) {     // prev_stage is a RUNTIME value
+            wgmma_wait_group<0>(); ...
+
+`wgmma_wait_group<0>()` sat on a runtime-conditional path, so ptxas could not prove EVERY path
+waits before the accumulators are reused, and inserted its own wait. Bisected locally, no GPU
+(128x128x64_2x1_v_sk2_dh, sm_90a):
+
+    WROT=0                       0 warnings   1 DEPBAR
+    WROT=1/2, guard as it was    1 warning    3 DEPBAR   <- the documented kill, reproduced
+    WROT=1/2, guard removed      0 warnings   2 DEPBAR   <- injection GONE, but release_empty(-1)
+    WROT=1/2, wait hoisted only  0 warnings   2 DEPBAR   <- and CORRECT
+
+Hoisting only the WAIT is sufficient: ptxas needs the wait unconditional and does not care that
+the mbarrier arrive is predicated. The release MUST stay guarded -- prev_stage is -1 on the first
+pass and release_empty(-1) arrives on `empty_mbar_addr - 8`, an out-of-bounds smem write.
+
+Resulting loop shape at WROT=1, which is cuBLAS's:
+
+    0be0  WARPGROUP.DEPBAR.LE      drain, at the TOP of the loop
+    0cd0  SYNCS.ARRIVE             release, immediately after  (cuBLAS's idx189)
+    0d80  SYNCS.PHASECHK.TRYWAIT   acquire
+    0f40  HGMMA x4                 issue, then back-edge with FOUR STILL IN FLIGHT
+    1100  WARPGROUP.DEPBAR.LE      post-loop drain, retires the final group
+
+**WROT=0 is byte-identical**: `if constexpr (WROT != 0)` discards the body exactly as the old
+`WROT != 0 &&` short-circuit did, verified by SASS diff of a WROT=0 build (5,723 lines, no diff).
+So no shipped config changes. Registered `128x128x64_2x1_v_sk2_dh_rot1` and `_rot2`.
+
+At depth 6 rot1 holds 1 buffer of 6 and rot2 holds 2 of 6; §H16.7's -10 to -12% was the same trade
+at depth 3, i.e. 1 of 3. That is the price difference, and it is why this is worth re-measuring.
+
+### §H27zt-RESULT — V1 ADOPTED: 90.49 → 98.34, +7.85, ranges fully separated. The campaign's largest single win, and it came from a knob that was recorded DEAD.
+
+GPU 0, `quick-home-speaks-fin-03`, clock-locked 1200, **every row LOCK HELD**, commit `6f6149f`.
+
+    cfg                                    mean     min     max   maxRelErr   verdict
+    128x128x64_2x1_v_sk2  (pin)           90.49   89.80   91.10    0.00000    (pin)
+    128x128x64_2x1_v_sk2_dh_rot1          91.34   90.30   91.90    0.00000    ranges overlap
+    128x128x64_2x1_v_sk2_dh_rot2          98.34   97.70   98.90    0.00000    ADOPT
+
+min 97.70 clears max 91.10 by 6.6 points against a 0.56 resolution floor. Not marginal.
+
+#### THE MECHANISM, confirmed against the prediction rather than asserted
+
+    metric                          pin        rot2     ratio    cuBLAS
+    sm__cycles_elapsed.avg       83,726      77,263    0.9228    76,421
+    tensor pipe active pct        81.81%      89.06%   1.0886     90.99%
+    sm__inst_executed_pipe_tensor 524,288    524,288   1.0000              identical work
+    dram__bytes_read.sum      83,919,360  83,920,640  1.0000              identical traffic
+    HGMMA per DEPBAR               4.00        3.97                ~8.00   UNCHANGED
+
+§H27zs predicted 77,730 cycles from the slope fit. Measured **77,263** -- within 0.6%, on a change
+of +7.85 points, from a model built before the change existed. Tensor utilisation went from 9.2
+points behind cuBLAS to 1.9 behind.
+
+**Phase 3 is the important negative:** HGMMA-per-drain did NOT change (4.00 -> 3.97). The win is
+purely WHERE the drain sits, exactly as §H27zq argued -- not how deep it waits (§H27zbA was right
+about that) and not how many drains there are (§H27zo's causal claim, already refuted).
+
+Residual: 77,263 - 76,421 = **842 cycles**, against the 1,309-cycle INTERCEPT excess §H27zs
+predicted. The SLOPE gap is closed; what remains is paid-once cost.
+
+#### WHY rot2 AND NOT rot1
+
+rot1 drains at the top BEFORE the mbarrier wait (holds 1 buffer); rot2 drains AFTER the acquire so
+the acquire overlaps too (holds 2). At depth 6 that is 2 of 6, leaving 4 free. §H16.7's -10 to -12%
+was this same trade at depth 3, where 2 held leaves 1. **The form was never wrong; it was priced at
+the wrong depth**, which is what §H27zn's depth probe (V1 = 6) made checkable.
+
+#### THE CHAIN, for the record
+
+    closed cycle budget           gap IS tensor idle, tensor_busy equal to 0.44% across kernels
+    slope/intercept fit (H27zs)   80.8% of the gap is SLOPE; 34.8 idle cycles per k-iteration
+                                  vs cuBLAS's ~0
+    PC sampling (H27zq)           cause = commit->drain distance, ours 1 instr vs cuBLAS 39
+    local SASS bisect (H27zt)     the "ptxas kill" was OUR runtime guard on prev_stage
+    hoist the wait                0 warnings, 2 DEPBAR, WROT=0 byte-identical
+    measure                       +7.85, predicted to 0.6%
+
+Three of my own hypotheses were refuted on the way (instruction count §H27zp, drain COUNT §H27zo,
+static pre-HGMMA distance) and each refutation narrowed the search. The retractions are kept.
+
+#### THIS KNOB WAS DEAD ON EVERY SHAPE, NOT JUST V1
+
+No tile has ever had a working rotation -- the guard broke it universally. Registered for the
+depth-4 tiles, which cover **10 of the 15 shapes**:
+
+    128x256x64_2x1_h_swz64_rot1 / _rot2       V7, V7b, V7c, V8, V8b, V8c, V8d   (V8 = 94.8%, the
+                                                                                 other real gap)
+    256x128x64_2x1_h_ep32s2_rot1 / _rot2      V2, V2b, V2c
+
+Prediction from the mechanism, stated before measuring: benefit tracks free buffers, so depth 4
+(rot1 leaves 3, rot2 leaves 2) should gain less than V1's depth 6 but still gain; **depth 3
+(192x192, V3/V4/V5/V6) should LOSE**, since rot2 there leaves a single buffer -- that is §H16.7's
+own regime. Test the depth-3 tiles last and expect a negative.
+
+### §H27zt-B — the rotation across the depth-4 tiles. V8 +0.72 ADOPTED, V2 exactly nothing. Both confirm the mechanism.
+
+GPU 0, `quick-home-speaks-fin-03`, clock-locked 1200, all rows LOCK HELD, commit `390b5d9`.
+
+    V8  16384x2048x512 nt   128x256 depth 4, K=512 -> 8 k_iters
+      128x256x64_2x1_h_swz64          95.51  [95.30, 95.70]  0.00000  (pin)
+      128x256x64_2x1_h_swz64_rot1     95.76  [95.30, 96.30]  0.00000  overlap
+      128x256x64_2x1_h_swz64_rot2     96.23  [96.10, 96.30]  0.00000  ADOPT  +0.72
+
+    V2  2048x2048x16384 tn  256x128 depth 4, K=16384 -> 128 k_iters
+      256x128x64_2x1_h_ep32s2         99.79  [99.70, 99.80]  0.00000  (pin)
+      256x128x64_2x1_h_ep32s2_rot1    99.80  [99.80, 99.80]  0.00000  overlap
+      256x128x64_2x1_h_ep32s2_rot2    99.77  [99.70, 99.80]  0.00000  overlap
+
+**Both results confirm the mechanism rather than qualify it.** The rotation recovers per-K-ITERATION
+tensor idle, so its value is (idle per iteration) x (number of iterations):
+
+    V1   34.8 idle cycles/iter x 128 iters   -> +7.85   depth 6, 4 buffers left free
+    V8    small                x   8 iters   -> +0.72   depth 4, only 8 iterations to act on
+    V2    ~0 idle (already 99.79)            ->  0.00   nothing to recover, at parity already
+
+V2 is the useful negative: same depth, same 128 k_iters as V1, and it moved 0.00 -- because a
+kernel already at 99.79% has no per-iteration idle for the rotation to remove. That rules out
+"rot2 is just generically faster" and ties the gain specifically to recovered idle.
+
+#### PREDICTION FOR THE REST OF THE 128x256 FAMILY, before measuring
+
+Same tile as V8, so the same rot2 applies; what differs is k_iters and how much idle each has:
+
+    V8   K=512    8 k_iters   96.23 after rot2
+    V8b  K=2048   32          98.1
+    V7   K=2048   32          98.2
+    V7c  K=2048   32          98.1
+    V7b  K=5632   88          99.2
+    V8c  K=11264  176         99.4
+    V8d  K=50304  786         99.2
+
+More iterations means more chances to act, but the high-K members are already at 99.2-99.4 so
+there is little idle left. Expect small positives at best. Worth one sweep to confirm the family
+pin, NOT worth a campaign.
+
+#### WHERE THE REMAINING WORK IS, after V1
+
+    V8   96.23   <- the largest remaining gap, and it is INTERCEPT-shaped (94.8/98.1/99.4 across K)
+    V7c  98.1
+    V7   98.2
+    V8b  98.1
+    V6   98.6
+    everything else 99.2 - 99.9
+
+V1's own residual is also intercept: 842 cycles against the 1,309 §H27zs predicted. **So the slope
+thread is now closed on both real gaps and the next target is the PAID-ONCE cost** -- prologue,
+TMA warm-up, epilogue, and for split-K shapes the reduce kernel, which no measurement in this
+campaign has ever profiled.
+
+### §H27zv — PDL ported from SM103. V1 98.54 → 104.79 (+6.25). FIRST SHAPE PAST cuBLAS. Total for the day: 90.4 → 104.8.
+
+GPU 0, `quick-home-speaks-fin-03`, clock-locked 1200, LOCK HELD, `maxRelErr 0.00000`, `0eaf6a5`.
+
+    128x128x64_2x1_v_sk2               90.44  [90.00, 90.70]   (this morning's pin)
+    128x128x64_2x1_v_sk2_dh_rot2       98.54  [97.70, 99.40]   +7.85  drain position (§H27zt)
+    128x128x64_2x1_v_sk2_dh_rot2_pdl  104.79  [104.30,105.30]  +6.25  launch overlap (this)
+
+Isolated A/B against the rot2 pin, so +6.25 is PDL's own contribution. Ranges fully separated.
+
+#### THIS WAS A PORT, NOT A DISCOVERY -- and the user caught that
+
+I had just finished proposing to "implement PDL" from scratch. It already existed: **B300 §60.7
+discovered it, §60.9 gated it (geomean 82.6 -> 89.5%), §60.16/60.20 iterated it, and it is
+default-ON on SM103.** SM90 had none of it. What I had done independently was rediscover the
+*signature* on H200 -- our gemm->reduce gap +2,336 ns against cuBLAS's -192 ns -- which is the
+same thing §60.7 saw on B300 at -4.06 vs +2.66 us. Checking the other arc's log first would have
+saved the entire derivation. `feedback_diff_against_proven_code_first` exists for exactly this and
+I did not apply it across ARCHES, only across modules.
+
+#### WHAT WAS PORTED, AND WHAT WAS DELIBERATELY LEFT
+
+Ported (A7 only): the three device primitives verbatim, an all-thread `griddep_wait()` at kernel
+entry after `prefetch.tensormap`, `griddep_launch_dependents()` after the CTA's last wgmma, and
+the host `cudaLaunchAttributeProgrammaticStreamSerialization` + `blublas_NO_PDL` kill-switch.
+Emits ACQBULK at 0x0150 and PREEXIT at 0x1390 -- the same two instructions §60.7 decoded out of
+cuBLAS's SASS.
+
+NOT ported: A8's narrowed wait and A9's machinery. **Both measured NEUTRAL on B300** -- §60.16
+"wait-scope was NOT the lever", §60.20 "throughput NEUTRAL; PDL exhausted". All of the +6.9 there
+is in A7. Only A9's trigger POSITION was taken, because it is free and firing early is what
+produced B300's 13.76 -> 24.45 us duration stretch (§60.15).
+
+BOTH HALVES WERE REQUIRED. The GEMM firing PREEXIT is only the producer side; the split-K reduce
+had to opt in as the CONSUMER, which meant converting its `<<<>>>` launch to `cudaLaunchKernelEx`
+and adding a wait before its only read of `ws`. Without that the gemm->reduce transition -- the
+exact 2,336 ns this targets -- would not have moved at all.
+
+`PDL=false` is INSTRUCTION-IDENTICAL: 2,880 instructions, no diff. The only change in the object
+is the mangled name (one extra `Lb0E` for the new template parameter).
+
+#### HONEST FRAMING OF "104.79%"
+
+This is a back-to-back LOOP throughput number. §H27zu measured isolated device time at 67.9 us
+ours vs 68.8 cuBLAS -- **we were already 0.6% ahead there**, and the extra ~4% comes from
+overlapping launch latency. Whether cuBLAS overlaps its own GEMM the same way is unknown (its
+nvjet fires launch_dependents, but whether it opts in as a consumer was never established). So:
+our kernel is marginally faster in isolation; the loop number is larger because we now extract
+overlap. For BluTrain, which runs back-to-back layer GEMMs, the loop number is the relevant one.
+
+#### THE CONTRACT IS NOT YET PROVEN
+
+`maxRelErr 0.00000` in this harness does NOT prove PDL is safe. The benchmark loop rewrites the
+same `dC` from the same inputs every iteration, so the entry wait is satisfied trivially. The real
+test is a chained dependency -- GEMM1's output feeding GEMM2's input -- which is what BluTrain
+does layer to layer. `examples/test_pdl_chain.cu` exists from B300 for exactly this and is
+arch-independent. **The V1 pin is staged but must not ship until that passes.**
+
+### §H27zv-GATE — PDL chain test PASSES. V1 ADOPTED at 104.79%. First shape past cuBLAS.
+
+    chained 200 iters, 2048x512x16384 -> 2048x512x512, PDL vs serialized
+    iterations with ANY differing element : 0 / 200
+    worst-case differing elements         : 0 / 1,048,576
+    SUMMARY pdl_chain_sm90: PASS
+
+`C2 = (A x B) x B2` back-to-back on ONE stream with no intervening sync, so GEMM2's A operand IS
+GEMM1's output -- the layer-to-layer pattern BluTrain actually runs. Compared bit-exactly against
+the SAME kernel with `blublas_NO_PDL=1` forcing serialization, which isolates the ordering change
+from numerics. 200 runs because a race is probabilistic and one clean pass proves nothing.
+
+Two things this exposed that are worth keeping:
+  - `examples/test_pdl_chain.cu` (the B300 gate) is NOT arch-independent -- it includes the SM103
+    template and ptxas rejects `.cta_group::2` for sm_90a. Wrote `test_pdl_chain_sm90.cu`.
+  - `make tests` printed "Test building complete" after a ptxas FATAL and produced no binary.
+    Third time that recipe's `| grep -v warning || true` has hidden a real failure today.
+  - both launchers cache `getenv("blublas_NO_PDL")` in a function-local static, so the kill-switch
+    cannot be flipped inside one process. The test re-execs a child. Worth knowing before anyone
+    tries to A/B it at runtime.
+
+**V1 PIN: `128x128x64_2x1_v_sk2_dh_rot2_pdl`.**
+
+#### V1, THE WHOLE DAY
+
+    start of day                          90.4%
+    + dh          (descriptor hoist)      91.7    +1.18   paired instrument, 21/21 reps
+    + rot2        (drain position)        98.54   +7.85   ranges separated
+    + PDL         (launch overlap)       104.79   +6.25   ranges separated, chain-gated
+                                                  ------
+                                                  +14.4
+
+Also today: V8 95.51 -> 96.23 (+0.72, same rot2), and six clean negatives across the V7/V8 family
+that stopped the rotation being applied where it does not pay.
+
+#### WHAT ACTUALLY PRODUCED THE WIN, honestly
+
+Three of my own hypotheses were refuted and retracted on the way -- instruction count (§H27zp),
+drain COUNT (§H27zo), and static pre-HGMMA distance. Each refutation narrowed the search. What
+worked was: a closed cycle budget (tensor_busy equal to 0.44% across kernels, so the gap IS idle),
+a slope/intercept fit that showed 80.8% of it was per-iteration, PC sampling that localised it to
+the commit->drain distance, and a local SASS bisect that found the "ptxas kill" was OUR OWN
+runtime guard. Then the user pointed out PDL was already solved on the other arch, which removed
+the last piece without my re-deriving it.
+
+### §H27zv-D — PDL ADOPTED ON ALL 15 PINS. Mean **100.02%** of cuBLAS. Nothing regresses beyond the measurement floor.
+
+GPU 0, `quick-home-speaks-fin-03`, clock-locked 1200, **LOCK HELD and maxRelErr 0.00000 on every
+row of all 15 shapes**, commit `8ffe6ec`. This sweep also RE-BASELINES V2b/V2c/V3/V4/V5/V6, which
+had been carrying `deep-ball-purrs-fin-03` numbers all day.
+
+           pin      +PDL    delta   vs the 0.56 floor
+    V1    98.54   104.79   +6.25   REAL GAIN
+    V7c   98.37   101.06   +2.69   REAL GAIN
+    V8    96.24    98.11   +1.87   REAL GAIN
+    V2    99.80   100.63   +0.83   REAL GAIN
+    V8b   98.83    99.44   +0.61   REAL GAIN
+    V7    99.01    99.50   +0.49   within noise
+    V5    99.46    99.87   +0.41   within noise
+    V2b   99.49    99.86   +0.37   within noise
+    V7b   99.63    99.99   +0.36   within noise
+    V8c   99.84   100.03   +0.19   within noise
+    V2c   98.97    99.03   +0.06   within noise
+    V6    98.76    98.81   +0.05   within noise
+    V8d   99.97   100.00   +0.03   within noise
+    V4    99.97    99.94   -0.03   within noise
+    V3    99.44    99.23   -0.21   within noise
+
+    positive 13/15   negative 2/15   mean +0.93   worst regression -0.21 vs a 0.56 floor
+
+    SCOREBOARD:  mean 100.02%   median 99.87%   worst 98.11%   five shapes at or above 100%
+
+#### WHY DEFAULT-ON AND NOT PER-SHAPE — decided by the data, not the argument
+
+The only case for per-shape adoption was "PDL costs contention where there is no gap to recover".
+**That cost does not exist above the measurement floor**: the worst of fifteen is -0.21 against a
+floor of 0.56 (§H27zr). Meanwhile per-shape has a real structural cost:
+
+**PDL is a property of the PAIR of consecutive launches, not of one kernel.** The producer half
+(PREEXIT) is an unconditional hint; the consumer half (the launch attribute + `griddep_wait`) is
+what opts in. BluTrain runs layer N (shape X) -> layer N+1 (shape Y). If X is PDL-on and Y is
+PDL-off, Y never opts in and **that boundary gets zero overlap**, whatever either measured alone.
+With 15 shapes interleaving, partial adoption fragments the chain everywhere. SM103 and cuBLAS are
+both default-on for the same reason.
+
+ADOPTED ON THE PINS, NOT BY FLIPPING THE TEMPLATE DEFAULT. `_PDL` stays `false`, so all 400+ other
+registered configs remain byte-identical (verified: 2,880 instructions, no diff). Only the 15
+pinned configs change. Two off-switches remain: name the non-`_pdl` alias (compile-time, per
+shape) or `blublas_NO_PDL=1` (runtime, global, no rebuild).
+
+#### THE beta != 0 GATE, and why beta == 0 hid it
+
+    beta=0.0  (C_in read skipped)   iters differing 0/200   worst elems 0/1048576
+    beta=0.5  (C_in read LIVE)      iters differing 0/200   worst elems 0/1048576
+    SUMMARY pdl_chain_sm90: PASS
+
+`beta != 0.0f` is FIRST in a short-circuiting `&&` (template:5465), so at `beta == 0` the
+epilogue's `C_in` read -- the SECOND global read of prior-grid-written data -- **never executes**.
+Every PDL measurement before this skipped it. Running at beta==0 was not wrong (it is a plain
+GEMM and costs nothing extra: no load, no multiply, no DRAM traffic, documented at template:5399),
+but it left the one branch PDL could break unexercised, and BluTrain runs addmm. Phase 2 seeds C2
+via a same-stream device copy so BOTH hazards are live at once: G2's A operand from G1, and its
+C_in from a prior stream operation.
+
+#### WHERE THE CAMPAIGN STANDS
+
+    this morning   V1 90.4   V8 94.8   median ~99   mean n/a (6 shapes on a dead box)
+    now            V1 104.79 V8 98.11  median 99.87  mean 100.02
+
+V1 moved +14.4 in one day (dh +1.18, rot2 +7.85, PDL +6.25) and is the first shape past cuBLAS;
+five are now at or above 100%. **V8 at 98.11 is the worst remaining shape**, and its gap is
+intercept-shaped (K=512, 8 k-iterations), so the next lever there is prologue/epilogue, not the
+mainloop -- the mainloop work is finished on both real gaps.
+
+### §H27zx — BACKFILL: the two 2026-08-20 datasets that existed only as screenshots, and a section-naming collision to be aware of.
+
+Both runs below were made on `deep-ball-purrs-fin-03`, which no longer exists. Their
+`test_reports/*/SUMMARY.md` were never committed and are lost with the box; these numbers are
+transcribed from the screenshots taken at the time and are the only surviving record.
+
+**NAMING COLLISION, stated so nobody is misled later.** The scripts `tools/h27zq_locked_nsys.sh`,
+`tools/h27zv_ladder_variants.sh` and `tools/h27zw_clock_matrix.sh` predate the doc sections
+§H27zq (commit->drain), §H27zv (PDL) and this one. **Tool `h27zX` does not correspond to doc
+section §H27zX after 2026-08-20.** The original runs those tools produced are recorded here under
+§H27zx instead.
+
+#### (a) ALL 15 SHAPES AT A HELD 1200 MHz — the run that reframed the whole campaign
+
+Throttle reason 0x0 on every row. This is what established that the apparent gap was mostly the
+power governor, and that only two shapes had a real kernel deficit:
+
+    V2b  5632x2048x16384  tn   100.0  99.5  99.6 100.0 100.0
+    V2c  2048x50304x16384 tn    99.2  99.2  99.2  99.3  99.2
+    V3   16384x11264x2048 nn    99.6  99.5  99.8  99.6  99.8
+    V4   16384x50304x2048 nn   100.1 100.0  99.8  99.9  99.9
+    V5   2048x11264x16384 tn    99.9  99.9  99.9  99.5  99.4
+    V6   16384x5632x2048  nt    98.5  98.7  98.8  98.8  98.4
+    V7   16384x2048x2048  nn    98.2  98.2  98.2  98.1  98.1
+    V7b  16384x2048x5632  nn    99.2  99.2  99.2  99.3  99.2
+    V7c  16384x512x2048   nn    98.5  98.5  98.1  97.0  98.6
+    V8   16384x2048x512   nt    95.3  95.0  93.8  94.8  94.8
+    V8b  16384x2048x2048  nt    98.0  97.9  98.8  98.0  98.0
+    V8c  16384x2048x11264 nt    99.5  99.0  99.7  99.4  99.2
+    V8d  16384x2048x50304 nt    99.1  99.4  99.1  99.2  99.1
+
+13 of 15 at 98.0-100.0%; only V1 (90.3, measured separately) and V8 (94.8) were real.
+**SUPERSEDED** by §H27zv-D, which re-measured all 15 on `quick-home-speaks-fin-03`. Kept because
+it is the origin of the "13 of 15 are already at parity" finding that redirected the campaign.
+
+#### (b) THE FREQUENCY LADDER — where the lock stops holding on an H200
+
+V2 `2048x2048x16384 tn`, 5 reps per row, clock sampled DURING the run rather than before it:
+
+    requested   %cuB x5                          clock DURING run      verdict
+      1200      99.3 99.6 98.9 98.9 99.4         mean 1200  min 1200   LOCK HELD
+      1300      99.8 99.8 99.8 99.8 99.8         mean 1305  min 1305   LOCK HELD
+      1400      99.7 99.5 99.8 99.8 99.7         mean 1410  min 1410   LOCK HELD
+      1474      98.4 98.0 98.1 98.2 98.1         mean 1455  min 1425   CAP OVERRODE - INVALID
+      1500      97.8 97.2 97.7 97.6 96.4         mean 1493  min 1440   CAP OVERRODE - INVALID
+      1600      95.5 97.1 96.3 96.0 95.8         mean 1573  min 1425   CAP OVERRODE - INVALID
+      1700      95.4 95.5 95.5 95.3 95.5         mean 1653  min 1440   CAP OVERRODE - INVALID
+      1755      96.2 94.9 95.6 95.4 95.2         mean 1677  min 1425   CAP OVERRODE - INVALID
+
+**The valid lock band on that H200 was 1200-1400.** Above 1474 the card accepts the request and
+then silently runs lower -- ask for 1755, get 1425. Every row above 1400 is a measurement of the
+power governor, not of the kernel, and the falling %cuB across those rows is that artifact, not a
+kernel effect. This is why every gate since samples `clocks.sm` DURING the benchmark and marks a
+slipped row INVALID rather than reading it once at idle.
+
+**NOT RE-VERIFIED on `quick-home-speaks-fin-03`.** The cap threshold is a property of the
+individual card and its cooling. 1200 has held on every run here, but the upper bound of the valid
+band on this box is unknown and must be re-measured before anyone times above it.
+
+### §H27zzb-RESULT — V8 98.17 → 99.01 (+0.84) with ep64. Confirms §H27z.98's membar diagnosis; REFUTES §H27z.97's stmatrix premise, for free.
+
+GPU 0, `quick-home-speaks-fin-03`, clock-locked 1200 LOCK HELD, maxRelErr 0.00000, `c8c2f43`.
+
+    128x256x64_2x1_h_swz64_rot2_pdl        98.17  [97.90, 98.40]   (pin)
+    128x256x64_2x1_h_ep64swz128_rot2_pdl   99.01  [98.70, 99.30]   ADOPT  +0.84
+
+V8 across the day: 95.51 -> 96.23 (rot2) -> 98.11 (PDL) -> 99.01 (ep64), **+3.5**.
+Scoreboard: mean **100.08%**, median 99.87, worst now **V6 at 98.81**, five shapes >= 100.
+
+#### THREE OF MY HYPOTHESES WERE WRONG BEFORE THE RIGHT ONE, and the log already had it
+
+  1. "the per-chunk barrier_sync is the cost"  -- measured at **5.3%**. Wrong.
+  2. "the divergent branches are bounds checks" -- V8 divides exactly (16384/128, 2048/256, zero
+     residue) so they COULD have been redundant, but dumping the SASS showed they are not bounds
+     checks at all: they are the TMA store commit sequence. Wrong.
+  3. "stmatrix + swizzle deletes the MEMBAR"    -- §H27z.97's own premise, refuted BY COMPILATION.
+
+The actual composition, measured per opcode rather than inferred from the stall label:
+
+    BRA 21.3% + BSSY 14.2% + FENCE.VIEW.ASYNC.S 5.9% + BAR.SYNC 5.3%  =  46.7%
+    ...against STS 3.5% and FMUL 1.9% -- the epilogue is neither store- nor math-bound.
+
+That bundle repeats ONCE PER CHUNK, which is what makes chunk count the lever -- not the barrier
+alone. **§H27z.98 had already diagnosed this**, proved the fence cannot be made cheaper (every
+writable PTX form emits MEMBAR; cuBLAS's zero-MEMBAR path is not reachable from PTX), derived the
+identical ep32->ep64 arithmetic, and registered `128x256x64_2x1_h_ep64s2`. Reading it first would
+have skipped all three wrong turns. That is the fourth time today the answer was already on disk.
+
+#### A FREE NEGATIVE THAT SAVES A GPU RUN
+
+§H27z.97 proposed stmatrix+swizzle to delete the BAR.SYNC and MEMBAR, noting "the combination has
+never been measured on any tile". It does not work, and one local compile shows it:
+
+    config                  MEMBAR  BAR.SYNC  FENCE   STS   STSM  BSSY
+    pin  (ep32+swz64)          8       19       9     128     0     21
+    ep64 (+swz128)             4       11       5     128     0     70
+    stsm (swz64+stmatrix)      8       19       9       0    16     19
+    swz64r64stsm               8       19       9       0    16     19
+
+stmatrix swaps 128 STS for 16 STSM and changes the synchronisation **not at all**. The premise is
+refuted without a GPU run. ep64 is the only lever that actually removes fences.
+
+#### THE TRADE ep64 MAKES, which was not predicted
+
+MEMBAR 8->4, BAR.SYNC 19->11, FENCE 9->5 -- as designed. But **BSSY goes 21 -> 70**: the wider
+chunk with SW128 more than triples the divergent regions, and BSSY was 14.2% of the epilogue. The
+fence halving wins by +0.84, so the trade is net positive here, but it is a trade and not a pure
+win -- on a shape with less membar to recover it could invert.
+
+#### WHY +0.84 AND NOT §H27z.98's PREDICTED 2-3 POINTS
+
+That prediction was written when V8 was ~94.8 and the membar was 5.9% of warp-active. rot2 and PDL
+had already taken V8 to 98.17 before ep64 ran, so part of the cost this targets had been absorbed.
+The prediction was not wrong about the mechanism, only about the headroom left by the time it ran.
+
+#### NEXT ON THIS TILE
+
+The membar share collapses with K (5.9/2.3/0.5/0.1 at K=512/2048/11264/50304), so ep64 should pay
+on the other LOW-K members of the 128x256 family and do nothing at high K:
+    V7 K=2048, V7c K=2048, V8b K=2048   -> worth testing
+    V7b K=5632, V8c K=11264, V8d K=50304 -> expect ~0, and BSSY may make it negative
+
+### §H27zzd — V6 DIAGNOSED BUT NOT FIXED. The cause is 11.9% excess DRAM, not the raster. Stopping here deliberately.
+
+GPU 0, `quick-home-speaks-fin-03`, clock-locked 1200, LOCK HELD, maxRelErr 0.00000 throughout.
+V6 = `16384x5632x2048 nt`, pin `192x192x64_2x1_h_rs8_dh_ubd_skew_lsw_pdl`, **98.81%**.
+
+#### WHAT IS PROVEN
+
+    slope fit (R^2 1.0000 both, SAME cuBLAS kernel across all four K -- clean, unlike V1's):
+      ours    cycles = 74,758 + 23,217.28 * k_iters
+      cuBLAS  cycles = 66,010 + 23,042.65 * k_iters
+      SLOPE excess 5,588 (39.0%)   INTERCEPT excess 8,748 (61.0%)   -- MIXED, unlike V1 or V8
+
+    ledger, and the number that has not appeared on any other shape today:
+      dram__bytes_read.sum   ours 272.7 MB   cuBLAS 243.7 MB   **1.1191**   (V1/V8 were 1.0001)
+      lts__t_sector_hit_rate  85.68 vs 86.20  -- EQUAL, so we REQUEST more, we do not cache worse
+      long_scoreboard         34.06 vs 20.08  1.70x
+      tensor work             7,925,760 both  -- identical
+
+    region census: our producer spins 36.3% of total time (two loops, 23.8% + 12.5%, @!P1 on a
+    TRYWAIT self-branch) against cuBLAS's 5.8%. Consistent with being starved on memory.
+
+#### WHAT IS REFUTED
+
+  - **B-multicast failing.** SASS emits `7 UTMALDG.4D.MULTICAST` alongside 7 plain loads, exactly
+    as a 2x1 cluster should. Configured AND emitted.
+  - **The raster swizzle being wrong.** §H27zi's law is `group x panel ~= 6.3 MB` with
+    `panel = BM*K*2` and NO N term, derived on V3/V4/V5. V6 has the smallest N of the family, so
+    testing the law outside its derivation set was legitimate -- and it HOLDS. The sequential gate
+    liked rs4 (+0.49) but paired it is +0.29 against a 0.31 floor with min_d -0.10, i.e. NOT
+    separable. rs1 +0.03, rs2 -0.28, rs16 -0.07. **rs8 stands.**
+
+#### THE ONE REAL LEAD, UNEXPLAINED
+
+Score tracks N across the three shapes sharing this exact pin:
+
+    V4  N=50304   99.94
+    V3  N=11264   99.23
+    V6  N= 5632   98.81
+
+and our L2 degrades as N shrinks while cuBLAS's improves -- halving V6's N took our hit rate
+85.30 -> 81.41 while theirs went 85.17 -> 89.56, and our DRAM fell only 35% where halving M fell
+52%. Something in our access pattern is N-sensitive in a way theirs is not. **Not identified.**
+
+CAVEAT ON THAT M/N EXPERIMENT: cuBLAS switched kernels on BOTH halved shapes (its tensor
+instruction count fell to 0.364x when the FLOPs fell to 0.5x, i.e. a different wgmma shape), so
+the ours-vs-cuBLAS columns on those two rows are NOT comparable. Only the ours-vs-ours scaling is
+usable. `h27zn` phase 2 does not print the cuBLAS kernel name the way `h27zs` does -- it should.
+
+#### WHY STOPPING
+
+V6 is 1.19 points, the raster and multicast leads are both closed, and the remaining cause is a
+29 MB DRAM excess with no identified mechanism. Several rounds have gone into it. The dispatcher
+is worth more: its 437-entry table and fitted trees predate the barrier removal, let alone today's
+rot2 / PDL / ep64, so **BluTrain currently selects NONE of the 15 pins**. That is the whole gap
+between "100.10% measured" and what the model actually runs.
+
+METHODOLOGICAL NOTE: the paired instrument's resolution floor is SHAPE-DEPENDENT -- 0.31 here
+against 0.56 on V1 (longer kernel, less relative noise). It must be re-read from the null control
+on every shape, never carried over as a constant.
+
+### §H27zze — V6: depth 4 via ep16s2 is CATASTROPHIC (-21 points). And it eliminates depth as the cause of V6's DRAM excess.
+
+GPU 0, `quick-home-speaks-fin-03`, clock-locked 1200 LOCK HELD, maxRelErr 0.00000.
+
+    192x192x64_2x1_h_rs8_dh_ubd_skew_lsw      98.49  [98.30, 98.90]   (pin, depth 3)
+    192x192x64_2x1_h_ep16s2_rs8_dh_ubd_skew   77.50  [77.40, 77.70]   depth 4   **-20.99**
+
+    metric                    pin        ep16s2     ratio
+    sm__cycles_elapsed      821,116    1,040,080    1.2667
+    smsp__inst_executed      87.5 M      147.3 M    1.6841
+    dram__bytes_read        272.6 MB     341.2 MB   1.2517
+    tensor pipe active        91.52%       71.95%   0.7862
+    long_scoreboard            33.27        34.35   flat
+
+#### WHY, and it is the SAME mechanism ep64 exploited on V8, running backwards
+
+`EPI_TILE_N=16` on BN=192 is **12 chunks per tile**, against the pin's ONE (unchunked). §H27zzb
+measured the per-chunk sync bundle at 46.7% of the epilogue region -- BAR.SYNC + MEMBAR.ALL.CTA +
+FENCE.VIEW.ASYNC.S + BSSY/BRA reconvergence, paid once per chunk. V8's ep64 halved 8 chunks to 4
+and won +0.84. This multiplies 1 chunk into 12 and loses 21 points. **The chunk count is the
+dominant term in the epilogue, and it swamps the pipeline stage it buys.**
+
+So §H27zdp's "depth 4 is the apples-to-apples structure" is correct as a STATEMENT about cuBLAS
+(their V6 kernel really is 64x4 and ours really is 3) but there is no route to it on this tile:
+    depth override      does not fit the smem budget
+    ep32s2   49,152 ->  still 3 stages, no gain (documented)
+    ep16s2   24,576 ->  4 stages, and -21 points
+Depth 4 on 192x192 stays PARKED, now with a measured cost rather than an unmeasured blocker.
+
+#### THE ELIMINATION THAT MATTERS MORE
+
+**Adding a pipeline stage made DRAM 25% WORSE (272.6 -> 341.2 MB).** V6's 11.9% DRAM excess is
+therefore NOT depth starvation -- a deeper prefetch made it worse, not better. Combined with the
+earlier eliminations, V6's cause is now bounded:
+
+    NOT the raster swizzle   rs4 +0.29 paired vs a 0.31 floor, min_d -0.10; rs8 stands (§H27zzd)
+    NOT B-multicast          SASS emits 7 UTMALDG.4D.MULTICAST, exactly as a 2x1 cluster should
+    NOT pipeline depth       depth 4 makes DRAM 25% worse
+    NOT the epilogue chunking  the pin is already at the optimum for this tile (1 chunk)
+
+Still open: 29 MB of excess DRAM at an IDENTICAL L2 hit rate, with score tracking N across the
+family (V4 N=50304 99.94, V3 N=11264 99.23, V6 N=5632 98.81) and our L2 degrading as N shrinks
+while cuBLAS's improves. The next instrument is a proper L2-sector capture -- SourceCounters
+leaves `L2 Theoretical Sectors Global*` EMPTY, so it needs the memory-workload section, which no
+run in this campaign has used.
+
+### §H27zzf — V6: DRAM IS NOT THE CAUSE. 23% more DRAM ran 0.4% FASTER. The whole 29 MB line is retracted.
+
+GPU 0, `quick-home-speaks-fin-03`, clock-locked 1200 LOCK HELD, maxRelErr 0.00000.
+
+    cfg                                     %cuB     cycles      DRAM read    tensor%
+    192x192x64_2x1_h_rs8_dh_ubd_skew_lsw   98.54    817,814     272.9 MB      91.62   (pin)
+    192x192x64_2x1_v_rs8_dh_ubd_skew_lsw   98.44    814,542     336.0 MB      91.30
+
+Raster `v` fetches **23% more DRAM and runs 0.4% FEWER cycles**. V6 is therefore NOT DRAM-bound,
+and the 11.9% read excess against cuBLAS -- which drove several rounds of investigation -- is a
+RED HERRING. Retracted.
+
+#### THE LOAD-PATH READ THAT SHOULD HAVE COME FIRST
+
+Dumping every TMA instruction in both kernels (the captures were already on disk):
+
+                              OURS       cuBLAS
+    TMA loads, plain         82,560      82,560
+    TMA loads, MULTICAST     82,560      82,560
+    TOTAL LOADS             165,120     165,120     IDENTICAL
+    loads per tile-iter            2           2    (A + B)
+    box per load        192x64x2 = 24,576 B, same tile both
+    TMA stores               15,480     247,680     16x more on THEIR side
+
+The load path is structurally identical -- same count, same 50/50 multicast, same box. We never
+fetch more per request. (Ours are UTMALDG.**4D**, theirs 3D, but the byte count per load is the
+same; the extra rank is our batch dimension, degenerate at batchCount=1.)
+
+ALSO RETRACTED: I claimed "L2 hit rate is equal, so we REQUEST more rather than cache worse".
+`lts__t_sector_hit_rate` counts ALL sectors including writes, and the store instruction counts
+differ 16x (15,480 vs 247,680), so that metric was confounded and could not support the claim.
+
+#### V6's CANDIDATE LIST IS NOW EXHAUSTED
+
+    NOT DRAM volume       23% more DRAM ran FASTER -- direct experiment, this section
+    NOT pipeline depth    depth 4 via ep16s2: -21 points, DRAM 25% worse (§H27zze)
+    NOT raster size       rs4 +0.29 paired vs a 0.31 floor, min_d -0.10 (§H27zzd)
+    NOT raster direction  2x1_v: -0.10, within noise, this section
+    NOT B-multicast       7 UTMALDG.4D.MULTICAST emitted, exactly as a 2x1 cluster should
+    NOT the load path     identical instruction count, multicast split and box size
+    NOT epilogue chunking the unchunked pin is already optimal for this tile (12 chunks = -21)
+
+What remains is ~10-14k cycles of tensor idle on 818k (tensor pipe 91.62 vs cuBLAS's 92.76),
+split 61% intercept / 39% slope by the §H27zy fit. No single structural cause survives. V6 is
+1.19 points and appears to be at the floor of what this kernel's structure gives; the next
+instrument would be a read-specific L2 capture (the memory-workload ncu section, never used in
+this campaign) to see whether the residual idle is even memory-shaped.
+
+### §H27zzh — V6: chunk-branch fold, MEASURED NULL (+0.07 vs a 0.31 floor)
+
+Folded the `g==0 ? C_NCHUNK0 : C_NCHUNK1` runtime select to a compile-time constant whenever the
+two chunk counts are equal (they are, on every symmetric tile). BSSY 21 → 14. Measured **+0.07**
+against V6's 0.31 resolution floor, i.e. **indistinguishable from zero**. Kept anyway — it is a
+strict static-count reduction with no risk — but it is NOT a fix and must not be quoted as one.
+
+Recorded because the branch count was a standing suspicion. It is now eliminated as V6's cause,
+joining DRAM volume (§H27zzf), pipeline depth (§H27zze), raster size/direction, B-multicast,
+the load path, and swizzle+stmatrix+depth4 (`ea32s3stsm`, −6.24).
+
+### §H27zzi — V6: the BUFFERLESS epilogue. The MEMBAR is gone (1 → 0) and depth is 4. Not yet timed.
+
+**Why this exists.** §H27zzf established V6's one verified structural difference from cuBLAS, from
+both SASS: ours has `MEMBAR` **1** (static, exec 20,640); cuBLAS nvjet has **0**, while running 12
+bare `FENCE.VIEW.ASYNC.S` (exec 247,680) and 2 `BAR.SYNC` (exec 660,480). Twelve times the fences,
+fifteen times the barriers — and it still wins, because each of theirs is free and ours is not.
+
+The chunk ladder is the confirmation, monotone in the MEMBAR count:
+
+| chunks | %cuB  |
+|--------|-------|
+| 1      | 98.53 |
+| 6      | 92.29 |
+| 12     | 77.50 |
+
+**Why we could not simply "do what cuBLAS does".** The MEMBAR is not a choice we made. Staging C
+through smem means a TMA engine (async proxy) reads bytes our `STS` wrote (generic proxy), so PTX
+requires `fence.proxy.async.shared::cta` — and **all 11 writable spellings** of it lower to
+`MEMBAR.ALL.CTA + FENCE.VIEW.ASYNC.S` (§H27zdo). stmatrix does not change it; measured, not assumed.
+cuBLAS emits a bare fence because nvjet writes SASS directly. We cannot emit SASS from CUDA. Every
+attempt to match their structure *while keeping the smem staging* was therefore attacking a
+constraint of the toolchain, not of our design — which is why `ea32s3stsm` lost 6.24 despite having
+the swizzle, stmatrix and depth 4 all switched on at once.
+
+**The one route that avoids the instruction entirely** is to not stage at all: write C straight to
+global with `STG`. No cross-proxy hazard ⇒ no fence required ⇒ no MEMBAR. And `STORE_BUF_BYTES`
+folds to 0, which returns the smem that was blocking the 4th stage — the single structural mismatch
+§H27zdp-CORRECTION identified. **Both blockers fall to one change.**
+
+This is not speculative: the **split-K path already runs exactly this epilogue** and is validated
+(§H27zzg SASS: `UTMASTG 0, STS 0, STSM 0, STG 102`). The only additions for non-split-K are the
+three things split-K defers to its reduce kernel — alpha, beta, and the fp32→bf16 convert.
+
+**Implementation.** Template slot 36 `_EPI_DIRECT_STG`, appended LAST so no positional alias shifts;
+default false. Two static_asserts forbid combining it with chunking (the store fires before the
+per-chunk filter, so chunking would re-store every element once per chunk) and with split-K (which
+already stores direct). Four post-loop sites needed guarding — **this is §H27z.14 repeating exactly**:
+`continue` skips one `r` iteration, *not* the store below it. Left unguarded, the TMA store ships an
+untouched `c_buf` straight over the `STG` results — silent garbage, not merely a lost win. Guarded:
+`tma_store_fence()` (this call *is* the MEMBAR), the TMA store block, the chunked drain, and the
+`EPI_LATE_STORE_WAIT` drain.
+
+**Verified locally, before spending any GPU time** (V6's pin, every other slot identical):
+
+| | V6 pin | +EPI_DIRECT_STG | cuBLAS V6 |
+|---|---|---|---|
+| MEMBAR | 1 | **0** | **0** |
+| UTMASTG | 3 | 0 | 12 |
+| FENCE.VIEW | 2 | 1 | 12 |
+| BAR.SYNC | 4 | 4 | 2 |
+| STG | 0 | 288 | – |
+| BSSY | 14 | **157** | – |
+| total instrs | 2808 | **4096** | – |
+| LOAD_PIPE_DEPTH | 3 | **4** | 4 |
+
+NN/NT/TN all compile; full registry compiles clean. `EPI_DIRECT_STG=false` re-verified
+**instruction-identical at 2808** — nothing that ships moved.
+
+**The cost is as visible as the win, and is stated up front.** Three TMA stores become 288 `STG`,
+each carrying its own bounds test, because raw `STG` has no descriptor to clamp it: +46% instructions
+and 143 extra reconvergence points. Coalescing should survive (adjacent lanes write adjacent column
+pairs, 128 B per warp), but the branch and issue overhead is real.
+
+**So this is a genuine toss-up, and it is deliberately NOT predicted here.** Today's record on
+predictions is poor: `ea32s3stsm` was withdrawn on a prediction of ~94.5, then measured 92.29 when
+actually run. Zero MEMBARs plus a free stage against +46% instructions is decided by the clock, not
+by argument.
+
+**Gate before any timing:** `maxRelErr` must be `0.00000`. Raw `STG` has no descriptor clamp, so the
+bounds are checked in software and a correctness miss would be an out-of-range write, not a rounding
+difference.
+
+**Status: staged locally, NOT YET RUN.** Config `192x192x64_2x1_h_rs8_dh_ubd_skew_lsw_pdl_dstg`.
+
+### §H27zzj — V6 ROOT CAUSE, decoded from cuBLAS SASS: WARP-LOCAL vs WARPGROUP-COLLECTIVE store ownership. §H27zdo and §H27zzi both corrected.
+
+**The question §H27zzf left unanswered.** cuBLAS runs `MEMBAR` **0** while *also* staging C through
+shared memory (`STSM` → smem → `UTMASTG` reads it). If they stage and we stage, and PTX forces
+`MEMBAR` on every writable spelling of the proxy fence (§H27zdo), how do they not pay it? §H27zzi
+answered "stop staging" — that dodges the question instead of answering it. Here is the answer,
+read out of their SASS rather than inferred from instruction counts.
+
+**Method.** Parsed all 29,072 instructions of `nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coop` (V6's
+cuBLAS kernel; `64x4` = BK 64, **4 stages**) from `sweep_results_cublas/sass/`, and walked back from
+every one of the 276 `UTMASTG` sites.
+
+**Finding 1 — the fence is 1:1 with the store, at every single site.**
+
+| | count |
+|---|---|
+| `UTMASTG` sites | 276 |
+| `FENCE.VIEW.ASYNC.S` is the *immediately* preceding instruction | **276 / 276** |
+| distance fence → store | **exactly 1 instruction, all 276** |
+| `BAR.SYNC` between fence and store | **0 / 276** |
+| `BAR.SYNC` between an `STSM` and the `UTMASTG` consuming it | **0 / 276** |
+
+**Finding 2 — the smem address is a function of the warp index.** From the pointer arithmetic:
+
+```
+UMOV      UR32, 0x30400                 ; smem base
+UIMAD.U32 UR32, UR24, 0x2000, UR32
+UIMAD.U32 UR32, UR26, 0x400,  UR32      ; + warp_id * 0x400     (UR26 = R21 >> 5 = tid>>5)
+STSM.16.M88.4 [R23+UR32],  R24          ; the warp writes ITS OWN region
+STSM.16.M88.4 [R168+UR32], R32
+FENCE.VIEW.ASYNC.S
+UTMASTG.3D [UR32], [UR22]               ; the SAME warp-indexed address is stored
+UTMACMDFLUSH
+UIADD3 UR32, UR32, 0x1000, URZ          ; ping-pong to the second buffer -- no drain wait
+```
+
+Each warp owns a private **0x400 = 1024 B** slot, and that warp-indexed address is an operand of
+both the `STSM` and the `UTMASTG`. Two `STSM.16.M88.4` = 2 × 512 B = 1024 B fill it exactly. So
+cuBLAS's C TMA box is **16 rows × 32 cols — precisely one warp's share** of the m64 wgmma
+accumulator (a warp owns 16 consecutive rows). The `±0x1000` toggle is a double buffer, which is
+why no `tma_store_wait` appears in the burst at all.
+
+**Finding 3 — ours is the opposite model.** Our V6 SASS, same region:
+
+```
+STS [R200+0x6690], R111            ; plain per-thread STS, x144
+STS ...
+BAR.SYNC.DEFER_BLOCKING R4, 0x80   ; CTA-wide, 128 threads
+MEMBAR.ALL.CTA                     ; <-- here
+FENCE.VIEW.ASYNC.S
+@P0 BRA                            ; lane 0 ALONE issues the TMA stores
+```
+
+All 128 threads write a shared `c_buf`; then **one lane** TMA-stores bytes the other 127 wrote.
+
+**CONCLUSION — the MEMBAR is CORRECT AND NECESSARY for our structure, not ptxas conservatism.**
+A cross-warp handoff genuinely requires CTA-scope visibility; `fence.proxy.async.shared::cta` is
+the right instruction and `MEMBAR.ALL.CTA` is its honest cost. cuBLAS omits it because their
+producer and consumer are **the same warp**, so a bare view fence is sufficient.
+
+**§H27zdo is corrected.** Enumerating 11 fence spellings was attacking a symptom. No spelling can
+remove a fence that the ownership model requires. The hunt was well-executed and the conclusion
+("all 11 lower to MEMBAR+FENCE") stands as fact — but it was the wrong question.
+
+**§H27zzi is corrected.** Writing `STG` instead of `STSM` is *not* "doing what cuBLAS does": it
+abandons both stmatrix and TMA to sidestep a fence, where cuBLAS keeps both and restructures
+ownership. It remains a legitimate experiment (it does reach MEMBAR 0 and depth 4) but it must not
+be described as matching cuBLAS. Its gate's Phase 2 is still worth having: it tells us whether the
+MEMBAR was ever the bottleneck, independent of the wall clock.
+
+**This finally explains `ea32s3stsm` (−6.24).** That config had stmatrix AND the swizzle AND depth
+4 — everything §H27z.97 asked for — and still lost. Because it changed the **instruction** and kept
+the **ownership**: still a warpgroup-shared 64-row buffer drained by lane 0, so still a `BAR.SYNC`,
+still a `MEMBAR`, plus stmatrix's extra address math. The failure was never mysterious; it was
+measured against the wrong hypothesis.
+
+**Honesty note on the counts.** cuBLAS's kernel is 29,072 static instructions to our 2,808 — a ~10×
+more unrolled epilogue. So "276 `UTMASTG` vs our 3" is mostly unrolling, NOT 92× the store work, and
+must not be quoted as such. What is load-bearing here is the *pattern* (fence:store exactly 1:1,
+zero barriers between producer and consumer, warp-indexed smem base), which is unrolling-invariant.
+
+**DESIGN TARGET — the three changes are one change.**
+1. C TMA box `64 × C_BOX_N` → **`16 × 32`** (one warp's rows)
+2. write with `STSM` into a per-warp slot at `base + warp_id*0x400` (we already have the
+   `EPI_USE_STSM` knob and its swizzle prerequisite, template slot 90)
+3. **each warp issues its own `UTMASTG`** — delete the `BAR.SYNC` and the `lane_in_wg == 0`
+   predication, because there is no longer anything to hand off
+
+Open and NOT predicted: whether ptxas still emits `MEMBAR.ALL.CTA` for a now warp-local
+`fence.proxy.async.shared::cta`. The PTX qualifier `.shared::cta` names an address space, not a
+thread scope, so it may well emit it regardless. If it does, we still delete the barrier and the
+lane-0 serialization; if it does not, we match cuBLAS exactly. One cheap SASS probe decides it,
+once the box geometry is in.
+
+**Also flagged, apples-to-apples.** cuBLAS's V6 kernel is `2x1_v`, and under the §H27z.59 swap their
+`2x1_v` == our **`1x2_h`**. Our V6 pin is `2x1_h`. The 192x192 tile is square so the tile itself is
+swap-invariant, but the cluster/raster pairing is NOT — this needs checking before any V6 number is
+called a like-for-like comparison.
+
+### §H27zzj-B — CORRECTION to §H27z.87's depth table: V6 is the ONE 192x192 where cuBLAS runs 64x4, not 64x3.
+
+Line ~17428 records, as a single row: `V3-V6  192x192  ours depth 3  cuBLAS 192x192_64x3  MATCH`.
+Read straight off the nsys kernel names in `profiling_reports/h27z92/02_nsys/`, that row is wrong
+for V6 and right for the other three:
+
+    V3_16384x11264x2048_nn   nvjet_sm90_tst_192x192_64x3_1x2_h_bz_coop
+    V4_16384x50304x2048_nn   nvjet_sm90_tst_192x192_64x3_2x1_v_bz_coop
+    V5_2048x11264x16384_tn   nvjet_sm90_tst_192x192_64x3_2x1_v_bz_coop
+    V6_16384x5632x2048_nt    nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coop   <-- 64x4
+
+**V6 is the only 192x192 shape where cuBLAS picks depth 4, and we run depth 3 there.** The blanket
+"MATCH" hid a genuine per-shape mismatch behind a tile-level generalisation. This is independent
+confirmation of §H27zdp-CORRECTION, which named depth as V6's structural mismatch — the two were
+in the tree contradicting each other and the nsys names settle it.
+
+Note this also means depth 4 for V6 is an APPLES-TO-APPLES REQUIREMENT, not an optimisation
+preference. §H27zze's `ep16s2` (−21) and §H27zzi's bufferless path are two different ways to buy
+that stage; the first is measured and catastrophic, the second is built and untimed.
+
+### §H27zzj-C — CLUSTER/RASTER: 7 of our 8 pins do NOT match cuBLAS under the proven swap. V1, the one that does, is our best variant.
+
+§H27z.86 proved the mapping: cuBLAS `AxB, r` → ours `BxA, flip(r)`. Applying it to the kernels
+cuBLAS actually launches:
+
+| | cuBLAS | → ours should be | our pin | |
+|---|---|---|---|---|
+| V1 | 128x128 1x2_h split | 2x1_v | `128x128x64_2x1_v_sk2_dh_rot2_pdl` | **MATCH** |
+| V2 | 128x256 2x1_v | 1x2_h | `256x128x64_2x1_h_ep32s2_pdl` | no |
+| V3 | 192x192 1x2_h | 2x1_v | `192x192x64_2x1_h_rs8_...` | no |
+| V4/V5 | 192x192 2x1_v | 1x2_h | `192x192x64_2x1_h_rs8_...` | no |
+| V6 | 192x192 2x1_v | 1x2_h | `192x192x64_2x1_h_rs8_...` | no |
+| V7/V8 | 256x128 1x2_h | 2x1_v | `..._2x1_h_...` | no |
+
+Tiles match everywhere (V2's cuBLAS 128x256 == our 256x128 under the swap, etc.). It is the
+**cluster/raster pairing** that differs on 7 of 8.
+
+**V1 is the only pin whose cluster and raster match cuBLAS, and V1 is the only variant we have
+taken past parity (105.13%).** That is a correlation across a sample of eight, not a demonstrated
+cause, and it is recorded as a lead — not a conclusion.
+
+It does NOT straightforwardly mean "re-pin everything to the matching cluster":
+`project_sm90_dispatcher_rollback` records that pinning cuBLAS variants cost 86.1% -> 73.2%, gated
+on tile-orientation being unknown at the time. But tile orientation is no longer unknown — §H27z.86
+settled it and the nsys names above confirm it per shape. So that 73.2% result was measured under a
+mapping we now know was wrong, and is not evidence against the corrected pairing.
+
+**Consequence for the V6 work:** per the standing apples-to-apples rule, V6's analysis config is
+`192x192 1x2_h`, not `2x1_h`. Every V6 number in §H27zzd through §H27zzj was measured on `2x1_h`.
+The epilogue-ownership finding in §H27zzj is a SASS structural fact and is unaffected by this. The
+timing comparisons are not, and should be re-established on the matching cluster before any further
+V6 conclusion is drawn.
+
+### §H27zzi-RESULT — REJECTED, −17.06. And the MEMBAR premise behind §H27zzf/§H27zzi is REFUTED: V6's pin never stalled on MEMBAR at all (0.00%).
+
+Clock-locked 1200 MHz HELD, 7 reps, GPU 0, `quick-home-speaks-fin-03`, commit b780ae3.
+
+| cfg | mean | min | max | maxRelErr | verdict |
+|---|---|---|---|---|---|
+| `192x192..._pdl` (pin) | 98.93 | 98.40 | 99.50 | 0.00000 | (pin) |
+| `192x192..._pdl_dstg` | **81.87** | 81.60 | 82.40 | 0.00000 | **REJECT** |
+
+**−17.06 points.** Correctness is clean (`maxRelErr 0.00000`), so the bufferless epilogue is a
+working implementation — raw `STG` with software bounds checks produced bit-identical output. It is
+simply far slower. Cost, measured: **+39.2% instructions** (87.5M → 121.9M), **+19.7% cycles**
+(818,918 → 980,204), tensor pipe utilisation **91.36% → 76.63%**. I flagged +46% static instructions
+as the risk and explicitly declined to predict the outcome; the risk was real and larger in effect
+than the static count suggested.
+
+**THE PREMISE IS REFUTED, AND THAT IS THE ACTUAL RESULT.** Phase 2 stall profile:
+
+| stall (pct of warp-active) | pin | dstg | delta |
+|---|---|---|---|
+| long_scoreboard | **33.45** | 31.86 | −1.59 |
+| barrier | **23.07** | 19.55 | −3.52 |
+| short_scoreboard | 1.55 | 4.43 | +2.88 |
+| drain | 0.03 | 0.02 | −0.01 |
+| **membar** | **0.00** | **0.00** | **+0.00** |
+
+`membar` is **0.00% on the PIN**. The MEMBAR instruction exists (1 static, ~20,640 executions) and
+costs *nothing measurable*. Every claim that it was V6's cause is refuted — not weakened, refuted:
+
+- **§H27zzf** ("V6 root cause verified from both SASS: MEMBAR ours 1, cuBLAS 0") — the SASS counts
+  are correct as counts; the causal reading is **RETRACTED**.
+- **§H27zzi** (the bufferless epilogue built to remove it) — **RETRACTED as a fix**, and rejected
+  by measurement. Kept in-tree behind `EPI_DIRECT_STG=false`, byte-identical when off.
+- **§H27zze/§H27zzf's chunk-ladder reading** (1 chunk 98.53 / 6 chunks 92.29 / 12 chunks 77.50,
+  attributed to MEMBAR count) — the ladder is real and reproducible, the **attribution is
+  retracted**. Whatever it tracks, it is not membar stall, which is zero at every rung.
+
+**MY FALSIFIER WAS BUILT WRONG AND SAID "CONFIRMED".** The test was `b <= 0.05*a or b < 0.1`, which
+fires whenever the arm is near zero — including when the *baseline* was already zero. It could not
+distinguish "we removed it" from "it was never there", and it printed MECHANISM CONFIRMED on
+`0.00 -> 0.00`. Fixed in `tools/h27zzi_v6_dstg_gate.sh`: a removal claim now requires a nonzero
+baseline, and reports REFUTED otherwise. **A falsifier that cannot fail is not a falsifier** — this
+is the third time this campaign an instrument, not a hypothesis, was the thing that was broken
+(cf. the CENSUS match-count and the rs8-vs-rs3 empty-diff).
+
+**WHAT SURVIVES.** §H27zzj's SASS decode is a structural *fact*, independent of this result:
+cuBLAS's stores are warp-local (fence 1:1 with store at 276/276 sites, zero BAR.SYNC between an
+`STSM` and the `UTMASTG` consuming it, smem base `+ warp_id*0x400`); ours are warpgroup-collective
+(128 threads `STS`, then `BAR.SYNC`, then lane 0 alone stores). That remains true. **What changes is
+the lever.** The prize was never the free MEMBAR — it is the **`barrier` stall at 23.07%**, which is
+the second-largest stall in the kernel and exactly what a cross-warp handoff produces.
+
+**The barrier hypothesis is UNTESTED, deliberately.** `dstg` kept all 4 `BAR.SYNC` — I left
+`barrier_sync()` in place as the conservative choice and said so at the time. Barrier stall still
+fell 3.52 points, but that is from the removed store-drain, not from removing a barrier. So this
+run says nothing about whether deleting the handoff helps.
+
+**NEXT, and it is now a different experiment.** Warp-local ownership per §H27zzj: box `64 x C_BOX_N`
+→ `16 x 32`, `STSM` into a per-warp slot, each warp issuing its own `UTMASTG` — keeping TMA and
+stmatrix (which `dstg` threw away, and which is why `dstg` cost +39% instructions). Target:
+`barrier` 23.07 → low, with instruction count roughly FLAT. If barrier stall does not fall, the
+ownership model is not V6's cause either and V6 goes back to open with `long_scoreboard` (33.45%,
+the largest) as the remaining lead.
+
+### §H27zzk-RESULT — V6 LAG CENSUS. Tensor work is IDENTICAL (1.0000). The gap is 1.60x instructions, and 25 of the 26 excess points are CONTROL FLOW + DRAIN WAIT.
+
+Clock-locked 1200 MHz, 7 reps, GPU 0, `quick-home-speaks-fin-03`, commit fc0099d. Shape
+16384x5632x2048 nt. Every row below has cuBLAS's own measured number beside it — the thing every
+earlier V6 section was missing. Census matched ours=10 cublas=10 rows on all three arms.
+
+**TENSOR CORES ARE EXONERATED, exactly.**
+
+| | ours | cuBLAS | ratio |
+|---|---|---|---|
+| `sm__inst_executed_pipe_tensor.sum` | **7,925,760** | **7,925,760** | **1.0000** |
+| tensor % of peak | 91.20 | 92.51 | 0.986 |
+| cycles | 823,165 | 799,633 | 1.029 |
+| **TOTAL instructions** | **87,510,332** | **54,680,771** | **1.600** |
+| **non-tensor instructions** | **79,584,572** | **46,755,011** | **1.702** |
+| issue % of peak | 21.03 | 13.31 | 1.580 |
+
+Bit-identical tensor work, to the instruction. We are not doing extra math — we are executing 1.70x
+the non-tensor instructions to deliver the same math, and issuing 1.58x as often to do it.
+
+**STALLS, with cuBLAS's own values (this is what kills the last two hypotheses):**
+
+| stall | ours | cuBLAS | delta |
+|---|---|---|---|
+| long_scoreboard | 33.60 | 20.09 | **+13.51** |
+| barrier | 23.12 | **19.97** | +3.16 |
+| short_scoreboard | 1.55 | 0.18 | +1.36 |
+| wait | 9.99 | 9.17 | +0.82 |
+| mio_throttle | 6.91 | 14.78 | **−7.87** |
+| membar | 0.00 | 0.00 | 0.00 |
+
+cuBLAS's barrier stall is **19.97%** — essentially ours. The 23.07% I called "the prize" in
+§H27zzi-RESULT is NORMAL for this kernel shape; the delta is 3.16 points, not 23. That read is
+withdrawn. `mio_throttle` is the one place we are *better* by a wide margin, which retires
+`project_mio_throttle_deferred` for V6: we stall half as much as cuBLAS there.
+
+**PER-OPCODE SAMPLE CENSUS (Phase 2) and CATEGORY LEDGER (Phase 3) agree independently:**
+
+| opcode | ours% | cuB% | EXCESS | | category | EXCESS |
+|---|---|---|---|---|---|---|
+| **BRA** | 34.41 | 9.65 | **+25.15** | | **control flow** | **+25.74** |
+| **WARPGROUP** | 23.15 | 10.66 | **+12.75** | | **DRAIN wait** | **+12.51** |
+| ULEA | 3.51 | 0.00 | +3.54 | | uniform addr math | +3.84 |
+| STS | 2.32 | 0.03 | +2.31 | | smem store STS | +1.89 |
+
+Two instruments, different code paths, same answer. **Control flow and wgmma-drain wait are +38 of
+the ~+26 net excess** (the rest is offset by categories where we win). The mirror image is the
+clearest statement of the problem: cuBLAS spends **48.53%** of its kernel in WGMMA math; we spend
+**20.94%**. They compute, we branch.
+
+**§H27zzj-C RESOLVED — the cluster mismatch is real but FREE.** Phase 4, all bit-exact:
+
+    2x1_h + pdl (pin)        98.84  [98.40, 99.30]
+    2x1_h no pdl             98.73  [98.10, 99.60]
+    1x2_h  (== cuBLAS 2x1_v) 98.41  [97.70, 99.00]
+
+The apples-to-apples cluster is 0.32 SLOWER against a 0.31 floor — a null. Recorded per the
+"a slower match is the finding" rule. It is not V6's cause and is dropped as a confound.
+
+**CORRECTION to §H27zzj.** I wrote "cuBLAS's kernel is 29,072 static instructions to our 2,808 — a
+~10x more unrolled epilogue" and cautioned against over-reading the store counts. **That was wrong
+in the wrong direction.** 29,072 was the line count of a dump file holding ten profiling passes.
+Deduped by address, the real figures are **cuBLAS 1,266 unique instructions, ours 2,826.** Their
+kernel is under half our size. We carry **2.2x the static code and 1.6x the dynamic instructions**,
+which is consistent with, not contrary to, the control-flow finding.
+
+**OPEN HAZARD, not yet resolved — do not act on BRA until this is answered.** In a warp-specialized
+kernel the producer warpgroup spins on a wait loop, and a spinning warp still accrues PC samples
+while doing nothing useful. If our hot branches are producer spin, BRA is a **symptom of waiting**
+and "remove branches" would be the fourth wrong fix in a row (after DRAM, MEMBAR, and the
+bufferless epilogue). If they sit on the consumer/mainloop path, it is real overhead.
+`tools/h27zzl_branch_localize.py` prints the hottest branch sites with surrounding SASS so the
+region is read off the instruction stream rather than argued. It needs no GPU — it re-analyses the
+CSVs this run already captured.
+
+### §H27zzk-B — the BRA finding COLLIDES with §H27zdt and loses. Wasted tiles EXCLUDED for V6. The cluster A/B is INVALID (100 ms window).
+
+**THE BRA LEAD IS DEAD, AND IT WAS ALREADY DEAD.** §H27zzk measured BRA at 34.41% vs cuBLAS's
+9.65%, and `tools/h27zzl_branch_localize.py` localised 27.9% of the kernel to four sites, each the
+back-edge of an `mbarrier` poll:
+
+    SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [UR8], R8
+    @!P0  BRA <backward>              <- re-poll immediately, no backoff
+
+and the sync-instruction census confirms the counterpart exactly:
+
+| | ours | cuBLAS |
+|---|---|---|
+| `WARPGROUP.DEPBAR.LE` | 21.20% | 10.70% |
+| **`NANOSLEEP`** | **absent** | **4.01%** (7 static) |
+| `SYNCS.PHASECHK.TRANS64.TRYWAIT` | 0.50% | 0.10% |
+
+All of that is TRUE and NONE of it is ACTIONABLE. **§H27zdt tested precisely this** — slot 28
+(`TICKS`), the suspend-time hint that emits cuBLAS's `NANOSLEEP`, at TICKS=50000, cuBLAS's exact
+value: **V5 +0.6, V3 +0.5**. The control arm is what settles it: the same knob moves two different
+variants by the same amount, so it is a small general effect and not any variant's cause.
+§H27zdt's conclusion stands verbatim — *"The spin time is SLACK — the producer is ahead and
+waiting, and sleeping through the wait buys nothing."*
+
+**I MADE THE EXACT ERROR §H27zdt DOCUMENTS, TWICE IN ONE ANALYSIS.** That section states:
+*"PC-sample share is not wall-clock cost. A spinning producer occupies its ~1/3 warp-slot share of
+the samples whether or not it is on the critical path... the same error was repeated later reading
+`issue_active` as evidence that instructions cost time."* I read BRA 34.41% as cost, AND read
+issue% 21.03 vs 13.31 as contention. Both readings are retracted. The knob already exists, was
+already measured, and is already known to be a null — the standing rule to check the documentation
+first exists because of exactly this.
+
+**Corollary: the 1.60x instruction ratio is not, by itself, evidence of cost.** It is an exact count
+and it is real, but the excess lives in waiting warps with free issue slots. Independent support:
+§H27zzh folded the chunk branch (BSSY 21 -> 14, a genuine static reduction) and measured **+0.07**
+against a 0.31 floor.
+
+**WASTED TILES: EXCLUDED for V6**, by §H27zdu's method — the one technique in this campaign that
+produced a win (V5 82.20 -> 92.80):
+
+    grid_m = ceil(16384/192) = 86      grid_n = ceil(5632/192) = 30      k_iters = 2048/64 = 32
+    divisor = k_iters x 96 = 3072
+    7,925,760 / 3072 = 2580.0000   EXACTLY      grid_m x grid_n = 86 x 30 = 2580
+
+Exact match, so every tensor instruction we issue does real work — and cuBLAS's count is identical
+to the instruction. V5's bug cannot occur here: `grid_m = 86` is EVEN, so `mega_grid_m = 43` with no
+cluster rounding, where V5's `grid_m = 11` was odd and produced a phantom CTA row.
+
+**THE CLUSTER A/B IS INVALID — MY ERROR.** §H27zdt-b mandates `BLUBLAS_BENCH_TARGET_MS=400`; the
+default is 100, at which the **cuBLAS reference alone swings 5-6%** (it is timed first, from cold
+clocks, and eats the ramp). Neither §H27zzk nor §H27zzi set it. Consequences:
+
+- `dstg` **−17.06** — STANDS, far above any noise floor.
+- Phase 1 ncu counters — STAND, per-launch and immune to the harness window.
+- Phase 4 cluster A/B (98.84 / 98.73 / 98.41, spread 0.32) — **WITHDRAWN**, measured below the
+  noise floor. §H27zzk-RESULT's "the cluster mismatch is free" claim is NOT established and must
+  be re-measured at 400 ms before it is quoted.
+
+Both scripts now `export BLUBLAS_BENCH_TARGET_MS=${WINMS:-400}`.
+
+**WHERE V6 ACTUALLY STANDS.** Eliminated, each against cuBLAS's own measured value or an exact
+count: extra tensor work (1.0000), wasted tiles (2580 exact), DRAM (§H27zzf), MEMBAR (0.00% both),
+barrier stall (cuBLAS 19.97 vs our 23.12 — theirs is nearly as high), mio_throttle (we are BETTER,
+6.91 vs 14.78), branch/spin overhead (slack, §H27zdt), pipeline depth (§H27zze), raster, and the
+bufferless epilogue (§H27zzi-RESULT).
+
+What remains unexplained is narrow: `WARPGROUP.DEPBAR.LE` 21.20% vs 10.70% (wgmma drain) and
+`tensor% of peak` 91.20 vs 92.51 — and the first is a sample share, which this section has just
+finished establishing is not a cost measure. **The honest position is that V6's residual gap is
+~1% and no identified mechanism accounts for it.** The next step is therefore NOT another
+hypothesis: it is to re-establish the true gap and the true floor at 400 ms, because at 100 ms we
+do not reliably know whether we are chasing 1.2 points or 0.3.
+
+### §H27zzk-C — Phase 4 REDONE at 400 ms. The cluster A/B now SEPARATES: the apples-to-apples cluster is genuinely 0.8 SLOWER. True V6 gap = 1.13 points.
+
+Same run, `WINMS=400`, 7 reps, GPU 0, commit f8033ad:
+
+| config | mean | min | max | width | vs 100 ms width |
+|---|---|---|---|---|---|
+| `2x1_h_..._pdl` (pin) | **98.87** | 98.70 | 99.10 | 0.40 | was 0.90 |
+| `2x1_h_...` (no pdl) | 98.60 | 98.30 | 99.00 | 0.70 | was 1.50 |
+| `1x2_h_...` (= cuBLAS's `2x1_v`) | **98.06** | 97.90 | 98.20 | 0.30 | was 1.30 |
+
+§H27zdt-b's window rule is confirmed empirically: ranges narrowed 2-4x purely from the window.
+
+**RESULT 1 — the cluster A/B separates.** `1x2_h` max 98.20 < pin min 98.70, fully separated,
+**−0.81**. §H27zzk-RESULT's "the cluster mismatch is real but FREE" is **superseded**: it is real
+and it COSTS us 0.81 to adopt. Recorded per the standing rule — the matching config is reported
+even though it is slower, and a slower match is the finding. What it says is that cuBLAS extracts
+more from `2x1_v` than we extract from its coordinate equivalent; it does NOT license re-pinning.
+
+**RESULT 2 — the true gap is 1.13 points**, range [0.90, 1.30]. Not the ~0.3 that a pessimistic
+reading of the 100 ms noise allowed. So V6 has real headroom above the floor and is worth
+continuing; we now know which number is being chased.
+
+### §H27zzm — WGMMA_ROTATE on V6, with a FREE NULL CONTROL. Staged, not yet run.
+
+After §H27zzk-B, exactly one V6 difference is unexplained: `WARPGROUP.DEPBAR.LE` **21.20%** vs
+cuBLAS's **10.70%** — the wgmma drain. `WGMMA_ROTATE` is the knob that moves the drain (V1 +7.85,
+V8 +0.72), and the V6 pin runs `ROTATE=0`.
+
+**This tile was never tested.** §H27zt-B left it as an explicit prediction: *"depth 3 (192x192,
+V3/V4/V5/V6) should LOSE, since rot2 there leaves a single buffer... Test the depth-3 tiles last
+and expect a negative."* A prediction is not a result. It is also weaker than it reads: its own
+mechanism is "benefit tracks free buffers", and at depth 4 rot1 leaves 3 while **rot2 leaves 2 --
+the arm that WON on V8**. At depth 3 rot1 also leaves 2, so rot1 sits in the winning regime.
+
+**VERIFIED LOCALLY, ZERO GPU TIME:**
+
+    ROT=0   WARPGROUP.DEPBAR.LE 6   HGMMA 48   2824 instrs
+    ROT=1   WARPGROUP.DEPBAR.LE 8   HGMMA 48   2832 instrs
+    ROT=2   BYTE-IDENTICAL to ROT=1 -- 0 differing lines, with AND without PDL
+
+`HGMMA` is 48 on every arm, so tensor work is constant and there is no wasted-work confound.
+
+**rot1 == rot2 on this tile, and that is a compiler outcome, not a bug.** The source forms are
+genuinely distinct (rot1 drains BEFORE `mbarrier_wait_impl`, rot2 AFTER), but that wait is a spin
+loop with no dependency on the drain, so ptxas may reorder `wgmma_wait_group` across it and
+converges both to one schedule. **Consequence: §H27zt-B's rot2-specific reasoning cannot apply
+here — rot2 does not emit the single-buffer structure the prediction assumes.**
+
+**ROT2 IS THEREFORE A FREE NULL CONTROL.** Identical binary, different config name, so any measured
+rot1−rot2 difference is pure noise — giving the resolution floor from THIS run on THIS shape rather
+than importing 0.31 measured elsewhere. Decision rule: **rot1 wins only if (rot1 − pin) exceeds the
+measured null |rot1 − rot2|.** This is the discipline that should have gated §H27zzi.
+
+Three outcomes, all reportable in advance so none can be rationalised after the fact:
+* **effect > null, positive, ranges separate** -> ADOPT.
+* **effect <= null** -> NULL. Rotation is not a lever here, §H27zt-B's predicted NEGATIVE is also
+  not confirmed, and the drain (21.20 vs 10.70) is thereby shown NOT to be actionable — which
+  would leave V6 with no identified mechanism at all, and that is the honest place to stop.
+* **effect negative beyond the null** -> §H27zt-B's prediction CONFIRMED; record it as such.
+
+### §H27zzm-RESULT — WGMMA_ROTATE on V6: NULL (effect 0.09 = floor 0.09). The drain is NOT a lever. V6 now has NO identified mechanism, and that is the honest stopping point.
+
+GPU 0, `quick-home-speaks-fin-03`, 400 ms window, 7 reps, all rows LOCK HELD 1200, commit 9d991b7.
+
+| cfg | mean | min | max | maxRelErr |
+|---|---|---|---|---|
+| `..._pdl` (pin) | **98.93** | 98.80 | 99.10 | 0.00000 |
+| `..._pdl_rot1` | 98.84 | 98.60 | 99.00 | 0.00000 |
+| `..._pdl_rot2` (NULL, identical binary to rot1) | 98.93 | 98.60 | 99.10 | 0.00000 |
+
+    NULL CONTROL  rot1 - rot2 = -0.09      <- byte-identical kernels
+    EFFECT        rot1 - pin  = -0.09
+
+**The effect is exactly the floor.** Rotation does nothing on the 192x192 depth-3 tile. Note this
+also does NOT confirm §H27zt-B's prediction of a negative — the arm is flat, not worse, and the
+prediction's rot2-specific reasoning was already void here because ptxas emits rot2 byte-identical
+to rot1 (§H27zzm). Recorded as a null on both counts.
+
+**CONSEQUENCE: `WARPGROUP.DEPBAR.LE` 21.20% vs 10.70% is NOT actionable.** It was the last
+unexplained V6 difference after §H27zzk-B, and the knob that moves it changes nothing. This is a
+third independent confirmation of §H27zdt's rule that **PC-sample share is not wall-clock cost** —
+the drain absorbs twice cuBLAS's samples and costs nothing measurable, exactly as the producer spin
+absorbs 27.9% and costs nothing.
+
+**BYPRODUCT WORTH KEEPING — the instrument got 3-6x sharper.** The 400 ms window plus a
+same-binary null control measured the floor at **0.09**, against the 0.31 (paired instrument) and
+0.56 (V1) previously in use. Any future A/B on this shape resolves effects down to ~0.1. The
+technique generalises for free wherever two config names compile to one kernel; where they do not,
+a duplicate registration of the pin under a second name achieves the same thing.
+
+**V6 FINAL STATE: 98.93% [98.80, 99.10], gap 1.07 points, NO IDENTIFIED MECHANISM.**
+
+Eliminated, each against cuBLAS's own measured value or an exact instruction count — not against a
+theory:
+
+| candidate | verdict | evidence |
+|---|---|---|
+| extra tensor work | NO | `inst_executed_pipe_tensor` 7,925,760 both, ratio **1.0000** |
+| wasted tiles | NO | 7,925,760/3072 = **2580.0000** = 86x30 exactly; grid_m even |
+| DRAM volume | REFUTED | 23% more DRAM ran 0.4% FASTER (§H27zzf) |
+| MEMBAR | REFUTED | membar stall **0.00%** on the pin (§H27zzi-RESULT) |
+| barrier stall | NORMAL | cuBLAS **19.97** vs our 23.12 |
+| mio_throttle | WE WIN | 6.91 vs cuBLAS 14.78 |
+| branch / spin overhead | SLACK | §H27zdt; TICKS=50000 moves V3 and V5 equally |
+| instruction count 1.60x | FREE | lives in waiting warps; chunk-fold BSSY 21->14 gave +0.07 |
+| pipeline depth 4 | REFUTED | ep16s2 −21; bufferless −17.06 |
+| bufferless epilogue | REJECTED | −17.06 (§H27zzi-RESULT) |
+| cluster (apples-to-apples) | COSTS 0.81 | `1x2_h` 98.06 vs `2x1_h` 98.87, ranges separate |
+| stmatrix + swizzle + depth4 | REJECTED | `ea32s3stsm` −6.24 |
+| **wgmma drain (ROTATE)** | **NULL** | **this section, 0.09 vs 0.09 floor** |
+
+All that remains is a description, not a mechanism: `tensor% of peak` **91.20 vs 92.51**. With
+tensor work identical to the instruction, the entire residual is the tensor pipe being idle ~1.3
+points more often than cuBLAS's — and every candidate cause for that idleness above has been
+measured and eliminated.
+
+**RECOMMENDATION: STOP OPTIMISING V6.** Not because the gap is imaginary — 1.07 points against a
+0.09 floor is 12x the resolution and unambiguously real — but because four consecutive mechanisms
+were proposed, built and refuted, and the fifth would be a guess. V6 ships at 98.93% bit-exact. The
+campaign's remaining value is elsewhere; per `project_sm90_dispatcher_done`, **the dispatcher's
+437-entry table and 3 fitted trees all predate the 2026-08-13 barrier removal and every result
+since, so BluTrain currently selects none of the 15 pins.** That is a known, mechanical,
+already-diagnosed loss — unlike V6's remaining 1.07.
+
+### §H27zzn-RESULT — alpha==1/beta==0: 40% FEWER INSTRUCTIONS, ZERO TIME CHANGE. This DEFINITIVELY closes the "1.60x instructions" line.
+
+GPU 0, 400 ms, 7 reps, all LOCK HELD 1200, commit a05870a, all arms `maxRelErr 0.00000`.
+
+| cfg | mean | min | max |
+|---|---|---|---|
+| `..._pdl` (pin) | 98.91 | 98.80 | 99.10 |
+| `..._pdl_a1b0` | 98.87 | 98.70 | 99.00 |
+| `..._pdl_rot1` (null pair) | 98.86 | 98.70 | 99.00 |
+| `..._pdl_rot2` (null pair) | 98.87 | 98.70 | 99.10 |
+
+    NULL  rot1 - rot2 = -0.01      EFFECT  a1b0 - pin = -0.04
+
+**NULL.** Every range overlaps. What was removed, verified in SASS beforehand:
+
+    FMUL 288 -> 0     (cuBLAS 0)      LDG 72 -> 0    (cuBLAS 1)
+    PRMT  72 -> 0     (cuBLAS 1)      F2FP 144 -> 72 (cuBLAS 72, EXACT)
+    ISETP 128 -> 44                   TOTAL 2824 -> 1696   (cuBLAS 1265)
+
+Instruction count cut **40%**, our size ratio to cuBLAS 2.23x -> 1.34x, `F2FP` brought to cuBLAS's
+count exactly — **and the clock did not move.**
+
+**THIS REFUTES MY OWN REFINEMENT OF §H27zdt.** I argued that §H27zdt's "sample share is not cost"
+applies only to WAITING instructions, and that `FMUL`/`F2FP`/`PRMT` are epilogue WORK whose samples
+are issue slots genuinely consumed, so the caveat could not excuse them. **That reasoning is now
+measured wrong.** Deleting them entirely changed nothing. The correct statement is stronger and
+simpler: on this shape the EPILOGUE IS NOT ON THE CRITICAL PATH AT ALL, so epilogue instructions —
+work or wait — are free. The earlier weak evidence (chunk-fold BSSY 21->14, +0.07) pointed the same
+way; this is the decisive version of that test, having removed 1,128 instructions instead of 7.
+
+**THE "1.60x INSTRUCTIONS" LINE IS CLOSED.** It is an exact and real count, and it costs nothing
+measurable. It must not be cited as an inefficiency again without a mechanism showing those
+specific instructions on the critical path.
+
+**INSTRUMENT DEFECT FOUND — a mean-difference floor can read implausibly tight.** `rot1 - rot2` on
+BYTE-IDENTICAL binaries came out at 0.01, while those same two arms have ranges spanning 0.30. The
+gate then classified a −0.04 effect as "beyond the floor". One null pair gives one sample of the
+noise, not its width. **Fixed:** the verdict now requires the RANGES to separate as well, and says
+so when they overlap. (A stale copy-paste line inviting a §H27zt-B conclusion was also removed.)
+
+**WHERE THIS COULD STILL PAY, with a mechanism rather than hope.** The epilogue runs ONCE per tile
+regardless of K, so its share is `epi / (epi + k_iters x mainloop)`. V6 has K=2048 -> 32 k_iters, so
+the mainloop dominates and a 1,128-instruction epilogue saving disappears — exactly as measured.
+On a SHORT-K shape the same saving is ~4x more significant: **V8 at K=512 is 8 k_iters**, and V8 sits
+at 99.01%. That is the one place the a1b0 cut has a structural reason to show. It is a cheap test
+and it is the LAST epilogue idea; if it is null there too, the epilogue is closed on every shape.
+
+`EPI_A1B0` stays default-false and is byte-identical off (2808 verified). It must NOT be adopted on
+V6: it buys nothing and adds a real correctness precondition (alpha==1 && beta==0) that a
+dispatcher would have to honour.
+
+### §H27zzn-B — V6 SUMMARY: fourteen mechanisms measured, all dead.
+
+DRAM · MEMBAR · barrier stall · mio_throttle · extra tensor work · wasted tiles · producer spin ·
+NANOSLEEP/TICKS · pipeline depth · bufferless epilogue · stmatrix+swizzle · raster · cluster ·
+wgmma-drain rotation · **instruction count (this section)**.
+
+V6 ships at **98.91%**, bit-exact, gap ~1.09 points, with no identified mechanism. Every remaining
+difference against cuBLAS has now been measured and shown either normal, better on our side, or
+free.
+
+### §H27zzo — INSTRUCTION COUNT IS CLOSED ON EVERY VARIANT (3rd confirmation). The real lead is `long_scoreboard` +13.51, and the SMEM UNION — flagged in §H18 and never built — is the only untried route to it.
+
+**THE MAINLOOP DIFF (the part that IS on the critical path).** Extracting the true innermost k-loop
+by back-edge (min..max HGMMA is WRONG — it swallows the epilogue; that first attempt showed cuBLAS
+with FFMA 288 and STSM 18 inside its "mainloop", which is how the error was caught):
+
+    ours    113 instrs / 12 HGMMA = 9.42 per wgmma
+    cuBLAS   66 instrs / 12 HGMMA = 5.50 per wgmma        1.71x
+
+| | ours | cuBLAS | per-HGMMA |
+|---|---|---|---|
+| UMOV | 27 | 1 | +2.17 |
+| ULOP3 | 25 | 0 | +2.08 |
+| USHF+ULEA+UIMAD | 16 | 0 | +1.33 |
+| UIADD3 | 8 | 26 | −1.50 |
+
+52 of our 113 loop instructions are UMOV+ULOP3, which cuBLAS lacks entirely; they carry 26 UIADD3
+instead. We **rebuild** the wgmma descriptors each iteration; they **increment** one.
+
+**AND THAT EXACT FIX IS ALREADY BUILT AND ALREADY NULL.** `DESC_WALK` (slot 30) is precisely this —
+its own comment reads *"cuBLAS's SASS is the same thing: `UIADD3 UR16, UR16, 0x2` and nothing
+else."* §H27zdz measured it:
+
+    dw            -20.5M    ->  null
+    dw + unroll   -11.0M    ->  null
+    total         -30.5M  = -16.9% of the kernel's instructions;  wall clock 92.80 -> 93.50
+
+So today's mainloop diff is a **correct diagnosis of an already-solved, already-null problem**.
+Three independent confirmations now stand, across two variants and both kernel regions:
+
+| cut | region | size | result |
+|---|---|---|---|
+| `dw` + unroll (§H27zdz, V5) | mainloop | −30.5M dynamic, −16.9% | **null** |
+| chunk-fold (§H27zzh, V6) | epilogue | −7 static | +0.07 |
+| `a1b0` (§H27zzn, V6) | epilogue | −1128 static, −40% | **null** |
+
+**INSTRUCTION COUNT IS NOT THE LEVER — mainloop or epilogue, V5 or V6. Closed.** It must not be
+reopened without a mechanism placing specific instructions on the critical path.
+
+**WHAT IS LEFT, and it has never been investigated.** §H27zdz said it: *"the extra cycles do not
+trace to instruction count. That is a fresh investigation."* The census names it:
+
+    long_scoreboard   ours 33.60   cuBLAS 20.09   +13.51   <- LARGEST stall delta in the kernel
+    barrier           ours 23.12   cuBLAS 19.97    +3.16
+    mio_throttle      ours  6.91   cuBLAS 14.78    -7.87   <- we are BETTER
+
+`long_scoreboard` is **waiting on global loads**. Crucially this is NOT the refuted DRAM finding:
+§H27zzf killed DRAM *volume* (bandwidth); this is *latency not being hidden*. Different mechanism,
+never tested, and it is the biggest single difference remaining.
+
+**THE STRUCTURAL CAUSE IS EXACT ARITHMETIC, NOT A GUESS.** cuBLAS runs V6 at `64x4`; we run depth 3:
+
+    STORE_BUF  = 192 x 192 x 2      = 73,728 B
+    per-stage  = (192+192) x 64 x 2 = 49,152 B
+    depth WITH  store buf = (231,424 - 73,728)/49,152 = 3.21 -> 3
+    depth WITHOUT         =  231,424           /49,152 = 4.71 -> 4     == cuBLAS
+
+**The C store buffer costs exactly one pipeline stage** — precisely the depth cuBLAS has and we
+lack, and fewer stages in flight is exactly what raises `long_scoreboard`.
+
+**THE FIX IS NAMED IN OUR OWN TREE AND WAS NEVER BUILT.** §H18 (line ~5730): *"cuBLAS is evidently
+REUSING the mainloop smem for the epilogue (the standard CUTLASS union trick) instead of reserving a
+separate full BM*BN store buffer... a 320x128 built on the current sizing would launch
+pipeline-starved from day one. **Fix the smem union BEFORE or WITH the 320x128 work, not after** --
+otherwise the tile will look like a failure when the real cause is depth."*
+
+**WHY THIS IS NOT A REPEAT OF THE TWO FAILED DEPTH-4 ATTEMPTS.** Both previous routes bought depth 4
+by *giving something up*, and paid for it:
+
+    ep16s2   depth 4 via CHUNKING          -21.0    chunking costs (1/6/12 chunks: 98.53/92.29/77.50)
+    dstg     depth 4 via BUFFERLESS STG    -17.06   loses TMA + stmatrix, 288 serial STG
+    UNION    depth 4 via ALIASED smem      untried  keeps the full buffer, TMA, stmatrix, no chunking
+
+The union gives up nothing in the epilogue — it only stops *reserving* smem that the mainloop is no
+longer using once the tile's k-loop has drained.
+
+**THE ONE REAL DESIGN QUESTION, stated before building.** In a persistent kernel the producer
+prefetches the NEXT tile while the consumer runs this tile's epilogue, so the stage buffers are not
+unconditionally dead. CUTLASS solves this with an explicit epilogue barrier. Either the producer
+stalls one tile-epilogue (costing prefetch overlap) or only a subset of stages is aliased. That
+trade is the thing to measure, and it must be measured — not argued.
+
+**STATUS: not started.** This is the first candidate all day that targets the largest remaining
+stall, rests on exact arithmetic rather than a sample share, matches cuBLAS's known configuration,
+and has never been tried.
+
+### §H27zzp-RESULT — DESC_WALK is +0.26 on V6 and is ADOPTED. It was ALWAYS a small positive; the 100 ms window hid it. a1b0 REJECTED.
+
+GPU 0, 400 ms, 7 reps, all LOCK HELD 1200, all arms `maxRelErr 0.00000`, commit bdb7f24.
+
+| cfg | mean | min | max |
+|---|---|---|---|
+| `..._pdl` (pin) | 98.87 | 98.80 | 99.10 |
+| **`..._dw_..._pdl`** | **99.13** | **99.00** | 99.40 |
+| `..._dw_..._pdl_a1b0` | 98.99 | 98.90 | 99.30 |
+| `..._pdl_rot1` (null) | 98.90 | 98.70 | 99.10 |
+| `..._pdl_rot2` (null) | 98.89 | 98.70 | 99.10 |
+
+    NULL rot1 - rot2 = +0.01      dw - pin = +0.26      dw+a1b0 - pin = +0.12
+
+**DESC_WALK: +0.26, ADOPT.** `dw`'s MEAN (99.13) exceeds the pin's MAX (99.10) and its MIN (99.00)
+exceeds the pin's MEAN. The null pair has now read ~0.01 on TWO independent runs (−0.01 §H27zzn,
++0.01 here), so the mean-difference noise is ~0.01–0.02 even though a single arm's reps span 0.40.
+Ranges overlap by 0.10, so a confirmation run is worth having, but the mean separation is 13–26x
+the measured mean-noise.
+
+**THIS RECONCILES §H27zdz RATHER THAN CONTRADICTING IT.** That section's own V5 table reads
+baseline 92.80 / `dw` 93.00 / `dw+unroll` 93.50 median — `dw` was **+0.20** and was classified null
+because the 100 ms ranges (92.10–94.10) swamped it. **`dw` was always a small positive on both
+variants; the instrument was the limiting factor.** The §H27zdz headline "instruction count is not
+the lever" still stands for its magnitude claim — a 16.9% cut buys ~0.2, not the ~1.7 the ratio
+would naively suggest — but "null" was too strong, and is corrected to "small, real, previously
+below the noise floor".
+
+**WHY IT WORKS, from the mainloop diff (§H27zzo).** Our k-loop body REBUILDS the wgmma descriptor
+every iteration; cuBLAS INCREMENTS one. `dw` converts us to their form:
+
+    UMOV  162 -> 112      ULOP3  85 -> 13       (cuBLAS: 1 and 0)
+
+**a1b0: REJECTED.** −0.04 solo (§H27zzn), and −0.14 relative to `dw` here. Null-to-slightly-negative
+across two independent measurements, AND it carries a correctness precondition (alpha==1 &&
+beta==0) that is false for addmm and would require host dispatch. Not worth it for zero gain.
+`EPI_A1B0` stays in-tree, default false, byte-identical off.
+
+**THE INSTRUMENT IS THE REAL WIN OF THE DAY.** 400 ms window (§H27zdt-b) + a same-binary null
+control (§H27zzm) resolves ~0.02 in the mean where we previously could not see 0.3. Every knob
+measured before this at 100 ms with effects under ~0.5 is now SUSPECT and worth re-testing --
+`rs8` +2.27, `dh_ubd` +0.77 and `SKEW` +1.62 were already flagged by §H27zdt-b as below their
+floor, and `dw` is now a demonstrated case of a real effect that was called null.
+
+**IMMEDIATE FOLLOW-UP: `dw` IS SHAPE-INDEPENDENT.** It is a mainloop descriptor change with no
+epilogue or tile-shape dependency, and it is already bit-exact on all three k_iters%3 residue
+classes (§H27zdw). It should be tested on ALL 15 PINS, not just V6. If it holds at ~+0.2 across
+the set it is the broadest win of the campaign — small per shape, but everywhere, and free.
+
+V6: **98.87 -> 99.13**.
+
+### §H27zzs-RESULT — DEPTH IS THE LEVER. One stage is worth 17.65 POINTS. Everything else measured today is noise beside it.
+
+GPU 0, 400 ms, 7 reps, LOCK HELD 1200, all `maxRelErr 0.00000`, commit e5fd132.
+
+| cfg | mean | min | max |
+|---|---|---|---|
+| `dw` pin — depth 3 | **99.26** | 99.00 | 99.40 |
+| `..._d2` — depth 2 | **81.61** | 81.60 | 81.70 |
+| rot1 / rot2 (null pair) | 98.89 / 98.89 | | |
+
+    NULL CONTROL = 0.00        DEPTH SLOPE 3 -> 2 = -17.65 per stage
+
+One slot changed (`_LOAD_PIPE_DEPTH=2`), no chunking, everything else identical to the pin. **This
+is the largest measured effect of the entire campaign** — larger than the barrier removal, larger
+than V1's rotation fix. Depth is not one lever among many; it dominates.
+
+**IT ALSO DECODES §H27zzq.** `ea96s1` (depth 4 + 2 chunks) measured −3.11, and that arm could not
+separate depth from chunking. Now it can: with depth worth ~17.65/stage downward, depth 4 cannot
+plausibly be negative, so the −3.11 is **chunking-dominated** — 2 chunks cost far more than the
+~1.25 the ladder implied, and they swamped whatever depth 4 returned. The premature conclusion
+printed by that gate ("depth 4 buys NOTHING, do NOT build warp-local") is **WITHDRAWN**; it was an
+inference from a two-variable arm, which is exactly what §H27zzs was built to prevent.
+
+**SO THE TARGET IS DEPTH 4 WITHOUT CHUNKING, AND THERE IS EXACTLY ONE ROUTE TO IT.**
+
+    route                      depth   chunk cost   result
+    ep16s2   (chunking)          4      12 chunks   -21.0
+    ea32s3   (chunking)          4       6 chunks   -6.24
+    ea96s1   (chunking)          4       2 chunks   -3.11
+    dstg     (bufferless STG)    4       none       -17.06  (loses TMA + stmatrix)
+    WARP-LOCAL                   4       NONE       <- the only untried route
+
+Every chunked route pays a penalty that scales with chunk count, and that penalty is the
+**warpgroup-collective handoff** each chunk performs (barrier + lane-0 store), not chunking itself
+— cuBLAS chunks at 16x32, FINER than any arm above, and pays nothing because each chunk is
+warp-private (§H27zzj: fence 1:1 with store 276/276, zero BAR.SYNC between an STSM and its
+consuming UTMASTG).
+
+### §H27zzt — WARP-LOCAL EPILOGUE, milestone 1 of 2 COMPLETE (sizing + depth). Store path is next.
+
+Slot 38 `_EPI_WARP_LOCAL`, default false. Geometry taken from cuBLAS's measured SASS:
+
+    EPI_WL_ROWS 16   (one warp's share of an m64 wgmma accumulator)
+    EPI_WL_COLS 32   (one stmatrix.x4 width)
+    EPI_WL_SLOT 1024 B  == cuBLAS's measured per-warp stride 0x400
+    EPI_WL_STAGES 2     == cuBLAS's UR32 +/- 0x1000 ping-pong
+
+    STORE_BUF = NUM_CONSUMER_WARPGROUPS(2) x 4 warps x 1024 B x 2 = 16,384 B
+                against BM*BN*2 = 73,728 B today
+
+**VERIFIED:** `EPI_WARP_LOCAL=false` -> LOAD_PIPE_DEPTH **3**; `=true` -> **4**. OFF path
+re-verified byte-identical at 2808 instructions.
+
+**REMAINING (milestone 2):** the C TMA descriptor box must go from `64 x C_BOX_N` to `16 x 32`
+(host side, `init_3d_tma_C_sm90(..., 64u, C_BOX_N)`); the epilogue write must target
+`base + warp_id*EPI_WL_SLOT` instead of the shared `c_buf`; and each warp must issue its OWN
+`UTMASTG` for its own slot, with the `BAR.SYNC` and the `lane_in_wg == 0` predication deleted
+because there is no longer anything to hand off. Per tile on 192x192 that is 3 atoms x 4 warps x
+6 column-blocks = 72 boxes of 16x32, each warp issuing 6 per atom, ping-ponging two slots so the
+TMA store of one overlaps the stmatrix into the other.
+
+**A NOTE ON PACE, recorded honestly.** Four mechanisms were proposed, built and refuted on V6
+before this (DRAM, MEMBAR, bufferless epilogue, rotation), and instruction count was closed three
+separate ways. The one thing never measured until now was the depth SLOPE — and it turned out to be
+17.65, an order of magnitude larger than anything else examined. The lesson is not "measure more";
+it is **measure the SENSITIVITY of each structural parameter before theorising about mechanisms.**
+A one-slot probe answered in four minutes what a day of mechanism-hunting did not.
+
+### §H27zzt-REGRESSION — THE WARP-LOCAL COMMIT BROKE ALL TEN CHUNKED PINS. Found only because the 15-pin matrix ran; every gate today was V6-only.
+
+**WHAT HAPPENED.** `h27zzu`'s first run (old box, 644 rows) returned `maxRelErr = 1.00000` on
+**284 rows — every V2*, V7* and V8* pin**, i.e. the whole 256x128 and 128x256 families. V1 and the
+192x192 family (V3-V6) passed. An error of exactly 1.0 is an all-zero output: the store never
+landed.
+
+**BISECTED LOCALLY, ZERO GPU.** Instruction count of `Sm90Config_128x256x64_2x1_h_ep32s2` (NT):
+
+    1cfe431  H27zo  (pre-session)      2080
+    0a8d384  H27zzc                    2080
+    e75c5a6  H27zzg                    2080
+    cb24432  H27zzh                    2080
+    809ef34  H27zzi                    2080
+    a05870a  H27zzn                    2080
+    bdb7f24  H27zzp                    2080
+    842f302  H27zzt-FIX                1928   <-- CHANGED
+
+And against the pre-session baseline, per layout:
+
+| config | base | HEAD | |
+|---|---|---|---|
+| 256x128 ep32s2 (V2 family) | 3176 | 3048 | **CHANGED** |
+| 128x256 ep32s2 (V7/V8 family) | 2080 | 1928 | **CHANGED** |
+| 192x192 rs8_dh_ubd_skew_lsw (V3-V6) | 2808 | 2808 | identical |
+| 128x128 2x1_v (V1) | 1352 | 1352 | identical |
+
+**CAUSE: the `} else {` that wraps the original epilogue in §H27zzt.** `EPI_WARP_LOCAL` is
+default-false, so the else-branch should have been byte-identical — and on the tiles I checked it
+was. It is not identical on CHUNKED tiles. The brace now encloses the chunk-recycling
+`tma_store_wait<EPI_STAGES-1>` / `barrier_sync` prologue and the chunk-loop tail together, and that
+changed the chunked path's semantics.
+
+**WHY IT SURVIVED A DAY OF GATES: I verified the OFF path on the WRONG TILE.** After every knob I
+recompiled `192x192x64_2x1_h_rs8_dh_ubd_skew_lsw_pdl` and confirmed "IDENTICAL 2808 -- shipping
+untouched". That tile has `EPI_TILE_N = 0`: it is **not chunked**, so it can never exercise the code
+the warp-local brace actually moved. Every gate today (zzi, zzm, zzn, zzp, zzq, zzs, zzt) ran V6
+only. Ten of fifteen pins were broken and nothing reported it.
+
+**THE RULE THIS BUYS.** A byte-identical OFF-path check must cover **one config per STRUCTURAL
+FAMILY**, not one config. Minimum set for SM90: `128x128` (V1, split-K), `192x192` (V3-V6,
+unchunked), `256x128 ep32s2` (V2, chunked), `128x256 ep64swz128` (V7/V8, chunked + swizzled). Four
+compiles, no GPU, ~20 s. Had that been the check, this was caught at `dbb1288` instead of by a
+1.5-hour matrix run on a rented box.
+
+### §H27zzu-PARTIAL — the first matrix run: 644 rows, TWO defects, and one usable signal.
+
+Old box `quick-home-speaks-fin-03`, 13-column pre-`box` schema, saved to
+`profiling_reports/h27zzu/rows_preboxcolumn_20260821T161107Z.tsv`. Completed `free`, `1200`, `1300`,
+`1400` at 45 rows/arm (15 pins x 3 reps); died in `1474 preheat` (14/45); 1500+ never ran.
+
+    KEPT 135 / 644      maxRelErr=1.00000  284   (the §H27zzt-REGRESSION above)
+                        pcuB=NA            225   (the entire `swap` arm)
+
+**DEFECT 2 — the `swap` arm produced NOTHING.** All 225 rows `NA`, meaning the harness printed no
+matching line under `BLUBLAS_REF_AFTER=1`. Either the env var never reached the process through the
+`${RAV:+...}` expansion in the runner, or the re-timing block faults. **Untested before shipping it
+into a 1.5-hour sweep** -- a single manual invocation would have shown it instantly. Fix and prove
+it on one shape before the next matrix.
+
+**THE ONE USABLE SIGNAL, stated with its caveat.** On the surviving V1/V3/V4/V5/V6 rows, `preheat`
+minus `default`:
+
+    free   +4.20   (96.00 -> 100.20)      rep spread 0.50
+    1200   +0.10   1300  -0.10            LOCK HELD
+    1400   +2.60                          LOCK HELD
+
+Order-independent exactly where the lock holds, large movement at `free`. That is consistent with
+the hypothesis that free-clock %cuB understates us -- but it rests on 21% of the intended data, one
+card, and a broken third arm, so it is a LEAD, NOT A RESULT. Re-run clean before quoting it.
+
+### §H27zzv — STATE AT END OF 2026-08-21, and tomorrow's order of work.
+
+**ADOPTED TODAY:** `DESC_WALK` on V6, **98.87 -> 99.17** (+0.26, §H27zzp-RESULT). Shape-independent
+and bit-exact on all three `k_iters%3` residue classes -- untested on the other 14 pins.
+
+**THE DAY'S REAL FINDING:** depth is worth **17.65 points per stage** (§H27zzs, depth 3->2 measured
+directly, one slot changed, null control 0.00). An order of magnitude larger than anything else
+examined all day, and the justification for the warp-local epilogue.
+
+**MEASURED AND DEAD ON V6** (each against cuBLAS's own counters or an exact instruction count):
+DRAM, MEMBAR (0.00% on our own pin), barrier stall (cuBLAS 19.97 vs our 23.12), mio_throttle (we
+are better, 6.91 vs 14.78), extra tensor work (ratio exactly 1.0000), wasted tiles (2580 = 86x30
+exactly), producer spin, TICKS/NANOSLEEP (+0.02), pipeline depth via chunking, bufferless epilogue
+(-17.06), stmatrix+swizzle, raster, cluster, wgmma-drain rotation, and **instruction count -- closed
+three separate ways** (dw -30.5M null on V5, chunk-fold -7 -> +0.07, a1b0 -40% -> null).
+
+**TOMORROW, IN ORDER:**
+1. **FIX §H27zzt-REGRESSION.** Ten pins are currently broken in-tree. Add the four-family OFF-path
+   check and make it a standing gate.
+2. **Warp-local correctness.** The slot-recycling drain (§H27zzt-FIX) compiles but has never run;
+   `maxRelErr` must go 28473 -> 0.00000 before any timing means anything.
+3. **`dw` across all 15 pins** -- +0.26 on V6, shape-independent, plausibly the broadest win.
+4. **Re-run `h27zzu` clean** with a correctness pre-flight, a forced clean rebuild (a new instance
+   always means stale objects on carried-over storage), and the `swap` arm proven on one shape first.
+
+### §H27zzt-REGRESSION-FIXED — warp-local reverted from mainline; the ten chunked pins are byte-identical again, and the four-family gate now makes this class of error impossible to miss.
+
+New box `dry-snow-crunches-fin-03`, 4x H200, **ours is GPU 3** (all prior timings were GPU 0 on two
+other boxes and do not transfer).
+
+**ROOT CAUSE, isolated by removal.** Deleting the `if constexpr (Config::EPI_WARP_LOCAL) {...}
+else {` wrapper -- and nothing else -- restored `128x256 ep32s2` from 1928 to 2080 instructions.
+The descriptor ternary was tested separately and is NOT implicated (1928 with and without it).
+So a **discarded** `if constexpr` branch plus the `else` scope it forces around the original
+epilogue changes codegen on CHUNKED tiles: the extra scope shifts register allocation, ptxas emits
+152 fewer instructions, and the result is wrong. Unchunked tiles are unaffected, which is exactly
+why it hid.
+
+**ACTION: reverted from mainline** -- the epilogue branch, the `STORE_BUF_BYTES` arm, the descriptor
+ternary and the `_wl` config. An unproven experiment that was ALSO failing its own correctness gate
+(maxRelErr 28473, §H27zzt-FIX never run) must not perturb ten working pins. The knob and the slot
+geometry constants stay in place; the work is in git history and will be redone with the warp-local
+path in its own `__device__` function so the original epilogue's codegen context is untouched.
+
+**VERIFIED: all four families byte-identical to `bdb7f24` (last good), 12/12.**
+
+    128x128 split-K      L0/L1/L2  ok        256x128 CHUNKED   L0/L1/L2  ok
+    192x192 unchunked    L0/L1/L2  ok        128x256 CHUNKED   L0/L1/L2  ok
+
+**NEW STANDING GATE: `tools/offpath_check.sh [ref]`.** Twelve compiles, ~20 s, no GPU. Run it after
+ANY default-false knob. The rule it encodes: *a byte-identical OFF-path check must cover one config
+per STRUCTURAL FAMILY, not one config.* The families differ in exactly the epilogue structure that
+knobs touch -- split-K, unchunked, and two chunked. Yesterday's check ran 192x192 alone, passed, and
+shipped a break in ten pins that only a 15-pin matrix on a rented box uncovered a day later.
+
+### §H27zzy — WHY STAGE 4 LOSES: decoded from cuBLAS SASS. Our box shape is RIGHT; the SWIZZLE is the whole difference. Two of my own claims retracted along the way.
+
+**STATE.** V6 stage 3 (`dw` pin) **99.19** [99.10, 99.20]; stage 4 (warp-local) **96.60**
+[96.50, 96.70]; null control 0.00; both `maxRelErr 0.00000`. Warp-local is **−2.59** and is the
+BEST stage-4 route so far (ep16s2 −21.0, dstg −17.06, ea32s3 −6.24, ea96s1 −3.11) and the only one
+that gives nothing up — it keeps TMA, keeps the full buffer, adds no chunking.
+
+Warp-local runs **1936 instructions against the pin's 2832** — FEWER — and still loses, which is a
+fourth independent confirmation that instruction count is not V6's lever.
+
+**RETRACTION 1.** I claimed cuBLAS M-splits 192x192 as 2+1 atoms (`coopB`) while we N-split, and
+that this was the obstacle. **Wrong.** I read §H19's table as cuBLAS's behaviour; that table exists
+to REFUTE H18's assumption. §H27's exhaustive 18-kernel census is explicit: *"cuBLAS never splits
+unevenly — when BM/64 alone cannot be halved it shrinks WGMMA_N instead... coopA/coopB: same
+emitted code either way."* Concluding from a kernel-name token is exactly the error I was warned
+against one message earlier.
+
+**PROOF that our compute split already matches theirs** — read from the instruction, not the name:
+
+    HGMMA.64x96x16.F32.BF16  R24 / R72 / R120     (three accumulator bases, 48 regs apart)
+
+`WGMMA_N = 96`, three m64 atoms, 48 accumulator registers per chunk. **Identical to ours.**
+
+**RETRACTION 2.** From the STSM address delta being ±64 B on every lane I concluded their logical
+box is 8 rows x 64 cols. **Wrong** — that delta is measured in a SWIZZLED layout, so the byte gap is
+not the logical gap. Reading a permuted address space as if it were linear.
+
+**WHAT THEIR SASS ACTUALLY SAYS**, worked through properly:
+
+    STSM#1 addr = (((lane&7)*9) XOR (lane>>3)) * 16
+    (lane&7)*9 = row*8 + row, and row<8 so the two terms occupy disjoint bits, giving
+        granule = row*8 + (row XOR m),   row = lane&7,  m = lane>>3
+    == §H27z.74's decoded swizzle EXACTLY.
+    STSM#1 covers granule columns m = 0..3;  STSM#2 covers m = 4..7.
+    Together: 8 smem rows x 8 granules x 16 B = 8 x 128 B = 1024 B = 0x400 per-warp slot.
+
+That is the SMEM layout. The LOGICAL box follows from their own wgmma: one atom per warpgroup is
+64 rows x 96 cols = 12,288 B = twelve 1024 B slots, and the only tiling that divides 64x96 into
+twelve 1024 B pieces is **16 rows x 32 cols** (32x16 also divides but is not a stmatrix shape).
+Twelve is also exactly their static `UTMASTG` count.
+
+**SO OUR BOX SHAPE IS ALREADY CORRECT.** 16 x 32 is what warp-local builds.
+
+**THE ENTIRE REMAINING DIFFERENCE IS ONE THING:**
+
+| | cuBLAS | warp-local today |
+|---|---|---|
+| logical box | 16 rows x 32 cols | **16 rows x 32 cols** (same) |
+| per-warp slot | 1024 B | **1024 B** (same) |
+| wgmma | HGMMA.64x96x16 | **same** |
+| smem layout | **8 rows x 128 B, SWIZZLED** | 16 rows x 64 B, LINEAR |
+| smem stores | 18 STSM | 72 STS |
+
+A 128 B smem row is one full bank row (32 banks x 4 B). Our 64 B rows put two logical rows in one
+bank row. That is the measured conflict case: §H27z.76 found STSM on a LINEAR layout at 192
+conflicts / 3.217 ms against STS's 192 / 3.230 ms — a TIE, stmatrix buying nothing. On a swizzled
+layout the conflicts go to zero and stmatrix is worth 1.93x. **So "just use STSM" was never
+available: the swizzle is the prerequisite, and it is the only thing we are missing.**
+
+**AND WE ALREADY OWN THE PERMUTATION.** `epi_swz_index(row, col, width, span, shift)` with
+`EPI_SWIZZLE_BYTES = 128` derives `span = 8, shift = 0`, giving
+`granule = row*8 + (g XOR (row&7))` — byte-for-byte cuBLAS's formula. The warp-local store simply
+does not call it; it writes `rs * 32 + cs` linear.
+
+**NEXT, and it is now a small change rather than a redesign:** set `EPI_SWIZZLE_BYTES = 128` on the
+warp-local config so the C descriptor gets `CU_TENSOR_MAP_SWIZZLE_128B`, route the slot write
+through `epi_swz_index`, then swap the 72 STS for stmatrix by REUSING the existing validated
+`EPI_USE_STSM` block (`stsm_lane_off[]` + the `rg[4]` packing) rather than writing new stmatrix
+addressing. Expected to recover part of the 2.59; NOT predicted to clear it, since 1.93x applies to
+the store path and that path is a small share of the kernel.
+
+### §H27zzz-RESULT — STAGE 4 BEATS STAGE 3. V6 99.10 -> 99.30 via warp-local + swizzle + stmatrix. The whole gain came from reading cuBLAS's SASS correctly.
+
+GPU 3, `dry-snow-crunches-fin-03`, locked 1200 HELD, 400 ms, 7 reps, all `maxRelErr 0.00000`.
+
+| arm | %cuB | range | delta |
+|---|---|---|---|
+| stage-3 pin (`dw`) | 99.10 | 99.00–99.20 | — |
+| warp-local, linear + STS | 96.60 | | −2.59 |
+| warp-local + **swizzle** | 98.66 | | **+2.06** |
+| warp-local + swizzle + **stmatrix** | **99.30** | 99.30–99.30 | **+0.50** |
+| null control rot1−rot2 | | | +0.03 |
+
+**ADOPTED: +0.20 over the stage-3 pin, ranges separate** (99.30 min vs 99.20 max), all seven reps
+identical at 99.30. Correctness: 42/42 on BOTH variants (`wl` and `wlsm`) — tile counts 1..2580,
+M- and N-residue at every granularity, K-residue, batch 2/4, all three layouts, determinism x3.
+
+**THE CHAIN THAT GOT HERE, every step decoded rather than guessed:**
+
+1. cuBLAS's STSM address is `(((lane&7)*9) XOR (lane>>3)) * 16`, which reduces to
+   `granule = row*8 + (row XOR m)` — §H27z.74's swizzle, visible in their arithmetic.
+2. Their wgmma is `HGMMA.64x96x16` with three accumulator bases 48 apart — **identical to ours**,
+   so the compute split was never the difference (§H27zzy retracted the 2+1 M-split claim).
+3. One atom per warpgroup is 64x96 = twelve 1024 B slots, and the only tiling that divides that
+   into twelve pieces is **16 rows x 32 cols** — which is what warp-local already built.
+4. So the sole remaining difference was the smem layout: theirs swizzled into 128 B rows, ours
+   linear. That is why stmatrix could not help — §H27z.76 measured STSM on a linear buffer at a
+   TIE with STS (192 conflicts, 3.217 vs 3.230 ms).
+5. Swizzle first (+2.06), which made stmatrix legal, then stmatrix (+0.50).
+
+The register partition was verified exhaustively before writing it: heads `r = cb*16 + gv1*2`
+taking regs `r+4q` and `r+4q+1` cover `[cb*16, cb*16+16)` exactly and disjointly, and the result is
+**18 STSM — cuBLAS's exact static count**, which is independent confirmation the model is right.
+
+**TWO BUGS FIXED ALONG THE WAY, both mine:**
+* tile-to-tile drain race — `if (lane==0) wait` with no `__syncwarp`, so 31 lanes entered the next
+  tile while lane 0's stores were in flight. Error VARIED run to run (28473 -> 29929).
+* slot ping-pong keyed on `cb`, which resets every atom, so `aa=1,cb=0` reused the slot
+  `aa=0,cb=2` was still storing from with the recycle guard reading false. 3 unguarded reuses per
+  tile: 1 tile passed, 100 tiles 3832, 2580 tiles 23615.
+
+**AND ONE PROCESS FIX THAT MATTERS MORE THAN EITHER.** §H27zzt-REGRESSION: a bare `{ }` around the
+unchanged epilogue moves chunked codegen 2080 -> 1928 and silently breaks all ten V2/V7/V8 pins.
+Warp-local is therefore wired as a SIBLING statement with `continue`, never wrapping the original,
+and `tools/offpath_check.sh` gates every edit on four structural families (split-K, unchunked, and
+both chunked). Yesterday's V6-only check passed while ten pins were broken.
+
+**WHAT REMAINS vs cuBLAS**, all measured, none yet attempted:
+
+    BAR.SYNC   ours 4    cuBLAS 2
+    UTMASTG    ours 9    cuBLAS 12
+    total      ours 1896 cuBLAS 1265
+
+**V6: 99.30%.** The 192x192 family (V3/V4/V5) should be tested next — they share the tile and the
+N-split, so the same three knobs may transfer.
+
+### §H27zA — V6 CLOSED at 99.30%. The last 0.70% is load latency, and its one lever is blocked by the BK=64 assumption. Parked deliberately.
+
+Counters, GPU 3, wlsm vs cuBLAS (metric filter fixed -- see the SIGPIPE note below):
+
+| | wlsm | cuBLAS | |
+|---|---|---|---|
+| cycles | 811,648 | 800,012 | 1.015 |
+| tensor% of peak | 91.64 | 92.51 | |
+| **TENSOR instr** | **7,925,760** | **7,925,760** | **1.0000** |
+| TOTAL instr | 86,081,433 | 54,679,129 | 1.574 |
+| **smem bank conflicts** | **944,894** | 998,766 | **0.946 -- BELOW theirs** |
+| long_scoreboard | **31.96** | 20.16 | +11.79 we worse |
+| mio_throttle | 5.70 | **14.75** | −9.05 THEY worse |
+| barrier | 24.41 | 19.87 | +4.54 |
+| membar | 0.00 | 0.00 | — |
+
+**THE SWIZZLE EXPLANATION IS NOW MEASURED, NOT ASSERTED.** Bank conflicts pin 4,648,041 ->
+wlsm 944,894, a **4.9x reduction** that lands us BELOW cuBLAS's 998,766. That is the +2.06.
+
+**THE WHOLE REMAINING GAP IS ~7,932 IDLE CYCLES.** Tensor-busy cycles are equal by construction
+(811,648 x 0.9164 = 743,795 vs 800,012 x 0.9251 = 740,091), so the deficit is entirely idle time,
+and `long_scoreboard` is the dominant idle reason.
+
+**AND IT IS A DIFFERENT BOTTLENECK FROM THEIRS, not a smaller amount of the same one.** cuBLAS is
+BANDWIDTH-bound (mio_throttle 14.75, the memory pipe refusing work); we are LATENCY-bound
+(waiting on loads) with ~9 points of pipe headroom they do not have. We are short of outstanding
+requests, not of bandwidth.
+
+**INSTRUCTION COUNT: FIFTH DISPROOF.** wlsm executes 4.4M MORE instructions than the pin
+(86.1M vs 81.7M) and is FASTER (99.30 vs 99.10). Stop citing 1.574x as a deficit.
+
+**THE ONE LEVER THAT TARGETS LATENCY IS BLOCKED.** Same bytes in flight, double the outstanding
+requests:
+
+    BK=64  stage 49,152 B -> depth 4 -> 4 loads in flight (196,608 B)
+    BK=32  stage 24,576 B -> depth 8 -> 8 loads in flight (196,608 B)
+
+`BK=32` derives depth 8 correctly but hits a hard static_assert: *"BK must be 64 (one 128B-swizzle
+atom; K-major descriptor math below assumes...)"*. Reaching depth 8 therefore means reworking the
+A/B **load** descriptor math, not flipping a knob. **PARKED with the evidence attached** -- it is a
+real project and should be picked up deliberately.
+
+**REMAINING, MEASURED:** BAR.SYNC 4 vs 2 (+4.54 barrier stall) is the only small lever left.
+
+### §H27zA-BUG — a SIGPIPE + pipefail race silently dropped ncu metrics in THIRTEEN tools.
+
+    printf '%s\n' "$AV" | grep -qx "$b" && M="$M,$m"      # under set -o pipefail
+
+`grep -q` exits on the FIRST match, `printf` takes SIGPIPE, `pipefail` turns that into a non-zero
+pipeline status, and the `&&` never fires -- **the metric is discarded BECAUSE it was found.**
+Reproduced at realistic size (20,002 lines): early match -> status 141 -> dropped; late match ->
+kept. That is exactly why `l1tex__`/`sm__*` came back `nan` while `smsp__warp_issue_stalled_*`
+survived, and why six metrics were blank for two runs.
+
+It is a **RACE** -- §H27zzk used the identical idiom and got real numbers, so it won it there. Any
+earlier run could have lost metrics with no warning, and the failure mode prints `nan` in a
+clean-looking table rather than erroring. Fixed in all 13 tools (herestring, no pipe), and the
+metric count is now echoed so a silent drop cannot recur.
+
+### §H27zB — WARP-LOCAL STORE TRANSFERRED TO V3/V4/V5. V5 adopts it, V3/V4 reject it. The winner is per-variant, not global.
+
+V6 gained +0.20 from the warp-local swizzled-stmatrix store (§H27zzz). The obvious next question
+is whether the same store helps the other three 192x192 variants. It does NOT transfer uniformly,
+and that is the finding.
+
+Run: GPU 3, clocks locked, 400 ms window (§H27zdt-b), `tools/h27zB_v345_transfer.sh`.
+
+| pin | shape | layout | winning arm | %cuB | loser | PINNED |
+|---|---|---|---|---|---|---|
+| V3 | 16384x11264x2048 | nn | base `_dw` | **99.90** | `_wlsm` lost | base `_dw` |
+| V4 | 16384x50304x2048 | nn | base `_dw` | **100.49** | `_wlsm` lost | base `_dw` |
+| V5 | 2048x11264x16384 | tn | `_wlsm` | **100.54** | base `_dw` lost | `_wlsm` |
+| V6 | 16384x5632x2048 | nt | `_wlsm` | **99.30** | base 99.10 (§H27zzz) | `_wlsm` |
+
+**PROVENANCE NOTE.** The winning-arm figures above are the committed pins and are independently
+reproduced by §H27zD's locked-clock grid (V3 99.85-99.95, V4 100.40, V5 100.55, V6 99.15-99.20).
+The LOSING arms' exact values were printed by the box run and were not retained in a local file,
+so only their direction is recorded here, not a number. V6's +0.20 is the one delta with both
+sides on record, in §H27zzz.
+
+**WHY IT MIGHT SPLIT THIS WAY -- HYPOTHESIS, NOT MEASURED.** V3/V4 carry the two largest N
+(11264 / 50304). If they are already bandwidth-limited on the store path then cutting bank
+conflicts buys nothing, because the pipe was full either way; V5/V6 would then be the
+conflict-limited pair where the swizzle releases real time. That is consistent with the
+bandwidth-vs-latency split measured on V6 in §H27zA, but **it has NOT been tested on V3/V4** --
+no bank-conflict or mio_throttle counter was collected for them. Flagged as a research follow-up,
+not a conclusion. // edits: Gautam_Reddy_1926
+
+**THE RULE THIS ESTABLISHES:** a store-path optimisation is worth testing per-variant and must
+never be adopted globally on the strength of one variant's win. Four pins, two adoptions.
+
+`tools/pins.sh` updated accordingly: V3/V4 keep `..._dw_skew_lsw_pdl`, V5/V6 take `..._pdl_wlsm`.
+
+### §H27zC — V1 DEPTH 6 vs 7: EQUIVALENT. Pinned to 6 because 6 is what cuBLAS runs.
+
+§H27zzg changed V1 from depth 6 to depth 7 on a STRUCTURAL argument with no timing behind it.
+That was a gap in the record and it is now closed with a real A/B.
+
+Run: GPU 3, clocks locked, 400 ms window, `tools/h27zC_v1_depth_ab.sh`,
+shape 2048x512x16384 tn, config `128x128x64_2x1_v_sk2_dh_rot2_pdl` +/- `_d6`.
+
+| depth | %cuB |
+|---|---|
+| 7 (`_d7`, was mainline) | 105.07 |
+| **6 (`_d6`, now pinned)** | **105.19** |
+
+**+0.12 -- inside the noise floor.** The two are equivalent; there is no performance argument
+either way.
+
+**PINNED TO 6 ON THE APPLES-TO-APPLES RULE, NOT ON SPEED.** cuBLAS runs
+`nvjet_sm90_tst_128x128_64x6_1x2_h_bz_split` on this shape -- the `64x6` is six stages. Under the
+§H27z.86 swap rule their `1x2_h` is our `2x1_v`, so depth 6 is the matching structure. When two
+configurations tie, we take the one that matches cuBLAS, because that keeps the comparison honest
+and keeps the remaining differences interpretable.
+
+**RETRACTION.** A figure of `105.13` for V1 appears once in earlier prose. It had no measurement
+behind it -- I wrote it from working memory. The measured pair is 105.07 (depth 7) and
+105.19 (depth 6). Use those.
+
+### §H27zD — THE CLOCK / POWER / ORDER SUITE. Measurement ORDER was worth up to 16 points, and it explains the entire free-clock deficit. Power is REFUTED. Kernel-switching is REFUTED.
+
+This is the biggest single measurement-validity finding in the campaign. Read it before quoting
+any free-clock number, ours or anyone's.
+
+#### WHY WE RAN IT — the problem in one paragraph
+
+Every score in this campaign is "our time vs cuBLAS's time on the same shape". Our test program
+measures cuBLAS ONCE per shape, and it does that BEFORE it measures any of our configurations.
+On a card with locked clocks that ordering is harmless. On a card left free, we kept seeing our
+variants sit around 96% while the very same binaries scored ~100.5% with clocks locked -- a
+4-point gap that appeared and disappeared purely with the clock setting. Something about running
+free was penalising us, and we did not know what. Until we knew, every free-clock number in the
+campaign was unusable and we could not tell an optimisation from an accident.
+
+#### THE THREE SUSPICIONS WE WROTE DOWN BEFORE MEASURING
+
+- **(A) ORDER.** cuBLAS is measured first, on a cold and idle card, so it gets the boost clock.
+  By the time our configuration runs the card has heated up and slowed down. We would then be
+  comparing their fast clock against our slow clock and calling the difference "kernel quality".
+- **(B) POWER.** §H27zdt already showed we issue about 2.24x the instructions cuBLAS does. More
+  instructions means more power per unit of work, so under a power cap the card might genuinely
+  hand OUR kernel a lower clock than it hands theirs. If true, that is a real deficit we own, not
+  a measurement fault.
+- **(C) KERNEL SWITCHING.** cuBLAS picks its kernel at run time. It might select a DIFFERENT,
+  better kernel when the clock is free than when it is locked, in which case we would be
+  comparing against two different opponents and never notice.
+
+These three predict different things, so one experiment can separate them.
+
+#### HOW THE TEST WAS BUILT — three phases, each with exactly one job
+
+Two new controls were added to `examples/test_bgemm_sm90_matrix.cu`:
+
+- `BLUBLAS_PREHEAT_MS` — burn a sustained cuBLAS load BEFORE the cuBLAS reference is measured, so
+  cuBLAS is measured on an already-hot card instead of a cold one.
+- `BLUBLAS_REF_AFTER` — measure the cuBLAS reference AFTER our configuration instead of before,
+  i.e. fully reverse the order.
+
+That gives three arms per cell: **default** (cuBLAS first, cold), **swap** (cuBLAS last), and
+**preheat** (cuBLAS first, but hot). If suspicion (A) is right, swap and preheat both move the
+score and they move it the same way. If (A) is wrong, all three arms agree.
+
+- **PHASE 1 — the wide grid.** 15 pinned shapes x 3 order arms x 6 clock settings (free, 1200,
+  1300, 1400, 1474, 1755 MHz) x 3 repeats, 400 ms measuring window throughout (§H27zdt-b: at
+  100 ms the cuBLAS reference alone swings 5-6%). Every row also records the clock, power,
+  temperature and the card's own throttle reason, sampled DURING the run, so we never have to
+  assume the lock held. 746 rows.
+- **PHASE 2 — per-kernel clock.** Phase 1's clock number comes from one sampler while BOTH
+  kernels are alternating on the card, so it cannot say who ran at what speed. Phase 2 fixes that:
+  nsys with GPU metrics at 10 kHz, joined onto each kernel's own start/stop interval, so we get
+  OUR clock and THEIR clock separately. 4 pins (V1, V3, V6, V8) x 5 clocks x 2 arms. This is the
+  phase that actually decides the question.
+- **PHASE 3 — kernel identity.** Read the cuBLAS kernel name out of the profile at free, 1200 and
+  1755 MHz and compare. This is the only phase that can settle (C).
+
+`touch PAUSE` stops the suite cleanly between cells. Pre-flight checks correctness and that both
+order arms actually respond before the grid starts.
+
+#### PHASE 1 OBSERVATIONS — the order effect is real, large, and only exists when the clock is loose
+
+Median %cuB across the 8 uncontaminated pins:
+
+| clock | default | swap | preheat | swap−default | preheat−default |
+|---|---|---|---|---|---|
+| **free** | 96.00 | 100.85 | 100.70 | **+4.85** | **+4.70** |
+| 1200 | 100.15 | 100.30 | 100.15 | +0.15 | +0.00 |
+| 1300 | 100.00 | — | 100.05 | — | +0.05 |
+| 1400 | 100.00 | 100.10 | 100.00 | +0.10 | +0.00 |
+| 1474 | 99.15 | 106.50 | 101.30 | +7.35 | +2.15 |
+| **1755** | 94.30 | 102.75 | 101.40 | **+8.45** | **+7.10** |
+
+**Three things fall out of this table.**
+
+1. **At a lock the card can actually hold (1200, 1300, 1400) the order effect is ZERO** -- 0.00 to
+   +0.15, i.e. nothing. All three arms agree. This is the control, and it passes.
+2. **At free the effect is +4.7 to +4.9 and it is the WHOLE deficit.** Default says 96.00,
+   both corrected arms say ~100.8. Our locked-clock standing is ~100.5. The free-clock "96%" was
+   never a kernel property.
+3. **1474 and 1755 behave like FREE, not like a lock, because those locks do not hold.** The
+   sampler recorded `clkMin` 1118-1185 MHz at a 1755 request and the throttle reason reads
+   `POWER_CAP`. A lock above what the card can sustain is not a lock. Only 1200/1300/1400 ran with
+   throttle `none`.
+
+Per-pin at free, all 15 -- the sign is positive on **every single pin**, which is what rules out
+this being one bad shape:
+
+| pin | lay | default | swap | preheat | sw−df | ph−df |
+|---|---|---|---|---|---|---|
+| V1 | tn | 99.55 | 108.85 | 108.25 | +9.30 | +8.70 |
+| V2 | tn | 96.30 | 106.90 | 100.50 | +10.60 | +4.20 |
+| V2b | tn | 96.00 | 104.80 | 100.75 | +8.80 | +4.75 |
+| V2c | tn | 89.80 | 92.95 | 94.20 | +3.15 | +4.40 |
+| V3 | nn | 96.30 | 99.55 | 100.65 | +3.25 | +4.35 |
+| V4 | nn | 95.75 | 100.20 | 99.65 | +4.45 | +3.90 |
+| V5 | tn | 96.05 | 98.05 | 101.35 | +2.00 | +5.30 |
+| V6 | nt | 95.55 | 99.95 | 100.80 | +4.40 | +5.25 |
+| V7 | nn | 97.00 | 106.75 | 100.80 | +9.75 | +3.80 |
+| V7b | nn | 96.30 | 100.35 | 100.90 | +4.05 | +4.60 |
+| V7c | nn | 97.60 | 100.35 | 108.35 | +2.75 | +10.75 |
+| V8 | nt | 95.50 | 99.35 | 103.65 | +3.85 | +8.15 |
+| V8b | nt | 97.40 | 106.75 | 101.65 | +9.35 | +4.25 |
+| V8c | nt | 96.45 | 104.40 | 101.45 | +7.95 | +5.00 |
+| V8d | nt | 95.85 | 97.80 | 98.90 | +1.95 | +3.05 |
+
+The last seven pins (V7*, V8*) share one configuration name and were hit by the layout-grouping
+bug described below, so their SHAPE-to-LAYOUT pairing is not trustworthy. The conclusion is
+therefore stated on the 8 clean pins only -- and it is slightly STRONGER there (+4.70) than it is
+with all 15 included (+4.45).
+
+What the card was actually doing, from the sampler:
+
+| clock | arm | clkAvg | clkMin | pwrAvg | pwrMax | tempMax | throttle |
+|---|---|---|---|---|---|---|---|
+| free | default | 1926 | 1350 | 192 | 668 | 54 | POWER_CAP |
+| free | swap | 1703 | 345 | 234 | 697 | 57 | POWER_CAP |
+| free | preheat | 1842 | 1282 | 304 | 700 | 60 | POWER_CAP |
+| 1200 | default | 1200 | 1200 | 123 | 444 | 47 | **none** |
+| 1200 | preheat | 1200 | 1200 | 187 | 522 | 51 | **none** |
+| 1300 | default | 1305 | 1305 | 130 | 487 | 49 | **none** |
+| 1400 | default | 1410 | 1410 | 143 | 567 | 53 | **none** |
+| 1400 | preheat | 1410 | 1410 | 236 | 681 | 59 | **none** |
+| 1474 | default | 1484 | 1470 | 161 | 633 | 55 | POWER_CAP |
+| 1755 | default | 1712 | 1118 | 218 | 681 | 59 | POWER_CAP |
+| 1755 | preheat | 1632 | 1170 | 337 | 719 | 64 | POWER_CAP |
+
+Note `clkMin` at 1200/1300/1400 equals `clkAvg` exactly -- the lock is real. Everywhere else it is
+hundreds of MHz below, and the reason string says POWER_CAP.
+
+#### PHASE 2 OBSERVATIONS — the decisive evidence. It is cuBLAS's clock that moves, not ours.
+
+This is the phase that settles everything. Clocks are per-kernel, in MHz:
+
+| pin | clock | arm | %cuB | ourClk | cubClk | cub−our |
+|---|---|---|---|---|---|---|
+| V1 | free | default | 96.0 | 1513.0 | 1667.6 | **+154.7** |
+| V1 | free | preheat | 112.0 | 1511.9 | 1446.1 | −65.7 |
+| V3 | free | default | 97.1 | 1386.1 | 1429.7 | +43.6 |
+| V3 | free | preheat | 100.8 | 1400.1 | 1377.2 | −22.9 |
+| V6 | free | default | 97.2 | 1413.9 | 1445.2 | +31.3 |
+| V6 | free | preheat | 101.2 | 1418.3 | 1397.8 | −20.5 |
+| V8 | free | default | 95.8 | 1565.7 | 1696.2 | **+130.5** |
+| V8 | free | preheat | 108.9 | 1599.2 | 1521.0 | −78.2 |
+| V1 | 1200 | default | 105.7 | 1189.2 | 1182.9 | −6.3 |
+| V3 | 1200 | default | 100.1 | 1192.3 | 1192.1 | **−0.2** |
+| V6 | 1200 | default | 99.5 | 1191.9 | 1191.2 | **−0.7** |
+| V8 | 1200 | default | 101.7 | 1169.7 | 1158.0 | −11.8 |
+| V6 | 1400 | default | 99.2 | 1394.9 | 1394.7 | **−0.2** |
+| V1 | 1755 | default | 99.7 | 1532.6 | 1614.8 | +82.2 |
+| V3 | 1755 | default | 94.5 | 1403.0 | 1484.8 | +81.8 |
+| V6 | 1755 | default | 94.5 | 1432.7 | 1505.5 | +72.8 |
+| V8 | 1755 | default | 98.3 | 1594.1 | 1663.7 | +69.6 |
+
+**In the default arm at free, cuBLAS runs 31 to 155 MHz FASTER than our kernel does, on the same
+card, in the same process, seconds apart.** That is the entire mechanism. It was measured first,
+while the card was cold and idle, so it got the boost clock.
+
+What preheating does to each side, stated as a delta:
+
+| pin | clock | our clock change | cuBLAS clock change | score change |
+|---|---|---|---|---|
+| V1 | free | −1.1 | **−221.5** | +16.0 |
+| V3 | free | +13.9 | **−52.5** | +3.7 |
+| V6 | free | +4.4 | **−47.4** | +4.0 |
+| V8 | free | +33.5 | **−175.2** | +13.1 |
+| V1 | 1200 | +2.4 | +0.4 | −0.3 |
+| V3 | 1200 | −1.4 | −1.2 | −0.1 |
+| V6 | 1200 | +1.2 | −0.7 | +0.1 |
+| V8 | 1200 | −1.6 | −2.2 | +0.5 |
+| V6 | 1400 | −0.3 | −0.9 | +0.0 |
+| V1 | 1755 | −46.6 | **−172.1** | +10.5 |
+| V3 | 1755 | +35.2 | **−78.6** | +7.1 |
+| V6 | 1755 | +34.3 | **−79.9** | +7.3 |
+| V8 | 1755 | −5.4 | **−145.9** | +11.2 |
+
+**Preheating does not speed OUR kernel up. It slows CUBLAS down to the speed our kernel was
+already running at.** Our clock moves by −47 to +35 MHz with no consistent sign; cuBLAS's clock
+falls every single time, by 20 to 222 MHz. At a lock that holds, both numbers are within 2.5 MHz
+and the score does not move.
+
+**AND THE CLOCK RATIO QUANTITATIVELY PREDICTS THE SCORE.** If a score is really just "our clock
+vs their clock", then
+
+    predicted %cuB(preheat) = %cuB(default) x [ (ourClk/cubClk)_preheat / (ourClk/cubClk)_default ]
+
+Tested on all 20 pin x clock cells: **correlation r = 0.9741, mean absolute error 0.69 points**,
+against arm swings as large as 16.0 points. The clock ratio is not merely correlated with the
+order effect -- it accounts for essentially all of it.
+
+#### PHASE 3 OBSERVATIONS — cuBLAS runs the identical kernel at every clock
+
+| pin | free | 1200 | 1755 |
+|---|---|---|---|
+| V1 | `nvjet_sm90_tst_128x128_64x6_1x2_h_bz_split` | same | same |
+| V3 | `nvjet_sm90_tst_192x192_64x3_1x2_h_bz_coop` | same | same |
+| V6 | `nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coop` | same | same |
+| V8 | `nvjet_sm90_tst_256x128_64x4_1x2_h_bz_coop` | same | same |
+
+Twelve profiles, four distinct kernel names, zero switches.
+
+#### VERDICT ON EACH SUSPICION
+
+- **(A) ORDER — CONFIRMED, and it is the whole free-clock deficit.** +4.70 median at free,
+  +7.10 at 1755, exactly 0.00 wherever the lock holds, positive on all 15 pins, and predicted to
+  within 0.69 points by the clock ratio alone.
+- **(B) POWER — REFUTED.** The prediction was that OUR heavier instruction stream would earn our
+  kernel a lower clock. The opposite is observed: under preheat our clock is flat or slightly UP
+  while cuBLAS's collapses. We do not lose clock for being instruction-heavy. §H27z's parked
+  power/clock track can stay parked, and this is the measurement that justifies it.
+- **(C) KERNEL SWITCHING — REFUTED.** Identical kernel names at free, 1200 and 1755.
+
+#### WHAT THIS CHANGES
+
+**The free-clock "96.3%" was a measurement fault and must not be quoted again.** Corrected free
+standing is ~100.8%. The locked-clock standing was right all along.
+
+Per-pin standing at each clock, default arm, median of repeats. The three middle columns are the
+locks the card can actually hold:
+
+| pin | lay | shape | free | 1200 | 1300 | 1400 | 1474 | 1755 |
+|---|---|---|---|---|---|---|---|---|
+| V1 | tn | 2048x512x16384 | 99.55 | 104.80 | 104.60 | 105.05 | 104.25 | 98.80 |
+| V2 | tn | 2048x2048x16384 | 96.30 | 100.30 | 100.70 | 100.70 | 100.05 | 96.90 |
+| V2b | tn | 5632x2048x16384 | 96.00 | 99.85 | 99.60 | 99.80 | 99.95 | 95.05 |
+| V2c | tn | 2048x50304x16384 | 89.80 | 99.00 | 99.60 | 98.10 | 89.20 | 87.55 |
+| V3 | nn | 16384x11264x2048 | 96.30 | 99.85 | 99.90 | 99.95 | 99.15 | 93.05 |
+| V4 | nn | 16384x50304x2048 | 95.75 | 100.40 | 100.20 | 100.05 | 95.75 | 92.40 |
+| V5 | tn | 2048x11264x16384 | 96.05 | 100.55 | 100.30 | 100.20 | 98.90 | 92.95 |
+| V6 | nt | 16384x5632x2048 | 95.55 | 99.15 | 99.20 | 98.80 | 98.85 | 95.15 |
+| V7 | nn | 16384x2048x2048 | 97.00 | 99.65 | 100.00 | 99.40 | 99.60 | 96.95 |
+| V7b | nn | 16384x2048x5632 | 96.30 | 100.00 | 100.00 | 99.85 | 99.20 | 94.45 |
+| V7c | nn | 16384x512x2048 | 97.60 | 100.65 | 100.80 | 101.05 | 100.90 | 95.15 |
+| V8 | nt | 16384x2048x512 | 95.50 | 98.45 | 97.80 | 98.55 | 98.20 | 94.60 |
+| V8b | nt | 16384x2048x2048 | 97.40 | 99.75 | 99.90 | 99.00 | 99.45 | 96.95 |
+| V8c | nt | 16384x2048x11264 | 96.45 | 99.95 | 100.10 | 99.95 | 98.90 | 96.30 |
+| V8d | nt | 16384x2048x50304 | 95.85 | 99.85 | 99.90 | 99.90 | 95.60 | 92.05 |
+
+V7*/V8* rows carry the layout caveat below.
+
+**TWO INDEPENDENT CONSISTENCY CHECKS, BOTH PASS.**
+
+1. **The lock value does not matter once the lock holds.** Mean over the 8 clean pins:
+   1200 -> 100.49, 1300 -> 100.51, 1400 -> 100.33. A spread of 0.18 points across a 200 MHz range.
+2. **Every clean pin reproduces its committed scoreboard number.** V1 104.80-105.05 vs 105.19,
+   V2 100.30-100.70 vs 100.63, V2b 99.85 vs 99.86, V2c 99.00 vs 99.03, V3 99.85-99.95 vs 99.90,
+   V4 100.40 vs 100.49, V5 100.55 vs 100.54, V6 99.15-99.20 vs 99.27. All within ~0.12. The
+   scoreboard and this suite were produced by different scripts on different days and they agree.
+
+**Mean of the 8 clean pins across the three holdable locks: 100.48% of cuBLAS.**
+
+#### RULES THIS ADDS TO THE CAMPAIGN
+
+1. **Lock the clock, and then CHECK the lock held** -- read `clkMin` and the throttle reason from
+   during the run. On this H200 the sustainable ceiling is between 1400 and 1474 MHz; a 1755
+   request behaves exactly like free.
+2. **Never compare a cold measurement against a hot one.** Whoever is measured first on an idle
+   card wins by up to 16 points for no reason connected to the kernel.
+3. **A free-clock comparison needs `BLUBLAS_PREHEAT_MS` or `BLUBLAS_REF_AFTER`**, otherwise it is
+   measuring the boost-clock schedule.
+4. **Report which arm and which clock a number came from.** A bare "%cuB" is now ambiguous.
+
+#### FOUR BUGS FOUND WHILE RUNNING IT — all four silently produced clean-looking wrong numbers
+
+- **The env-assignment bug — killed every swap row.** `${RA:+BLUBLAS_REF_AFTER=$RA} ./binary` does
+  not set a variable; the shell parses the expansion as the COMMAND NAME. Every swap row failed
+  and 225 rows the previous day came back empty. Fixed with an explicit `env`. **The pre-flight
+  did not catch it because the pre-flight used a literal assignment** -- so it exercised a
+  different code path from the grid. A pre-flight must run the same construction the grid runs.
+- **Layout mixing in the batched grid.** Phase 1 batched by configuration name to save build time,
+  but V7* (nn) and V8* (nt) SHARE the configuration `128x256x64_2x1_h_ep64swz128_rot2_pdl`, so a
+  batch ran seven pins under a single layout flag and half of them got the wrong one. Caught only
+  because V7 and V8b -- different shapes -- reported byte-identical 685.35 TFLOPS. Fixed by
+  grouping on (configuration, layout). **The 7 affected pins are flagged and were excluded from
+  every conclusion; the conclusion is stronger without them.**
+- **Leaked clock samplers.** `kill $SP` killed a subshell, not the `nvidia-smi -lms` child under
+  it. Over 500 accumulated and turned 8-second rows into 46-second rows, which is what made the
+  first estimate come out at 40 hours. Fixed with one sampler for the whole phase.
+- **Clock reported in Hz, not MHz.** `h27zD_perkernel.py` emitted raw `1512954621.7`. Fixed with a
+  scale-if-greater-than-1e6 guard.
+
+#### LIMITS OF THIS FINDING — stated plainly
+
+- **All of it comes from ONE physical card**, `dry-snow-crunches-fin-03-GPU-0de7cb9c-eaa`. The
+  mechanism (boost clock on an idle card) is generic to how NVIDIA GPUs manage clocks and there is
+  no reason to expect it to be unique to this one, but the specific numbers -- +4.70 at free, the
+  1400-1474 MHz sustainable ceiling, the 20-222 MHz cuBLAS drop -- are measured on that card only
+  and are NOT verified across cards or on B300. Do not quote them as H200-wide, and do not quote
+  them as universal.
+- Phases 2 and 3 ran pin-by-pin, not batched, so they never touched the layout bug.
+- The 1500/1600/1700 MHz points listed in the first suite header were dropped when the grid was
+  cut to fit the time budget. 1474 and 1755 already bracket the sustainable ceiling, so no
+  hypothesis lost coverage.
+
+Artifacts: `profiling_reports/h27zD/` -- `rows.tsv` (746 rows), `perkernel.tsv` (40 rows),
+`SUMMARY.md`, and `nsys/` (per-kernel profiles and kernel-identity logs).
+Tools: `tools/h27zD_clock_suite.sh`, `tools/h27zD_perkernel.py`, `tools/h27zD_analyze.py`,
+`tools/h27zD_timeit.sh`.
