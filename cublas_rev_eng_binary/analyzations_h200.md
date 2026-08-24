@@ -20320,3 +20320,161 @@ of the dispatcher shipping it.
 6. **State the decision rule before the data exists.** Every number in §H27zI/J/K is judged
    against a floor the run measured on itself, with the bar fixed in advance. That rule is the
    only reason the V2b +0.26% is recorded as a tie instead of a fifth pin change.
+
+### §H27zL — C7517 EXPLAINED AND CLOSED: WGMMA_SKEW is the sole trigger, and skew PAYS FOR ITSELF. Keep it. §H27zbC's "does not pay yet" is corrected.
+
+**THE TRIGGER, PROVEN BY KNOB BISECT** (local nvcc 13.0, sm_90a, no GPU needed):
+
+| arm | C7517 | C7515 | C7519 | DEPBAR |
+|---|---|---|---|---|
+| 192x192 pin as shipped | 2 | 0 | 4 | 7 |
+| **same, SKEW off** | **0** | **0** | **0** | **3** |
+| same, DESC_HOIST off | 2 | 0 | 4 | 7 |
+| same, UNIFORM_B_DESC off | 2 | 0 | 2 | 7 |
+| same, EPI_LATE_STORE_WAIT off | 2 | 0 | 4 | 7 |
+| 128x256 pin | 0 | 0 | 0 | 3 |
+| **128x256 + SKEW** | — | — | — | **WILL NOT COMPILE** |
+
+`WGMMA_SKEW` is the **sole** trigger. Every other knob flipped off still warns; skew off is clean.
+Reproduced on all three 192x192 pins: DEPBAR **7->3** (V3/V4) and **15->11** (V5, V6), C7517 2->0
+and C7519 4->0 in every case.
+
+**AND IT EXPLAINS THE TILE CORRELATION THAT LOOKED SO DAMNING.** 128x256 with skew fails a
+static_assert: *"WGMMA_SKEW needs >= 2 m64 atoms per warpgroup: it carries atom 0 to the next pass
+and issues the rest on acquire, so MAX_ATOMS==1 has nothing to split (192x192 has 3; a SPLIT_M
+128x256 has 1)"*. **128x128 and 128x256 show zero warnings because they CANNOT use skew, not
+because they are better.** §H27zE-BUILD's "192x192 has 168 warnings and is our weakest family"
+correlation is fully explained and carries no further information.
+
+**WHY IT HAPPENS.** Skew splits the wgmma issue across the loop back-edge -- atom 0 of a stage is
+issued one pass LATER than atoms 1..N, deliberately, to copy cuBLAS. That produces a peel, a body
+and a tail, so the accumulators are reached from several paths. Our waits are correct on each, but
+ptxas cannot PROVE one dominates them all, so it inserts its own.
+
+**PRECISION IS NOT AT RISK, AND THE INJECTED WAIT IS WHY.** Without it the accumulators would be
+read before the wgmma retired. ptxas is protecting correctness, not damaging it. Every row across
+§H27zE/I/J/K -- 135 + 270 + 102 measurements -- came back `maxRelErr 0.00000`. This was only ever a
+performance question.
+
+**THE A/B: SKEW WINS. REMOVING IT COSTS US.** Three skew-off twins added, each identical to its pin
+in every template slot except `/*SKEW=*/`. Measured on the §H27zJ instrument (one config per
+process, arms interleaved round by round, the pin's own spread as the floor), GPU 1, locked 1400:
+
+| shape | skew | no-skew | delta of REMOVING skew | verdict |
+|---|---|---|---|---|
+| V3 `16384x11264x2048` | 672.09 | 668.36 | **-0.55%** | SKEW WINS |
+| V4 `16384x50304x2048` | 688.13 | 686.45 | -0.24% | tie |
+| V5 `2048x11264x16384` | 708.66 | 707.55 | -0.16% | tie |
+| V6 `16384x5632x2048` | 651.40 | 643.87 | **-1.16%** | SKEW WINS |
+
+**Mean -0.53%.** Two shapes lose clearly, two are neutral, none gains. **The 4 extra DEPBARs and
+the compiler-injected waits are a price skew is earning.** KEEP SKEW.
+
+**§H27zbC-RESULT IS CORRECTED.** It was titled *"THE MECHANISM IS PROVEN, THE IMPLEMENTATION DOES
+NOT PAY YET"* and measured V3 at **-0.78%, skew WORSE**. On a clean instrument V3 now shows skew
+**+0.55% BETTER** -- the sign flipped. That measurement predates the 400 ms window (§H27zdt-b) and
+one-config-per-process (§H27zF). Skew's value is established here for the first time.
+
+**CAVEAT ON RECORD:** V6's no-skew arm spread **1.58%**, ten times its skew arm (0.15%). The
+direction agrees with V3 but V6's magnitude is the least trustworthy number in that table.
+
+**WHAT REMAINS, PARKED.** The warnings stay, and are now known to be the cost of a knob worth
+keeping. The open opportunity is the §H27zt fix applied to skew: keep the mechanism but restructure
+so ptxas can prove our wait dominates every path, removing the injected waits for free. `drain_prev`,
+`skew_body` and the `WROT==0` branch were all checked and their waits are ALREADY unconditional, so
+the un-provable path is elsewhere -- most likely the peel/tail structure, where the k-loop may not
+execute at all. A real investigation, not a quick win.
+
+**TOOLING NOTE.** `-DBLUBLAS_SM90_FAST_BUILD` builds this experiment in ~5 min instead of ~1 h: the
+pins and twins live in the `_SPLITK` list, which FAST_BUILD does not gate, so nothing needs adding
+to the FAST list -- and adding them there produces "function has already been defined" for every
+one. Never sweep or ship with that binary.
+
+**AND §H27zA-BUG BIT AGAIN, IN A SCRIPT WRITTEN THE SAME DAY IT WAS DOCUMENTED.**
+`strings "$BIN" | grep -qF "$c"` under `set -o pipefail` **rejects the config BECAUSE it was
+found**: grep -q exits on the first match, strings takes SIGPIPE, pipefail makes the pipeline
+non-zero, the `||` fires. It is a RACE -- it did not reproduce locally on 20,000 lines, and it
+failed reliably against a 1327-kernel binary where `strings` is slow. Snapshot once into a variable
+and match with a herestring; never pipe into `grep -q` under pipefail.
+
+### §H27zM / §H27zN — THE DISPATCHER RE-PINNED. All 15 shapes were ALREADY in tier-1 but selecting pre-PDL configs. 14 re-pinned, mean +3.90%. And V2c was never sub-parity -- we had the wrong config pinned.
+
+**THE STATE NOBODY HAD CHECKED.** All 15 BluTrain shapes are already in tier-1 -- none of them
+falls through to the fitted tree. They simply select configs chosen in the 2026-08-04 campaign,
+which predates PDL (§H27zv-D), the 2026-08-13 barrier removal, swz64, warp-local and stmatrix.
+So the change is a **field update on 15 existing rows, not an insertion**: `lookup()` is a binary
+search over (M,N,K) and the row ORDER is load-bearing. Enum ids are appended, never renumbered,
+because the table stores the numbers.
+
+**WHY IT WAS MEASURED FIRST.** §H27zI compared 17 `_pdl` configs against EACH OTHER; the tier-1
+incumbents are not `_pdl` configs and were never in that candidate set. "Our pin beats the
+incumbent" was an assumption. And `project_sm90_dispatcher_rollback` records a dispatcher change
+costing GEMM 86.1% -> 73.2% (that one pinned cuBLAS's variants, not our measured-best -- different
+experiment, same reason not to swap blind).
+
+**§H27zM RESULT (incumbent vs pin, 4 rounds, one config per process): 11 RE-PIN, 0 where the
+incumbent wins, 4 ties.** Mean gain on the 11: **+3.90%**.
+
+| shape | incumbent | our pin | gain |
+|---|---|---|---|
+| V1 `2048x512x16384` | 542.34 | 602.86 | **+11.16%** |
+| V4 `16384x50304x2048` | 647.48 | 688.37 | **+6.32%** |
+| V8 `16384x2048x512` | 467.63 | 493.93 | **+5.62%** |
+| V7c `16384x512x2048` | 588.72 | 612.75 | +4.08% |
+| V7 `16384x2048x2048` | 636.04 | 658.01 | +3.46% |
+| V5 `2048x11264x16384` | 684.45 | 707.94 | +3.43% |
+| V6 `16384x5632x2048` | 644.46 | 664.12 | +3.05% |
+| V8b `16384x2048x2048` | 637.23 | 655.97 | +2.94% |
+| V7b `16384x2048x5632` | 696.73 | 706.06 | +1.34% |
+| V2 `2048x2048x16384` | 707.86 | 713.70 | +0.83% |
+| V8c `16384x2048x11264` | 715.71 | 720.18 | +0.62% |
+
+**§H27zM HAD A FLAW AND §H27zN FIXED IT.** `for pair in "incumbent" "pin"` ran the incumbent FIRST
+in every round -- the order never alternated. §H27zN re-ran the four non-re-pinned shapes with the
+order ALTERNATING (odd rounds incumbent first, even rounds pin first), 8 rounds, and MEASURED the
+order effect instead of assuming:
+
+    V2b +0.02%   V3 -0.02%   V8d +0.04%   <- order was innocent, the H27zM numbers stand
+    V2c +0.85%                            <- running first IS worth 0.85% on this shape alone
+
+Note the bias direction: it favoured the INCUMBENT, so the 11 wins above are if anything
+UNDERSTATED. Only the ties were ever suspect.
+
+**§H27zN RESULT, with cuBLAS alongside:**
+
+| shape | incumbent | %cuB | our pin | %cuB | cuBLAS | gain | decision |
+|---|---|---|---|---|---|---|---|
+| V2b `5632x2048x16384` | 658.29 | 99.8 | 659.00 | 99.9 | 659.42 | +0.11% | tie -> take our pin |
+| **V2c `2048x50304x16384`** | **738.36** | **100.5** | 716.81 | **97.6** | 734.65 | **-2.92%** | **KEEP INCUMBENT** |
+| V3 `16384x11264x2048` | 665.07 | 99.0 | 672.22 | 100.1 | 671.73 | +1.08% | RE-PIN |
+| V8d `16384x2048x50304` | 731.60 | 100.6 | 732.09 | 100.7 | 727.34 | +0.07% | tie -> take our pin |
+
+**V2C WAS NEVER A SUB-PARITY SHAPE. WE HAD THE WRONG CONFIG PINNED.** It has been logged at 99.4%
+for the entire campaign. With `256x128x64_1x2_v_ep32s2` it is **100.5% of cuBLAS** -- above parity.
+Our best `_pdl` pin manages 97.6%. The incumbent BEATS cuBLAS on that shape and our pin does not,
+so it keeps its incumbent; taking our own config there would cost 2.9 points for narrative
+tidiness. Structural hint worth chasing: our pin is `2x1_h`, the winner is `1x2_v` -- a different
+CLUSTER ORIENTATION, on the widest-N shape we have (N=50304).
+
+**THE THREE SUB-PARITY SHAPES ARE ALL RESOLVED:**
+
+| shape | was | now | how |
+|---|---|---|---|
+| V6 | 98.9% | **100.8%** | `128x256x64_2x1_h_ep64swz128_pdl` (§H27zJ, +1.97%, reproduced twice) |
+| V2c | 99.4% | **100.5%** | never sub-parity -- wrong config was pinned |
+| V8d | 99.9% | **100.7%** | our pin, confirmed over 8 alternating rounds |
+
+**FINAL STATE: 14 of 15 tier-1 rows re-pinned to measured-best; V2c keeps its incumbent.**
+Verified after every edit: row counts unchanged (nn 147 / nt 148 / tn 142), all three tables still
+sorted by (M,N,K), no key ever moved, no enum id renumbered, every new enum has a switch case.
+
+**A TRAP, BACKED OUT OF.** `project_sm90_dispatcher_rollback` warns of a SECOND copy of the table
+in `BluTrain/Tensor-Implementations/BluBridge-BLAS/`. It was byte-identical so it was synced -- then
+the sibling files were checked: the vendored `Bgemm_sm90_warpspecialized_template.cuh` differs by
+**3662 lines** and contains NONE of our new configs. Syncing the table alone would have pointed
+BluTrain at `_template` symbols that do not exist there. **Reverted; BluTrain is untouched.**
+Updating that vendored fork is a real merge and must be its own task.
+
+**MEASURED ON GPU 1 of fine-mind-thinks-fin-02, locked 1400 (held), preheat 2000 ms, one config per
+process. A card change voids the absolute figures.** Ships only after a FULL rebuild -- the box
+currently holds a FAST_BUILD binary, which must never be shipped or swept with.
