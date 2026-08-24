@@ -20050,3 +20050,273 @@ Artifacts: `profiling_reports/h27zD/` -- `rows.tsv` (746 rows), `perkernel.tsv` 
 `SUMMARY.md`, and `nsys/` (per-kernel profiles and kernel-identity logs).
 Tools: `tools/h27zD_clock_suite.sh`, `tools/h27zD_perkernel.py`, `tools/h27zD_analyze.py`,
 `tools/h27zD_timeit.sh`.
+
+### §H27zE — THE CROSS-COMPARISON CAMPAIGN. Identity 15/15. And a measurement bug that invented a "+10.28% better than the pin" twice in a row.
+
+Two things had never been done: (1) nothing ever CHECKED that cuBLAS launches the kernel we assume
+it launches, and (2) every variant had only ever been run on its OWN shape.
+
+**IDENTITY GATE — 15/15 MATCH.** nsys on all 15 pins, cuBLAS kernel name captured and diffed
+against §H27zzj-C:
+
+| pin | cuBLAS actually launched |
+|---|---|
+| V1 | `nvjet_sm90_tst_128x128_64x6_1x2_h_bz_splitK_NTT` |
+| V2/V2b/V2c | `nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_NTN` |
+| V3 | `nvjet_sm90_tst_192x192_64x3_1x2_h_bz_coopB_NNN` |
+| V4 | `nvjet_sm90_tst_192x192_64x3_2x1_v_bz_coopB_NNN` |
+| V5 | `nvjet_sm90_tst_192x192_64x3_2x1_v_bz_coopB_NTN` |
+| V6 | `nvjet_sm90_tst_192x192_64x4_2x1_v_bz_coopB_TNN` |
+| V7/V7b/V7c | `nvjet_sm90_tst_256x128_64x4_1x2_h_bz_coopA_NNT` |
+| V8/V8b/V8c/V8d | `nvjet_sm90_tst_256x128_64x4_1x2_h_bz_coopA_TNT` |
+
+Tile, cluster and raster agree on every shape. **The apples-to-apples pairing is verified, not
+assumed.** §H27zzj-B is confirmed independently: V6 is the one 192x192 running 64x4; the rest 64x3.
+The names now also carry `coopA`/`coopB` and a layout suffix, which older captures did not show.
+
+**FIRST-PASS SCOREBOARD, each pin measured ALONE (this context is validated in §H27zF):**
+mean **100.78% of cuBLAS**, 12 of 15 at or above parity, below only V2c 99.4, V6 98.9, V8d 99.9.
+Movers vs the previous record: V8 +3.09, V5 +1.86, V8b +0.86, V7 +0.80; V1 −0.49, V6 −0.37.
+
+**THE BUG.** Phase 2 passed all 9 champion configs to ONE process per shape and reported that
+`128x256..._rot2_pdl` beat V2's pin by **+10.28%**, `+9.82%` on V2c and `+6.49%` on V2b. It
+reproduced to two decimal places across two independent runs. **It was still wrong** — see §H27zF.
+Reproducibility is not correctness: repeating a biased design forever just yields a precise wrong
+answer, and no number of nsys passes would have exposed it.
+
+**SEVEN DEFECTS IN THE TOOLING, ALL MINE, EACH FOUND ONLY BY BEING LOOKED FOR:**
+
+| defect | consequence |
+|---|---|
+| EXPECT strings omitted the depth token (`128x256_2x1_v` is not a substring of `128x256_64x4_2x1_v`) | 11 FALSE `DIFFER` verdicts on a gate that had actually passed |
+| resume key was (box, shape, rep), no LAYOUT | V8b silently skipped -- V7 `nn` and V8b `nt` share shape `16384x2048x2048`. **Same class as the §H27zD layout-grouping bug, reintroduced.** |
+| clock locked once, verified once, at idle | **11 of 14 runs executed at 1980 MHz under a "1400" lock** and nothing said so |
+| dispatcher home-pin lookup picked an arbitrary variant | nonsense deltas up to `+250.93%` |
+| three clock helpers written but never called | the "fix" changed nothing |
+| `clk_summary` emitted `NO SAMPLES`, not a valid assignment | `eval` fails -> unset var -> **crash** on the next arithmetic under `set -u` |
+| header grew 11->15 columns with old files present | appending wide rows under a narrow header shifts every field index |
+
+Fixes: per-run re-lock plus a during-run sampler recorded on every row; layout in all five resume
+keys; a header-version guard that rotates a stale file instead of appending into it; and every one
+verified by EXECUTION (all four append widths run and counted: P1=11, P2=15, P3=13, P3P=10).
+
+### §H27zF — WHY: 713.90 alone, 648.73 alongside eight others. Not nsys, not order, not thermals.
+
+Same config, same shape, same box, minutes apart, clock flat at 1410 (`clkMin == clkMax`):
+
+    phase 1, alone, under nsys    256x128x64_2x1_h_ep32s2_pdl   713.90 TFLOPS  100.8%
+    phase 2, 3rd of 9, no nsys    256x128x64_2x1_h_ep32s2_pdl   648.73 TFLOPS   91.4%
+
+Seven arms on one shape, three reps, each arm changing exactly one thing:
+
+| arm | A = the pin | B = the "winner" |
+|---|---|---|
+| alone | **713.24** | 715.42 |
+| alone + nsys | **713.27** | — |
+| A then B | 713.86 | 715.39 |
+| B then A | 713.38 | 715.26 |
+| A, C, B | 713.92 | 715.30 |
+| **the nine-config list** | **666.47** | **715.66** |
+
+- **nsys is INNOCENT** — 713.27 vs 713.24. Phase 1's number was right.
+- **ORDER is INNOCENT** — A first 713.86, A second 713.38.
+- **"more than one config" is INNOCENT** — two and three configs are both fine.
+- **B is untouched in every context**, including 9th of 9.
+
+**THE +10.28% COLLAPSES TO +0.31%.** Measured cleanly, 713.24 vs 715.42 — a tie. The pin was
+never 10% behind; it was being deflated while its challenger was not, so the bias could not
+cancel out of a ranking.
+
+**CONSEQUENCE: phase 3 as designed was invalid** — 442 configs in one invocation is the same
+context, worse. It was cancelled before running.
+
+### §H27zG — it takes TWO predecessors. No single config does it.
+
+Same config measured 17 ways; only what ran BEFORE it changed.
+
+    baseline   0 predecessors   713.45
+    cum1       1 predecessor    714.52     <- still clean
+    cum2       2 predecessors   656.42     <- -8.0%
+    cum3..cum8 3..8             645.89 - 660.70
+    pair0..pair7  each single predecessor alone   713.14 - 714.03   <- ALL clean
+
+**INSTRUMENT VALIDATION, free:** `cum1` and `pair0` are the same arm measured twice — 714.52 vs
+713.72, agreeing to **0.1%**. The drop is 60x that. It is not noise.
+
+So: **1 predecessor is safe, 2 is not**, no individual config is responsible, and the effect
+spares some configs entirely (B at position 9). Mechanism NOT identified — there is no
+`cudaMalloc` anywhere in the SM90 sources, so the obvious "split-K workspace" theory is dead.
+**Parked as unexplained.** The design does not need the mechanism: measuring one config per
+process avoids it by construction.
+
+### §H27zI — THE DEFINITIVE MATRIX. 17 configs x 15 shapes, ONE CONFIG PER PROCESS. One win, eight ties, six pins already best.
+
+Design, with the reason for each choice:
+
+- **one config per process** — the only context that reproduced (six arms within 0.1% in §H27zF)
+- **a null control** — after each shape, the pin is re-measured in a fresh process. pin(main) vs
+  pin(null) IS the run's noise floor, measured rather than assumed
+- **the decision rule written before any data existed** — a candidate must beat the pin by more
+  than 2x the 95th-percentile null, floored at 0.5%. Anything less prints as a TIE and the pin
+  stands. This rule is what §H27zE lacked
+- **rotated shape order per rep**, so drift shows up as spread instead of favouring one shape
+- **clock re-locked per invocation, sampled during it, recorded per row**; out-of-band rows dropped
+
+**RESULT (rep 1, 270 measurements). Floor: 15 null pairs, median 0.18%, 95th pct 0.30% ->
+threshold 0.60%. Two rows dropped by the clock gate (1613, 1588 MHz).**
+
+    1 genuine WIN, 8 ties, 6 shapes where the pin is already best.
+
+**THE THREE PHANTOM GAINS, RE-MEASURED PROPERLY:**
+
+| shape | §H27zE claimed | §H27zI measured |
+|---|---|---|
+| 2048x2048x16384 | +10.28% | **+0.13% — tie** |
+| 5632x2048x16384 | +6.49% | **+0.13% — tie** |
+| 2048x50304x16384 | +9.82% | **the pin is BEST** |
+
+Cross-check: §H27zF measured that pin alone at 713.24 on GPU 3; §H27zI got 713.82 on GPU 1 —
+**0.08% apart on a different card.**
+
+**TWO SIDE FINDINGS.** (1) `128x256x64_2x1_h_ep64swz128_pdl` and `..._swz64_pdl` — the variants
+WITHOUT `rot2` — sit at or near the top on most shapes and had never been pinned anywhere. All
+ties except V6. (2) On `2048x512x16384` (N=512) the 128x256 configs collapse to **179 TFLOPS**
+against 605 for 128x128 — a 256-wide tile on N=512 is mostly wasted. Correctly caught rather than
+shipped.
+
+### §H27zJ — V6 CONFIRMED and PIN_BEST introduced. V6 crosses cuBLAS: 98.8% -> 100.8%.
+
+The one win from §H27zI, re-run on V6's shape alone: 4 configs x 6 rounds, INTERLEAVED (round 1
+runs all four, then round 2, ...) so drift moves all four together instead of favouring the first.
+The pin is measured 6 times exactly like the candidates, so its own spread is the floor.
+
+| config | median | %cuB | spread | vs pin | |
+|---|---|---|---|---|---|
+| **`128x256x64_2x1_h_ep64swz128_pdl`** | **664.33** | **100.8%** | 0.36% | **+1.97%** | **CONFIRMED WIN** |
+| `128x256x64_2x1_h_ep64swz128_rot2_pdl` | 663.85 | 100.7% | 1.40% | +1.89% | WIN |
+| `128x256x64_2x1_h_swz64_pdl` | 660.43 | 100.1% | 0.14% | +1.37% | WIN |
+| `192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_wlsm` | 651.50 | 98.8% | 0.18% | — | current pin |
+
+Floor 0.18%, threshold 0.50%, win **+1.97% = 4x the floor**. Reproduced across two independent
+runs: §H27zI 664.00/650.60, §H27zJ 664.33/651.50 — **0.14% apart**.
+
+**V6 WAS ONE OF ONLY THREE SHAPES BELOW PARITY. IT IS NOW ABOVE IT.**
+
+**PIN_MATCH vs PIN_BEST — the two jobs one field was doing.** `PIN[]` is the apples-to-apples
+pin: it structurally matches what cuBLAS launches, so a comparison measures OUR CODE and not a
+difference of tile shape. It must never change because something benchmarks faster — a slower
+structural match is a finding. `PIN_BEST[]` is what should SHIP; it is free to be a different
+structure because the dispatcher only has to be fast and correct. For V6 they now differ: cuBLAS
+runs 192x192 so the match stays 192x192, while the dispatcher gets the 128x256. Every other shape
+has `PIN_BEST == PIN`. Added to `tools/pins.sh`; existing scripts read `PIN[]` and are unaffected.
+
+**Measured on GPU 1 of fine-mind-thinks-fin-02, locked 1400, every row 1410. A card change voids
+the absolute figures.**
+
+### §H27zE-BUILD — the compiler has been telling us the wgmma pipeline is serialized, in every build log, and nobody read it.
+
+`make` emits, on a full build:
+
+| | count | |
+|---|---|---|
+| **C7517** | 351 | `wgmma.wait_group is injected by compiler to allow use of registers defined by GMMA` |
+| **C7515** | 6 | **"Potential Performance Loss"** — non-wgmma instructions define accumulator registers between the start and end of a pipeline stage, **serializing wgmma** |
+| **C7519** | 3 | **"Potential Performance Loss"** — divergent path creates a dependence on a compiler-inserted `WG.AR`, again serializing wgmma |
+
+**C7517 BY TILE FAMILY — and the correlation is uncomfortable:**
+
+| tile | injected waits | variants | best %cuB |
+|---|---|---|---|
+| 192x192 | **168** | V3 V4 V5 V6 | 99.27 – 100.54 |
+| 256x128 | 9 | V2 | 100.63 |
+| **128x128** | **0** | V1 | **105.19** |
+| **128x256** | **0** | V7 V8 | 99.01 – 101.06 |
+
+45 warned configs have `PDL=true`, and among them are the exact parameter sets of the **V3/V4, V5
+and V6 pins**. This is live shipping code.
+
+Why it matters is recorded in our own source, at template:4956 (§H27zt's bisection):
+
+    WROT=0                     0 warnings   1 DEPBAR
+    WROT=1/2, guard as it was  1 warning    3 DEPBAR    <- the documented kill
+    WROT=1/2, guard removed    0 warnings   2 DEPBAR
+
+**A C7517 warning means EXTRA DEPBARs.** §H27zA measured V6's one remaining lever as
+"BAR.SYNC 4 vs 2, +4.54 barrier stall". These may be the same thing. `drain_prev`, `skew_body`
+and the `WROT==0` branch were all checked and their waits are already unconditional, so §H27zt's
+fix is applied there — the trigger is elsewhere and was NOT identified. **Open lead, not a
+conclusion.** Note the correlation is not proof: 192x192 also has by far the most registered
+variants.
+
+The C7515/C7519 nine are all `192x192 cluster 1x2` and **none has `PDL=true`**, so no shipping pin
+is affected. One carries `_KLOOP_UNROLL=true` — a candidate explanation for §H27zdy's
+"SASS target met, wall clock null": a divergent path serializing wgmma would cancel the gain.
+
+**TWO DEAD THINGS REMOVED.** `--full-verify` was parsed, stored and **never read** — the switch
+did nothing (verification already covers every element on the GPU, so nothing was unchecked, but
+the flag was a lie). Deleted. `prev_stage` warns as unused but **is live at template:4974 and
+:5389 for `WROT != 0`**; it is now `[[maybe_unused]]`, matching `head_stage` on the next line —
+deleting it would have broken the rotation path.
+
+### §H27zK — ALL FOUR SUSPICIOUS TIES ARE GENUINE TIES. The pin question is closed on all 15 shapes: exactly one was wrong.
+
+§H27zI ran n=1, so the four shapes where the PIN DID NOT COME FIRST were re-measured on the §H27zJ
+instrument (one config per process, candidates interleaved with the pin round by round, the pin's
+own spread across rounds used as the floor). Candidates taken from the §H27zI ranking, not hardcoded.
+
+| shape | pin spread | threshold | best challenger | verdict |
+|---|---|---|---|---|
+| V1 `2048x512x16384` | **0.50%** | 0.99% | depth 7, +0.12% | **tie** |
+| V2b `5632x2048x16384` | 0.11% | 0.50% | `128x256..._ep64swz128_pdl`, +0.26% | **tie** |
+| V3 `16384x11264x2048` | 0.10% | 0.50% | — **pin is best** | **pin stays** |
+| V8d `16384x2048x50304` | 0.17% | 0.50% | +0.02% | **tie** |
+
+**0 confirmed wins across the four.**
+
+**V1 WAS THE STRONGEST SUSPICION AND IT WAS WRONG — because V1 IS A NOISY SHAPE.** Its pin spread
+is **0.50%**, three to five times every other shape here (0.10-0.17%). That is what produced the
++0.56% near-miss in §H27zI: a single-shot fluctuation on the noisiest shape we have. Record this —
+V1 needs more rounds than the others before any V1 claim is believable.
+
+**DEPTH 6 vs DEPTH 7 IS NOW CONFIRMED A TIE THREE INDEPENDENT TIMES:** §H27zC +0.12 favouring 6,
+§H27zI +0.56 favouring 7, §H27zK +0.12 favouring 7 — all inside their own floors. Depth 6 stays on
+the apples-to-apples rule (cuBLAS runs `64x6`), not on speed.
+
+**V3 WAS A V6 LOOKALIKE AND ISN'T ONE.** In §H27zI the 128x256 family took the top two slots above
+a 192x192 pin -- exactly V6's signature, which turned out to be a real +1.97%. Re-measured, the
+same family lands BEHIND the pin (-0.10%, -0.17%). The signature is not sufficient; only the
+measurement decides.
+
+**MARGINAL CASE ON RECORD, DELIBERATELY NOT ACTED ON.** On V2b all four challengers beat the pin
+consistently by 0.16-0.26%, each with a spread of 0.02-0.07% against a pin spread of 0.11%. The
+consistency suggests a real but tiny effect. It is below the 0.50% threshold that was fixed BEFORE
+the data existed, so it is a tie and the pin stands. Lowering the bar after seeing the numbers is
+the exact failure this campaign was built to prevent. Revisit with more rounds only if 0.26% ever
+matters.
+
+**Also captured:** on `2048x512x16384` (N=512) the 128x256 configs measure **179.72 TFLOPS,
+31.2% of cuBLAS** -- a 256-wide tile on N=512 wastes most of the work. The sweep found it instead
+of the dispatcher shipping it.
+
+### §H27zE-to-K SUMMARY — what the whole cross-comparison campaign concluded.
+
+**15 shapes x 17 registered `_pdl` variants, every measurement one-config-per-process.**
+
+1. **cuBLAS launches the kernel we assumed on all 15 shapes (15/15).** The apples-to-apples
+   pairing of §H27zzj-C is verified rather than assumed, and §H27zzj-B is independently confirmed.
+2. **EXACTLY ONE PIN WAS WRONG.** V6 -> `128x256x64_2x1_h_ep64swz128_pdl`, +1.97%, crossing parity
+   98.8% -> 100.8%. The other 14 are correct: 6 already best, 8 ties inside their measured floors.
+3. **`PIN_MATCH` / `PIN_BEST` split added to `tools/pins.sh`.** `PIN[]` keeps the structural match
+   to cuBLAS for diagnosis and must never move for speed; `PIN_BEST[]` is what ships. V6 is the
+   only shape where they differ.
+4. **A measurement bug was found, quantified and designed out.** Passing many configs to one
+   process deflates SOME of them 6-8% while sparing others (>=2 predecessors triggers it; the
+   mechanism is still unidentified and there is no `cudaMalloc` in the SM90 sources to blame). It
+   invented "+10.28% better than the pin" and reproduced it exactly twice. One config per process
+   avoids it by construction.
+5. **Repeating a measurement does not make it correct.** The phantom gain was stable to two
+   decimal places across independent runs. Only a controlled experiment that varied the CONTEXT
+   exposed it. Reproducibility answers "is it noisy", never "is it biased".
+6. **State the decision rule before the data exists.** Every number in §H27zI/J/K is judged
+   against a floor the run measured on itself, with the bar fixed in advance. That rule is the
+   only reason the V2b +0.26% is recorded as a tie instead of a fifth pin change.
