@@ -20651,3 +20651,43 @@ the bench is 83-94% in the trainer at the same clock.
 **Measured on GPU 3 of fine-mind-thinks-fin-02. Free-clock and locked-1400 captures both retained:
 `nsys_blublas_repin`, `nsys_blublas_1stream`, `nsys_blublas_1stream_lock`, `nsys_cublas_repin`,
 `nsys_cublas_lock`. The August baseline in `nsys_train_blublas/` was deliberately NOT overwritten.**
+
+### §H27zW-FUTURE — PDL ON THE REMAINING BluTrain KERNELS. Parked as a future task, with the numbers that justify revisiting it.
+
+**THE TASK.** Add PDL (the launch attribute + `griddep_wait` consumer half, and the `PREEXIT`
+producer hint) to BluTrain's own kernels — `convert_type_kernel`, `gqa_v62` /
+`gqa_backward_v26_kv`, `rms_norm_*`, `swiglu_*`, `add_kernel` / `add_inplace_kernel`,
+`generic_strided_copy_kernel` — and measure whether the launch chain reconnects.
+
+**WHY IT IS PARKED AND NOT CLOSED.** PDL is a property of the PAIR of consecutive launches
+(§H27zv-D). Today only our 15 pinned GEMM configs opt in. Our GEMM is 37.62% of trainer GPU
+time; its neighbours are BluTrain's own kernels at 62.38% across 128,843 launches, and none of
+them opt in. So nearly every boundary in the real training loop is broken and PDL collects
+almost nothing:
+
+    where                       PDL's real gain
+    standalone bench            +0.93% mean over 15 pins (V1 +6.25 is the outlier)
+    trainer, whole run          +20.6 ms of 36,355.7 ms busy  =  0.06%
+
+    union-vs-sum, day2 captures
+      PDL ON    sum 36,716.3 ms   union 36,335.1 ms   overlap 381.2 ms
+      PDL OFF   sum 36,355.7 ms   union 36,355.7 ms   overlap   0.0 ms
+
+The bench earns +0.93% because its loop runs the SAME kernel back to back, so every boundary is
+ours→ours. The trainer earns 0.06% because almost every boundary is ours→theirs.
+
+**THE 381 ms IS NOT A SAVING, IT IS SPAN INFLATION.** PDL-on blocks launch early and then block
+on `cudaGridDependencySynchronize()`, so launch-to-completion grows while the work does not. It
+inflates the per-kernel SUM by 381.2 ms while the real wall-clock saving is 20.6 ms. That
+inflation lands on dgrad and is the whole reason the trainer read 96.5% instead of 99.0%.
+
+**WHY THE 0.06% IS A LOWER BOUND, NOT A VERDICT.** It was measured under nsys, where the GPU is
+heavily idled by profiling overhead and kernels are spread apart — precisely the gaps PDL would
+otherwise fill. A profiled run therefore CANNOT show PDL's production ceiling. Do not conclude
+from it that PDL-everywhere is worthless. The decisive experiment is unprofiled end-to-end
+tok/s with PDL on vs off.
+
+**IF IT IS ATTEMPTED, REMEMBER THE beta GATE.** `beta != 0.0f` is first in a short-circuiting
+`&&` (template:5465), so at `beta == 0` the epilogue's `C_in` read — the second global read of
+prior-grid-written data, and the one branch PDL can actually break — never executes. Any PDL
+correctness gate must run at `beta != 0` (§H27zv-D).
