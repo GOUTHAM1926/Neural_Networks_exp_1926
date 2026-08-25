@@ -20478,3 +20478,176 @@ Updating that vendored fork is a real merge and must be its own task.
 **MEASURED ON GPU 1 of fine-mind-thinks-fin-02, locked 1400 (held), preheat 2000 ms, one config per
 process. A card change voids the absolute figures.** Ships only after a FULL rebuild -- the box
 currently holds a FAST_BUILD binary, which must never be shipped or swept with.
+
+### §H27zM-VALIDATED — the re-pinned dispatcher passes end to end through the real entry points. Median 100.0% of cuBLAS, 8 of 15 above parity, at a verified lock.
+
+Run through `blublasBgemmSM90_dispatch_{nn,nt,tn}` -- the public API BluTrain uses -- not per-config
+test symbols. `examples/test_bgemm_sm90_dispatch_validate.cu` checks two independent claims:
+**correctness** against cuBLAS, and **selection** (does the throughput match the config the table
+NAMES). A table can hold the perfect answer while the lookup is wrong -- an off-by-one in the
+binary search, an enum drifted from the switch, a silent miss into the tree -- and a
+correctness-only test cannot see any of it, because the fallback still computes the right answer.
+
+**FIRST ATTEMPT WAS RUN AT FREE CLOCK AND PROVED NOTHING ABOUT SELECTION.** Every `gotTF` came back
+far above its `expectTF` (V1 686.8 vs 602.9) purely from boost, and the run reported a flattering
+105.0% median with 14 of 15 beating cuBLAS. Work it through: the old V1 config at free clock would
+read 542.3 x 1.14 = 617.9, still ABOVE the 584.8 tolerance floor -- **a wrong pick would have
+passed.** "0 SLOW" meant nothing; the clock had already cleared the bar. The correctness half was
+unaffected.
+
+**RE-RUN AT A VERIFIED 1410 MHz LOCK -- the expectations were measured under exactly that
+condition, so `gotTF` must now equal `expectTF`:**
+
+| shape | expect | got | delta | %cuB |
+|---|---|---|---|---|
+| V1 `2048x512x16384` tn | 602.9 | 603.5 | +0.10% | **105.1** |
+| V2 `2048x2048x16384` tn | 713.7 | 713.3 | −0.06% | 100.3 |
+| V2b `5632x2048x16384` tn | 659.0 | 661.2 | +0.33% | 100.0 |
+| V2c `2048x50304x16384` tn (incumbent kept) | 736.2 | 743.0 | +0.92% | 100.2 |
+| V3 `16384x11264x2048` nn | 672.2 | 671.9 | −0.04% | 99.8 |
+| V4 `16384x50304x2048` nn | 688.4 | 688.1 | −0.04% | 99.9 |
+| V5 `2048x11264x16384` tn | 707.9 | 709.3 | +0.20% | 100.3 |
+| V6 `16384x5632x2048` nt | 664.1 | 664.2 | +0.02% | 100.4 |
+| V7 `16384x2048x2048` nn | 658.0 | 654.8 | −0.49% | 99.5 |
+| V7b `16384x2048x5632` nn | 706.1 | 704.5 | −0.23% | 99.8 |
+| V7c `16384x512x2048` nn | 612.8 | 615.3 | +0.41% | 101.0 |
+| V8 `16384x2048x512` nt | 493.9 | 494.0 | +0.02% | 98.6 |
+| V8b `16384x2048x2048` nt | 656.0 | 656.8 | +0.12% | 99.3 |
+| V8c `16384x2048x11264` nt | 720.2 | 719.5 | −0.10% | 99.8 |
+| V8d `16384x2048x50304` nt | 732.1 | 734.2 | +0.29% | 100.1 |
+
+**15 ok, 0 WRONG RESULT, 0 SLOW, 0 NOT TAKEN.**
+
+**THE SELECTION PROOF.** Every row is within 0.92% of its expectation, most within 0.1%. Had the
+dispatcher fallen back to the incumbent, V1 would read ~542 (−10%), V4 ~647 (−5.9%), V8 ~468
+(−5.3%) -- all far outside the 3% tolerance. **14 of 15 are proven this way.** The exception is
+V8c, whose gain over its incumbent was only +0.62%: throughput cannot distinguish that from noise,
+so V8c's selection rests on the table edit being verified statically, not on this measurement.
+That limit is inherent, not a defect.
+
+**HEADLINE, and the only version of it worth quoting:** median **100.0%** of cuBLAS, mean 100.27%,
+p10 99.3%, p90 101.0%, **8 of 15 at or above parity**, through the real dispatcher at a held lock.
+The free-clock run's "105.0% median, 14 of 15" is the same code and is NOT quotable -- §H27zD again.
+
+**STILL OUTSTANDING:** the library validated here is a FAST_BUILD (the 228-entry sweep list is
+absent), which is complete for these 15 shapes but must NOT ship or sweep. A full rebuild is
+required before release -- and it is far cheaper than assumed: only `Bgemm_sm90_dispatcher.cu`
+includes the table, so a table change costs ONE file plus a relink, seconds, not the hour spent
+on the 1327 kernel instantiations in the three `*_variants.cu`.
+
+### §H27zO — BLUTRAIN PORT AND THE 1.7B MEASUREMENT. GEMM 80.8% -> 96.6%. Two causes found and fixed, one real gap left that is NOT explained by anything we have tested.
+
+#### The port
+
+BluTrain builds a SECOND, vendored copy of our library at
+`BluTrain/Tensor-Implementations/BluBridge-BLAS/` (`BLAS_DIR := BluBridge-BLAS` in the tensor
+Makefile). **Our top-level `src/` is never compiled into the trainer.** The port was 5 files plus
+one Makefile line; `include/` was already identical:
+
+| file | diff lines |
+|---|---|
+| `Bgemm_sm90_warpspecialized_template.cuh` | 3662 |
+| `Bgemm_sm90_bf16.cuh` | 310 |
+| `Bgemm_sm90_dispatch_table.h` | 51 |
+| `Splitk_reduce.cuh` | 44 |
+| `Bgemm_sm90_dispatcher.cu` | 7 |
+
+`tools/verify_blutrain_wiring.sh` passes 20/20 after fixing two of ITS OWN stale assertions: the
+table-entry count (423 -> 437, already failing before the port) and an exact tracked-file count that
+only ever grows (now a floor). Full BluTrain build: **10m02s** measured -- the "~1 hour" quoted
+repeatedly earlier in the day was never measured and was wrong.
+
+#### Identity: 21/21 call sites verified
+
+Every call site issues the config we pinned, and cuBLAS issues the kernel our §H27zE identity gate
+recorded standalone. **The apples-to-apples pairing holds in the real trainer, not just on the
+bench.** Total GEMM launches 34,720 in both backends -- identical work.
+
+**THE AUGUST HEADLINE DEFICIT IS GONE.** `gate_up-fwd` (16384x11264x2048) was **75.0%** of cuBLAS
+and "alone 34% of the deficit" because `tree_nn` returned 128x128. It now gets the pinned 192x192
+and reads **98.3-99.8%**.
+
+#### CAUSE 1 -- the backward pass runs on TWO streams and the per-kernel comparison never accounted for it
+
+nsys, grouped by stream:
+
+    ours    stream 7: 26,040 launches 8,880.5 ms | stream 16: 8,680 launches 3,199.0 ms
+    cuBLAS  stream 7: 34,720 launches 11,248.3 ms   (ONE stream)
+
+**8,680 is exactly the wgrad call sites** (1440x6 + 40). `MatmulBackward.cu` puts grad_B on a
+secondary stream under `WITH_MYBLAS` so it overlaps grad_A; the cuBLAS branch serialises. So OUR
+kernels were timed while sharing SMs and cuBLAS's never were.
+
+Added `BLUTRAIN_BWD_SINGLE_STREAM=1`, **default OFF** (production keeps the overlap -- it is a real
+wall-clock win). Worth **180 ms** of the 831 ms gap: 12,079.5 -> 11,899.3 ms, 93.1% -> 94.5%.
+
+**MY ATTRIBUTION WAS WRONG AND THE DATA CORRECTED IT.** I predicted the contention penalised the
+wgrad kernels. It penalised the **dgrad** kernels -- they run on the PRIMARY stream and were having
+SMs stolen by the secondary-stream wgrad: `wV-dgrad` 65.2 -> 89.5 (+24.3), `lm_head-wgrad`
+82.7 -> 95.5, `wQ-dgrad` 92.7 -> 97.6. The wgrad sites barely moved.
+
+**ALSO FOUND: `mpirun` forwards ONLY what `-x` names.** `BLUBLAS_SM90_TRACE` and
+`BLUBLAS_SM90_DISABLE` -- both documented as working debug switches -- were never in that list, so
+setting them did nothing and would have read as "the switch has no effect". Now forwarded via
+`MPI_FORWARD_ENV`.
+
+#### CAUSE 2 -- nn/nt are CLOCK-LIMITED, and the bench ran locked while training runs free
+
+Comparing the same shape+config on the bench (locked 1410) against training (free clock), BOTH
+libraries speed up, but not equally:
+
+| layout | our gain | cuBLAS gain | points we lose |
+|---|---|---|---|
+| nn | +16.1% | +22.5% | −5.1 |
+| nt | +15.8% | +21.6% | −4.6 |
+| **tn** | **+3.4%** | **+21.1%** | **−14.7** |
+
+Three tn sites go BACKWARDS with more clock: `wV-wgrad` −0.2%, `wK-wgrad` −0.4%,
+`gate_up-wgrad` −0.6%, while cuBLAS gains +13 to +32% on the same shapes. V1 was our BEST shape at
+105.1% on the bench and reads **79.3%** in training -- not because we slowed (602 vs 603.5 TFLOPS,
+identical) but because **cuBLAS went 574 -> 759**.
+
+**Locking the training clock to 1400 CONFIRMED this for nn/nt and REFUTED it for tn:**
+
+| site | free | locked | standalone |
+|---|---|---|---|
+| lm_head-dgrad nt | 88.2 | **99.8** | 100.1 |
+| down-fwd nn | 91.6 | **98.8** | 99.7 |
+| wQ-fwd nn | 92.4 | **97.3** | 99.5 |
+| gate_up-wgrad tn | 88.1 | **88.6** | 100.3 |
+| wQ-wgrad tn | 85.7 | **87.1** | 100.3 |
+| wV-wgrad tn | 79.2 | **83.2** | **105.1** |
+
+**At a held 1400: ours 96.6% of cuBLAS, 474 ms lost. nn 98.2%, nt 97.1%, tn 89.2%.**
+nn and nt now match their standalone numbers within ~2 points. **tn does not.**
+
+#### THE OPEN PROBLEM -- tn is 6 to 21 points worse in training than on the bench, at the SAME clock
+
+**78% of the remaining 474 ms is tn/wgrad** (368 ms); `gate_up-wgrad` alone is 41.8%.
+
+RULED OUT, each by measurement, not argument:
+- **clock** -- persists at a held 1400
+- **beta** -- all 34,720 cuBLAS launches are the `_bz` beta-zero kernel, so beta==0 everywhere
+- **stream concurrency** -- persists with a single stream
+- **wrong kernel** -- 21/21 sites verified issuing the pinned config
+- **the cluster/raster mismatch** -- our `1x2_v` vs cuBLAS's `2x1_v` on `gate_up-wgrad` is REAL and
+  violates the §H27z.86 swap rule, but it is IDENTICAL in the standalone run that measured 100.3%.
+  **A constant cannot explain a difference.** It may still be worth absolute points; it is not the
+  explanation for this gap, and it must not be recorded as one.
+
+STILL LIVE:
+- **L2 residency.** Our harness runs ~2000 back-to-back iterations on the SAME buffers; training
+  touches fresh activations every call. These are precisely the high-K, small-output shapes where
+  reuse would matter most. **The one tn site that DOES match is `lm_head-wgrad` at 99.8%** -- by far
+  the largest (N=50304, 4552 us), too big for L2 reuse to help either library. That exception fits
+  the L2 story and fits nothing else we have.
+- strides / alignment of the trainer's tensors versus our freshly-allocated benchmark buffers.
+
+**CONSEQUENCE FOR THE CAMPAIGN, and it is uncomfortable: every locked-clock tn number we have
+quoted is optimistic.** The whole step-3 campaign measured at 1200-1400 locked, which is correct
+for isolating kernel work but hides a ceiling production actually hits. A tn "100% of cuBLAS" on
+the bench is 83-94% in the trainer at the same clock.
+
+**Measured on GPU 3 of fine-mind-thinks-fin-02. Free-clock and locked-1400 captures both retained:
+`nsys_blublas_repin`, `nsys_blublas_1stream`, `nsys_blublas_1stream_lock`, `nsys_cublas_repin`,
+`nsys_cublas_lock`. The August baseline in `nsys_train_blublas/` was deliberately NOT overwritten.**
