@@ -20707,6 +20707,27 @@ correctness gate must run at `beta != 0` (§H27zv-D).
 
 ### §H27zW — THE PAIRED TRAINER CAPTURE. Locked 1400 we are **99.8%** of cuBLAS over the whole run; free clocks we are **98.4%**. The per-kernel sum was charging us 521 ms of our own overlap, and TWO of my earlier conclusions were wrong.
 
+> **TWO NUMBERS BELOW ARE WRONG AND ARE CORRECTED IN §H27zX. Do not quote either of them.**
+>
+> - **The dgrad/wgrad split is wrong.** `tools/h27zW_sites.py` paired the two captures by kernel
+>   START TIME. Our arm interleaves two CUDA streams and cuBLAS uses one, so the backward region
+>   misaligns and the dgrad and wgrad rows were effectively SWAPPED. Re-pairing on
+>   `correlationId` (launch order) gives **100.0000%** layout agreement on all four captures.
+>   With multistream ON the correct values are **dgrad 91.8% locked / 88.5% free** and
+>   **wgrad 94.6% locked / 92.6% free** — not the 87.7 / 84.6 written below. Forward is
+>   unaffected: it is single-stream and block-contiguous in both arms.
+> - **The locked cuBLAS clock summary is contaminated.** The run log for that phase
+>   (`profiling_reports/h27zW/locked_1400/output.md`) prints `min 0 / mean 1353 / max 1410 MHz
+>   (25 samples, 595 W)` for the locked cuBLAS arm. **That never happened.** An orphaned clock
+>   sampler from an earlier failed run kept appending to
+>   `h27zW/locked_1400/clk_cublas.csv` (2826 lines, mixing 345 / 450 / 855 / 900 and
+>   1875–1980 MHz rows plus a torn `14101410` row). Filtering to well-formed rows with
+>   utilization > 50% and memory > 1000 MiB gives **1410 / 1410 / 1410 MHz, 449 W mean**.
+>   **The lock DID hold.** The other seven CSVs of the two campaigns are clean (91–98 lines).
+>
+> The sum-vs-union finding, the tok/s tie at locked clocks, the free-clock loss and the
+> single-stream-cuBLAS proof below are all unaffected and stand.
+
 `weak-word-closes-fin-03`, GPU 3, all four GPUs idle, `bluscript_config_profile.yaml`
 (36 layers, 10 steps, grad_accum 4 -> 40 fwd/bwd passes, 34,720 GEMM launches). PDL OFF in every
 BluBLAS arm. Secondary backward stream ON (production default). Both arms of each phase captured
@@ -20753,7 +20774,16 @@ measurements agreeing to within a tenth of a point.
 **1. "PDL off lifts dgrad to 98-100%" was WRONG.** That came from `day2_blublas_nopdl`, which had
 tracing on. The trace printf serialises the host and spreads the launches apart, which suppressed
 the very stream overlap that penalises dgrad -- so dgrad looked clean for the wrong reason. With
-PDL genuinely off and no trace, dgrad reads **87.7% locked / 84.6% free**, and `wQ-dgrad` 75.1%.
+PDL genuinely off and no trace, dgrad is still down with the secondary stream ON.
+
+**~~dgrad reads 87.7% locked / 84.6% free, and `wQ-dgrad` 75.1%.~~ RETRACTED — those came from
+start-time pairing, which swaps dgrad and wgrad (§H27zX).** Re-paired on `correlationId`, the same
+two captures read **dgrad 91.8% locked / 88.5% free**, **wgrad 94.6% locked / 92.6% free**, and
+**`wQ-dgrad/wO-dgrad` 89.4% locked**. And with the secondary stream turned OFF entirely the whole
+effect disappears: **dgrad 100.0%, wgrad 99.0% at locked 1400** (§H27zX). So the residual dgrad
+deficit under PDL-off is not a PDL artefact and not a kernel deficiency — it is SM contention from
+our own two-stream overlap, and the correction to make to point 1 above is that the trace printf
+suppressed the overlap, which is exactly the mechanism, just measured on the wrong rows.
 
 **2. "We are +0.22% faster at locked clocks" was an artefact of one bad cuBLAS step.**
 
@@ -20778,6 +20808,11 @@ The secondary stream carries wgrad only, so the forward sites never share with i
     clock while busy   cuBLAS 1948 MHz    ours 1942 MHz      6 MHz apart
     power              cuBLAS  673 W      ours  647 W        we draw LESS
     tok/s              cuBLAS 27,788      ours 27,353        -1.57%, ranges do not overlap
+
+**AND THE LOCKED PHASE OF THIS SAME CAMPAIGN HELD ITS LOCK, contrary to what its own run log says.**
+The locked cuBLAS clock CSV was contaminated by an orphaned sampler (see the banner at the top of
+this section and §H27zX). Cleaned: **1410 / 1410 / 1410 MHz at 449 W mean** for cuBLAS and
+**1410 / 1410 / 1410 MHz at 430 W mean** for us. There was no dip to 1353 MHz and no 595 W arm.
 
 **CAREFUL -- THIS DOES NOT REFUTE THE PARKED POWER/CLOCK TRACK, AND I SHOULD NOT HAVE SAID IT DID.**
 The numbers above are `nvidia-smi` **device-level** samples taken every 2 s across a 285 s run --
@@ -20827,3 +20862,557 @@ really is the only moving part.
   a crashed launch -- a failed run has zero memory as a CONSEQUENCE. Exit code is checked first.
 - **sqlite detection by glob**, because some nsys builds write `%q{OMPI_COMM_WORLD_RANK}`
   literally and an exact-name check calls a good capture "missing".
+
+### §H27zX — THE SINGLE-STREAM CONTROL. At locked 1400 we are at PARITY (GEMM **99.1%**, whole-run union **99.6%**, tok/s a TIE); at free clocks there is a real, twice-reproduced **1.5%** loss that lives ENTIRELY in the forward `nn` sites; and the dgrad/wgrad deficits were **100% stream contention** — single-stream they read **100.0%** and **99.0%**.
+
+#### SETUP
+
+`weak-word-closes-fin-03`, GPU 3, all four GPUs otherwise idle. `bluscript_config_profile.yaml`:
+36 layers, d_model 2048, 16/4 GQA heads, head_dim 128, ffn_hidden 5632 SwiGLU, context 4096,
+vocab 50304, B×T = 4×4096, global_batch 65536 with grad_accum 4, 10 steps → 40 fwd/bwd passes.
+**34,720 GEMM launches and 173,563 total kernels in EVERY arm** — the workload is identical across
+all four captures, only the library and the stream count change.
+
+Two campaigns, both with PDL off (`blublas_NO_PDL=1`):
+
+    h27zW   multistream ON    production default
+    h27zX   multistream OFF   BLUTRAIN_BWD_SINGLE_STREAM=1
+
+Each campaign ran two phases, locked 1400 MHz and free clocks. **The cuBLAS arm was measured first
+in every case**, because it historically benefits from a cold card (§H27zD) — so any residual order
+effect works AGAINST us and cannot manufacture a win for us. Tool: `tools/h27zW_pair_nopdl.sh`.
+
+#### THE MASTER TABLE
+
+                                  multistream ON (h27zW)    multistream OFF (h27zX)
+    LOCKED 1400
+      tok/s ours / cuBLAS          23,389 / 23,337           23,292 / 23,406
+      our GEMM sum                 13,919.8 ms               13,461.2 ms
+      cuBLAS GEMM sum              13,342.6 ms               13,336.3 ms
+      GEMM %cuB (sum)              95.9%                     99.1%
+      GEMM %cuB (union)            99.5%                     98.9%
+      whole-run union %cuB         99.8%                     99.6%
+        fwd                        98.7%   (+91.1 ms)        98.7%   (+89.5 ms)
+        dgrad                      91.8%  (+294.5 ms)       100.0%    (+0.3 ms)
+        wgrad                      94.6%  (+191.6 ms)        99.0%   (+35.1 ms)
+    FREE CLOCKS
+      tok/s ours / cuBLAS          27,353 / 27,788           27,357 / 27,784
+      our GEMM sum                 12,094.7 ms               11,618.1 ms
+      cuBLAS GEMM sum              11,254.1 ms               11,263.8 ms
+      GEMM %cuB (sum)              93.1%                     97.0%
+      GEMM %cuB (union)            96.7%                     96.8%
+      whole-run union %cuB         98.4%                     98.5%
+        fwd                        95.8%  (+243.4 ms)        95.9%  (+236.2 ms)
+        dgrad                      88.5%  (+369.9 ms)        98.3%   (+50.2 ms)
+        wgrad                      92.6%  (+227.3 ms)        97.7%   (+68.0 ms)
+
+Read the two columns against each other and the whole story is in three lines:
+
+- **dgrad goes 91.8% → 100.0% and wgrad 94.6% → 99.0% purely by removing the second stream.**
+  Nothing about the kernels changed. Both campaigns ran the same binary, same pins, same clocks.
+- **fwd does not move at all** (98.7% → 98.7% locked, 95.8% → 95.9% free). It is single-stream in
+  both campaigns, so this is the control that proves the change did what it claims.
+- **the free-clock loss survives everything**: 97.0% GEMM sum and 98.5% whole-run union with the
+  second stream gone, −1.54% tok/s, and the two campaigns agree to 0.1 pt. It is real.
+
+**DO NOT CROSS-DIFFERENCE THE SUM AND UNION COLUMNS.** The cuBLAS GEMM sum in the table above
+(13,342.6 locked / 11,254.1 free for h27zW) is 16.7 ms and 12.8 ms larger than the cuBLAS union
+figure used in §H27zW's sum-vs-union block (13,325.9 / 11,241.3). 16.7 ms is exactly the measured
+`cublasLt::splitKreduce_kernel` total, so the master table counts cuBLAS's split-K reduce inside
+"GEMM" and the union block does not, while OUR sum is 13,919.8 in both places and therefore
+excludes our own 47.4 ms reduce in both. Flagged as arithmetic inference across two independently
+reported numbers, not separately re-derived — the point is only that **the two filters differ, so
+percentages must be read as reported and never recomputed by mixing columns.**
+
+#### PER-CALL-SITE — h27zX (SINGLE STREAM), LOCKED 1400
+
+`%cuB` = cuBLAS_time / our_time, so **>100% means we are faster**. TF = TFLOPS.
+
+    call site             launch    ours ms  cuBLAS ms    %cuB   ours TF   cuB TF
+    wQ-fwd/wO-fwd           5760     1235.5     1195.4    96.8%    640.8    662.2
+    wK-fwd/wV-fwd           5760      334.4      324.1    96.9%    591.8    610.7
+    gate_up-fwd             2880     3268.1     3252.2    99.5%    666.1    669.4
+    down-fwd                2880     1566.7     1543.0    98.5%    694.8    705.5
+    lm_head-fwd               80      392.8      393.4   100.2%    687.5    686.4
+    wQ-dgrad/wO-dgrad       2880      562.5      558.3    99.3%    703.7    708.9
+    wK-dgrad/wV-dgrad       2880      159.4      174.1   109.3%    621.0    568.2
+    gate_up-dgrad           1440     1551.2     1551.9   100.0%    701.7    701.4
+    down-dgrad              1440      839.0      827.8    98.7%    648.7    657.5
+    lm_head-dgrad             40      182.1      181.7    99.8%    741.3    743.0
+    wQ-wgrad/wO-wgrad       2880      615.5      603.5    98.0%    643.1    655.9
+    wK-wgrad/wV-wgrad       2880      204.5      191.9    93.8%    483.9    515.8
+    gate_up-wgrad           1440     1533.1     1523.4    99.4%    710.0    714.5
+    down-wgrad              1440      831.4      831.3   100.0%    654.6    654.7
+    lm_head-wgrad             40      184.9      184.2    99.6%    730.3    733.1
+    TOTAL                  34720    13461.2    13336.3    99.1%
+
+**Twelve of fifteen sites are at 98.0% or better and four are at or above parity.** The whole
+locked-clock deficit is 124.9 ms out of 13,461.2. The worst row is `wK-wgrad/wV-wgrad` at 93.8%,
+which is also the lowest-TFLOPS row in the table (483.9 vs 515.8) — the small-N tn shape, 204.5 ms
+total, i.e. 12.6 ms of the 124.9. `wK-dgrad/wV-dgrad` at **109.3%** is the largest single win.
+
+#### PER-CALL-SITE — h27zX (SINGLE STREAM), FREE CLOCKS
+
+    call site             launch    ours ms  cuBLAS ms    %cuB   ours TF   cuB TF
+    wQ-fwd/wO-fwd           5760     1033.5      957.3    92.6%    766.0    827.0
+    wK-fwd/wV-fwd           5760      271.5      258.8    95.3%    729.1    764.8
+    gate_up-fwd             2880     2821.3     2774.1    98.3%    771.6    784.8
+    down-fwd                2880     1350.8     1252.5    92.7%    805.8    869.1
+    lm_head-fwd               80      344.0      342.2    99.5%    785.1    789.1
+    wQ-dgrad/wO-dgrad       2880      484.1      468.2    96.7%    817.7    845.4
+    wK-dgrad/wV-dgrad       2880      137.5      144.8   105.3%    719.8    683.3
+    gate_up-dgrad           1440     1384.1     1367.4    98.8%    786.4    796.0
+    down-dgrad              1440      726.8      709.0    97.5%    748.8    767.7
+    lm_head-dgrad             40      160.9      153.8    95.6%    839.2    877.8
+    wQ-wgrad/wO-wgrad       2880      518.6      504.8    97.3%    763.3    784.2
+    wK-wgrad/wV-wgrad       2880      165.7      153.5    92.6%    597.1    644.7
+    gate_up-wgrad           1440     1349.2     1327.2    98.4%    806.8    820.1
+    down-wgrad              1440      703.4      701.3    99.7%    773.7    776.1
+    lm_head-wgrad             40      166.7      148.9    89.3%    809.9    906.6
+    TOTAL                  34720    11618.1    11263.8    97.0%
+
+**WHERE THE FREE-CLOCK LOSS ACTUALLY IS.** 354.3 ms total, and the forward `nn` sites carry
+**236.2 of it (67%)**: `wQ-fwd/wO-fwd` −76.2 ms at 92.6%, `down-fwd` −98.3 ms at 92.7%,
+`gate_up-fwd` −47.2 ms at 98.3%. Every one of the three worst percentage rows in the forward block
+is a plain `nn` matmul. `lm_head-wgrad` at 89.3% looks worse but is 17.8 ms on 40 launches and
+cannot matter; it is noise-scale weight, not a target. Compare against locked, same rows, same
+pins, same code:
+
+    site               locked   free     delta
+    wQ-fwd/wO-fwd       96.8%   92.6%    -4.2 pt
+    down-fwd            98.5%   92.7%    -5.8 pt
+    wK-fwd/wV-fwd       96.9%   95.3%    -1.6 pt
+    gate_up-fwd         99.5%   98.3%    -1.2 pt
+    wQ-dgrad/wO-dgrad   99.3%   96.7%    -2.6 pt
+    down-dgrad          98.7%   97.5%    -1.2 pt
+    gate_up-wgrad       99.4%   98.4%    -1.0 pt
+
+Unlocking the clock costs us 4–6 points on exactly two `nn` forward sites and ~1 point everywhere
+else. **The free-clock gap is not a diffuse property of the library. It is two shapes.**
+
+#### PER-CALL-SITE — h27zW (MULTISTREAM ON), THE ROWS THAT MOVE
+
+Re-paired on `correlationId`. **This is NOT a full table — only the rows worth recording are
+listed, and the missing rows must not be inferred from it.** The forward rows are the same
+measurement as the single-stream table above (forward is single-stream in both campaigns; our own
+forward kernel time differs by +0.07%), and §H27zW's forward block already records them
+(`gate_up-fwd` 99.5 / 98.2, `down-fwd` 98.5 / 92.7, `wQ-fwd/wO-fwd` 96.7 / 92.5).
+
+    LOCKED 1400              %cuB    vs h27zX single-stream
+      wQ-wgrad/wO-wgrad     82.7%    98.0%     -15.3 pt
+      wK-wgrad/wV-wgrad     78.8%    93.8%     -15.0 pt
+      wQ-dgrad/wO-dgrad     89.4%    99.3%      -9.9 pt
+      gate_up-dgrad         89.1%   100.0%     -10.9 pt
+
+    FREE CLOCKS              %cuB    vs h27zX single-stream
+      wK-wgrad/wV-wgrad     76.1%    92.6%     -16.5 pt
+      wQ-wgrad/wO-wgrad     81.5%    97.3%     -15.8 pt
+      gate_up-dgrad         86.0%    98.8%     -12.8 pt
+
+**A 15-point per-kernel "deficit" that is created by our own scheduling decision.** Every one of
+these rows was previously read as a kernel problem. None of them is.
+
+#### WHAT MULTISTREAM COSTS OUR OWN KERNELS
+
+Our own kernel time, OFF → ON — no cuBLAS in this comparison at all:
+
+    locked    fwd    6797.6 -> 6802.2    +4.6 ms   +0.07%   untouched (fwd is single-stream either way)
+              dgrad  3294.2 -> 3590.2  +296.0 ms   +9.0%
+              wgrad  3369.4 -> 3527.3  +157.9 ms   +4.7%
+    free      fwd    5821.1 -> 5823.9    +2.8 ms   +0.05%
+              dgrad  2893.4 -> 3209.9  +316.5 ms  +10.9%
+              wgrad  2903.7 -> 3060.9  +157.2 ms   +5.4%
+
+Concurrency makes each backward kernel **genuinely slower** — this is SM contention, not a
+measurement artefact; two kernels sharing the SMs each take longer — while overlapping them in
+wall clock. The forward rows are the null: +0.07% and +0.05% on the half of the work the change
+cannot touch.
+
+**AND THE TRADE DOES NOT PAY.** Net wall clock, our GEMM union: 13,461.2 (OFF) → 13,398.4 (ON) =
+**62.8 ms saved** out of 13,461.2. End-to-end: **tok/s +0.42% locked, −0.01% free.** The overlap
+earns nothing in production conditions (free clocks are production) while costing ~3.4 points of
+apparent per-kernel performance and, until this section, costing us a completely false diagnosis.
+
+#### SUM vs UNION, AND THE STREAM TOPOLOGY
+
+    locked            GEMM sum    GEMM union   hidden
+      ours (ON)        13919.8     13398.4     521.3 ms
+      cuBLAS            13325.9     13325.9       0.0 ms
+      ours (OFF)       13461.2     13461.2       0.0 ms
+    free
+      ours (ON)        12094.7     11628.0     466.7 ms
+      cuBLAS            11241.3     11241.3       0.0 ms
+      ours (OFF)       11618.1     11618.1       0.0 ms
+
+Stream topology, **measured from `streamId`, not inferred**:
+
+    cuBLAS, all four captures     stream 7 only          34,720 launches
+    ours, multistream ON          stream 7  26,040  +  stream 16  8,680
+    ours, multistream OFF         stream 7 only          34,720 launches
+
+The 8,680 launches on stream 16 are exactly the wgrad sites, **verified two independent ways**:
+
+1. The `(Sm90Layout)N` template argument (`enum class Sm90Layout { NN, NT, TN }`, so 0 = NN = fwd,
+   1 = NT = dgrad, 2 = TN = wgrad) gives **NN 17,360 / NT 8,680 / TN 8,680**, and TN appears on
+   stream 16 exclusively — zero fwd and zero dgrad launches there.
+2. It matches cuBLAS's NT-layout kernel family count exactly: **5,800 + 2,880 = 8,680**.
+
+**IMPORTANT — cuBLAS's "0.0 ms hidden" is a property of the HARNESS, not of cuBLAS.** The secondary
+stream is created only on the `WITH_MYBLAS` path, so the cuBLAS build never gets one. cuBLAS would
+overlap too if the trainer handed it two streams. This is not a cuBLAS design choice we are
+observing, and §H27zW's "single stream, proven not assumed" should be read as "single stream
+*because our harness only ever gives it one*". Corroborated by the cuBLAS arm being essentially
+identical across the two campaigns, which is what you expect if the campaign flag does nothing to
+it: GEMM sum **13,342.6 vs 13,336.3 locked (0.05%)** and **11,254.1 vs 11,263.8 free (0.09%)**.
+
+#### CLOCK AND POWER — MEASURED, WITH THE CONTAMINATION REMOVED
+
+H200 limits: SM clock max **1980 MHz**, memory clock **3201 MHz**, power limit **700 W**
+(max = default = 700, so nothing is de-rated).
+
+                                clock MHz              power W
+                            min   mean   max      mean   peak
+    LOCKED  cuBLAS h27zW   1410   1410   1410      449    469
+            ours   h27zW   1410   1410   1410      430    481
+            cuBLAS h27zX   1410   1410   1410      462    468
+            ours   h27zX   1410   1410   1410      432    481
+    FREE    cuBLAS h27zW   1860   1948   1980      674    695
+            ours   h27zW   1800   1942   1965      648    689
+            cuBLAS h27zX   1950   1964   1980      657    690
+            ours   h27zX   1875   1939   1980      638    693
+
+**The lock held flat at 1410 in all four locked arms** (min = mean = max), which is what kills the
+"1353 MHz / 595 W" line in the h27zW locked run log — see the retraction at the top of §H27zW.
+
+At free clocks cuBLAS runs **10–25 MHz higher (0.5–1.3%)** and draws **19–26 W MORE**. Neither
+library is anywhere near the 700 W cap: peaks are 690–695 W but means are 638–674 W.
+
+**We draw LESS power while going SLOWER at effectively the same clock.** That is the signature of
+more stalling — idle units burn fewer watts — rather than of a power or governor limit.
+**RECORD THIS AS A HYPOTHESIS WITH A MATCHING SIGNATURE, NOT AS PROVEN.** The clock samples are
+only 9–12 per arm and are DEVICE-level averages over a run in which our GEMM is 37.6% of GPU time.
+A device average cannot arbitrate a per-kernel claim in either direction — that is the same error
+[[feedback-isolated-measurements-mislead]] warns about, and it applies to the stalling story just
+as much as it applied to the clock story it replaces.
+
+#### CLOCK SCALING PER SITE, OURS vs cuBLAS
+
+Clock went 1410 → ~1950, a factor of **1.383×**. Achieved throughput ratio, free TF ÷ locked TF,
+same site, same pin, both libraries:
+
+    down-fwd           ours 1.160x    cuBLAS 1.232x
+    wQ-fwd/wO-fwd      ours 1.195x    cuBLAS 1.249x
+    gate_up-fwd        ours 1.158x    cuBLAS 1.172x
+
+**Neither library comes close to 1.383×**, so both are bandwidth/latency-bound — HBM does not speed
+up when the SM clock does, and 1.16–1.25× out of 1.383× is what that costs. But cuBLAS converts
+extra MHz into throughput measurably better on the `nn` forward shapes (+0.072 and +0.054 on the
+two worst rows, +0.014 on `gate_up-fwd`), and **that difference IS the free-clock gap** — the same
+two sites, ranked the same way, as the per-site table above. The gap is not "we lose at high clock"
+in general; it is "these two shapes scale worse than cuBLAS's do".
+
+#### TRAP — THE ANALYSIS SCRIPT'S OWN BUG (this is what broke §H27zW)
+
+`tools/h27zW_sites.py` originally zipped the two arms **by global kernel start time**. With our arm
+on two streams and cuBLAS on one, the backward region misaligns:
+
+    pairing by kernel start time     layout signatures agree on   92.70% of positions
+    pairing by correlationId         layout signatures agree on  100.0000% of positions
+
+Under the broken pairing the "dgrad" rows held **90.5% true-wgrad** kernels and the "wgrad" rows
+held **94.4% true-dgrad** kernels — the two rows were effectively SWAPPED. Forward was unaffected
+because it is single-stream and block-contiguous in both arms, which is exactly why the output
+looked credible: the half of the table that could be checked against the bench was right.
+
+**A PAIRING THAT PRODUCES PLAUSIBLE NUMBERS IS NOT A VALIDATED PAIRING.** 92.70% agreement is high
+enough to look like rounding and low enough to invert a conclusion. The script now prints its own
+layout-agreement percentage on every run and refuses to be trusted below 100%.
+
+#### TRAP — ORPHANED CLOCK SAMPLERS
+
+The tool's clock sampler runs as a background subshell. Its `EXIT` trap reset the **clock lock**
+only, not the sampler, so an interrupted or failed run leaves the sampler alive and appending to
+its CSV. `h27zW/locked_1400/clk_cublas.csv` grew to **2826 lines** mixing an idle section
+(345 MHz), the locked section (1410) and a free section (1875–1980), plus a torn row
+(`14101410`) from two writers hitting the same line. Reading that run's `output.md` at face value
+says the locked cuBLAS arm dipped to a **1353 MHz mean at 595 W**. **It did not.** Filtered to
+well-formed rows with utilization > 50% and memory > 1000 MiB it is 1410/1410/1410 at 449 W.
+
+The retained local copy (`profiling_reports/h27zW/locked_1400/clk_cublas.csv`, a partial sync at
+1309 lines) shows the same signature and can be re-checked: 900 rows at 345 MHz, 281 at 1410, 101
+at 1980, 13 at 1965, 2 at 855, 1 at 450, and the single torn `14101410`. **The other seven CSVs of
+the two campaigns are clean at 91–98 lines** — the length of the file is itself the detector, and
+the tool should assert it.
+
+#### ATTRIBUTION METHOD, AND ITS REAL VALIDITY CRITERION
+
+Per-site attribution works by taking the paired launches inside each cuBLAS kernel-NAME group,
+sorting them by duration, and cutting at known launch counts. For the 14,400-launch
+`256x128_64x4_1x2_h_bz_coopA_NNT` group:
+
+    cut boundary 1        gap   145,249 ns
+    cut boundary 2        gap   309,889 ns
+    3rd-largest gap anywhere    3,552 ns
+    margin                      87x (boundary 2)   and   41x (boundary 1)
+
+The two cuts are the #1 and #2 largest gaps in the sorted array by 87× and 41×. Clusters do not
+overlap by a single nanosecond: **zero of 14,400 launches are ambiguous.**
+
+**BUT THE STATED JUSTIFICATION WAS WRONG.** The claim "sites in a group differ in FLOPs by 4× or
+more" is **FALSE** — `down` and `wQ` differ by only **2.75×** and one boundary is only **1.80×**.
+What actually makes the method work is that **within-site duration spread is 3.8–8.7% of the
+mean**, so any FLOPs step above roughly **1.3×** separates cleanly. The real criterion is the ratio
+of the FLOPs step to the within-site spread, not the FLOPs step alone.
+
+**AND NOTHING IN THE PROCEDURE DETECTS A BAD CUT.** Sorting and slicing at a count always yields an
+answer, correct or not, so the gap margins must be re-verified per capture. **They shrink at free
+clocks: boundary-1 gap/spread falls from 30.7× locked to 5.4× free.** Still safe, but 5.4× is a
+margin that a wider spread or a closer pair of shapes would eat.
+
+#### OTHER VERIFIED FACTS WORTH RECORDING
+
+**Ground truth for the shapes and launch counts**, from a `BLUBLAS_SM90_TRACE` run — this is the
+denominator every table above is checked against:
+
+    nn  16384    512   2048    5760    wK-fwd + wV-fwd
+    nn  16384   2048   2048    5760    wQ-fwd + wO-fwd
+    nn  16384   2048   5632    2880    down-fwd
+    nn  16384  11264   2048    2880    gate_up-fwd
+    nn  16384  50304   2048      80    lm_head-fwd
+    nt  16384   2048    512    2880
+    nt  16384   2048   2048    2880
+    nt  16384   5632   2048    1440
+    nt  16384   2048  11264    1440
+    nt  16384   2048  50304      40
+    tn   2048    512  16384    2880
+    tn   2048   2048  16384    2880
+    tn   5632   2048  16384    1440
+    tn   2048  11264  16384    1440
+    tn   2048  50304  16384      40
+                             ------
+                             34,720
+
+**21 call sites, 15 distinct shapes** — wV shares wK's shape and attnOut (wO) shares wQ's, which is
+why the tables above carry `wQ-fwd/wO-fwd`-style combined rows. The nn/nt/tn subtotals are
+17,360 / 8,680 / 8,680.
+
+**ATTENTION IS NOT OURS, and it is a fifth of the run.** The four gqa kernels are BluTrain's own
+fused kernels, not GEMM calls into us:
+
+    gqa_backward_v26_kv               5239.0 ms
+    gqa_v62                           1732.7 ms
+    convert_dq_accum_to_bf16_v5        176.9 ms
+    compute_drowsum_v22                 75.8 ms
+                                    ---------
+                                      7224.4 ms   = 19.68% of GPU time
+
+    our GEMM              13,814.3 ms   37.62%    34,720 launches    8 distinct kernels
+    other BluTrain        15,677.5 ms   42.70%   131,643 launches   33 distinct kernels
+
+**Zero cuBLAS GEMM kernels appear in a `WITH_BLUBLAS=1` run** — the substitution is total, there is
+no silent fallback path taking any of the 34,720.
+
+**BluTrain spends 23.60% of GPU time on dtype conversion alone** — more than our GEMM's entire
+deficit by two orders of magnitude:
+
+    convert_type_kernel<bfloat16_t,float>    4728.0 ms    34,936 launches
+    convert_type_kernel<float,bfloat16_t>    3938.2 ms    26,120 launches
+
+**Non-GEMM kernel time between the two arms: 138,843 launches each, differing by 37.9 ms total —
+and 30.7 ms of that (81%) is one kernel, the split-K reduce:**
+
+    blublas::splitk::splitk_reduce_kernel     2,880 launches    47.4 ms
+    cublasLt::splitKreduce_kernel             2,880 launches    16.7 ms
+                                                               ------
+                                              ours is 2.84x SLOWER
+
+The strictly-shared non-GEMM remainder — 36 kernel names with identical launch counts in both arms
+— differs by only **7.2 ms (+0.032%)**. **Everything except the matmul and our reduce is identical
+to 7.2 ms**, so no comparison in this section is contaminated by a difference in the rest of the
+trainer.
+
+**HALF THE "FORWARD" GEMM TIME IS VALIDATION, NOT TRAINING.** 8,680 of the 17,360 forward launches
+are the validation passes at step 0 and step 9 — those segments hold 5,208 launches instead of 868.
+Both arms do it identically, so the comparison is fair, **but the weighting does not reflect
+training**: any forward-site conclusion drawn from these captures is weighted half by validation
+passes. Worth remembering before optimising a forward site on the strength of its ms total.
+
+**PER-STEP tok/s WITH SPREADS** — the only honest way to read a 1% claim:
+
+    locked  cuBLAS   mean 23337.07   sd 123.93   min 23034.62   max 23407.19   (one outlier)
+            cuBLAS   excluding the outlier: mean 23380.28, n=7
+    locked  ours     mean 23389.26   sd   7.27   range 24.89
+    free    cuBLAS   mean 27788.35   sd  35.13
+    free    ours     mean 27353.43   sd  59.35
+
+**Locked is a TIE with the sign against us** — Welch t = +1.02, p ~ 0.28 excluding the outlier; our
+sd of 7.27 against cuBLAS's 123.93 is the whole reason the raw means looked like a win. **Free is
+−1.565% with non-overlapping ranges** — that one is real and no amount of resampling removes it.
+
+**NOISE FLOOR.** The identical cuBLAS locked arm, run once per campaign, gives **23,337 vs 23,406**
+→ **run-to-run noise floor ~0.3%**. Nothing below 0.3% end-to-end is quotable from a single pair of
+runs, which is exactly why the +0.42% multistream "win" above is reported next to its own −0.01%.
+
+#### CLEARED vs STILL OPEN
+
+**CLEARED:**
+
+- **The dgrad/wgrad deficits were stream contention, full stop.** Single-stream locked: dgrad
+  **100.0%**, wgrad **99.0%**. Nothing was wrong with those kernels.
+- **We BEAT cuBLAS on `wK-dgrad/wV-dgrad`** — 109.3% locked, 105.3% free — because cuBLAS needs
+  split-K plus a reduce on that shape and we do not.
+- **Locked-clock parity**: 99.6% whole-run union, 99.1% GEMM sum, tok/s a tie.
+- **PDL affects nsys spans, not throughput**: 0.06% (§H27zW-FUTURE).
+- **cuBLAS never runs multistream** — but only because the harness never gives it a second stream.
+- **Nobody is power-capped** (means 638–674 W against a 700 W limit, peaks 690–695 W).
+- **The locked clock held** — 1410/1410/1410 in all four locked arms; the 1353 MHz reading was a
+  contaminated CSV.
+- **The pairing and attribution methods are now validated** — 100.0000% layout agreement, cuts at
+  87×/41× the next-largest gap, zero ambiguous launches.
+- **Everything except the matmul is identical to 7.2 ms.**
+
+**STILL OPEN:**
+
+- **The free-clock gap.** 97.0% GEMM, 98.5% whole-run union, −1.54% tok/s, **reproduced twice**,
+  and concentrated in forward `nn`: `down-fwd` 92.7%, `wQ/wO-fwd` 92.6%, `gate_up-fwd` 98.3%, with
+  forward carrying **236 of 354 ms**. This is the one live performance question.
+- **Why we draw 20–25 W less at the same clock.** Signature says stalling; 9–12 device samples
+  cannot prove it.
+- **Whether the 10–25 MHz free-clock difference contributes at all.** Needs PER-KERNEL clock via
+  `tools/h27zw_clock_matrix.sh`, not device sampling. Do not settle this with `nvidia-smi` again.
+- **`wQ/wO-fwd` reads 99.5% on the bench but 96.8% in the trainer** at the same shape, same config,
+  same clock. Leading candidate: the trainer runs addmm with **`beta != 0`** while the bench
+  measured **`beta == 0`** — the short-circuited `C_in` epilogue read that §H27zv-D flagged as an
+  unexercised branch. That is a one-experiment question and it should be the next one asked.
+- **Our split-K reduce is 2.84× slower than cuBLAS's** (47.4 ms vs 16.7 ms on 2,880 launches). Only
+  30.7 ms, but it is the single largest non-GEMM difference in the entire run and it is ours.
+
+### §H27zY — SINGLE STREAM IS NOW THE DEFAULT. The backward secondary stream could never have paid: one GEMM CTA fills an entire SM, so concurrent-kernel overlap is CAPACITY-IMPOSSIBLE, not merely small.
+
+`BLUTRAIN_BWD_SINGLE_STREAM` now defaults to **ON** (single stream). Only a literal `=0` restores
+the two-stream path. Changed in `MatmulBackward.cu`; the old default was OFF.
+
+#### THE MEASUREMENT THAT SETTLES IT — occupancy, not timing
+
+From `CUPTI_ACTIVITY_KIND_KERNEL` in the §H27zX captures:
+
+    dynamicSharedMemory   229,376 B   (sharedMemoryExecuted 233,472 = 228 KB) of 228 KB   = 100.0%
+    registersPerThread    168, block 384  ->  64,512 of 65,536 registers                  =  98.4%
+    grid                  132 CTAs on a 132-SM H200                                       =  1 CTA/SM
+    registers left for ANY co-resident CTA                                                =  1,024
+
+**A second concurrent kernel cannot be co-resident with ours at all** — not another GEMM, not a
+`convert_type_kernel`, not anything. Its CTAs cannot begin until one of ours retires and releases
+its 224 KB. Overlap is therefore limited to TAIL-FILLING as CTAs drain. cuBLAS makes the identical
+choice (`grid(2,66,1)` = 132 CTAs, block 384), so it would hit the same wall if the trainer gave it
+two streams.
+
+**This kills a whole class of proposals, not just this one.** Any future "overlap the GEMM with X"
+idea on SM90 is answered by the occupancy before it is built. The win has to come from ELIMINATING
+work, not overlapping it.
+
+#### WHAT THE FEATURE WAS WORTH, AND WHAT IT COST
+
+    tok/s          locked 1400   two-stream 23,389  vs single 23,292   = +0.42%
+                   FREE CLOCKS   two-stream 27,353  vs single 27,357   = -0.01%   <- production
+    noise floor    ~0.3% (same cuBLAS arm re-run across campaigns: 23,337 vs 23,406)
+
+    cost to our own kernels    dgrad +9.0% locked / +10.9% free      wgrad +4.7% / +5.4%
+    cost to measurement        3.4 points of apparent GEMM performance, permanently
+
+Production runs free clocks, where it earns nothing above the noise floor. Worst case from the flip
+is giving up 0.42% at a clock setting nobody trains at.
+
+#### THE SWITCH ANNOUNCES THE MODE IT LATCHED
+
+`bwd_single_stream()` now prints `[blutrain] bwd stream mode = SINGLE|TWO` once on stderr. This is
+not decoration. Without it a lost override is INVISIBLE, and there are two independent ways to lose
+one: a value carrying a stray space or newline from an `--env-file` / k8s manifest / Slurm
+`--export` resolves to the default silently, and `mpirun` forwards only what `-x` names (§H27zP).
+Either way an A/B compares the default against itself and reports a clean ~0% delta that reads as
+CONFIRMATION rather than as a broken instrument.
+
+Two env conventions now coexist and both key on `"0"` meaning OPPOSITE things — `blublas_NO_PDL`
+is presence-based so even `=0` disables PDL, while `BLUTRAIN_BWD_SINGLE_STREAM=0` *enables* two
+streams. **Do not edit one by analogy with the other.**
+
+#### TWO PRE-EXISTING DEFECTS FOUND WHILE REVIEWING THIS, NOT FIXED
+
+1. **`MatmulBackward.cu:720` — the two-stream rejoin can be skipped.** A `throw` sits between the
+   pre-handshake (552-555) and the rejoin (724-727) with no RAII guard, so an exception leaves the
+   primary stream never waiting for a grad_B still in flight on `stream_b`. Safe today only by
+   coincidence of which fallback kernels exist. Now that `=0` is the only way to reproduce older
+   captures, this path needs the rejoin made unconditional on scope exit.
+2. **`MatmulBackward.cu:637` — the fp16 grad_B branch hardcodes `beta=0.0f`** and discards the
+   caller's `beta_b`, which is exactly the defect the comment above it claims was fixed. bf16 is
+   correct; fp16 is not.
+
+### §H27zZ — THE REAL PRIZE IS NOT THE GEMM. 23.60% of trainer GPU time is dtype conversion, and BOTH backends are asked for bf16 output by a single reusable variable.
+
+    convert_type_kernel<bfloat16_t,float>   34,936 launches   4,728.0 ms   12.88%   GEMM OUTPUTS, up-cast
+    convert_type_kernel<float,bfloat16_t>   26,120 launches   3,938.2 ms   10.73%   GEMM INPUTS, down-cast
+                                                              --------
+                                                              8,666.2 ms   23.60%
+
+For scale: our GEMM is 37.62% of GPU time and the remaining gap to cuBLAS at locked clocks is
+**141.6 ms**. The up-cast alone is **4,728 ms — 33x larger than the gap we have been chasing.**
+
+#### THE ROUND TRIP IS REDUNDANT AND LOSSY
+
+BluTrain holds everything in fp32 (`rms_norm_*_sm90<float>`, `swiglu_*_kernel_vec<float>`,
+`add_kernel<float>`). Per matmul: fp32 -> bf16 -> GEMM -> **fp32 accumulator rounded to bf16** ->
+bf16 stored -> bf16 read back -> widened to fp32. Steps 4-6 are a round trip on a value that was
+ALREADY fp32 in a register and is wanted as fp32 by the next consumer.
+
+The rounding is OURS and EXPLICIT — `__float22bfloat162_rn` / `__float2bfloat16` at template
+lines 5757, 5786, 5907, 5998, 6006, 6024, 6073, against `float acc[MAX_ATOMS][WG_NCHUNKS][CREGS_CHUNK]`
+at 4863. **The MMA does not do it for us**; wgmma leaves fp32 in registers and the epilogue chooses.
+So it is entirely in our hands. 34,936 up-casts against 34,720 GEMM launches = one per output.
+
+#### THE DECISIVE FINDING — cuBLAS IS ASKED FOR bf16 OUTPUT BY ONE REUSED VARIABLE
+
+`MatmulBackward.cu:1256-1264`:
+
+    cudaDataType_t cuda_type = ... ? CUDA_R_16F : CUDA_R_16BF;
+    cublasGemmEx(handle, opB_bwd, CUBLAS_OP_N, K_a, M, N, &alpha_f,
+        b_ptr,  cuda_type, ldb_bwd,              // A  bf16
+        go_ptr, cuda_type, ldgo_bwd,             // B  bf16
+        &beta_f, ga_ptr, cuda_type, ldga_bwd,    // C  bf16   <-- SAME VARIABLE
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+
+One variable in all three slots. `cublas_api.h:3368` confirms `Atype`/`Btype`/`Ctype` are
+INDEPENDENT parameters, so bf16-in/fp32-out is expressible — **the bf16 output is BluTrain's
+choice, not a cuBLAS limitation.** This explains the capture showing 34,936 up-casts in BOTH builds.
+
+**Consequences.** (1) The fix is a ONE-TOKEN change, `ga_ptr, cuda_type` -> `ga_ptr, CUDA_R_32F`.
+(2) It is symmetric, so an apples-to-apples comparison survives — the identical change is available
+to both backends, which is what makes this a legitimate optimisation rather than a benchmark trick.
+(3) **The whole hypothesis is testable on the cuBLAS path FIRST, with our kernel untouched.**
+
+#### ORDERED PLAN, CHEAPEST AND MOST DECISIVE FIRST
+
+    step 0  ~2 min   probe: does the H200 cuBLAS heuristic ACCEPT 16BF in / 32F out? Heuristics do
+                     refuse combinations -- sm_86 cuBLASLt returned zero algos for bf16 bias output.
+    step 1  ~30 min  map the 21 sites' consumers. THE NUMBER THAT DECIDES EVERYTHING AND IS NOT YET
+                     KNOWN: outputs feeding another GEMM want bf16 again, so fp32 output MOVES their
+                     convert rather than removing it. 4,728 ms is a CEILING, not an estimate.
+    step 2  ~1 hr    one-token change on the cuBLAS path + drop the matching convert + measure tok/s.
+                     Proves the win at zero risk to our kernel.
+    step 3           only if 0-2 pay: build it into our kernel as a TEMPLATE KNOB, never a separate
+                     kernel -- a separate kernel cannot compose with cluster/swizzle/raster/PDL/skew.
+
+#### TWO EXPECTED BLOCKERS FOR STEP 3, BOTH UNVERIFIED
+
+- **Shared memory.** Our CTA already uses 100% of the SM's 228 KB (§H27zY). An fp32 epilogue
+  staging tile is 2x the bytes of a bf16 one. If the epilogue smem is additive rather than aliased
+  onto mainloop TMA buffers, it may not fit at all.
+- **`stmatrix` is 16-bit only.** If the epilogue stages through `stmatrix` (knob `EPI_USE_STSM`),
+  an fp32 path cannot use it and needs a different store.
+
+#### PRECISION, STATED FAIRLY
+
+bf16 is 1-8-7 (8 significand bits); fp32 is 1-8-23 (24). The widening back to fp32 is EXACT since
+bf16 is a strict prefix of fp32, so **all the loss happens in our epilogue rounding**. Removing it
+strictly increases precision — there is no accuracy traded for speed here. Against that, fp32
+output doubles the store bytes; the convert kernel currently reads 2N and writes 4N bytes, so
+removing it saves ~4N of traffic net. Quantify per shape before claiming a number.
