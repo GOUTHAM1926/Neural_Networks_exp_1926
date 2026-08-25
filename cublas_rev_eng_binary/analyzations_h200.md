@@ -20537,6 +20537,19 @@ on the 1327 kernel instantiations in the three `*_variants.cu`.
 
 ### §H27zO — BLUTRAIN PORT AND THE 1.7B MEASUREMENT. GEMM 80.8% -> 96.6%. Two causes found and fixed, one real gap left that is NOT explained by anything we have tested.
 
+> **SUPERSEDED IN PART BY §H27zW — read that first.** The "one real gap left that is NOT
+> explained" IS now explained, and one claim below is wrong:
+>
+> - The residual gap was the **per-kernel sum double-counting our own stream overlap**. Measured
+>   by sum-vs-union: 521 ms of our GEMM time runs concurrently, cuBLAS hides exactly 0.0 ms. Over
+>   the whole run at locked 1400 we are **99.8%** of cuBLAS, not 96.6%.
+> - **CAUSE 2 below ("nn/nt are CLOCK-LIMITED") is REFUTED.** At free clocks cuBLAS averages
+>   1948 MHz and we average 1942 MHz -- 6 MHz apart -- and we draw LESS power (647 W vs 673 W).
+>   We are not clock-starved and not power-capped; we stall more. The free-clock loss is real
+>   (-1.57% tok/s) but it is a stall problem, not a clock or power problem.
+> - The two-stream finding below is CONFIRMED and strengthened: cuBLAS's 0.0 ms hidden time proves
+>   single-stream directly rather than by grep.
+
 #### The port
 
 BluTrain builds a SECOND, vendored copy of our library at
@@ -20691,3 +20704,126 @@ tok/s with PDL on vs off.
 `&&` (template:5465), so at `beta == 0` the epilogue's `C_in` read — the second global read of
 prior-grid-written data, and the one branch PDL can actually break — never executes. Any PDL
 correctness gate must run at `beta != 0` (§H27zv-D).
+
+### §H27zW — THE PAIRED TRAINER CAPTURE. Locked 1400 we are **99.8%** of cuBLAS over the whole run; free clocks we are **98.4%**. The per-kernel sum was charging us 521 ms of our own overlap, and TWO of my earlier conclusions were wrong.
+
+`weak-word-closes-fin-03`, GPU 3, all four GPUs idle, `bluscript_config_profile.yaml`
+(36 layers, 10 steps, grad_accum 4 -> 40 fwd/bwd passes, 34,720 GEMM launches). PDL OFF in every
+BluBLAS arm. Secondary backward stream ON (production default). Both arms of each phase captured
+back to back by `tools/h27zW_pair_nopdl.sh`, cuBLAS first.
+
+#### WHY A NEW CAPTURE WAS NEEDED — none of the three day2 arms was both clean AND comparable
+
+    day2_blublas        PDL ON   -> spans inflated; the inflation lands on dgrad
+    day2_blublas_nopdl  PDL OFF  -> but BLUBLAS_SM90_TRACE=1, i.e. 34,720 host printf lines
+                                    interleaved with the launch stream
+    day2_cublas         clean, but its only clean partner was the PDL-ON arm
+
+day2 also ran while GPUs 0 and 1 were at 100% for someone else, so it is not comparable to
+anything measured on an idle box (23,402 tok/s there vs 27,353 here at free clocks).
+
+#### THE DECISIVE MEASUREMENT — sum vs union
+
+`sum` adds every kernel's start-to-end. `union` merges the intervals, so concurrent work is
+counted once. The difference IS the overlap.
+
+    locked 1400        GEMM sum    GEMM union    hidden
+      ours              13919.8      13398.4     521.3 ms
+      cuBLAS            13325.9      13325.9       0.0 ms   <- single stream, proven not assumed
+      gap  sum           +593.9  ->  95.7%
+      gap  union          +72.6  ->  99.5%
+      gap  WHOLE RUN      +73.6  ->  99.8%
+
+    free clocks
+      ours              12094.7      11628.0     466.7 ms
+      cuBLAS            11241.3      11241.3       0.0 ms
+      gap  sum           +853.4  ->  92.9%
+      gap  union         +386.7  ->  96.7%
+      gap  WHOLE RUN     +510.6  ->  98.4%
+
+**cuBLAS hides exactly 0.0 ms.** That is the proof that its 34,720 launches are on one stream and
+ours are not -- not an inference from grep, a measurement. Of our 594 ms locked "deficit",
+**521 ms is our own overlap being double-counted and 73 ms is real.**
+
+Cross-check, free: union says we lose 1.65% of the run, tok/s says 1.57%. Two independent
+measurements agreeing to within a tenth of a point.
+
+#### TWO CORRECTIONS TO WHAT I SAID EARLIER
+
+**1. "PDL off lifts dgrad to 98-100%" was WRONG.** That came from `day2_blublas_nopdl`, which had
+tracing on. The trace printf serialises the host and spreads the launches apart, which suppressed
+the very stream overlap that penalises dgrad -- so dgrad looked clean for the wrong reason. With
+PDL genuinely off and no trace, dgrad reads **87.7% locked / 84.6% free**, and `wQ-dgrad` 75.1%.
+
+**2. "We are +0.22% faster at locked clocks" was an artefact of one bad cuBLAS step.**
+
+    cuBLAS  23397 23407 23384 23340 23387 23380  23034  23364   <- one outlier
+    ours    23389 23392 23397 23389 23388 23393  23388  23373
+
+Drop the outlier and cuBLAS averages 23,380 against our 23,389. It is a **TIE**, which is what the
+union also says (we are 0.2% behind). Not a win.
+
+#### FORWARD IS CLEAN AND IS ALREADY ANSWERED
+
+The secondary stream carries wgrad only, so the forward sites never share with it:
+
+                     locked   free
+    fwd overall       98.7%   95.8%
+      gate_up-fwd      99.5    98.2
+      down-fwd         98.5    92.7     <- real, and nothing to do with streams or PDL
+      wQ-fwd/wO-fwd    96.7    92.5
+
+#### FREE CLOCKS: NOT A CLOCK DEFICIT, AND NOT A POWER CAP
+
+    clock while busy   cuBLAS 1948 MHz    ours 1942 MHz      6 MHz apart
+    power              cuBLAS  673 W      ours  647 W        we draw LESS
+    tok/s              cuBLAS 27,788      ours 27,353        -1.57%, ranges do not overlap
+
+**CAREFUL -- THIS DOES NOT REFUTE THE PARKED POWER/CLOCK TRACK, AND I SHOULD NOT HAVE SAID IT DID.**
+The numbers above are `nvidia-smi` **device-level** samples taken every 2 s across a 285 s run --
+9 samples for cuBLAS and 12 for ours. That is far too coarse to resolve a 0.3% clock difference,
+and it averages over the whole run, of which our GEMM is only 37.6%. The parked track's figure was
+measured on a completely different instrument: **per-kernel** clock via
+`nsys --gpu-metrics-devices` on V2, giving ours 1389 MHz vs cuBLAS 1457 MHz (-4.7%).
+
+Both can be true at once -- the device average can match while the clock DURING our GEMM kernels
+specifically is lower. A coarse device average cannot arbitrate a per-kernel claim, and treating it
+as if it could is exactly the error [[feedback-isolated-measurements-mislead]] warns about.
+
+What the power number DOES support, weakly: neither library is near the 700 W cap (647 W and
+673 W), so a hard power ceiling is not obviously what is holding our clock down in THIS
+configuration. Drawing less while going slower is consistent with more stalling -- idle units burn
+fewer watts -- but at 9-12 samples this is a hint, not a finding.
+
+**THE INSTRUMENT THAT SETTLES IT** is the per-kernel clock, not the device average:
+`tools/h27zw_clock_matrix.sh` already captures per-kernel clock + tensor/issue/smact/dram. Run it
+on the two worst free-clock sites before drawing any conclusion about clock or power.
+
+What each library gained from the 1400 -> ~1945 MHz change (+39% clock):
+
+    cuBLAS   13325.9 -> 11241.3   = 1.185x   (+18.5%)
+    ours     13398.4 -> 11628.0   = 1.152x   (+15.2%)
+
+**Neither approaches 1.39x**, so both are latency/bandwidth-bound -- HBM does not speed up when
+the SM clock does. cuBLAS simply tolerates it better. The question for the next step is therefore
+narrow: *at 1945 MHz, what are our warps stalled on that cuBLAS's are not?*
+
+#### EVERYTHING ELSE IS IDENTICAL
+
+Total non-GEMM kernel time differs between the two runs by **37.9 ms** out of ~23,000. The matmul
+really is the only moving part.
+
+#### SCRIPT TRAPS FOUND BUILDING THIS (all fixed in the tool)
+
+- **`nvcc not found`.** `/root/.bashrc` puts CUDA on PATH but returns early for non-interactive
+  shells, so a script launched over ssh/nohup has no toolchain. Same class:
+- **`mpirun` refuses to run as root** unless `OMPI_ALLOW_RUN_AS_ROOT{,_CONFIRM}` are set. Both
+  worked when launched by hand from a shell that already exported them, and failed over ssh.
+  **A script that depends on who started it is not a measurement tool.**
+- **Placement.** `mpirun` exports only what `-x` names, and `CUDA_VISIBLE_DEVICES` is NOT in the
+  Makefile default. Without it the rank silently lands on GPU 0. The tool now asserts peak memory
+  on the named GPU and aborts otherwise.
+- **Error ordering.** Checking placement before exit code reported "WRONG GPU" for what was really
+  a crashed launch -- a failed run has zero memory as a CONSEQUENCE. Exit code is checked first.
+- **sqlite detection by glob**, because some nsys builds write `%q{OMPI_COMM_WORLD_RANK}`
+  literally and an exact-name check calls a good capture "missing".
