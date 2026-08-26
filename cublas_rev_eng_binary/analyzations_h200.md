@@ -22465,3 +22465,92 @@ and banked.
 and tensor fill ~109%. Neither reaches the 130% target; only data movement (2.43x,
 §H27z.82) does. Settling the clock question is worth doing because it is cheap and
 because "untested" invites re-litigation — but it is not the path to 130%.
+
+---
+
+### §H27al — **THE TARGET IS A NUMBER: GET THE INSTRUCTION RATIO BELOW ~1.8x AND THE CLOCK DEFICIT DISAPPEARS.** Two independent instruction measures, fitted separately against the same clock data, converge on a zero-crossing of **1.77x** and **1.80x**. §H27ah's per-opcode count is the better predictor (**r = −0.996**, perfectly monotonic) against §H27ag's issue ratio (**r = −0.903**, NOT monotonic). §H27ai's cut moves V1 from 2.43x to 2.08x — predicted **−6.80% → −3.03%** clock, i.e. **roughly half the deficit**, with **0.29x of excess still to remove**.
+
+§H27ak reopened the clock track. This section turns it from a direction into a target, using
+only data already on disk — no GPU time was spent.
+
+#### FIRST, §H27ag's PUBLISHED FIT REPRODUCES EXACTLY
+
+Refitting its own 15-shape table: **r = −0.745, slope −6.83% per 1.0x**, against the published
+−0.742 / −6.82. The published number is sound and is not in question here.
+
+#### THE TWO INSTRUCTION MEASURES ARE NOT THE SAME NUMBER, AND ONE IS CLEARLY BETTER
+
+They disagree materially — V1 is **2.07x** by §H27ag and **2.43x** by §H27ah — because they
+count different things:
+
+- **§H27ag "issue ratio"** — `smsp__inst_executed`, an issue-rate measure taken from the free rows.
+- **§H27ah "per-opcode ratio"** — dynamic per-opcode totals from the ncu SASS export, **deduped
+  by address** (the `cuda,sass` view repeats addresses; §H27ah's total matched the sass-only
+  reference exactly after dedup).
+
+Head to head on the four shapes where BOTH exist, against the same clock losses:
+
+| predictor | n | r | slope | zero-crossing |
+|---|---|---|---|---|
+| §H27ag issue ratio | 4 | −0.903 | −16.75%/1.0x | 1.77x |
+| **§H27ah per-opcode ratio** | 4 | **−0.996** | −10.62%/1.0x | **1.80x** |
+
+The monotonicity check is what separates them:
+
+```
+H27ag issue :  V7(1.80)->-1.08   V8d(1.81)->+0.61   V1(2.07)->-6.80   V2c(2.18)->-5.52
+H27ah opcode:  V8d(1.77)->+0.61  V7(1.86)->-1.08    V2c(2.33)->-5.52  V1(2.43)->-6.80
+```
+
+**§H27ag's ordering breaks twice** — V8d has a *higher* issue ratio than V7 yet a *better* clock,
+and V1 has a *lower* issue ratio than V2c yet a *worse* clock. **§H27ah's ordering is perfect.**
+
+That is a result in its own right: **an issue-rate metric is the wrong instrument for this
+question, and the per-opcode dynamic count is the right one.** It also explains why §H27ag's
+15-shape r was only −0.742 — the scatter is substantially measurement, not physics.
+
+#### THE CONVERGENCE IS THE STRONG PART, NOT EITHER FIT ALONE
+
+Four points at r = −0.996 is seductive and, on its own, weak evidence. What carries weight is
+that **two differently-defined instruction measures, fitted independently, land the zero-crossing
+at 1.77x and 1.80x** — and that **V8d is a measured shape sitting at 1.77x with a clock deficit
+of +0.61%, i.e. already slightly AHEAD of cuBLAS.** The crossing is not an extrapolation into
+empty space; there is a real shape sitting on it.
+
+#### WHAT §H27ai's CUT IS PREDICTED TO BE WORTH
+
+```
+V1 k-loop      16.56 -> 12.53 instr/wgmma      (-24.4%, measured in SASS, §H27ai)
+V1 whole-kernel ratio   2.43x -> 2.08x
+predicted clock         -6.80% -> -3.03%       gain +3.70 points
+remaining above the 1.80x crossing:  +0.29x
+```
+
+**Roughly half the deficit, and about 14% more instructions still to remove to reach break-even.**
+
+#### THE CEILING, REVISED UPWARD
+
+§H27aj quoted ~104% for this track, derived from the **15-shape mean** clock loss of −1.73%.
+That understates it per-shape. V1's own deficit is −6.80%, and §H27ac put us at **100.42% of
+cuBLAS at equal clock**. Closing V1's deficit entirely gives `100.42 x 1.068 ≈ 107%`, and the
+per-opcode fit extrapolated to instruction parity (1.0x) implies a clock *advantage*, not merely
+parity. **Call the ceiling ~107-108%, not 104%.**
+
+This does **not** change the strategic conclusion. **130% is not reachable on this track** —
+tensor fill caps near 109% (cuBLAS measured at 92% tensor active) and clock near 108%. Only data
+movement (**10.12 GB vs 4.16 GB**, reuse 76% vs 93%, §H27z.82) has the target inside it. The
+clock track is worth ~7 points and is cheap; it is not the path to 130%.
+
+#### THE OUTSTANDING TESTS, both cheap, both falsifiable
+
+1. **Per-opcode ratios for the remaining 11 shapes.** `tools/h27ah_opcode_hist.sh` already exists
+   and no code changes are needed. Turns the n=4 fit into n=15 and either confirms the ~1.8x
+   crossing or kills it. **This is the highest-value GPU hour available** — it is pure
+   measurement of the better predictor across the set.
+2. **Measure V1's CLOCK, not `%cuB`, base vs `dw_uad_cs`.** §H27af protocol: sustained load,
+   10 s windows, 4 s settling discard, `clocks.sm` + `power.draw`. Prediction: **+3.70 points of
+   clock, −6.80% → −3.03%.** §H27aj failed to see anything only because `%cuB` carries a
+   3.16-point free-clock floor while clock is directly readable and stable.
+
+**Falsifiable in one direction:** if V1's clock does not move on a cut that verifiably removed
+24.4% of k-loop instructions, the instruction→clock channel is dead and the track closes for real.
