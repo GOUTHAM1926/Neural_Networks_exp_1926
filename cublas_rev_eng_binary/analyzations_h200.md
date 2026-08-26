@@ -22268,3 +22268,32 @@ deficit; closing half that deficit is the target.
 is unroll depth: cuBLAS fits **16 static HGMMA** per loop body against our **4**, so
 every loop-carried cost (branch, ISETP, `WARPGROUP.ARRIVE`, the mbarrier wait) is
 amortised 4× better. `_KLOOP_UNROLL` (slot 33) already exists and is the next lever.
+
+#### §H27ai OPEN TASKS — opened by the user on the strength of this result
+
+**OPEN 1 — FIND THE SWEET SPOT.** §H27ai removed instructions that were pure
+overhead, so it moves work-per-cycle and clock the *same* direction. That is a free
+win, not a trade, and it says nothing about where the real trade begins. The task is
+to map the curve: instructions/wgmma against achieved clock against TFLOPS, and find
+the point where adding work per cycle starts costing more clock than it buys.
+§H27ag's **−6.82% clock per 1.0× instruction ratio** is a fit over a narrow range
+(1.77×–2.43×), not a law — the ladder in this section gives four new points on it and
+should be used to test whether the slope holds below 1.77×.
+
+**OPEN 2 — FILL THE IDLE TENSOR PIPE.** V1's tensor pipe runs **78.9–91.4% active**;
+the rest is idle, and idle tensor cores are the largest single block of headroom left
+for the 130% target. §H27zs already attributed it and the attribution is quantitative:
+
+> cuBLAS's mainloop idles **~0** cycles per k-iteration, ours idles **34.8**. 34.8 is
+> the length of our 31-instruction pre-first-HGMMA phase at ~1 IPC. cuBLAS's
+> equivalent phase is **6 instructions** AND runs with 4 wgmma still in flight, so it
+> is entirely hidden.
+
+This is independent of the clock work — it is time, not power.
+
+**Both point at the same lever: `_KLOOP_UNROLL` (slot 33, already in the template).**
+cuBLAS fits 16 static HGMMA per loop body against our 4. That amortises every
+loop-carried cost 4× better (OPEN 1) *and* gives the scheduler enough in-flight wgmma
+to hide the pre-HGMMA phase (OPEN 2). It is also exactly the 60% of the k-loop gap
+§H27ai does not close. Same discipline as this section: one knob at a time, static
+SASS check locally before any GPU time is spent.
