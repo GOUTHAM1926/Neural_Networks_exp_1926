@@ -21416,3 +21416,288 @@ bf16 is a strict prefix of fp32, so **all the loss happens in our epilogue round
 strictly increases precision — there is no accuracy traded for speed here. Against that, fp32
 output doubles the store bytes; the convert kernel currently reads 2N and writes 4N bytes, so
 removing it saves ~4N of traffic net. Quantify per shape before claiming a number.
+
+### §H27aa — THE CONVERSION KERNELS RUN AT 35% OF HBM PEAK ON H200, AND THE VECTORIZED REPLACEMENT ALREADY EXISTS IN THE TREE — it is gated to sm_103 only. Three independent wins found, cheapest first, no GPU needed to find any of them.
+
+Offline source investigation while the box was unavailable. This is the step-1 site mapping owed
+by §H27zZ, and it found something larger on the way.
+
+#### 1. WHERE THE CASTS LIVE — the trainer script, explicitly, not the library
+
+Every cast is written in `train/production/bluscript.cpp` as `autograd::to_dtype`. There is no
+hidden conversion inside the matmul op; the library never casts. Forward map (SPLIT attention
+path, which is what `bluscript_config_profile.yaml` selects — `use_fused_rms_rope`, NOT
+`fully_fused_attn`):
+
+    line  site        cast out        consumer                         verdict
+    256   wQ-fwd      -> Float32      fused_rms_rope (fp32 kernel)     fp32 GENUINELY used
+    257   wK-fwd      -> Float32      fused_rms_rope (fp32 kernel)     fp32 GENUINELY used
+    258   wV-fwd      -> Float32      reshape/transpose, then 319      *** NO fp32 CONSUMER ***
+    319                -> Bfloat16     scaled_dot_product_attention
+    328   wO-fwd      -> Float32      add (fp32 residual)              fp32 GENUINELY used
+    362   gate_up-fwd -> Float32      swiglu (fp32)                    fp32 GENUINELY used
+    365   down-fwd    -> Float32      add (fp32 residual)              fp32 GENUINELY used
+    467   lm_head     -> Float32      loss                             fp32 GENUINELY used
+
+**SIX of the seven forward sites genuinely want fp32**, so an fp32-output epilogue would remove
+their up-cast rather than merely move it. That was the open question from §H27zZ and it resolves
+in favour of the idea.
+
+Backward: `AutogradMeta.cpp:116,158,173` — for low-precision params the incoming gradient is
+up-cast to fp32 (`lowp ? u.as_type(Dtype::Float32)`) so accumulation across the 4 grad_accum
+micro-steps stays fp32. So the wgrad up-cast is removable the same way, and an fp32 output with
+`beta=1` could accumulate STRAIGHT into the fp32 gradient buffer, removing a read-modify-write too.
+
+#### 2. THE BIG ONE — the convert kernel is scalar on H200 while a vectorized one sits in the tree
+
+`ConversionKernels.cu:157-198`. The launcher has a vectorized fast path... gated on
+`is_sm103_device()`:
+
+    if (is_sm103_device() && in%16==0 && out%16==0) { convert_cuda_bf16_to_fp32_sm103(...); return; }
+    int threads = 256;
+    int blocks  = std::max(((n + threads - 1) / threads), (long)112);
+    convert_type_kernel<Src, Dst><<<blocks, threads, 0, stream>>>(input, output, n);
+
+`is_sm103_device()` is B300. **On H200 it never fires**, so all 61,056 conversions run
+`convert_type_kernel`, which is ONE ELEMENT PER THREAD with no vectorization —
+`input[idx]` / `output[idx]`, scalar loads and stores.
+
+**MEASURED ACHIEVED BANDWIDTH** (h27zX captures; `n` derived exactly from the launch config, since
+`blocks = ceil(n/256)` with `threads=256` gives `n = gridX*256` — verified: gridX 131072*256 =
+33,554,432 = 16384x2048, gridX 720896*256 = 184,549,376 = 16384x11264, both exact):
+
+    phase     launches   time        elements    traffic      achieved     % of ~4800 GB/s peak
+    locked      61,056   8,666.6 ms  2,392 G     14,354 GB    1,656 GB/s        35%
+    free        61,056   7,422.3 ms  2,392 G     14,354 GB    1,934 GB/s        40%
+
+    per-kernel, locked:  1,656 / 1,638 / 1,651 / 1,665 / 1,671 / 1,650 GB/s -- uniformly ~1,650
+
+A pure memory-bound kernel should reach 80-90% of peak. **We are at 35%.**
+
+**THE REPLACEMENT IS ALREADY WRITTEN.** `ConversionKernelsSM103.cu` header, verbatim:
+
+    bf16 -> fp32 : vec8_convert_to_fp32, block 256, full grid (n/8 threads), one vector/thread
+                   ~5380 GB/s vs PyTorch 2131 = 2.52x
+    fp32 -> bf16 : n <  38.6M -> vec8_convert_to_bf16   6042 GB/s
+                   n >= 38.6M -> gridstride_vec_convert_to_bf16, GS_UNROLL=2   6877 GB/s @ 134M
+
+and, decisively, from the same header:
+
+    "these kernels use only vectorized loads + bf16 intrinsics, no tcgen05 / TMA / inline PTX"
+
+**Nothing in them requires Blackwell.** The gate is where they were TUNED, not what they REQUIRE.
+
+#### 3. THREE INDEPENDENT WINS, CHEAPEST FIRST
+
+**WIN A — enable the vec8 converters on H200.** No new kernel to write. Widen the device gate,
+validate bit-exactness, re-tune the size threshold for H200 (the 38.6M crossover is a B300 number).
+If H200 reaches the same fraction of ITS peak, ~3,500-3,800 GB/s against today's 1,656-1,934, i.e.
+roughly **2x on 8,666 ms = ~4.3 s of a 36 s run, ~12% of total GPU time.** Zero precision change,
+zero change to our GEMM. **For scale: our entire remaining GEMM gap to cuBLAS is 141.6 ms.**
+
+**WIN B — delete the wV round trip.** Trainer one-liner. `wV`'s output is cast bf16 -> fp32
+(line 258) and then straight back to bf16 (line 319) with NOTHING consuming it as fp32 in between
+— only `reshape`/`transpose`, which are layout ops. Both casts are pure waste. Needs validation
+that removing the autograd cast nodes is safe on the backward edge, but the forward logic is
+unambiguous.
+
+**WIN C — fp32 output epilogue in our GEMM (§H27zZ).** Removes the up-cast entirely rather than
+speeding it up. Now better justified, since step 1 shows 6 of 7 sites genuinely want fp32. Still
+the hardest: 100% of shared memory already used, and `stmatrix` is 16-bit only.
+
+**A and C OVERLAP** — if C lands, the up-cast disappears and A only helps the remaining down-cast.
+So do A first: it is cheap, immediate, needs no kernel redesign, and it de-risks C by telling us
+how much of the 23.60% is bandwidth versus launch overhead.
+
+#### WHAT IS STILL UNKNOWN
+
+- Whether the vec8 kernels are bit-identical to the scalar ones on H200 inputs. Both use
+  `__float2bfloat16` / `__bfloat162float`, so they should be, but it must be VALIDATED not assumed.
+- Whether H200 tensors always satisfy the 16 B alignment the vec8 path requires. The launcher
+  already falls back to scalar if not, so the risk is silent non-improvement, not incorrectness --
+  which means any A/B must CONFIRM the fast path actually fired, not just measure.
+- The right size threshold on H200; 38.6M is a B300 crossover and cannot be assumed to transfer.
+
+### §H27ac — THE CLOCK QUESTION IS CLOSED. At equal clock we are **100.42%** of cuBLAS — we BEAT it. The entire free-clock gap is a **3.42% clock deficit**, and the cause is that we issue **1.57-2.27x** the instructions for identical tensor work.
+
+`loud-tree-grows-fin-03`, H200, GPU 1, both GPUs otherwise idle, commit `2ac1395`.
+`tools/h27zw_clock_matrix.sh`, 15 shapes x {free, locked 1400} = 30 nsys captures with
+`--gpu-metrics-devices --gpu-metrics-frequency=10000`. **Both libraries run inside ONE process**,
+so their clocks are sampled at the same instant on the same card — no cross-capture comparison.
+
+#### THE RESULT
+
+    V     shape               lock    %cuB   ourClk  cubClk  clkGap   verdict
+    V1    2048x512x16384      free    96.8    1483    1619    -8.4%
+    V1                        1400   105.3    1389    1385    +0.3%   LOCK HELD
+    V2    2048x2048x16384     free    96.1    1396    1462    -4.5%
+    V2                        1400   100.9    1406    1404    +0.1%   LOCK HELD
+    V2b   5632x2048x16384     free    97.8    1420    1456    -2.4%
+    V2b                       1400    99.9    1401    1404    -0.2%   LOCK HELD
+    V2c   2048x50304x16384    free    92.4    1281    1383    -7.4%
+    V2c                       1400    92.8    1310    1404    -6.7%   CAP OVERRODE
+    V3    16384x11264x2048    free    95.6    1359    1407    -3.4%
+    V3                        1400    99.4    1402    1394    +0.6%   LOCK HELD
+    V4    16384x50304x2048    free    99.2    1373    1379    -0.5%
+    V4                        1400    99.8    1404    1401    +0.2%   LOCK HELD
+    V5    2048x11264x16384    free    98.0    1360    1388    -2.0%
+    V5                        1400   100.1    1405    1407    -0.1%   LOCK HELD
+    V6    16384x5632x2048     free    95.8    1382    1431    -3.4%
+    V6                        1400    99.0    1396    1395    +0.1%   LOCK HELD
+    V7    16384x2048x2048     free    98.2    1433    1467    -2.3%
+    V7                        1400   100.3    1391    1389    +0.1%   LOCK HELD
+    V7b   16384x2048x5632     free    96.0    1362    1419    -4.1%
+    V7b                       1400   100.0    1401    1401    -0.0%   LOCK HELD
+    V7c   16384x512x2048      free   100.1    1515    1543    -1.8%
+    V7c                       1400   101.1    1377    1383    -0.4%   LOCK HELD
+    V8    16384x2048x512      free    99.2    1557    1607    -3.2%
+    V8                        1400   100.3    1351    1353    -0.1%   CAP OVERRODE
+    V8b   16384x2048x2048     free    98.5    1431    1460    -2.0%
+    V8b                       1400    99.9    1388    1391    -0.2%   LOCK HELD
+    V8c   16384x2048x11264    free    96.8    1362    1403    -2.9%
+    V8c                       1400    99.9    1403    1404    -0.0%   LOCK HELD
+    V8d   16384x2048x50304    free    96.8    1349    1391    -3.0%
+    V8d                       1400    99.8    1405    1406    -0.1%   LOCK HELD
+
+#### THE ARITHMETIC CLOSES TO 0.15 OF A POINT
+
+    locked, the 13 LOCK HELD rows      mean %cuB      = 100.42%
+    free, all 15 rows                  mean %cuB      =  97.15%
+    free, all 15 rows                  mean clock gap =  -3.42%
+
+    100.42 x (1 - 0.0342) = 97.0        measured 97.15
+
+**There is nothing else in the gap.** At equal clock we are AHEAD of cuBLAS on average, and ahead
+by 5.3 points on V1. Every earlier framing that treated the free-clock loss as a kernel-quality
+problem was wrong.
+
+#### THE CAUSE, MEASURED PER KERNEL IN THE SAME CAPTURE
+
+                    tensor active     issue rate      SM active      DRAM read     issue ratio
+    V1              78.9 / 74.6       31.4 / 15.2     95.1 / 89.6    32.1 / 33.0      2.07x
+    V2              79.6 / 76.0       31.7 / 15.4     95.2 / 90.7    30.2 / 28.7      2.06x
+    V2b             93.9 / 93.4       25.0 / 11.0     96.9 / 95.3    14.7 / 14.8      2.27x
+    V2c             86.8 / 86.5       23.1 / 10.5     99.9 / 87.8    15.4 / 18.2      2.20x
+    V3              97.4 / 97.7       25.7 / 11.8     99.9 / 98.8    29.6 / 17.5      2.18x
+    V5              89.4 / 90.2       20.5 / 13.1    100.0 / 98.1     7.8 / 10.3      1.57x
+    V7              97.6 / 97.8       20.8 / 12.9    100.0 / 99.0    13.3 / 18.0      1.61x
+    V8              87.4 / 86.9       21.1 / 11.7    100.0 / 94.0     7.5 /  7.6      1.80x
+
+**Identical tensor work. Identical DRAM traffic. HIGHER SM occupancy on our side. And 1.57-2.27x
+the instruction issue.** Issue burns fetch/decode/issue power; the governor answers with less
+clock; we lose exactly that much throughput. This independently reproduces the 2.24x recorded on
+the previous box, on different hardware with a different instrument.
+
+#### V2c IS THE SMOKING GUN
+
+    V2c  1400   ours 1310 MHz   cuBLAS 1404 MHz   CAP OVERRODE
+
+We REQUESTED a 1400 lock. cuBLAS held 1404. We were throttled to 1310. Same card, same instant,
+same requested clock — the power cap bit US and not them. That is our power draw isolated from
+every other variable, and it is why V2c is the only shape still below parity when locked (92.8%).
+
+#### WHAT THIS MAKES THE #1 TASK
+
+Cut the instruction count. Not the tile shape, not the swizzle, not the epilogue latency — the
+COUNT. Two concrete leads, both from static SASS and therefore both still HYPOTHESES:
+
+**LEAD 1 — the uniform datapath.** cuBLAS runs address arithmetic on the U-prefixed forms, which
+issue once per warp against the uniform register file. We run the per-thread forms:
+
+    OURS                    cuBLAS
+    IMAD    757             UIMAD   1702
+    SHF     187             USHF     575
+    LEA     174             ULDC    1771
+    ISETP   121             UISETP  1150
+    IADD3    78             UIADD3  3197
+
+**LEAD 2 — STSM vs STS.** One `STSM.16.M88.4` moves a register block to shared; one `STS` moves
+one register. Ours: STS 128, STSM 0. cuBLAS: STS 483, STSM 414. This REFRAMES the old stmatrix
+null (§ probe_stsm_banks): that test measured DURATION on a path worth 1.40% of the kernel and
+correctly found nothing. The right metric is INSTRUCTION COUNT, because count drives clock and
+clock drives everything.
+
+**THE CONFOUND, STATED SO IT IS NOT SKIPPED.** Both leads are STATIC counts from two kernels with
+different unroll structure — ours loops (16 static HGMMA), cuBLAS is heavily unrolled (552 static
+HGMMA). Static ratios do NOT translate to dynamic ones; our IMADs could be one-time setup. The
+instrument that settles it is **ncu dynamic instruction mix** (`smsp__inst_executed` by category)
+on the SAME shape for both libraries. Do not act on the static census alone.
+
+### §H27ad — DYNAMIC instruction counts, ncu, V1. **2.54x confirmed** — but we execute them in the SAME cycles at the SAME tensor utilisation, so they cost POWER, not TIME. And the claimed instructions→power→clock chain is NOT yet proven; the power data we have argues against the naive version.
+
+`loud-tree-grows-fin-03`, H200 GPU 1, ncu 2025.3.1, `--launch-count 4` per arm, profiled
+separately per arm (a single window with `--launch-skip 8 --launch-count 8` caught only cuBLAS —
+the two libraries do not interleave the way that assumed).
+
+    V1  2048x512x16384 tn        per launch
+    ours   : bgemm_sm90_kernel<Sm90WarpspecConfig<128,128,...>>   (config 128x128x64_2x1_v_sk2_dh_rot2_pdl_d6)
+    cuBLAS : nvjet_sm90_tst_128x128_64x6_1x2_h_bz_splitK_NTT       (also split-K, so comparable)
+
+    metric                        OURS         cuBLAS      ratio
+    inst_executed           11,982,058      4,711,825      2.54x
+    inst_issued             11,993,748      4,730,411      2.54x
+    op_branch                1,052,597        278,217      3.78x
+    op_shared_st                     0         82,432      0.00x
+    op_global_st                32,768              0        inf
+    op_tma_ld                   65,536         65,536      1.00x
+    op_tma_st                        0          8,192      0.00x
+    cycles_elapsed              76,204         75,490      1.01x
+    TENSOR ACTIVE %               91.4           91.1      1.00x
+
+#### THE HEADLINE, AND IT IS NOT WHAT THE STATIC CENSUS SUGGESTED
+
+**2.54x the dynamic instructions, executed in 1.01x the cycles, at identical tensor utilisation.**
+The instructions are therefore NOT costing us time. The tensor pipe is the bottleneck for both and
+we keep it equally busy (91.4 vs 91.1). Whatever the 2.54x costs, it is not throughput directly.
+
+#### BRANCHES ARE 3.78x — loop versus unroll
+
+1,052,597 vs 278,217. Our mainloop LOOPS where cuBLAS UNROLLS. Largest single identified class,
+but at 8.8% of our 12.0M total it is nowhere near the whole 2.54x. The remaining ~11M are
+integer/predicate/float ops that these class counters do not break out — that is where the
+IMAD-vs-UIMAD question lives and it needs the per-opcode SASS source counters.
+
+#### THE STSM LEAD DOES NOT APPLY TO THIS CONFIG — and the static census misled me
+
+Neither kernel uses `stsm` here (metric 0 for both). And the epilogue paths are the OPPOSITE of
+what the static dump implied:
+
+    ours     op_global_st 32,768   op_shared_st 0        -> DIRECT-TO-GLOBAL path
+    cuBLAS   op_shared_st 82,432   op_tma_st 8,192       -> stages through shared, then TMA
+
+The earlier static comparison (§H27ac LEAD 2) used `box_src/probe.sass`, which is a DIFFERENT
+config (256x128 TN, STS 128 + UTMASTG 8). **The epilogue path is config-dependent**, so STSM must
+be re-checked per config and cannot be treated as a blanket ours-vs-cuBLAS difference. This is the
+static-count confound landing exactly where §H27ac warned it would.
+
+#### THE MECHANISM IS NOT PROVEN. I ASSERTED IT TOO CONFIDENTLY.
+
+The chain claimed in §H27ac was: more instructions -> more fetch/decode/issue power -> less clock
+under the 700 W cap -> less throughput. The instruction half is now measured. **The power half is
+not, and the power data we DO have contradicts the naive version:**
+
+    §H27zX trainer, device-level, LOCKED 1400 (both at 1410 MHz):  ours 430-432 W   cuBLAS 449-462 W
+    §H27zX trainer, device-level, FREE:                            ours 638-648 W   cuBLAS 657-674 W
+
+**At equal clock we drew LESS power, not more.** If our instruction count made us power-hungry we
+would expect the opposite. Three possible resolutions, none yet tested:
+  1. Those are TRAINER device-level averages over 11-13 samples, not bench per-kernel power — the
+     two measurements may simply not be comparable.
+  2. Power is not the only governor input (temperature, current, reliability limits).
+  3. The bench clock difference is not power-driven at all, and the instruction count is a
+     coincidence rather than a cause.
+
+**THE EXPERIMENT THAT SETTLES IT** is per-library power at a FIXED clock on the bench: lock the
+clock, run ONE library at a time, sample power. If we draw more than cuBLAS at the same clock, the
+chain holds. If we draw the same or less, the instruction count is not the clock lever and §H27ac's
+conclusion needs rewriting. `nsys --gpu-metrics-devices` exposes no per-kernel power counter (the
+ourPwr/cubPwr columns in `h27zw_clock_matrix.sh` came back "-"), so this needs device-level
+sampling with a single library in flight.
+
+#### WHAT REMAINS TRUE REGARDLESS
+
+    locked, 13 LOCK HELD rows    mean %cuB 100.42%      we BEAT cuBLAS at equal clock
+    free, 15 rows                mean %cuB  97.15%      and the gap equals the clock gap (-3.42%)
+
+That result is from a different instrument (per-kernel clock via GPU_METRICS) and stands on its own.
+What is open is WHY we are handed less clock, not WHETHER we are.
