@@ -21834,23 +21834,54 @@ Grouped by instruction ratio the monotonicity is clean:
     1.76-1.83x   V7,V7b,V7c,V8,V8b,V8c,V8d          mean loss -0.75%
     2.07-2.27x   V1,V2,V2b,V2c                      mean loss -4.55%
 
-#### THE MECHANISM
+#### THE MECHANISM  *(corrected -- see CORRECTION note below)*
 
-    P = C . V^2 . f
+Dynamic switching power is
 
-Both libraries are pinned at the SAME P -- 100% cap on every shape, 1.00x measured power. Our
-higher instruction issue is a higher ACTIVITY FACTOR C: more switching per cycle. At fixed P and
-V, higher C forces lower f. **We do not draw more power. We cannot -- we are both capped. We spend
-the same watts on more switching and receive fewer cycles per second in exchange.**
+    P = alpha . C . V^2 . f      (+ a leakage term, roughly V-dependent and workload-independent)
+
+with the terms meaning:
+
+    C       CAPACITANCE. A fixed physical property of the silicon -- wire and gate capacitance
+            laid down at fabrication. It does NOT change with workload. It is the same number
+            when cuBLAS runs as when we run.
+    alpha   ACTIVITY FACTOR. The fraction of switching nodes that actually toggle per clock
+            cycle. THIS is the term the workload moves.
+    alpha.C EFFECTIVE SWITCHED CAPACITANCE -- the product is the quantity that is actually
+            charged and discharged each cycle, and it is the quantity our instruction count
+            moves. C is fixed; we move alpha, so we move alpha.C.
+
+Both libraries are pinned at the SAME P -- 100% cap on every shape, 1.00x measured power, on the
+same silicon so the same C. Our higher instruction issue is a higher **alpha**: every extra
+instruction issued per cycle means more decode, more register-file reads and writes, more
+operand-collector traffic and more ALU toggling, so a larger fraction of that fixed capacitance is
+charged and discharged each cycle. Rearranging at fixed P and fixed V:
+
+    f = P / (alpha . C . V^2)
+
+**A higher alpha forces a lower f.** We do not draw more power. We cannot -- we are both capped.
+We spend the same watts on more switching and receive fewer cycles per second in exchange.
 
 This reconciles everything that looked contradictory across §H27ad/§H27ae/§H27af:
   * power identical                         -> both at the ceiling                        ok
-  * we still lose clock                     -> higher C                                   ok
+  * we still lose clock                     -> higher alpha (activity factor)             ok
   * §H27af V2c locked: same power, both capped, -7%                                       ok
   * §H27af V2b locked: +4% power, no clock loss -> neither was AT the ceiling there, so
     power was free to rise instead of frequency being taken away                          ok
   * §H27ad: 2.54x instructions in 1.01x cycles at identical tensor utilisation -- the
     instructions never cost TIME, they cost CLOCK                                         ok
+
+#### CORRECTION TO THIS SECTION'S ORIGINAL WORDING
+
+The first version of this section wrote the law as `P = C . V^2 . f` and called **C** the
+"ACTIVITY FACTOR". That is wrong and it was my error. C is CAPACITANCE and it is fixed by the
+silicon; **alpha** is the activity factor and it is what the workload changes. The two were
+conflated under one symbol.
+
+**The arithmetic and the conclusion are unaffected** -- the correlation, the slope, the grouped
+monotonicity and the falsification test all stand exactly as measured, because only the NAMING was
+wrong. The term that varies with workload was always the one being pointed at; it was simply given
+the wrong letter. Nothing downstream of this section needs re-running.
 
 #### THE PREDICTION THIS MAKES, AND HOW TO FALSIFY IT
 
@@ -21880,6 +21911,15 @@ held to, and this one gets it too.
     the ncu dynamic counts of §H27ad. ncu measured 2.54x on V1 where the nsys issue counter says
     2.07x -- the two instruments disagree by ~20%, so the slope's absolute value is soft even
     though the ranking is consistent.
+  * **alpha WAS NEVER MEASURED.** No instrument on this box exposes the activity factor. What we
+    measured is the INSTRUCTION RATIO, and we are using it as a PROXY for alpha. The proxy is
+    plausible -- more instructions issued per cycle really does mean more toggling -- but it is a
+    proxy, not the quantity in the equation.
+  * **V may also differ between the two workloads.** DVFS selects (V, f) pairs together, so a
+    lower f can come with a lower V, and V enters the power law squared. We measured f and we
+    measured P; we did not measure V per arm. Attributing the whole effect to alpha is therefore
+    an ASSUMPTION, not a measurement, and part of the observed clock delta could be the voltage
+    leg of the (V, f) pair rather than the activity factor.
 
 #### WHAT THIS RETIRES AND WHAT IT OPENS
 
@@ -21891,3 +21931,215 @@ OPEN: which instructions make up the excess. §H27ad found branches at 3.78x but
 of our total; the remaining ~11M per launch are unclassified. The per-opcode dynamic histogram
 (ncu SASS source counters) is the next measurement, and it now has a clear purpose -- every
 instruction removed is predicted to buy 6.82%/1.0x of clock back.
+
+**ANSWERED IN §H27ah** -- the per-opcode dynamic histogram was run on four shapes. The excess is
+`R2UR` + `ULEA` (warp-uniform addresses computed per-thread and then promoted), with cuBLAS at
+ZERO `ULEA` on every shape. Branches came in at 8.3-10.3% of the gap, i.e. real but never the
+largest term, exactly as the 8.8% figure above suggested.
+
+### §H27ah — **THE PER-OPCODE DYNAMIC HISTOGRAM NAMES THE EXCESS.** Across four shapes, three tile configs and three layouts the SAME TWO OPCODES dominate the gap — `R2UR` and `ULEA` — and **cuBLAS issues `ULEA` exactly ZERO times in every single case**. The reading: we compute warp-uniform addresses PER THREAD and then promote them to uniform; cuBLAS's addresses are uniform from the start.
+
+`loud-tree-grows-fin-03`, H200 GPU 1, commit `dbd1421`, `tools/h27ah_opcode_hist.sh`.
+
+    collect : ncu --set detailed --section SourceCounters --launch-count 1
+              (one launch per arm per shape)
+    export  : ncu --import ... --page source --print-source sass --csv
+
+That export gives **`Instructions Executed` PER SASS LINE** — a true DYNAMIC count, weighted by how
+many times each line actually ran. It is not a static code-size census.
+
+#### WHY DYNAMIC IS THE ONLY MEASUREMENT THAT MEANS ANYTHING HERE
+
+Our mainloop **LOOPS** where cuBLAS **UNROLLS**. A static SASS opcode count therefore compares one
+copy of our loop body against N inlined copies of theirs, and the ratio it produces is an artefact
+of unroll factor, not of work done. §H27ac warned about exactly this confound and then acted on it
+anyway:
+
+  * **§H27ac LEAD 1 (the uniform datapath)** was a STATIC count.
+  * **§H27ac LEAD 2 (STSM vs STS)** was a STATIC count, and §H27ad then showed it **does not apply
+    to this config at all** — neither kernel uses `stsm` here (metric 0 for both), and the static
+    dump that suggested it came from `box_src/probe.sass`, a DIFFERENT config.
+
+**This measurement supersedes both.** LEAD 2 is dead (already killed in §H27ad). LEAD 1 is now
+promoted from hypothesis to measured result, but on dynamic counts and with a sharper name: the
+issue is not "cuBLAS uses U-forms and we do not", it is that **we produce the uniform value on the
+per-thread path and then move it across**.
+
+#### TOTALS — DYNAMIC INSTRUCTIONS EXECUTED, ONE LAUNCH
+
+    shape                          ours            cuBLAS         ratio
+    V1   2048x512x16384   tn      12,590,432       5,190,716      2.43x
+    V2c  2048x50304x16384 tn     923,599,623     397,157,914      2.33x
+    V7   16384x2048x2048  nn      33,969,919      18,271,094      1.86x
+    V8d  16384x2048x50304 nt     677,560,476     382,502,330      1.77x
+
+Four shapes, three tile configs, three layouts (tn, nn, nt). The ratio never drops below 1.77x.
+
+#### CROSS-CHECK AGAINST THE INDEPENDENT INSTRUMENT
+
+§H27ac's per-kernel nsys `issue` counters (free rows) measured the same four shapes:
+
+    shape    ncu dynamic    nsys issue    ncu is ...    free-clock loss (§H27ag)
+    V1          2.43x          2.07x        +17.4%          -6.80%
+    V2c         2.33x          2.18x         +6.9%          -5.52%
+    V7          1.86x          1.80x         +3.3%          -1.08%
+    V8d         1.77x          1.81x         -2.2%          +0.61%
+
+**The two instruments disagree by up to ~17-20%.** The magnitude is therefore SOFT and the
+per-shape absolute ratio should not be quoted to more than the leading digit or two.
+
+Recorded precisely, because "the ranking is trustworthy" is not quite what the numbers say:
+
+  * Both instruments put **V1 and V2c in the high group and V7 and V8d in the low group** — that
+    grouping is robust and it is the part that matters.
+  * **Within each pair the two instruments INVERT.** nsys ranks V2c (2.18x) above V1 (2.07x) and
+    V8d (1.81x) above V7 (1.80x); ncu ranks V1 above V2c and V7 above V8d. Both inversions are
+    inside the instruments' own ~17% disagreement, so neither ordering is resolved by this data.
+  * Worth noting for whoever picks this up: **the ncu ordering matches the free-clock loss on all
+    four shapes and the nsys ordering matches on neither pair.** Derived from the table above,
+    ncu-ratio vs clock-loss over these four points gives r = -0.996, slope -10.6% clock per 1.0x.
+    **Four points. Do not treat that as a better slope than §H27ag's fifteen-point -6.82%** — it is
+    a suggestive coincidence on a tiny sample, recorded so it is not lost, not a result.
+
+#### PER-SHAPE TOP CONTRIBUTORS TO THE GAP
+
+Columns: ours, cuBLAS, difference, and that difference as a share of the shape's total gap.
+
+**V1, total gap +7,399,716**
+
+    opcode          ours       cuBLAS         diff     share
+    IMAD       1,517,056        6,272   +1,510,784     20.4%
+    R2UR       1,050,112        4,096   +1,046,016     14.1%
+    ULEA       1,025,792            0   +1,025,792     13.9%
+    BRA        1,152,980      388,591     +764,389     10.3%
+    UMOV         875,648      185,472     +690,176      9.3%
+    LOP3         535,552      126,464     +409,088      5.5%
+    ISETP        595,456      223,744     +371,712      5.0%
+    SHF          343,040        3,072     +339,968      4.6%
+
+**V2c, total gap +526,441,709**
+
+    opcode          ours       cuBLAS         diff     share
+    LOP3     115,959,168    7,527,742 +108,431,426     20.6%
+    R2UR     103,123,200      106,322 +103,016,878     19.6%
+    ULOP3     61,173,360       30,480  +61,142,880     11.6%
+    SHF       61,241,520      153,088  +61,088,432     11.6%
+    BRA       62,210,649   18,582,184  +43,628,465      8.3%
+    ULEA      43,349,784            0  +43,349,784      8.2%
+    VIADD     40,311,360            0  +40,311,360      7.7%
+    IMAD      39,512,304      230,852  +39,281,452      7.5%
+
+**V7, total gap +15,698,825**
+
+    opcode          ours       cuBLAS         diff     share
+    LOP3       2,901,280      393,590   +2,507,690     16.0%
+    ULOP3      2,494,064       11,328   +2,482,736     15.8%
+    R2UR       2,113,536       26,970   +2,086,566     13.3%
+    UMOV       2,533,836      714,102   +1,819,734     11.6%
+    ULEA       1,788,360            0   +1,788,360     11.4%
+    USHF       1,576,288       32,004   +1,544,284      9.8%
+    BRA        2,379,781      841,429   +1,538,352      9.8%
+    SHF        1,451,824       51,264   +1,400,560      8.9%
+
+**V8d, total gap +295,058,146**
+
+    opcode          ours       cuBLAS         diff     share
+    ULOP3     61,173,360       11,328  +61,162,032     20.7%
+    LOP3      64,668,960    7,342,454  +57,326,506     19.4%
+    R2UR      51,527,680       26,970  +51,500,710     17.5%
+    ULEA      42,487,240            0  +42,487,240     14.4%
+    UMOV      53,189,068   14,611,942  +38,577,126     13.1%
+    USHF      37,286,240       32,004  +37,254,236     12.6%
+    SHF       35,433,296       51,264  +35,382,032     12.0%
+    IMAD      32,550,832       86,276  +32,464,556     11.0%
+
+Read the shares correctly: they are shares of the NET gap, and the V8d column sums to **120.7%**.
+That is not an arithmetic error — it means V8d has opcodes running the OTHER way (cuBLAS issuing
+more than us) whose negative contributions the listed positives have to overshoot. The same effect
+is visible directly on V1 as `UIADD3`, below. V1 sums to 79.1%, V2c to 95.1%, V7 to 96.6%.
+
+#### THE DIAGNOSTIC PAIR — THIS IS THE CENTREPIECE
+
+    opcode   shape   ours           cuBLAS
+    R2UR     V1        1,050,112         4,096
+             V2c     103,123,200       106,322
+             V7        2,113,536        26,970
+             V8d      51,527,680        26,970
+    ULEA     V1        1,025,792             0
+             V2c      43,349,784             0
+             V7        1,788,360             0
+             V8d      42,487,240             0
+
+`R2UR` moves a value from a per-thread register into a **UNIFORM register**. `ULEA` then does
+**uniform address arithmetic** on it.
+
+**cuBLAS issues `ULEA` exactly ZERO times on every shape tested, and `R2UR` essentially zero**
+(4,096 / 106,322 / 26,970 / 26,970 against our 1.05M / 103.1M / 2.11M / 51.5M).
+
+The reading: **we compute warp-uniform addresses PER THREAD and then promote the result to
+uniform. cuBLAS's addresses are uniform from the start, so it needs neither instruction.** A
+warp-uniform address computed per-thread is **the same value calculated 32 times**.
+
+This is not a subtle inefficiency at the margin. It is present on all four shapes, all three tile
+configs and all three layouts, and it is the only pattern in the whole histogram where one library
+is at zero and the other is in the tens of millions.
+
+**The corroborating asymmetry on V1**: cuBLAS issues **6,272** `IMAD`s where we issue
+**1,517,056** — a **242x** difference on plain integer multiply-add, and it is V1's single largest
+gap term at 20.4%. Integer multiply-add is what address computation is made of.
+
+#### ALSO RECORDED
+
+  * **`BRA` is 8.3-10.3% of the gap on every shape** (V1 10.3%, V2c 8.3%, V7 9.8%, V8d 9.8%). Our
+    mainloop loops where cuBLAS unrolls. It is REAL and it is remarkably stable across shapes, but
+    it is **never the largest term** on any of the four. This is consistent with §H27ad's branch
+    class counter (3.78x, 8.8% of our total on V1) and it keeps that lead alive at roughly its
+    previously-measured size — no larger.
+  * **`BSSY` 235,008 and `BSYNC` 284,544 on V1, against cuBLAS's ZERO.** These manage
+    reconvergence points, so their presence at all is the statement: **our code has branch
+    divergence and theirs does not.**
+  * **`UIADD3` runs the OTHER way on V1** — ours 1,121,920 vs cuBLAS 1,887,808, a difference of
+    **-765,888** in our favour on the raw count. **This is not a defect and must not be "fixed".**
+    It is cuBLAS doing on the CHEAP UNIFORM path what we do on the EXPENSIVE PER-THREAD path. A
+    uniform instruction issues once per warp; the per-thread equivalent issues for 32 lanes. Them
+    having MORE uniform integer adds than us is the same finding as the R2UR/ULEA pair, seen from
+    the other side.
+
+#### TWO PARSING TRAPS, BOTH PAID FOR
+
+  * **The exported CSV's FIRST line is a `"Kernel Name"` row; the real header is line 2.** Feeding
+    the file straight to `csv.DictReader` does not error — it silently yields **ZERO for every
+    column** and produces a table of all-zeros that looks like a legitimate (and very exciting)
+    result. Skip line 1.
+  * **A leading predicate (`@P0`, `@!P1`) must be stripped before taking the opcode**, otherwise
+    predicated instructions land in their own bogus bucket and the real opcode is undercounted by
+    exactly the amount that appears in the fake one.
+
+Both of these produce plausible-looking output rather than a crash. That is the dangerous kind.
+
+#### WHAT THIS MAKES ACTIONABLE
+
+The target is no longer "cut instructions" in the abstract, which was never a task anyone could
+start. It is now specific and it names the code path:
+
+**STOP COMPUTING WARP-UNIFORM ADDRESSES PER-THREAD AND THEN PROMOTING THEM.**
+
+§H27ag's slope predicts **~6.82% of clock returned per 1.0x of instruction ratio removed**, so the
+payoff is quantitative and the test is direct: **change the address path, re-measure the clock, and
+check the movement against the prediction.** V1 alone carries R2UR + ULEA + IMAD = 48.4% of its
+gap, so this is not a rounding-error target.
+
+**If the clock does not move as predicted, §H27ag is wrong and all of this is bookkeeping.** That
+is the same falsification standard the PDL, secondary-stream and split-K-reduce claims were held
+to, and it applies here without exception.
+
+#### WHAT IS NOT YET KNOWN — STATED SO IT IS NOT SKIPPED
+
+**Which SOURCE-LEVEL construct emits the R2UR/ULEA pattern is unknown.** The histogram names the
+INSTRUCTIONS; it does not name the line of CUDA that generates them. Without that mapping the
+actionable statement above is a direction, not a patch.
+
+That mapping is the next investigation, and the instrument is the same tool: **ncu's
+SASS-to-source correlation**, which the `--page source` export can also provide. Do not start
+rewriting the address path by guesswork before it is run — §H27ac's LEAD 2 is what guessing from
+a dump that did not match the config costs.
