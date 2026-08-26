@@ -22300,7 +22300,18 @@ SASS check locally before any GPU time is spent.
 
 ---
 
-### §H27aj — **THE INSTRUCTION CUT IS REAL AND BUYS NOTHING, AND THE CLOCK PREMISE IS REFUTED ON THIS SHAPE.** 24.4% fewer k-loop instructions moves performance **−0.22 ± 0.46** at locked clocks against a **0.72-point** floor. The free-clock arm cannot resolve anything (floor **3.16**). And the decisive number: peak power over the entire free run was **293 W against a 700 W cap** — we were never power-limited, so the α→power→clock mechanism could not have been operating here at all.
+> **RETRACTION BANNER (§H27ak, same day).** FINDING 2 BELOW IS WRONG AND IS WITHDRAWN.
+> The "293 W against a 700 W cap" reading was a SAMPLING ARTIFACT of my own instrument,
+> not a property of the shape. `h27zdf_paired.sh` starts a fresh process per arm --
+> context create, allocate, correctness check, teardown -- so the kernel is a sliver of
+> wall-clock and a 200 ms sampler mostly watches an IDLE GPU. §H27af sampled the SAME
+> shape under sustained load and measured **ours 692 W mean / 703 W max / cap_active
+> 100%**, cuBLAS **667 W / 715 W / 99%**. **V1's shape IS fully power-capped.** The
+> "128 CTAs is under one wave" argument is also backwards: one CTA fills an entire SM
+> here, so 128 CTAs on 132 SMs is ~97% of the machine -- a FULL wave, which is exactly
+> why it caps. FINDINGS 1 and 3, the paired tables, and the floors are unaffected.
+
+### §H27aj — **THE INSTRUCTION CUT IS REAL AND BUYS NOTHING AT LOCKED CLOCK.** ~~AND THE CLOCK PREMISE IS REFUTED ON THIS SHAPE.~~ *(second clause retracted, see banner)* 24.4% fewer k-loop instructions moves performance **−0.22 ± 0.46** at locked clocks against a **0.72-point** floor. The free-clock arm cannot resolve anything (floor **3.16**). And the decisive number: peak power over the entire free run was **293 W against a 700 W cap** — we were never power-limited, so the α→power→clock mechanism could not have been operating here at all.
 
 §H27ai cut the instructions and verified the cut in SASS. This section measures what
 the cut is worth. **Correctness first: 10/10 PASS, `maxRelErr 0.00000` on every arm**,
@@ -22339,7 +22350,7 @@ instructions were already hidden behind tensor work — they cost power, not tim
 Pinning the clock removes the only channel through which removing them could pay, so
 a null at locked clocks is what the earlier measurement *requires*.
 
-#### FINDING 2 — THE POWER PREMISE DOES NOT HOLD ON THIS SHAPE. This is the important one.
+#### ~~FINDING 2 — THE POWER PREMISE DOES NOT HOLD ON THIS SHAPE.~~ **RETRACTED — see the banner. The premise holds; the instrument was wrong.**
 
 Dense sampling across the whole free run, 200 ms cadence:
 
@@ -22392,3 +22403,65 @@ largest single inefficiency measured anywhere in this campaign.
 - **The free-clock floor of 3.16 points** says free-clock A/B on this box cannot
   settle anything under ~3 points. Prior free-clock adoptions under that size should
   be re-read with this in mind.
+
+---
+
+### §H27ak — **§H27aj's FINDING 2 IS RETRACTED. V1's SHAPE IS FULLY POWER-CAPPED (692 W, cap_active 100%) AND WE PAY A 6.8% CLOCK DEFICIT THERE.** The clock track is NOT closed — it was never tested, because §H27aj measured `%cuB` (free-clock floor **3.16 points**) instead of measuring the CLOCK, which is the variable the mechanism actually predicts.
+
+#### THE AUDIT THAT CAUGHT IT
+
+§H27aj concluded the power premise could not hold on `2048x512x16384` because a dense
+sampler saw **max 293 W against a 700 W cap**. §H27af had already profiled **the same
+shape on the same box**. Re-reading its 103,026 samples:
+
+| variant | arm | n | cap_active | P mean | P max | clock mean |
+|---|---|---|---|---|---|---|
+| V1 `2048x512x16384` | ours   | 3308 | **100%** | **692 W** | 703 W | **1432 MHz** |
+| V1 `2048x512x16384` | cuBLAS | 3408 | 99%      | 667 W     | 715 W | **1537 MHz** |
+
+Across all 15 shapes: **cap_active 102,364 / 103,026 = 99.4%**, global P max **715 W**.
+Both libraries are pinned to the power cap on every shape in the set.
+
+**The 293 W was my instrument, not the hardware.** `h27zdf_paired.sh` launches a fresh
+process per arm — CUDA context creation, allocation, the correctness pass, teardown —
+so the kernel occupies a small fraction of wall-clock. A 200 ms sampler therefore
+spends most of its samples on an idle GPU. §H27af avoided this with sustained 10 s
+windows and a 4 s settling discard, which is why it saw 692 W.
+
+The secondary argument was wrong too. "128 CTAs on 132 SMs is under one wave" implied
+low utilisation — but §H27zY established that **one of our GEMM CTAs fills an entire
+SM** (100% of dynamic smem, 98.4% of registers, 1 CTA/SM). 128 of 132 SMs is ~97% of
+the machine: a *full* wave. Sub-one-wave in CTA count is full occupancy in hardware.
+
+#### WHAT THIS RESTORES — the mechanism is live on this shape, and it is large
+
+At free clocks on V1's pin we draw **more** power than cuBLAS (692 vs 667 W, 1.04x) and
+run **105 MHz slower** (1432 vs 1537) — a **6.8% clock deficit** at a 2.43x instruction
+ratio. That is §H27ag's r = −0.742 relationship, present on the exact shape §H27aj
+declared it absent from.
+
+#### WHY §H27aj STILL FAILED TO SEE THE EFFECT — it measured the wrong variable
+
+§H27aj's free arm reported `%cuB` with a **null-control floor of 3.16 points**. Clock,
+by contrast, is directly readable and far more stable. The mechanism predicts a change
+in CLOCK; the experiment only ever looked at a derived, noisier quantity.
+
+**THE OUTSTANDING TEST, and it is cheap.** Cutting 24.4% of k-loop instructions moves
+the ratio 2.43x → ~1.84x. At §H27ag's slope of −6.82% per 1.0x that predicts **≈ +4%
+clock**. Protocol must be §H27af's, not §H27aj's: sustained load, 10 s windows, 4 s
+settling discard, measuring `clocks.sm` and `power.draw` for `base` vs `cs` vs
+`dw_uad_cs` — **not** `%cuB`. Falsifiable in one direction: if clock does not move, the
+instruction→clock channel is dead and the track closes for real.
+
+#### WHAT DOES NOT CHANGE
+
+§H27aj FINDINGS 1 and 3 stand. At **locked** clock the cut is worth **−0.22 against a
+0.72 floor — zero** — and that remains the correct, predicted result, because pinning
+the clock removes the only channel the mechanism has. `dw_uad` remains a real
+regression (−7.33 locked, −4.44 free) and must not ship. `cs` remains bit-exact, free
+and banked.
+
+**The ceiling arithmetic also stands**: even a perfectly recovered clock is worth ~104%,
+and tensor fill ~109%. Neither reaches the 130% target; only data movement (2.43x,
+§H27z.82) does. Settling the clock question is worth doing because it is cheap and
+because "untested" invites re-litigation — but it is not the path to 130%.
