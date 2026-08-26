@@ -21701,3 +21701,193 @@ sampling with a single library in flight.
 
 That result is from a different instrument (per-kernel clock via GPU_METRICS) and stands on its own.
 What is open is WHY we are handed less clock, not WHETHER we are.
+
+### §H27af — PER-VARIANT POWER ATTRIBUTION, LOCKED 1400. We match cuBLAS on power (**1.00-1.05x**), and **power does NOT explain the clock loss** — the worst-affected shape has ZERO power excess. Two measurement bugs had to be killed first, one of which produced a completely convincing false result.
+
+`loud-tree-grows-fin-03`, H200 GPU 1, GPU 0 idle, commit `3b17c6e`. `tools/h27af_power_attrib.sh`:
+10 s window per arm per rep, 3 reps, first 4 s discarded as sensor ramp, nvidia-smi at 99 Hz,
+94,048 per-instant samples. **Every arm settled** (0 "still moving", 0 "too few").
+
+Attribution works by PHASE MARKERS, not separate processes: the two timing windows are sequential
+(cuBLAS for TARGET_MS, then ours), and with `BLUBLAS_PHASE_MARKS=1` the binary stamps the wall
+clock at each window's edges in nvidia-smi's own format, so the sample stream splits exactly. One
+process is DELIBERATE — both arms then see the same thermal state and clock history, seconds apart,
+instead of reintroducing the cold-card order bias.
+
+#### TWO BUGS THAT HAD TO DIE FIRST — the first one produced a fully convincing false result
+
+**BUG 1: a 400 ms window never lets the power sensor settle.** Version 1 of this probe reported
+ours at **2.3-2.6x cuBLAS's power on every variant**, and 73.2% cap-active on V2c against cuBLAS's
+0.0%. It was ALL an artefact. The per-instant data showed every window still climbing at its end:
+
+    V4  cublas   103 -> 140 -> 201 -> 263 W   across its 400 ms window
+    V4  ours     368 -> 423 -> 486 -> 555 W   across its 400 ms window
+
+Each rep runs idle -> cuBLAS -> ours, so power climbs monotonically and WHOEVER GOES SECOND LOOKS
+WORSE. cuBLAS read low because it follows idle; we read high because we follow cuBLAS. The cap flag
+was confounded identically — the cap fires late in the rep and late is always us. **The aggregate
+table was entirely persuasive and entirely wrong; only the per-instant series exposed it.**
+
+**BUG 2: `MAX_IT = 2000` silently truncated the window.** Asking for 10 s delivered 500 ms on fast
+shapes (2000 iters x ~0.25 ms). Harmless for TFLOPS, fatal for power. Now `BLUBLAS_BENCH_MAX_IT`,
+default unchanged at 2000 so no existing measurement moves.
+
+**And §H27zA-BUG for the THIRD time:** `strings "$BIN" | grep -q PHASE` under `set -o pipefail`
+REJECTS when the match IS found — `grep -q` exits on first hit, closes the pipe, `strings` dies on
+SIGPIPE (141), pipefail promotes it to failure. Snapshot into a variable before matching. Never
+pipe into a short-circuiting grep while pipefail is on.
+
+#### THE RESULT
+
+    V     power   cap ours/cuB    clock ours/cuB    clock loss
+    V1    1.05x   100%  /  0%     1332 / 1410        -5.53%
+    V2    1.02x   100%  /  0%     1395 / 1410        -1.06%
+    V2b   1.04x   69.5% /  0%     1409 / 1410        -0.07%
+    V2c   1.00x   100%  / 100%    1277 / 1373        -6.99%
+    V3    1.00x   100%  / 99.3%   1398 / 1400        -0.14%
+    V4    1.00x   100%  / 100%    1366 / 1380        -1.01%
+    V5    1.00x   100%  / 100%    1367 / 1361        +0.44%
+    V6    1.02x   94.8% /  0%     1405 / 1410        -0.35%
+    V7    1.02x    0%   /  0%     1410 / 1410         0.00%
+    V7b   1.00x   100%  / 100%    1384 / 1397        -0.93%
+    V7c   1.03x   95.3% /  0%     1400 / 1410        -0.71%
+    V8    1.02x    0%   /  0%     1410 / 1410         0.00%
+    V8b   1.01x    0%   /  0%     1410 / 1410         0.00%
+    V8c   1.00x   100%  / 100%    1389 / 1395        -0.43%
+    V8d   1.00x   100%  / 100%    1380 / 1387        -0.50%
+                                               mean   -1.15%
+
+#### FINDING 1 — WE MATCH cuBLAS ON POWER
+
+1.00-1.05x, never more, on any shape. Settled, 99 Hz, phase-separated.
+
+#### FINDING 2 — POWER DOES NOT EXPLAIN THE CLOCK LOSS
+
+The extremes contradict each other outright:
+
+    V1    +5% power  ->  -5.53% clock     most power excess
+    V2c    0% power  ->  -6.99% clock     WORST clock loss, ZERO power excess
+    V2b   +4% power  ->  -0.07% clock     high excess, no loss at all
+
+If power drove clock, V2c would show no loss and V2b a large one. Both are backwards. **Cap state
+does not predict it either**: V7/V8/V8b sit at 0% cap for both arms with identical clocks, while
+V2c sits at 100% for both and loses 7%.
+
+#### FINDING 3 — THIS DAMAGES THE INSTRUCTION THEORY
+
+§H27ad measured **2.54x the instructions on V1**, and V1's power excess is **+5%**. So our extra
+instructions are worth at most a few percent of total draw — power is dominated by tensor cores and
+DRAM, which are near-identical between the two libraries. Removing EVERY extra instruction would
+recover ~5% of power on the one shape where any excess exists, and **on V2c, where the clock loss
+is worst, there is no power excess to remove at all.**
+
+Instruction-cutting is therefore NOT the general clock lever proposed in §H27ac. It may still
+matter on V1 specifically. It cannot explain V2c.
+
+#### FINDING 4 — THE LOCK IS NOT HOLDING AS CLEANLY AS §H27ac REPORTED
+
+On six shapes (V2c, V4, V5, V7b, V8c, V8d) BOTH libraries sit at 100% cap with clocks of 1361-1397,
+i.e. the 1400 lock is not holding for either. §H27ac's tolerance was `min(ours,cuBLAS) >= F-40`,
+which passes anything above 1360, so those rows were reported LOCK HELD while mildly capped. The
+§H27ac conclusion (100.42% at equal clock) is unaffected — both arms were equally capped, so the
+comparison stands — but the "LOCK HELD" label was too generous and the tolerance should tighten.
+
+#### WHAT THIS RUN CANNOT ANSWER
+
+It is at LOCKED 1400, where the mean loss is only -1.15% and concentrated in two shapes. **The
+-3.42% gap of §H27ac is at FREE clocks**, a regime this instrument has not yet probed. That run is
+next and is the one that matters.
+
+### §H27ag — **THE MECHANISM IS FOUND.** At free clocks power is **1.00x** and both libraries are **100% capped on every shape**, yet our clock is lower — and the loss tracks the INSTRUCTION RATIO at **r = -0.742**, slope **-6.82% clock per 1.0x**. It is not that we draw more power. It is that we spend the same power on more switching and are handed fewer cycles.
+
+`loud-tree-grows-fin-03`, H200 GPU 1, GPU 0 idle at 32-34 C, commit `3b17c6e`.
+`tools/h27af_power_attrib.sh LOCK=free`, 10 s windows, 3 reps, first 4 s discarded,
+nvidia-smi at 99 Hz, **103,027 per-instant samples, every arm settled** (0 still-moving, 0 too-few).
+
+#### THE RESULT
+
+    V       ours  cuBLAS   clk loss   issue ratio (§H27ac, free rows)
+    V1      1426    1530     -6.80%      2.07x
+    V2      1474    1528     -3.53%      2.27x
+    V2b     1507    1543     -2.33%      2.20x
+    V2c     1386    1467     -5.52%      2.18x
+    V3      1492    1496     -0.27%      1.56x
+    V4      1467    1476     -0.61%      1.59x
+    V5      1461    1468     -0.48%      1.61x
+    V6      1503    1505     -0.13%      1.61x
+    V7      1551    1568     -1.08%      1.80x
+    V7b     1490    1503     -0.86%      1.81x
+    V7c     1486    1528     -2.75%      1.83x
+    V8      1638    1650     -0.73%      1.82x
+    V8b     1554    1572     -1.15%      1.79x
+    V8c     1477    1481     -0.27%      1.76x
+    V8d     1485    1476     +0.61%      1.81x
+
+    Pearson r = -0.742    slope = -6.82 % clock per 1.0x instruction ratio
+    mean clock loss = -1.73%
+
+    POWER = 1.00x ON ALL FIFTEEN.   CAP = 100% vs 100% ON ALL FIFTEEN.
+
+Grouped by instruction ratio the monotonicity is clean:
+
+    1.56-1.61x   V3,V4,V5,V6                        mean loss -0.37%
+    1.76-1.83x   V7,V7b,V7c,V8,V8b,V8c,V8d          mean loss -0.75%
+    2.07-2.27x   V1,V2,V2b,V2c                      mean loss -4.55%
+
+#### THE MECHANISM
+
+    P = C . V^2 . f
+
+Both libraries are pinned at the SAME P -- 100% cap on every shape, 1.00x measured power. Our
+higher instruction issue is a higher ACTIVITY FACTOR C: more switching per cycle. At fixed P and
+V, higher C forces lower f. **We do not draw more power. We cannot -- we are both capped. We spend
+the same watts on more switching and receive fewer cycles per second in exchange.**
+
+This reconciles everything that looked contradictory across §H27ad/§H27ae/§H27af:
+  * power identical                         -> both at the ceiling                        ok
+  * we still lose clock                     -> higher C                                   ok
+  * §H27af V2c locked: same power, both capped, -7%                                       ok
+  * §H27af V2b locked: +4% power, no clock loss -> neither was AT the ceiling there, so
+    power was free to rise instead of frequency being taken away                          ok
+  * §H27ad: 2.54x instructions in 1.01x cycles at identical tensor utilisation -- the
+    instructions never cost TIME, they cost CLOCK                                         ok
+
+#### THE PREDICTION THIS MAKES, AND HOW TO FALSIFY IT
+
+The slope is quantitative: cutting the instruction ratio should return ~6.82% of clock per 1.0x.
+
+    V1   2.07x -> 1.50x   predicts  +3.9% clock
+    V2   2.27x -> 1.50x   predicts  +5.3% clock
+    V2c  2.18x -> 1.50x   predicts  +4.6% clock
+
+**The test is direct: cut instructions, re-measure clock, check the movement against the
+prediction.** If the clock does not move as predicted, the correlation was spurious and this
+section is wrong. That is the standard the PDL, secondary-stream and split-K-reduce claims were
+held to, and this one gets it too.
+
+#### CAVEATS, STATED PLAINLY
+
+  * **r = -0.742, not 1.0.** Real scatter: V7c has a modest 1.83x ratio but a -2.75% loss;
+    V2b has 2.20x and only -2.33%. Something else is also in play and this does not explain
+    everything.
+  * **Correlation is not causation.** What raises it above a coincidence here is that the
+    competing explanation (we draw more power) is RULED OUT by direct measurement at 1.00x on
+    every shape, and that a physical law predicts exactly this relationship.
+  * **Mean loss -1.73% here vs -3.42% in §H27ac.** Different instrument (device-level nvidia-smi
+    vs per-kernel nsys GPU_METRICS) and a different day. Direction and mechanism agree; the
+    magnitude does not, and the per-kernel figure is the one to trust for absolute values.
+  * The instruction ratios used here are §H27ac's per-kernel `issue` counters at FREE clocks, not
+    the ncu dynamic counts of §H27ad. ncu measured 2.54x on V1 where the nsys issue counter says
+    2.07x -- the two instruments disagree by ~20%, so the slope's absolute value is soft even
+    though the ranking is consistent.
+
+#### WHAT THIS RETIRES AND WHAT IT OPENS
+
+RETIRED: "we draw more power than cuBLAS" -- measured 1.00x on fifteen shapes, settled, at 99 Hz.
+Also retired is §H27af's suggestion that instruction-cutting is not the lever; it IS the lever,
+via activity factor rather than via power draw.
+
+OPEN: which instructions make up the excess. §H27ad found branches at 3.78x but that is only 8.8%
+of our total; the remaining ~11M per launch are unclassified. The per-opcode dynamic histogram
+(ncu SASS source counters) is the next measurement, and it now has a clear purpose -- every
+instruction removed is predicted to buy 6.82%/1.0x of clock back.
