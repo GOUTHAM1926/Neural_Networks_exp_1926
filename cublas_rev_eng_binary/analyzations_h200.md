@@ -22143,3 +22143,128 @@ That mapping is the next investigation, and the instrument is the same tool: **n
 SASS-to-source correlation**, which the `--page source` export can also provide. Do not start
 rewriting the address path by guesswork before it is run — §H27ac's LEAD 2 is what guessing from
 a dump that did not match the config costs.
+
+---
+
+### §H27ai — **THE EXCESS IS REMOVED, AND THE SASS PROVES IT BEFORE ANY GPU RUN.** `R2UR` 8→1 and `ULEA` 7→1 in V1's k-loop, **24.4% fewer instructions per wgmma**. The two knobs that do it already existed and were validated bit-exact — §H27zc2 limited that validation to 192x192, so V1 never got either. `dw` alone is WORSE (+5.1%); it only pays with `uad`, exactly as the mechanism predicts.
+
+§H27ah named the opcodes. This section removes them, and the removal is measured
+**statically, locally, from `cuobjdump`** — no GPU was needed to establish it.
+
+#### THE APPLES-TO-APPLES DENOMINATOR
+
+Both kernels issue **exactly 524,288 wgmma** on V1's pinned shape. That is identical
+tensor work, so dividing by it makes every row below a cost per unit of real work,
+not a cost per kernel:
+
+| per wgmma | ours | cuBLAS | excess | | per wgmma | ours | cuBLAS | excess |
+|---|---|---|---|---|---|---|---|---|
+| **IMAD**  | 2.75 | 0    | **+2.75** | | LOP3   | 0.75 | 0.10 | +0.65 |
+| **R2UR**  | 2.00 | 0    | **+2.00** | | IADD3  | 0.75 | 0.10 | +0.65 |
+| **ULEA**  | 1.25 | 0    | **+1.25** | | SHF    | 0.50 | 0    | +0.50 |
+| UMOV      | 1.25 | 0.21 | +1.04     | | UIADD3 | 1.50 | 2.50 | **−1.00** |
+| **TOTAL** | **16.56** | **6.58** | **2.52×** | | | | | |
+
+2.52× against the 2.43× whole-kernel ratio of §H27ad — **the k-loop is the entire
+story.** Nothing outside it needs to be touched to explain the gap.
+
+Note the last row: we issue **fewer** `UIADD3` than cuBLAS. We are not simply doing
+more of everything. We are doing the same address arithmetic on the *wrong datapath*.
+
+#### WHAT CUBLAS DOES INSTEAD — the whole per-wgmma descriptor cost, from their SASS
+
+```
+HGMMA  R24, gdesc[UR16].tnspA.tnspB, R24
+UIADD3 UR16, UR16, 0x80, URZ        <- A descriptor: walk
+UIADD3 UR18, UR18, 0x80, URZ        <- B descriptor: walk
+```
+
+Two uniform adds, then one rewind (`UIADD3 UR16, UR16, -0x200`) at the bottom of the
+group. **They never rebuild the descriptor. They walk it.** That is why their `R2UR`
+and `ULEA` counters read zero — there is nothing to cross and nothing to recompute.
+
+#### THE SMOKING GUN — ptxas ALREADY GETS IT RIGHT FOR B, IN THE SAME LOOP
+
+```
+B descriptor (uniform, correct)          A descriptor (vector, then crossed -- the waste)
+  UIADD3        UR4, UR4, 0x4000           SHF.R.U32.HI  R2, RZ, 0x4, R2
+  ULOP3.LUT     UR4, UR4, 0x3fc00          LOP3.LUT      R2, R2, 0x2000000
+  USHF.R.U32.HI UR4, URZ, 0x4, UR4         R2UR          UR16, R2          <-- the crossing
+  ULOP3.LUT     UR4, UR4, 0x2000000        IADD3         R8, P0, R5, 0x80
+  UMOV          UR18, UR4                  IMAD.X        R9, RZ, RZ, R5, P0
+                                           R2UR          UR24, R8
+```
+
+Same descriptor, same `>>4`, same OR-mask. One is free; the other costs six
+instructions. This kills the "Hopper just needs R2UR for descriptors" reading dead —
+the compiler emits the cheap form five lines away. The difference is whether the
+inputs are provably warp-uniform.
+
+#### THE THIRD SOURCE — `ULEA` IS 100% THE MODULO, AND THE OLD REFUTATION DOES NOT APPLY
+
+`LOAD_PIPE_DEPTH` 6 is not a power of two, so `(stage + 1) % 6` compiles to a
+magic-number division:
+
+```
+UIADD3 UR4, UR7, 0x1        UIMAD.WIDE UR8, UR4, 0x2aaaaaab      <- magic for /3
+ULEA.HI UR9, UR9, UR9, URZ, 0x1                                  <- ...with the shift, /6
+UIMAD UR4, UR9, -0x6, UR4   ISETP.NE / SEL / LOP3                <- x - (x/6)*6, then phase ^=
+```
+
+Seven instructions per iteration, and it is the **entire** source of our `ULEA`.
+cuBLAS advances with a predicated compare-and-reset instead:
+`@UP3 UMOV UR13, URZ / @!UP3 UIADD3 UR13, UR13, 0x1`.
+
+**§H27zdy's note at the SKEW advance does NOT refute this.** It recorded that
+"replacing `% LOAD_PIPE_DEPTH` with a branchless compare-select moved IMAD only
+33 → 31 and R2UR not at all" — but it measured `IMAD` and `R2UR`, and the modulo
+emits **neither**. The two opcodes it actually produces, `ULEA` and `UIMAD`, were
+never counted. A null on the wrong counters is not a null.
+
+#### THE CHANGE
+
+- **new slot 40 `STAGE_CSEL`** — compare-select stage advance. `false` reproduces
+  `(s+1) % DEPTH` exactly, so the default binary is byte-identical.
+- **`advance_stage<DEPTH, CSEL>` helper**, all six advance sites routed through it.
+  The one remaining `%` at the SKEW `while` predicate is untouched (V1 is not SKEW).
+- **four configs on V1's pin**, adding `dw` / `uad` / `cs` one at a time so each is
+  separately attributable. `DESC_WALK` and `UNIFORM_A_DESC` are **not new** — both
+  were already validated bit-exact, but §H27zc2 restricted that to 192x192.
+
+#### THE RESULT — static, innermost HGMMA loop, `cuobjdump`, per wgmma
+
+| variant | instr/wgmma | vs base | R2UR | ULEA | IMAD | UIMAD |
+|---|---|---|---|---|---|---|
+| base (V1 today)  | 19.50 | —          | 8 | 7 | 11 | 2 |
+| `+cs`            | 19.25 | −1.3%      | 8 | 6 | 11 | **0** |
+| `+dw`            | 20.50 | **+5.1%**  | 8 | 5 |  8 | 2 |
+| `+dw +uad`       | 15.00 | **−23.1%** | **1** | **1** | 8 | 0 |
+| `+dw +uad +cs`   | 14.75 | **−24.4%** | **1** | **1** | **6** | 0 |
+
+**`dw` alone is worse, and that is the mechanism confirming itself.** DESC_WALK gives
+one base plus compile-time offsets, but while `row0` remains a runtime value A's base
+is still born on the vector datapath — so the walk is added *on top of* the rebuild
+instead of replacing it. `UNIFORM_A_DESC` folds `row0` to a literal, which is what
+lets the base stay uniform. They are a pair; neither is a knob you turn alone.
+
+#### WHAT IS AND IS NOT ESTABLISHED
+
+Established, locally and reproducibly: the static k-loop shrinks 24.4% per wgmma and
+the two named opcodes drop by 8× and 7×.
+
+**Not yet measured: dynamic instruction count, correctness, clock, TFLOPS.** `uad`
+has never run on a 128x128 tile — §H27zc2's validation was 192x192 only, and §H27zm
+records a real bug (`nchunk0_eff` on SPLIT_M tiles) that this exact knob exposed
+before. Correctness is a gate, not a formality.
+
+The prediction to test, from §H27ag's slope of −6.82% clock per 1.0× instructions:
+cutting the k-loop 24.4% should return roughly **1.5–1.7% of clock**, on top of any
+direct cycle saving. §H27ac put us at 100.42% at equal clock with a −3.42% clock
+deficit; closing half that deficit is the target.
+
+#### WHAT THIS DOES NOT CLOSE
+
+14.75 against cuBLAS's 6.58 — this is about **40% of the k-loop gap**. The remainder
+is unroll depth: cuBLAS fits **16 static HGMMA** per loop body against our **4**, so
+every loop-carried cost (branch, ISETP, `WARPGROUP.ARRIVE`, the mbarrier wait) is
+amortised 4× better. `_KLOOP_UNROLL` (slot 33) already exists and is the next lever.
