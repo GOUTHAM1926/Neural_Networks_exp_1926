@@ -22297,3 +22297,98 @@ loop-carried cost 4× better (OPEN 1) *and* gives the scheduler enough in-flight
 to hide the pre-HGMMA phase (OPEN 2). It is also exactly the 60% of the k-loop gap
 §H27ai does not close. Same discipline as this section: one knob at a time, static
 SASS check locally before any GPU time is spent.
+
+---
+
+### §H27aj — **THE INSTRUCTION CUT IS REAL AND BUYS NOTHING, AND THE CLOCK PREMISE IS REFUTED ON THIS SHAPE.** 24.4% fewer k-loop instructions moves performance **−0.22 ± 0.46** at locked clocks against a **0.72-point** floor. The free-clock arm cannot resolve anything (floor **3.16**). And the decisive number: peak power over the entire free run was **293 W against a 700 W cap** — we were never power-limited, so the α→power→clock mechanism could not have been operating here at all.
+
+§H27ai cut the instructions and verified the cut in SASS. This section measures what
+the cut is worth. **Correctness first: 10/10 PASS, `maxRelErr 0.00000` on every arm**,
+including `dw_uad` on a 128x128 tile, which had never run there (§H27zc2 validated it
+on 192x192 only). The correctness gate is cleared and bit-exact.
+
+#### THE INSTRUMENT — `h27zdf_paired.sh`, 21 reps, 6 arms, PIN entered TWICE as the null
+
+Shape `2048x512x16384 tn`, one config per process, 400 ms window, rotated arm order.
+
+**LOCKED 1400** (achieved 1410 MHz, min = max, lock verified):
+
+| arm | mean_d vs pin | sd_d | verdict |
+|---|---|---|---|
+| NULL_B *(identical binary)* | **−0.07** | 0.65 | **method error → floor 0.72** |
+| CS | −0.10 | 0.55 | not separable |
+| DW | +0.02 | 0.62 | not separable |
+| **DW_UAD** | **−7.33** | 0.45 | **believable — a real regression** |
+| DW_UAD_CS | −0.22 | 0.46 | not separable |
+
+**FREE clocks:**
+
+| arm | mean_d vs pin | sd_d | verdict |
+|---|---|---|---|
+| NULL_B *(identical binary)* | **+0.48** | 2.68 | **floor 3.16 — the arm is unusable** |
+| CS | −0.83 | 2.66 | not separable |
+| DW | −0.31 | 3.31 | not separable |
+| **DW_UAD** | **−4.44** | 2.93 | believable — regression confirmed in both phases |
+| DW_UAD_CS | −0.70 | 2.80 | not separable |
+
+#### FINDING 1 — AT A FIXED CLOCK THE CUT IS WORTH ZERO, AND THAT CONFIRMS §H27ad
+
+This is not a disappointing null; it is the predicted one. §H27ad measured **2.54×
+dynamic instructions in the SAME cycles at the SAME tensor utilisation**. Those
+instructions were already hidden behind tensor work — they cost power, not time.
+Pinning the clock removes the only channel through which removing them could pay, so
+a null at locked clocks is what the earlier measurement *requires*.
+
+#### FINDING 2 — THE POWER PREMISE DOES NOT HOLD ON THIS SHAPE. This is the important one.
+
+Dense sampling across the whole free run, 200 ms cadence:
+
+```
+2531 samples    mean 165 W    MAX 293 W    >200 W: 28.4%    >400 W: 0 (0.0%)
+```
+
+**The cap is 700 W. Nothing ever came close.** The clock had no power reason to fall,
+so nothing about α, activity factor or instruction count could have influenced it here.
+
+The cause is the shape. `2048x512x16384` with a 128x128 tile is
+(2048/128)x(512/128) = **64 tiles**, x2 for split-K = **128 CTAs on 132 SMs — less
+than a single wave**, a ~0.06 ms kernel. V1's pin is far too small to be a power
+experiment. §H27ag's clock mechanism was fitted across 15 shapes including large
+ones; carrying its conclusion onto this shape was an unjustified transfer and is
+retracted for this shape. **§H27ag is not refuted — it was tested somewhere it could
+not apply.**
+
+#### FINDING 3 — `DW_UAD` IS A REAL REGRESSION, AND `CS` ON TOP ERASES IT
+
+−7.33 locked and −4.44 free, both far outside their floors, same sign, consistent.
+Yet `DW_UAD_CS` — two static instructions fewer — sits at −0.22 and −0.70, i.e. back
+at the pin. A 2-instruction delta cannot be worth 7 points, so this is a **cliff, not
+a slope**: `uad` emits TWO mainloop copies (1584 static instructions against 1392),
+and something about that footprint — I-cache, scheduling, register pressure — costs
+more than the arithmetic it saves. **Do not ship `dw_uad`.** `cs` alone is bit-exact,
+free, and inside the floor; keep it.
+
+#### THE CEILING ARITHMETIC — why the clock track cannot reach the 130% target
+
+| path | ceiling | basis |
+|---|---|---|
+| clock | **~104%** | §H27ac: 100.42% at equal clock, −3.42% clock deficit; closing it entirely |
+| tensor fill | **~109%** | cuBLAS measured at 92% tensor active; 100/92 = 1.087 |
+| **memory traffic** | **past 130%** | §H27z.82: ours **10.12 GB** vs cuBLAS **4.16 GB**; reuse recovered 76% vs 93% |
+
+Clock and tensor-fill **cannot arithmetically reach 130% even executed perfectly**.
+Data movement is the only lever with the target inside it, and at 2.43x it is the
+largest single inefficiency measured anywhere in this campaign.
+
+**RECOMMENDATION: park the clock track. Open data movement as the primary line.**
+
+#### WHAT IS BANKED
+
+- `STAGE_CSEL` (`cs`): bit-exact, removes the magic-number division, neutral on
+  performance, **keep**. Instruction count also gates unroll depth, which is the
+  `KLOOP_UNROLL` lever for the idle tensor pipe.
+- **The locked null of 0.72 points** is the most valuable artifact of the day — a
+  trustworthy instrument at this shape and window.
+- **The free-clock floor of 3.16 points** says free-clock A/B on this box cannot
+  settle anything under ~3 points. Prior free-clock adoptions under that size should
+  be re-read with this in mind.
