@@ -24016,3 +24016,63 @@ correct, §H27bc), not load count (identical, §H27b7), not tile geometry waste 
 minimum, §H27b6), not cluster shape (refuted twice). The remaining candidates are how long a
 fetched line stays useful before being re-requested — smem residency, pipeline depth, and the
 order tiles are scheduled in — i.e. **reuse depth, not reuse ratio**.
+
+---
+
+### §H27be — **THE CULPRIT IS NAMED: 67% of our L2 read requests are A, the operand a 1-D cluster cannot multicast — and EVERY clustering route is now closed by measurement.** 2x2 cuts requests 14.6% and costs **36.8 points** to occupancy, reproducing the recorded "-36 pts" to within a point. cuBLAS's 1.97 M is **below what any size-2 clustering can reach**, so their reuse is not from multicast at all.
+
+#### OUR REQUEST COUNT IS EXACTLY OUR STRUCTURE
+
+Both libraries issue the same 128 B L2 requests (ours 3.95 sectors/request, cuBLAS 4.06) — the
+granularity is identical, only the COUNT differs. Ours decomposes exactly:
+
+    A row-fetches = M x (K/BK) = 2048 x 256 = 524,288, once per N-tile (4)        2,097,152
+    B row-fetches = N x (K/BK) =  512 x 256 = 131,072, once per M-tile (16) / 2   1,048,576
+                                                              predicted total  =  3,145,728
+                                                              MEASURED         =  3,228,232  (+2.6%)
+
+**A is 67% of the requests, and A is precisely the operand our 2x1 cluster does NOT multicast**
+(2x1 spans M, so the peers share N and only B is shared).
+
+#### EVERY CLUSTERING ROUTE, CLOSED BY MEASUREMENT
+
+    cluster   A reads   B reads   predicted requests   measured requests   %cuB
+    2x1 (pin)    4x        8x         3,145,728            3,225,657       97.5%
+    1x2          2x       16x         3,145,728                 --         89.6%   (§H27ba)
+    2x2          2x        8x         2,097,152            2,755,877       60.7%
+
+- **1x2 merely trades one multicast for the other** — identical predicted total, and measured
+  worse. That is why §H27ba's axis flip failed, and the arithmetic explains it exactly.
+- **2x2 multicasts both and does cut requests (−14.6%)** — but performance collapses
+  97.5% -> 60.7%, i.e. **-36.8 points**, against the previously recorded H200 figure of
+  "size-4 strands 12 CTAs = -36 pts". Reproduced to within a point. The grid is 128 CTAs in
+  both cases, so at size 4 that is 32 clusters and the strand cost is real.
+
+**The fix works on the metric and is unusable on this hardware.**
+
+#### AND THE ARITHMETIC RULES OUT CLUSTERING AS cuBLAS'S MECHANISM
+
+    best achievable by ANY size-2 clustering on this shape   3,145,728 requests
+    cuBLAS measured                                          1,968,138 requests
+
+cuBLAS is **37% below what size-2 clustering can reach**, and they use a size-2 cluster. So
+their reuse does not come from multicast. Combined with §H27b7 (identical load instruction
+counts) and §H27bc (our multicast verified correct line by line), the entire multicast /
+cluster family is exhausted.
+
+#### WHAT IS LEFT — OPERAND RETENTION ACROSS TILES
+
+The only remaining source of reuse is **not re-fetching between tiles**. If a persistent CTA
+processes several M-tiles at the same N consecutively, it can hold the B tile in shared memory
+across them and fetch it once instead of once per tile. **We reload both operands every tile.**
+
+Fitting cuBLAS's number: A x2 + B x7 = 1,966,080 against their measured 1,968,138 — i.e. B
+fetched ~7 times where the tile count says 16. That is consistent with B being retained across
+roughly half the M-tiles a CTA visits.
+
+This is a **scheduling and smem-residency property, not a cluster property**, which is exactly
+why no cluster shape could reach it and why every cluster experiment this session failed. It
+is the "reuse DEPTH not reuse RATIO" distinction §H27bd pointed at, now with an arithmetic fit.
+
+**NEXT: does our persistent tile loop re-issue the B TMA for consecutive tiles that share N?
+If yes, that is the 1.64x, and retaining it is the fix.**
