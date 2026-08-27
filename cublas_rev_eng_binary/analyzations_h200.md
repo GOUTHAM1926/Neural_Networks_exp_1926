@@ -24208,3 +24208,58 @@ in the wrong condition; §H27as retracted one built on a counter that does not t
 this retracts one built on a curve-fit. All three were caught before shipping, and this one
 before a line of code. The recurring failure is **explaining a measurement with a mechanism
 that was not independently observed.** The measurement is not the explanation.
+
+---
+
+### §H27bh — **SASS FLOW COMPARISON: the load paths are structurally EQUIVALENT, which rules out the load path as the source of the 1.6x L2 requests.** Same instruction mix, same descriptor usage, same multicast pattern per stage. What differs is packaging — we carry **12 TMA instructions that never execute** and peel the producer **7-way against their 2-way**.
+
+Full instruction-order comparison of both V1 kernels, `ncu --page source --print-source sass`,
+deduped by address, dynamic counts attached.
+
+#### PER-STAGE LOAD PATTERN — IDENTICAL
+
+    cuBLAS                                        OURS
+      UTMALDG.3D.MULTICAST [UR8],[UR34],UR33        UTMALDG.3D           [UR8],[UR16]
+      UTMALDG.3D.MULTICAST [UR8],[UR34],UR33        UTMALDG.3D           [UR8],[UR16]
+      UTMALDG.3D           [UR16],[UR34]            UTMALDG.3D.MULTICAST [UR8],[UR16],UR19
+      UTMALDG.3D           [UR16],[UR34]            UTMALDG.3D.MULTICAST [UR8],[UR16],UR19
+
+Two multicast plus two plain per stage, one shared descriptor register, same 3-D form, same
+65,536 dynamic total. **There is no difference in how a tile is fetched.**
+
+#### WHAT DOES DIFFER — PACKAGING, NOT MECHANISM
+
+    metric                    cuBLAS                          ours
+    static UTMALDG                 8                            28
+    execution profile      4 x 13,696 + 4 x 2,688      4 x 4,096 x 4 copies + 12 NEVER EXECUTED
+    producer peel               2-way                        7-way
+    TMA address span           2.3 KB                        7.0 KB
+    leader election    uniform predicate (@UP3)      ELECT before every TMA (28 static)
+    total static instr           1,200                        1,384
+
+**Twelve of our TMA instructions have dynamic count ZERO on this shape** — pipeline peel copies
+that never run. Together with the 7-way peel and the per-TMA `ELECT` (cuBLAS uses uniform
+predication and never elects), that is genuine dead code and code-size waste worth removing on
+its own merits. It is I-cache pressure, not L2 traffic.
+
+#### THE NEGATIVE RESULT, WHICH IS THE POINT
+
+**The 1.6x L2 read requests do NOT come from the load path.** Same instructions, same counts,
+same descriptors, same multicast annotation, same per-stage order. Everything about how we
+fetch a tile matches cuBLAS. Combined with the earlier eliminations this leaves very little:
+
+    load instruction count / mix / order     identical            (this section, §H27b7)
+    multicast implementation                 verified correct     (§H27bc)
+    cluster shape                            all refuted          (§H27ba, §H27be)
+    tile geometry                            1.015x minimum       (§H27b6)
+    cross-tile retention                     physically impossible (§H27bg)
+    writes / DRAM                            identical            (§H27b5)
+    instruction & vector path                worth 2.1% of power  (§H27b4)
+
+Unexamined sources that could still reach L2: **L1/TEX misses** — we issue 32,768 L1/TEX
+requests at 74.72% hit rate where cuBLAS issues **ZERO** — and **instruction fetch**, given our
+code is larger (1,384 vs 1,200) and far more scattered (7 KB vs 2.3 KB of TMA span).
+
+Neither is obviously large enough to account for ~1.26 M extra requests, and **neither will be
+claimed as the cause without measuring it.** Three explanations have already been retracted
+today for exactly that error (§H27ak, §H27as, §H27bg).
