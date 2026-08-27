@@ -23529,3 +23529,63 @@ infer from cuBLAS's dispatch.
     V2,V2b-> 256x128x64_2x1_h_ep32s2_pdl_dh_dw_uad_ubd_cs  +1.95 paired
     V1    -> 128x128x64_2x1_v_sk2_dh_rot2_pdl_d6_shfl      ~0 perf, 76% vector-op cut
     V3    -> a v-raster + pdl config does not exist yet    ~+0.9 indicated
+
+---
+
+### §H27b4 — **THE CLOCK DEFICIT IS SOLVED, AND IT IS NOT INSTRUCTIONS. At equal clock BELOW the cap we draw 1.11-1.13x cuBLAS's power. Removing 76% of the k-loop vector ops recovers only 2.1% of it.** The chain is now measured end to end: **+12% power -> 100% cap saturation (vs cuBLAS's 47.7%) -> −108 MHz -> the free-clock deficit.** The leading remaining suspect is **L2 request volume at 1.85x** with DRAM bytes at parity.
+
+Three prior attempts to measure power at equal clock failed on `plain-fish-falls-fin-03`
+(§H27ap). Two sampling faults had to be fixed first: `power.draw` is a **2.4 s trailing
+average** (`nvidia-smi -q -d POWER` reports "Power Samples: Duration 2.36 sec"), and 100 Hz
+sampling of `power.draw.instant` **aliases**. The working protocol is **30 s windows** (so the
+lagging sensor settles INSIDE each arm's window), **8 s discarded**, **2 Hz sampling**,
+persistence mode forced, and a clock lock low enough that BOTH arms stay under the cap.
+
+#### THE MEASUREMENT — V1, `kind-data-thinks-fin-03`, settled, unclamped
+
+    lock   cuBLAS W   ours W   ratio    cap% (ours/cuB)   achieved clock
+    1000       427      472    1.11x       0% /  0%       1005 / 1005
+    1200       540      612    1.13x       0% /  0%       1200 / 1200
+    1400       696      698    1.00x     100% / 47.7%     1301 / 1409
+
+**At equal clock, below the cap, we draw 11-13% more power.** The 1400 row is the consequence
+in one line: we saturate the 700 W cap on **100%** of samples where cuBLAS saturates on 47.7%,
+so the governor takes **108 MHz (7.7%)** from us and none from them. The 1.00x power ratio at
+1400 is the CLAMP, not parity — which is exactly why every free-clock power comparison this
+week read 1.00x and taught us nothing (§H27ag, §H27am).
+
+#### AND IT IS NOT THE INSTRUCTIONS — the decisive control
+
+`_shfl` cuts V1's k-loop vector ops from **8.25 to 2.00 per wgmma** (§H27b0), a 76% removal.
+Same protocol, lock 1200:
+
+    arm                      cuBLAS W   ours W   ratio
+    V1 (old config)              540      621    1.15x
+    V1 + shfl (vec 8.25->2.00)   540      608    1.13x
+
+cuBLAS reads 540 W in both — a clean control. **The 76% vector-op cut bought 13 W = 2.1% of
+power, and 87% of the excess survives.** The k-loop address arithmetic is NOT what burns the
+12%.
+
+This closes the instruction track honestly and completely. §H27am measured its performance
+channel at +0.58 clock points; this measures its POWER channel at 2.1%; §H27b1 measured its
+total worth at +0.5-0.9 points. Three independent measurements, all small, all consistent.
+
+#### WHERE THE POWER ACTUALLY GOES — the one counter still far from parity
+
+From the §H27ao census on V1, with DRAM at parity:
+
+    dram__bytes.sum        ours   88,456,448    cuBLAS   88,378,624    1.00x
+    lts__t_requests.sum    ours    4,405,890    cuBLAS    2,384,607    1.85x
+    lts__t_sectors.sum     ours   14,862,825    cuBLAS    8,345,518    1.78x
+    l1tex shared wavefronts                                            0.98x
+    tensor cycles                                                      1.00x
+
+**We issue 1.85x the L2 requests while moving identical DRAM bytes.** Sectors-per-request are
+comparable (3.37 vs 3.50), so it is not a granularity problem — we simply go to L2 nearly
+twice as often for the same data, and our L2 hit rate is correspondingly higher (69.8% vs
+49.5%). L2 traffic is energy-expensive and it is the only major counter left at ~2x.
+
+**NEXT CAMPAIGN: why do we make 1.85x the L2 requests for the same bytes?** That is now the
+best-defined open question in the project, and unlike the instruction hunt it has a measured
+power excess of ~12% behind it, worth roughly 8 points of clock.
