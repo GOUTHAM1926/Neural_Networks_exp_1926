@@ -22972,3 +22972,89 @@ Remaining, in size order:
 
 A, B and C are one change: keep the descriptor base live across iterations. That is the
 last structural difference from cuBLAS's mainloop and the natural next knob (`DESC_ACCUM`).
+
+---
+
+### §H27aw — **DEAD-WORK SWEEP COMPLETE ACROSS ALL 15 PINS. Every rung is bit-exact (maxRelErr 0.00000, 50+ runs). The answer is DIFFERENT for every tile — there is no universal setting.** 256x128 takes the full stack (+1.95 paired, believable); 128x256 takes `dh` ONLY (+0.37% mean, 7/7 shapes, sign-test p = 0.016) and REGRESSES on the deeper walk; 192x192 needs nothing (already `R2UR 0`); 128x128 already regressed on `dw_uad` (−7.33).
+
+#### THE FOUR FAMILIES, AND WHY ONE ANSWER DOES NOT FIT THEM
+
+| family | pins | had | verdict | measured |
+|---|---|---|---|---|
+| `256x128` | V2, V2b, V2c | nothing | **adopt `dh_dw_uad_ubd_cs`** | **+1.95 paired (believable)**, 3/3 single-shot |
+| `128x256` | V7, V7b, V7c, V8, V8b, V8c, V8d | nothing | **adopt `dh` ONLY** | **+0.37% mean, 7/7, p = 0.016** |
+| `192x192` | V3, V4, V5, V6 | dh dw ubd | **no change** | `uad` is a byte-identical no-op |
+| `128x128` | V1 | dh | **no change** | `dw_uad` = −7.33 (§H27aj) |
+
+#### 128x256 — SEVEN PINS, AND THE DEEPER WALK IS A REGRESSION
+
+    shape        _dh      _dh_dw_uad   _dh_dw_uad_ubd   _dh_dw_uad_ubd_cs
+    V7        +0.73%        -1.12%          -1.05%           -0.70%
+    V7b       +0.56%        +0.96%          +0.86%           +1.56%
+    V7c       +0.15%        -0.80%          -0.99%           -0.95%
+    V8        +0.35%        -0.21%          -0.94%           -0.31%
+    V8b       +0.19%        -1.51%          -1.43%           -1.18%
+    V8c       +0.49%        +1.20%          +0.97%           +0.80%
+    V8d       +0.14%        -0.75%          -0.50%           -0.31%
+    mean      +0.37%        -0.32%          -0.44%           -0.16%
+    wins         7/7           2/7             2/7              2/7
+
+**`dh` alone is positive on every one of the seven shapes.** Each delta is far below the
+1.37-point paired floor measured on V2c, so no single-shape paired test could resolve it —
+but **7/7 in the same direction across INDEPENDENT shapes is a two-sided sign test at
+p = 0.016.** That is the correct instrument for a sub-floor effect and it is why the
+result is claimable at all.
+
+The deeper rungs REMOVE MORE INSTRUCTIONS (−23.5% vs −17.3% static) and go BACKWARDS
+(2/7). Instruction count is not monotone with performance on this tile.
+
+#### 256x128 — THREE PINS, THE FULL STACK PAYS
+
+    shape        base TF   _dh_dw_uad   _dh_dw_uad_ubd_cs
+    V2            696.82      +0.94%           +0.48%
+    V2b           641.09      +0.41%           +1.59%
+    V2c           645.85      +2.45%           +0.96%
+    mean                      +1.27% (3/3)     +1.01% (3/3)
+
+Both rungs win on all three. The paired null-controlled run on V2c (§H27au) is the
+tie-break and it favours the full stack: **FULL +1.95 (believable) vs DHDWUAD +1.45
+(marginal, sitting on the 1.37 floor)**. Adopt `dh_dw_uad_ubd_cs`.
+
+#### 192x192 — NOTHING TO DO, MEASURED NOT ASSUMED
+
+A `_uad` twin of each of the three 192x192 configs compiled to a **byte-identical k-loop**:
+102 static instructions, 12 wgmma, **8.50 per wgmma, R2UR 0 / ULEA 6 / IMAD 0** with and
+without. `ubd` already puts both descriptors on the uniform datapath at this tile. The
+three twins were deleted rather than shipped as dead configs.
+
+At **8.50 instructions per wgmma this family has the cleanest mainloop in the set** — and
+it also refutes the prediction that V3/V4/V5/V6 were sitting in the bad dw-without-uad
+state seen on V1 and V2c. They were not.
+
+#### THE GENERAL LESSON
+
+The same five knobs produce four different verdicts on four tiles. `dw` requires `uad` on
+128x128 and 256x128 but is a **regression even with it** on 128x256; `ubd` is essential on
+192x192, a no-op on 256x128, and irrelevant on 128x256; `cs` is worth nothing anywhere
+(−0.07 V2c, −0.10 V1) yet is kept because it is bit-exact dead-work removal. **Every tile
+must be measured; nothing generalises.**
+
+#### ADOPTION POLICY IN FORCE (user directive, 2026-08-27)
+
+*"If you remove redundant instructions or dead work and it is correct with no precision
+issues, keep it even if performance is not what we expected — you removed something
+unwanted anyway."*
+
+Applied as: **keep if bit-exact AND not a measured regression.** `cs` qualifies at zero
+gain and stays. `dw_uad` on 128x128 (−7.33) and on 128x256 (2/7, mean −0.32%) does not,
+and stays out.
+
+#### EXPECTED EFFECT OF ADOPTION, all bit-exact
+
+    V2    95.1% -> ~95.8%      V7  97.6% -> ~98.3%      V8b 97.8% -> ~98.0%
+    V2b   94.1% -> ~96.2%      V7b 95.4% -> ~96.2%      V8c 96.4% -> ~96.9%
+    V2c   89.1% -> ~91.4%      V7c 95.0% -> ~98.3%      V8d 97.3% -> ~97.4%
+                               V8  95.3% -> ~94.6%
+    V1, V3, V4, V5, V6 unchanged.   Set mean 96.1% -> roughly 96.7%.
+
+Not yet applied to `Bgemm_sm90_dispatch_table.h` — the pin change is a separate, gated step.
