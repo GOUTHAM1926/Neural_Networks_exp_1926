@@ -23411,3 +23411,70 @@ is itself the useful conclusion: further instruction work has a small ceiling.
   instruction channel at only 1.66%/1.0x).
 - `UNIFORM_A_SHFL` should be considered for the remaining unpinned configs in the tree; it was
   only applied to the four pinned families.
+
+---
+
+### §H27b2 — **TILE AND RASTER ARE COUPLED, AND V2c's 8-POINT DEFICIT IS A TILE-SHAPE PROBLEM, NOT AN INSTRUCTION ONE. `128x256/2x1/v + dh + shfl` takes V2c from 89.7% to 96.9% at locked clock — +7.2 points, bit-exact.** Neutral on V2 (−0.2) and slightly negative on V2b (−0.45), so it is a per-shape pin, not a config-wide change. **This also corrects §H27aw.**
+
+§H27b1 left V2c as the one shape with a large deficit that was neither clock nor instructions:
+91.6% at locked 1400 against a set mean of 99.1%. ncu on that shape:
+
+    arm      kernel                                          DRAM      L2 hit   tensor
+    ours     256x128 tile, 2x1 cluster, raster h            7.765 GB   63.49%   98.52%
+    cuBLAS   nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_NTN  6.807 GB   60.76%   98.90%
+
+**cuBLAS runs the TRANSPOSED tile with VERTICAL raster and moves 1.14x fewer bytes at equal
+tensor utilisation.** On `2048x50304x16384` — tiny M, enormous N — the raster direction decides
+which operand stays resident in L2.
+
+#### THE COUPLING, measured at locked 1400 on V2c
+
+    config                                     tile/raster     %cuB
+    256x128x64_2x1_h_ep32s2_pdl_dh_dw_uad_ubd_cs   256x128/h    92.4%   <- the pin
+    256x128x64_2x1_v_ep32s2                        256x128/v    93.0%   raster alone: +0.6
+    128x256x64_2x1_h_ep64swz128_rot2_pdl_dh_shfl   128x256/h    82.9%   tile alone: -9.5 (!)
+    128x256x64_2x1_v                               128x256/v    94.0%   together: +1.6
+    128x256x64_2x1_v_ep32s2                        128x256/v    94.6%   + matching epilogue
+
+**The transposed tile is catastrophic with `h` raster and our best result with `v`.** Neither
+knob is meaningful alone; they must move together.
+
+**§H27aw is corrected.** Its conclusion "tile orientation is not the answer — every 256x128
+variant is 5-15 points worse" tested 256x128 arms against a 128x256 pin **without pairing the
+raster**, so it compared mismatched (tile, raster) combinations and concluded the tile was at
+fault. The real finding is that the PAIR matters.
+
+#### ADDING OUR DEAD-WORK KNOBS ON TOP — they compose
+
+Two passes, locked 1400, `maxRelErr 0.00000` on every arm:
+
+    config                                    pass1   pass2    mean
+    256x128/h  (current pin)                  89.4%   90.0%   89.7%
+    128x256/v  ep32s2                         95.1%   95.9%   95.5%
+    128x256/v  ep32s2 + dh + shfl             96.1%   97.7%   96.9%
+
+**+7.2 points total: +5.8 from the shape, +1.4 from the dead-work removal on top.**
+
+#### IT IS SHAPE-SPECIFIC, NOT CONFIG-WIDE
+
+V2, V2b and V2c all pin the same config today, so the obvious question is whether the new
+shape helps all three. Two passes each, locked 1400:
+
+    shape                     current pin        128x256/v+dh+shfl      delta
+    V2   2048x2048x16384      100.1 / 99.8        99.9 / 99.7          -0.2
+    V2b  5632x2048x16384       99.8 / 99.7        99.4 / 99.2          -0.45
+    V2c  2048x50304x16384      90.5 / 89.0        96.0 / 95.3          +5.9
+
+**V2 and V2b are already at ~100% locked and do not need it.** Applying the new config to all
+three would still net +1.75 mean on the family, but the right move is a per-shape pin for V2c
+alone, which costs nothing on the other two.
+
+#### EFFECT ON THE SET
+
+With V2c moved, the locked-clock mean goes **99.12% -> ~99.4%**, and the worst shape in the
+set goes from 91.6% to ~96%. The spread at equal clock narrows to roughly 96-104%.
+
+**This reopens tile/raster selection as a live lever.** V2c was found only because it stood out
+after the clock and instruction variables were removed. The same question has not been asked of
+the other fourteen pins: for each, is the (tile, raster) pair cuBLAS chooses the one we pin?
+That is a cheap sweep and it is the natural next campaign.
