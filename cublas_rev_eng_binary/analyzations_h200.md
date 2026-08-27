@@ -24311,3 +24311,64 @@ covers ~5,286 B where the tile needs ~3,085 B, the surplus is visible directly i
 descriptor and the fix is a descriptor change, not a restructuring.
 
 This is bounded: the fields are in our own code and the target number is already measured.
+
+---
+
+### §H27bj — **END-TO-END ON THE 1.7B TRAINER WE ARE LEVEL WITH cuBLAS: 100.01% at free clocks, 99.94% locked.** Same script, same box, same shards, same day, 15 steps each, the only variable `WITH_BLUBLAS=0` vs `1`. Clock, power and temperature all match to within 2 MHz / 0 W / 1 C. **The GEMM-level deficit does not survive to the application.**
+
+`kind-data-thinks-fin-03`, GPU 0, CUDA 13.0, 1.7B production config (36 layers, 16 heads,
+GQA-4, ffn 5632, context 4096, vocab 50304), production `global_batch` 2,097,152 (grad_accum
+128), 15 steps per run, steady-state = mean of the last 12. Real `flux_*` shards.
+
+    run                  tok/s     %cuB     clock      power (mean/peak)   temp
+    BluBLAS  free       27,995   100.01%   1812 MHz    665 W / 818 W       64 C
+    cuBLAS   free       27,992      --     1810 MHz    665 W / 820 W       65 C
+    BluBLAS  locked     24,775    99.94%   1410 MHz    511 W / 628 W       59 C
+    cuBLAS   locked     24,790      --     1410 MHz    511 W / 624 W       59 C
+
+**+3 tok/s free, -15 tok/s locked. Both inside 0.06%.** Per-step spread within a run was
+~0.16%, so these are separated by less than the noise.
+
+#### THE GEMM DEFICIT DOES NOT REACH THE APPLICATION
+
+The isolated GEMM measures, on V1's shape at equal sub-cap clock, **+11-13% power** (§H27b4)
+driving **100% cap saturation vs cuBLAS's 47.7%** and a **-108 MHz** clock loss. At trainer
+level none of it is visible:
+
+    clock   1812 vs 1810 MHz    2 MHz apart
+    power    665 vs  665 W      identical
+    temp      64 vs   65 C      1 C apart
+
+This is the dilution the arithmetic predicted and it is now measured, not argued: **our GEMM is
+~38% of the trainer run** (§H27zW), so a 12% excess on that slice is ~4.5% of the whole, and the
+remaining 62% is byte-identical work on both arms. Neither arm ends up cap-limited the way a
+back-to-back GEMM loop does — at free clocks both sit at 665 W against a 700 W cap, i.e. **under
+it**, which is exactly the condition where the GEMM's cap saturation cannot occur.
+
+#### WHAT THIS DOES AND DOES NOT SAY
+
+**Does:** on the workload that matters, with the current dispatch, BluBLAS and cuBLAS are
+indistinguishable. The free-clock GEMM gap that consumed this session is an artifact of
+measuring a GEMM in isolation at 100% duty cycle, a condition the trainer never creates.
+
+**Does not:** this is the BASELINE BLAS. The dispatch table routes every shape to
+pre-optimization configs; today's `_shfl` and `_dh_dw_uad_ubd_cs` rungs are compiled in but
+**nothing selects them** (0 dispatch entries reference them). Today's +1.08% on seven pins and
+the V2c work are absent from these numbers.
+
+**Historical trainer figures (93.8% -> 96.4% -> 98.4%) are NOT comparable** — the trainer script
+itself changed since they were taken (the wV round-trip removal and the SwiGLU work), so only
+this same-day, same-script, same-box pair is a valid comparison.
+
+#### ALSO FOUND — `pins.sh` DISAGREES WITH THE DISPATCH TABLE ON 2 OF 15 SHAPES
+
+    var   pins.sh (what was benchmarked all day)        dispatch table (what production runs)
+    V2c   256x128x64_2x1_h_ep32s2_pdl                   256x128x64_1x2_v_ep32s2      <-- DIFFERS
+    V6    192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_wlsm  128x256x64_2x1_h_ep64swz128_pdl  <-- DIFFERS
+
+The other 13 agree. **This puts today's headline V2c result in question**: its baseline was
+measured at 89.1-92.4% using the `pins.sh` config, but production dispatches
+`256x128x64_1x2_v_ep32s2`, whose dispatch-table annotation reads **812.9 TF** against the
+~654-687 TF measured for the `pins.sh` baseline. If that holds, the "+7.2 points on V2c" improved
+a config production does not use. Verification is queued (§H27bl); the claim should not be
+repeated until it lands.
