@@ -23349,3 +23349,65 @@ one observation decides nothing. Needs a second pass before any conclusion.
 0.58-9.25. The remaining question is whether anything below ~1.6 is reachable, and 192x192
 suggests it is — but 192x192 also gets 12 wgmma per loop body against the others' 4-8, so
 part of its advantage is the denominator, not the numerator.
+
+---
+
+### §H27b1 — **END OF THE INSTRUCTION HUNT. All 15 pins bit-exact; vector density collapsed from a 0.58-9.25 spread to 0.58-2.00. Free clocks 96.1% -> 97.0%; LOCKED clock 99.1% mean with five shapes at or above 100% and V1 at 104.4%.** The one shape that is not a clock story is V2c, still 91.6% at equal clock.
+
+#### FINAL CONFIG ASSIGNMENT, all measured, all `maxRelErr 0.00000`
+
+    family    pins  config adopted                                    vec/wgmma  gain
+    128x128     1   ..._d6_shfl                                       8.25->2.00  ~0 (3 passes: -0.93/+0.53/+0.32)
+    256x128     3   ..._dh_dw_uad_ubd_cs                              7.75->1.62  +1.95 paired
+    192x192     4   unchanged (already optimal)                            0.58   --
+    128x256     7   ..._dh_shfl                                       9.25->1.75  +1.08% (7/7, p=0.016)
+
+`shfl` was also tried on 256x128 (vec/wgmma 0.75, the best density outside 192x192) but
+measured V2 +0.82%, V2b +0.64%, **V2c −0.36% in both passes**. The three share one config and
+V2c is the shape that needs help most, so `uad` stays there. Recorded because the static
+number says `shfl` should win and the measurement says otherwise — another case where
+vec/wgmma predicts direction but not magnitude on every shape.
+
+#### THE TWO STANDINGS, MEASURED TODAY ON `kind-data-thinks-fin-03`, CUDA 13.0
+
+    FREE CLOCKS                             LOCKED 1400 (achieved 1410, held)
+    V7c   99.7    V2    97.0                V1   104.4    V7b   99.8
+    V8    99.0    V8d   97.2                V7c  100.6    V2b   99.7
+    V8c   98.8    V5    97.1                V2   100.4    V7    99.3
+    V1    98.7    V7b   97.1                V5   100.2    V8c   99.1
+    V7    98.4    V3    96.7                V8d  100.1    V8b   98.9
+    V8b   96.7    V4    97.2                V3    98.6    V6    98.5
+    V6    96.2    V2b   94.8                V4    98.0    V8    97.6
+    V2c   90.7                              V2c   91.6
+    mean 97.02%   (was 96.06%)              mean 99.12%
+
+**At equal clock we are at parity** — 99.12% mean, five shapes >= 100%, V1 at 104.4%. The
+~2.1-point free-clock shortfall is the clock deficit, consistent with §H27ac/§H27ag.
+
+#### HONEST ACCOUNTING OF TODAY'S GAIN
+
+Raw before/after is **96.06% -> 97.02%, +0.96 points**. But the four 192x192 pins whose
+config was **not touched** moved **+0.47** on their own, which is pure measurement drift.
+Drift-corrected: **+0.48 points**. The directly-measured A/B gains weight to +0.89. The truth
+is **+0.5 to +0.9 points**, and the A/B numbers are the trustworthy ones because they were
+paired or repeated within a session.
+
+**This does not reach the 105-109% target.** At free clocks we are at 97%; at equal clock 99%.
+One shape (V1) exceeds 105% at equal clock; the mean does not.
+
+#### WHAT THE HUNT ACTUALLY ACHIEVED
+
+Vector density across the pinned set went from **0.58-9.25** to **0.58-2.00** vec/wgmma. Every
+family is now within ~3.5x of the best. That is the instruction excess substantially removed,
+and it bought +0.5 to +0.9 points. **The remaining gap is therefore NOT instructions**, which
+is itself the useful conclusion: further instruction work has a small ceiling.
+
+#### WHAT REMAINS
+
+- **V2c at 91.6% LOCKED** is the only shape with a large non-clock deficit — 7.5 points below
+  the set mean at equal clock. It is `2048x50304x16384`, the widest-N shape. Whatever is wrong
+  there is not instruction count and not clock. This is the single best-defined open target.
+- The **~2.1-point clock deficit** across the set (§H27ag mechanism, §H27am measured the
+  instruction channel at only 1.66%/1.0x).
+- `UNIFORM_A_SHFL` should be considered for the remaining unpinned configs in the tree; it was
+  only applied to the four pinned families.
