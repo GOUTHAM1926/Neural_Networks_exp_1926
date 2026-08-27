@@ -23058,3 +23058,71 @@ and stays out.
     V1, V3, V4, V5, V6 unchanged.   Set mean 96.1% -> roughly 96.7%.
 
 Not yet applied to `Bgemm_sm90_dispatch_table.h` — the pin change is a separate, gated step.
+
+---
+
+### §H27ax — **WE HAVE BEEN COUNTING THE WRONG THING ALL SESSION. Our UNIFORM instruction count is already at PARITY with cuBLAS (1.16-1.36x, r = +0.061 against real %cuB — no relationship). The entire excess is VECTOR: 2.35-3.67x, r = −0.642, the best predictor found.** A vector op drives 32 lanes where a uniform op drives one, so total-instruction counting weights them equally when they differ ~32x in switching cost.
+
+This is not a new discovery — it is written in the template at slot 34 (§H27zm) and I did not
+find it until now:
+
+> *"Our UNIFORM instruction count already MATCHES cuBLAS (216.2M vs 215.6M, 1.0023); the
+> entire excess is VECTOR, 578.5M vs 181.6M, and a vector op drives 32 lanes where a uniform
+> op drives one — **which is why three instruction-count cuts moved the clock 0.0** while the
+> vector share stayed put."*
+
+Re-deriving it from today's §H27ao census against today's real %cuB (§H27at):
+
+    var     total x   uniform x   VECTOR x   real %cuB
+    V1        2.54x       1.36x      3.67x       94.5%
+    V2c       2.24x       1.17x      3.30x       89.1%
+    V7        1.81x       1.16x      2.35x       97.0%
+    V8d       1.78x       1.19x      2.35x       96.7%
+
+    total instructions   vs real %cuB   r = -0.545
+    UNIFORM instructions vs real %cuB   r = +0.061      <- NO relationship
+    VECTOR  instructions vs real %cuB   r = -0.642      <- the metric
+
+**`smsp__inst_executed` must be decomposed before it is used.** Uniform ratio spans
+1.16-1.36 across shapes — essentially parity — while VECTOR spans 2.35-3.67. Every
+conclusion drawn from the total is diluted by a term that carries no signal.
+
+**This retro-explains the session.** §H27am's cut bought +0.58 clock points; §H27au's V2c
+stack bought +1.95. The difference is what each removed: V2c's took **R2UR 16 → 1**, and
+R2UR *is* the vector→uniform crossing, so that cut removed VECTOR work. Cuts that shuffled
+uniform arithmetic moved nothing.
+
+#### CONSEQUENCE 1 — THE HUNT'S TARGET CHANGES
+
+Stop optimising `smsp__inst_executed`. Target **vector-datapath instructions**: `IMAD`,
+`IADD3`, `LOP3`, `SHF`, `ISETP`, `SEL`, `LEA` and every `R2UR` that marks a value born on
+the wrong datapath. The census must report `total`, `uniform` and `total − uniform`
+separately from now on.
+
+#### CONSEQUENCE 2 — `KLOOP_UNROLL` IS THE DESIGNED FIX, AND §H27as's PARKING NOTE WAS WRONG
+
+The remaining dead work identified in §H27au — the per-iteration descriptor rebuild
+(`S2UR SR_CgaCtaId`, `UIMAD stage*copy_size`, ~18 instructions of mask/shift/OR/sign-extend)
+— is *exactly* what slot 33 was written for:
+
+> *"dw's expression `a_desc_tile + ((st*copy_size)>>4)` is already optimal WHEN st is
+> constant — it folds to one UIADD3, **which is cuBLAS's whole descriptor cost**. The only
+> defect is that st is runtime, which also forces the mod-3 magic divide and the stage*8
+> barrier offset. STAGE_SPECIALISE had the right goal but resolved st with a RUNTIME
+> if-chain, paying more than the literal saved: **+30.7% executed instructions**. Unrolling
+> gives the same literals with no dispatch and no carried state."*
+
+Three consequences:
+- **A `DESC_ACCUM` carried-state knob should NOT be written.** It is the third form of an
+  idea already measured to backfire (STAGE_SPECIALISE, +30.7%). Unrolling is the form that
+  works because it needs neither dispatch nor carried state.
+- **§H27as's note parking KLOOP_UNROLL as "cleanup only, expect ~0" is withdrawn.** That was
+  written when the performance case rested on total instruction count. Making `stage` a
+  compile-time literal removes the multiply, the modulo AND the barrier-offset multiply, and
+  those are vector-datapath costs.
+- It remains true that unrolling an 8-iteration mainloop (V8, K=512) will not help; the
+  template already notes the loop must align to the ring first, at most D−1 runtime
+  iterations, then run literal bodies, then a residue.
+
+**NEXT: enable `_KLOOP_UNROLL` on the 256x128 and 128x256 families and measure it with the
+vector/uniform split reported, not the total.**
