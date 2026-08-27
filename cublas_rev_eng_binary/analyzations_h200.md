@@ -22693,7 +22693,17 @@ instruction count in §H27ah/§H27ai/§H27ao.
 
 ---
 
-### §H27as — **THE INSTRUCTION EXCESS IS NOT WHY WE ARE BEHIND. It ANTI-correlates with the deficit (r = −0.305, wrong sign). What predicts the deficit across all 15 variants is K (r = −0.730).** V1 has the MOST extra math (2.54x) and the SMALLEST cycle penalty (1.003x); V8 has BELOW-AVERAGE extra math (1.78x) and the LARGEST (1.079x). Tensor utilisation is at parity — mean gap −0.75 points, and we are AHEAD on V1 and V4.
+> **RETRACTED IN FULL BY §H27at (same day).** Every conclusion in this section is
+> computed against `sm__cycles_elapsed` from ncu, which turns out to be UNCORRELATED with
+> real throughput (**r = +0.197** against measured %cuB). Against the real benchmark the
+> instruction correlation REVERSES to **r = −0.511 with the correct sign**, the ranking
+> inverts almost exactly (V8 1st-worst by the proxy is 6th in reality; V1 best by the
+> proxy is 2nd-WORST; V7c 2nd-worst by the proxy is the BEST shape we have), and the
+> low-K story does not survive (log(K) vs real %cuB is only −0.381). The tensor-utilisation
+> TABLE below is measured data and stands; every inference drawn from the cycle column
+> does not. See §H27at.
+
+### §H27as — ~~**THE INSTRUCTION EXCESS IS NOT WHY WE ARE BEHIND.**~~ *(RETRACTED — see banner)* It ANTI-correlates with the deficit (r = −0.305, wrong sign). What predicts the deficit across all 15 variants is K (r = −0.730).** V1 has the MOST extra math (2.54x) and the SMALLEST cycle penalty (1.003x); V8 has BELOW-AVERAGE extra math (1.78x) and the LARGEST (1.079x). Tensor utilisation is at parity — mean gap −0.75 points, and we are AHEAD on V1 and V4.
 
 #### ABSOLUTE TENSOR UTILISATION, ALL 15, MEASURED ON THIS BOX
 
@@ -22796,3 +22806,92 @@ The reasons it is still worth doing:
 **Explicitly NOT expected to help the low-K shapes.** Deeper unrolling of an 8-iteration
 mainloop (V8) makes the fill/drain problem worse, not better. Those need the opposite
 treatment.
+
+---
+
+### §H27at — **§H27as IS RETRACTED. Measured against REAL throughput, the instruction ratio is the best predictor we have (r = −0.511, correct sign) and the shapes doing the most excess math ARE the shapes furthest behind (93.72% vs 96.33%).** §H27as reached the opposite conclusion because it used `sm__cycles_elapsed` from ncu as the outcome — and that quantity is **uncorrelated with real throughput (r = +0.197)**.
+
+#### THE GROUND TRUTH — real %cuB, all 15 pins, one config per process, TARGET_MS=400
+
+`kind-data-thinks-fin-03`, CUDA 13.0, free clocks.
+
+    var    shape                lay     ourTF    cuBLAS    %cuB       var    %cuB
+    V7c    16384x512x2048       nn     652.37    656.24   99.4%       V4    96.8%
+    V8b    16384x2048x2048      nt     668.40    682.56   97.9%       V7b   96.7%
+    V3     16384x11264x2048     nn     643.23    660.60   97.4%       V8d   96.7%
+    V8c    16384x2048x11264     nt     689.13    707.94   97.3%       V2    96.1%
+    V7     16384x2048x2048      nn     664.47    684.90   97.0%       V6    95.7%
+    V8     16384x2048x512       nt     551.83    576.49   95.7%       V5    95.4%
+                                                                      V2b   95.2%
+    mean 96.1%   sd 2.27   range 89.1 - 99.4                          V1    94.5%
+                                                                      V2c   89.1%
+
+#### THE PROXY WAS ALMOST EXACTLY INVERTED
+
+    var    ncu cycle ratio   ncu rank      real %cuB   real rank
+    V8           1.079x        1 (worst)      95.7%       6
+    V1           1.003x       15 (best)       94.5%       2 (near worst)
+    V2c          1.007x       12              89.1%       1 (worst)
+    V7c          1.032x        2 (near worst) 99.4%      15 (best)
+
+`sm__cycles_elapsed` is measured under profiling — serialised launches, kernel replay,
+clocks pinned by ncu — and does not survive contact with a real timed run. **It must not
+be used as a performance outcome again.** §H27as's "the work is on the low-K shapes, V8
+is the biggest deficit, V1 is our best shape" is wrong in all three parts: V8 is
+mid-pack, V1 is second-worst, and the worst shape is V2c which the proxy ranked 12th.
+
+#### RE-TESTED AGAINST REAL THROUGHPUT
+
+    instruction ratio  vs  real %cuB    r = -0.511     correct sign, strongest predictor
+    log(K)             vs  real %cuB    r = -0.381     weak
+    tensor gap         vs  real %cuB    r = -0.207     weak
+    ncu cycle ratio    vs  real %cuB    r = +0.197     useless
+
+    instr ratio >= 2.2   V1, V2, V2b, V2c    mean  93.72% of cuBLAS
+    instr ratio <= 1.6   V3, V4, V5, V6      mean  96.33% of cuBLAS
+                                             difference 2.6 points
+
+Robust to the outlier: dropping V2c gives r = −0.448 on n=14.
+
+**So the original hypothesis stands: the shapes doing the most excess integer math are
+the shapes furthest behind.** The four worst-offending configs by instruction ratio are
+also, on average, 2.6 points further from cuBLAS than the four cleanest.
+
+#### RECONCILING WITH §H27am's INTERVENTION
+
+§H27am cut V1's k-loop 24.4% and measured **+0.58 clock points**, which read as "tiny" at
+the time. Against the cross-shape slope here — roughly **2.7 points of %cuB per 1.0x of
+instruction ratio** (2.61 points across a 0.97 range) — a cut of 2.43x → 2.08x predicts
+**+1.24 points**. Measured +0.58 on the clock channel alone, with the %cuB channel buried
+under a 3.16-point free-clock noise floor. Those are consistent within a factor of two;
+they are not in conflict. The intervention was real and simply smaller than the fit, not
+absent.
+
+**Full instruction parity (2.43x → 1.0x) projects to roughly +3.9 points on V1.** That is
+worth having and it is the best-supported lever on the board — but it is single-digit,
+and it does not reach the 130% target.
+
+#### METHOD RULE, EARNED TWICE TODAY
+
+§H27ak retracted a conclusion built on a power reading taken in the wrong condition;
+§H27as is now retracted for a conclusion built on a cycle counter that does not track
+throughput. **Correlate against measured %cuB or do not correlate at all.** Profiler
+counters are for finding MECHANISM once an effect is established in real timing — never
+for establishing that the effect exists.
+
+#### ALSO SETTLED TODAY — TILE ORIENTATION IS NOT THE ANSWER
+
+cuBLAS runs `nvjet_sm90_tst_256x128_64x4_1x2_h_bz_coopA_*` on V7c/V8/V8b/V8d — a
+**256x128 tile with a 1x2 cluster**, the transpose of our 128x256 with 2x1, so their
+cluster multicasts A (the large operand) where ours multicasts B. Matching them on V8:
+
+    128x256x64_2x1_h_ep64swz128_rot2_pdl   98.2%   <- ours, best
+    256x128x64_1x2_h_rs2_ep32s2            93.6%
+    256x128x64_2x1_h_ep32s2_pdl            92.4%
+    256x128x64_1x2_h_ep32s2                88.3%
+    256x128x64_1x2_h                       83.3%
+    256x128x64_1x2_h_ep64s2                83.1%
+
+**Every 256x128 variant is worse, by 5 to 15 points.** The long-standing "tile-orientation
+unknown" that §H27zdispatcher recorded as gating the cuBLAS-variant pin is answered: our
+orientation is the better one here, and matching cuBLAS's would cost us.
