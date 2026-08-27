@@ -23829,3 +23829,72 @@ is the last unexamined object in the path.
 At equal clock on V1 the pin now measures **97.9-104.4%** across runs. The deficit is a
 free-clock phenomenon caused by the power draw, and the power draw is caused by the L2
 traffic. Nothing in the compute path is behind cuBLAS.
+
+---
+
+### §H27bb — **THE COOPERATIVE SLICING IS IMPLEMENTED AND CORRECTLY PARAMETERISED, YET DELIVERS A TENTH OF WHAT IT SHOULD.** Design predicts disabling multicast costs ~25% of L2 reads; measurement says **2.5%**. That factor of ten is the located, unresolved contradiction and it is where the ~12% power / ~8 clock points live.
+
+#### THE CODE DOES THE RIGHT THING
+
+`issue_operand_3d_mn` implements the CUTLASS pattern — **every** cluster peer issues the
+multicast (not one elected leader), each for **its own K-slice**, each with a ctaMask covering
+all peers, and the TMA engine replicates the write and the barrier arrival into every peer's
+smem at the same relative offset:
+
+```c
+const int slice_bytes = AW * slice_k * 2;
+tma_3d_gmem2smem_multicast(dst + i*ATOM_BYTES + slice_idx*slice_bytes,
+                           tmap, mn0 + AW*i, k0 + slice_idx*slice_k, batch, mbar, ctaMask);
+```
+
+and the slice widths are derived correctly:
+
+```c
+constexpr int A_MN_SLICE_K = BK / CLUSTER_N;   // A shares over N
+constexpr int B_MN_SLICE_K = BK / CLUSTER_M;   // B shares over M
+static constexpr bool NEEDS_A_MULTICAST = MULTICAST_A && (CLUSTER_N > 1);
+static constexpr bool NEEDS_B_MULTICAST = MULTICAST_B && (CLUSTER_M > 1);
+```
+
+For V1's `2x1` pin: `NEEDS_A_MULTICAST=false` (A is not shared — the two CTAs hold different M
+rows, correct), `NEEDS_B_MULTICAST=true`, `B_MN_SLICE_K = 64/2 = 32` — **each peer fetches half
+of B and broadcasts it.** This is cooperative loading, already present, correctly configured.
+
+#### BUT THE HARDWARE DOES NOT DELIVER IT
+
+A and B tiles are the same size here (`BM x BK` = `BN x BK` = 128x64), so B is half the load
+volume. With multicast off, each CTA fetches the FULL B tile, so B's L2 traffic doubles —
+predicting **+25% total L2 reads**. Measured (§H27b9):
+
+    multicast ON    12,781,162 sectors
+    multicast OFF   13,104,924 sectors
+    delta                2.5%      <- predicted ~25%
+
+**A factor of ten between design intent and measured effect.** Performance is likewise
+unchanged (613.64 vs 616.14 TF), which is consistent: if the slicing were working, disabling it
+would cost real bandwidth and show up.
+
+#### WHY THIS IS THE RIGHT PLACE TO STOP AND HAND OVER
+
+Everything else in the chain is now measured and closed:
+
+    load instruction counts        identical to cuBLAS (32,768 + 32,768)
+    multicast instruction counts   identical to cuBLAS
+    DRAM reads                     identical (56 sectors in 2.6 M)
+    L2 writes                      identical to the sector
+    load-path geometry             1.015x its own theoretical minimum
+    tensor utilisation             91-99%, above cuBLAS on two shapes
+    compute throughput             83.48% vs 83.46%
+    duration at equal clock        59.14 us vs 59.39 us  (we are FASTER)
+    cluster axis                   refuted twice, properly isolated the second time
+    coopA/coopB                    refuted -- it would change the load count; it does not
+
+The single remaining discrepancy is that **our multicast issues the right instruction, the
+right number of times, with the right slice width, and returns a tenth of the expected
+saving.** Candidates, none yet tested: the ctaMask value actually programmed at runtime; the
+cluster peers not being co-resident so the replication has no peer to serve; the mbarrier
+transaction-byte accounting forcing a full-tile fetch regardless of slice; or the descriptor's
+box geometry making a half-K slice touch the same number of L2 sectors as the full tile.
+
+**The first check is the cheapest: print the runtime `ctaMask` and confirm it names two CTAs,
+and confirm `cudaOccupancyMaxActiveClusters` reports the cluster is actually co-resident.**
