@@ -23414,6 +23414,14 @@ is itself the useful conclusion: further instruction work has a small ceiling.
 
 ---
 
+> **CORRECTED BY §H27bl.** The "+7.2 points on V2c" below is measured against
+> `256x128x64_2x1_h_ep32s2_pdl`, which `pins.sh` names but **production does not dispatch**.
+> The dispatch table routes `2048x50304x16384 tn` to `256x128x64_1x2_v_ep32s2`, which measures
+> **94.6% free / 94.1% locked** against the pins.sh config's 90.5% / 88.8%. So the real gain of
+> `128x256x64_2x1_v_ep32s2_dh_shfl` over what production actually runs is **+1.4 points free,
+> +2.2 locked** — genuine, but a third of the claimed figure. The coupling finding itself
+> (transposed tile catastrophic with h raster, best with v) stands.
+
 ### §H27b2 — **TILE AND RASTER ARE COUPLED, AND V2c's 8-POINT DEFICIT IS A TILE-SHAPE PROBLEM, NOT AN INSTRUCTION ONE. `128x256/2x1/v + dh + shfl` takes V2c from 89.7% to 96.9% at locked clock — +7.2 points, bit-exact.** Neutral on V2 (−0.2) and slightly negative on V2b (−0.45), so it is a per-shape pin, not a config-wide change. **This also corrects §H27aw.**
 
 §H27b1 left V2c as the one shape with a large deficit that was neither clock nor instructions:
@@ -24372,3 +24380,49 @@ measured at 89.1-92.4% using the `pins.sh` config, but production dispatches
 ~654-687 TF measured for the `pins.sh` baseline. If that holds, the "+7.2 points on V2c" improved
 a config production does not use. Verification is queued (§H27bl); the claim should not be
 repeated until it lands.
+
+---
+
+### §H27bl — **THE V2c CLAIM IS CORRECTED DOWNWARD: +1.4 / +2.2 points, not +7.2.** `pins.sh` and the dispatch table name different configs for this shape, and everything measured today used the `pins.sh` one — which production does not run and which is **4 points worse** than what it does run.
+
+`2048x50304x16384 tn`, four configs, both clock policies, all PASS `maxRelErr 0.00000`:
+
+    config                                          free %cuB   locked %cuB
+    256x128x64_1x2_v_ep32s2        <- DISPATCHED       94.6%       94.1%
+    256x128x64_2x1_h_ep32s2_pdl    <- pins.sh          90.5%       88.8%
+    256x128x64_2x1_h_..._dh_dw_uad_ubd_cs               90.2%       89.6%
+    128x256x64_2x1_v_ep32s2_dh_shfl <- our best         96.0%       96.3%
+
+#### WHAT WAS WRONG
+
+§H27b2 reported V2c going **89.7% -> 96.9%, +7.2 points**. That baseline was
+`256x128x64_2x1_h_ep32s2_pdl`, taken from `pins.sh`. **Production dispatches
+`256x128x64_1x2_v_ep32s2` instead**, and it is 4 points better than the pins.sh config
+(94.6 vs 90.5 free). Against the config that actually runs, our best arm gains
+**+1.4 points free and +2.2 locked** — real, and a third of what was claimed.
+
+#### AND THE 256x128 LADDER IS THE WRONG TILE FOR THIS SHAPE ENTIRELY
+
+`_dh_dw_uad_ubd_cs`, the rung that measured **+1.95 paired and null-controlled** in §H27au,
+sits at **90.2% / 89.6%** — below the dispatched `1x2_v` at 94.6% / 94.1%. The +1.95 was a
+real improvement to `256x128_2x1_h`, and `256x128_2x1_h` is simply not the right tile here.
+**A gated, null-controlled, believable improvement to the wrong configuration is still worth
+nothing**, which is the lesson.
+
+The dispatch-table annotation on that row reads **812.9 TF**; measured today the same config
+gives 678 TF free / 702 TF locked. That comment is stale and should not be trusted as a
+baseline.
+
+#### THE RULE THIS ESTABLISHES
+
+**`pins.sh` is not the dispatch table.** They agree on 13 of 15 shapes and disagree on V2c and
+V6. Any standalone result intended to justify a production change must be measured against
+`Bgemm_sm90_dispatch_table.h`, not against `pins.sh`. Today's other results are unaffected —
+the 128x256 family (7 pins) and V1 were verified to agree between the two — but V6's numbers
+carry the same defect as V2c's and have not been re-measured.
+
+#### WHAT IS STILL WORTH DOING ON V2c
+
+`128x256x64_2x1_v_ep32s2_dh_shfl` beats the dispatched config by 1.4-2.2 points and is
+bit-exact. Retargeting that one row is justified. It was deliberately left out of §H27bm's
+retarget pending exactly this verification.
