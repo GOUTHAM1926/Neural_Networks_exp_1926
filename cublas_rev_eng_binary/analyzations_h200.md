@@ -23716,3 +23716,51 @@ statement is the arithmetic one above.
 
 **NEXT: disassemble cuBLAS's V1 kernel and count its load instructions and their multicast
 masks against ours.** That is the only way to name what produces 241 MB from a size-2 cluster.
+
+---
+
+### §H27b7 — **SASS: WE ISSUE EXACTLY THE SAME TMA LOADS AS cuBLAS — same count, same multicast split — YET PULL 1.62x THE L2 SECTORS.** The gap is not how many loads, nor whether we multicast. It is **sectors touched per TMA transaction**, which is tensor-map geometry.
+
+Disassembled both V1 kernels (`ncu --page source --print-source sass`, deduped by address,
+dynamic execution counts), shape `2048x512x16384 tn`, our pin
+`128x128x64_2x1_v_sk2_dh_rot2_pdl_d6_shfl`:
+
+    ours                                    cuBLAS
+      32,768  UTMALDG.3D                      32,768  UTMALDG.3D
+      32,768  UTMALDG.3D.MULTICAST            32,768  UTMALDG.3D.MULTICAST
+         640  UTMACCTL.PF                      8,192  UTMASTG.4D
+                                               8,192  UTMACMDFLUSH
+                                               1,024  LDS
+                                                 512  LDG.E
+
+**The load side is identical: 65,536 TMA loads each, split 50/50 between multicast and
+non-multicast.** Against L2 read sectors of 12,776,156 (ours) and 7,882,457 (cuBLAS), that is
+**1.62x the sectors from the same number of transactions.**
+
+#### WHAT THIS ELIMINATES
+
+- **"We issue more loads."** No — identical counts.
+- **"We do not multicast."** No — we issue exactly as many `.MULTICAST` loads as they do.
+- **"Wrong cluster axis / wrong operand multicast."** Already refuted by measurement in §H27b6
+  (their axis makes us worse: 4.07 -> 4.93 L2 reads per DRAM read), and now also by the SASS:
+  both clusters are size 2 and both issue 32,768 multicast loads.
+- **`coopA`/`coopB` as "cooperative loading splits the fetch across CTAs."** If that were the
+  mechanism their load COUNT would differ from ours. It does not. §H27b5's naming was
+  inference from a kernel-name string and is withdrawn; this is the SASS evidence that settles
+  it.
+
+#### WHAT IT LEAVES
+
+Same instruction, same count, same multicast — **different bytes moved per instruction.** A
+`UTMALDG.3D` transfers whatever its tensor map describes, so the remaining variables are the
+**box dimensions and the swizzle mode** on the TMA descriptor, and how many 32 B L2 sectors a
+single box touches.
+
+**THE NEXT AND ONLY REMAINING QUESTION: what box geometry does cuBLAS's tensor map use versus
+ours?** Ours is built in `make_tensor_map_*`; theirs is set up host-side before launch. Our
+descriptor uses a 5D box (atom 64x8) for MN-major per §H27-native-MN-major. Comparing box
+dims and swizzle between the two is a bounded, concrete task and it is the last unexplained
+step in the chain:
+
+    box geometry (unknown)  ->  1.62x L2 sectors per TMA  ->  +12% power at equal clock
+                            ->  100% cap saturation vs 47.7%  ->  -108 MHz  ->  free-clock deficit
