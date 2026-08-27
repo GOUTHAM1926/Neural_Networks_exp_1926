@@ -22895,3 +22895,80 @@ cluster multicasts A (the large operand) where ours multicasts B. Matching them 
 **Every 256x128 variant is worse, by 5 to 15 points.** The long-standing "tile-orientation
 unknown" that §H27zdispatcher recorded as gating the cuBLAS-variant pin is answered: our
 orientation is the better one here, and matching cuBLAS's would cost us.
+
+---
+
+### §H27au — **FIRST GATED WIN. Removing the dead address math on V2c's config is worth +1.95 points, paired and null-controlled, bit-exact.** 40.3% fewer k-loop instructions per wgmma (R2UR 16→1, IMAD 6→2). V2c was our worst shape at 89.1%; the full rung takes it to ~91.4%. `cs` alone buys NOTHING (−0.07) — the win is the descriptor work.
+
+V2c (`2048x50304x16384 tn`, `256x128x64_2x1_h_ep32s2_pdl`) is the worst shape in the set
+(§H27at) and carries one of the four highest instruction ratios (2.24x), which against
+real %cuB is the strongest predictor available (r = −0.511). Its baseline is also worse
+than V1's: **it does not set DESC_HOIST at all**, so it runs the full `make_gmma_desc_*`
+rebuild on every wgmma rather than merely hoisting it.
+
+#### STATIC — innermost HGMMA loop, cuobjdump, per wgmma
+
+    variant                     instr/wgmma   vs base   R2UR  ULEA  IMAD
+    base +dh +dw                    17.00      +9.7%      16     7     7   WORSE without uad
+    base                            15.50       0.0%      16     7     6
+    base +cs                        15.25      -1.6%      16     6     6
+    base +dh                        13.00     -16.1%      16    7    13
+    base +dh +dw +uad                9.50     -38.7%       1     5     2
+    base +dh +dw +uad +ubd           9.50     -38.7%       1     5     2   ubd is a NO-OP
+    base +dh +dw +uad +ubd +cs       9.25     -40.3%       1     4     2
+
+`ubd` (UNIFORM_B_DESC) changes **nothing** on this config — 76 static instructions with
+and without. `dw`+`uad` already puts B's descriptor on the uniform path here. And `dh+dw`
+without `uad` is again WORSE than baseline, the same pairing as §H27ai: DESC_WALK stacks a
+walk on top of a rebuild unless UNIFORM_A_DESC has folded `row0` to a literal first.
+
+#### MEASURED — `h27zdf_paired.sh`, 15 reps, 5 arms, PIN entered twice as the null, locked 1410
+
+    arm         mean_d    sd_d   min_d   max_d   verdict
+    NULL_B       +0.37    1.00   -2.60   +1.50   <- METHOD ERROR, floor = 1.37 points
+    CS           -0.07    0.89   -2.30   +0.90   nothing
+    DHDWUAD      +1.45    0.82    0.00   +2.80   marginal, sits on the floor
+    FULL         +1.95    1.30   -0.70   +4.50   BELIEVABLE
+
+Net of the null's +0.37 bias, **~+1.6 points**. All seven rungs PASS with
+**maxRelErr 0.00000**. Single-shot %cuB for reference: base 89.5% → full rung 91.2-91.8%
+(cuBLAS's own column moved 717.59-726.49 across those runs, 1.2%, so the paired number is
+the one to quote).
+
+**`cs` alone is worth nothing.** Removing the magic-number division does not pay by
+itself — consistent with §H27aj, where `cs` measured −0.10 on V1 against a 0.72 floor.
+It stays because it is bit-exact and removes dead work, not because it is fast.
+
+#### THIS ALSO APPLIES TO V2 AND V2b
+
+Both pin the same `256x128x64_2x1_h_ep32s2_pdl` config (V2 96.1%, V2b 95.2%). The rung is
+registered for the config, not the shape, so both should carry the same benefit. **Not yet
+measured on them** — that is the next gate before any dispatcher change.
+
+#### WHAT DEAD WORK REMAINS — read straight off the best rung's SASS
+
+The winning rung still **rebuilds** the descriptor base every k-iteration instead of
+carrying it. From the 74-instruction loop body:
+
+```
+S2UR   UR23, SR_CgaCtaId        <- cluster CTA id re-read EVERY iteration, loop-invariant
+UIMAD  UR8, UR4, 0xc000         <- stage * 49152 as a MULTIPLY, every iteration
+ULEA   UR9, UR23, UR8, 0x18     <- the remaining ULEA lives here
+ULOP3 / USHF / ULOP3 / USHF / UIADD3.X ...   <- ~18 instructions rebuilding both bases
+```
+
+then the useful part — eight `UIADD3.64` walking the per-wgmma offsets, which is exactly
+cuBLAS's shape. **We perform their walk, but rebuild the base first; cuBLAS carries the
+base in a register and rewinds it at the bottom of the group.**
+
+Remaining, in size order:
+
+| # | dead work | cost |
+|---|---|---|
+| A | descriptor base REBUILT per iteration instead of accumulated (`+= copy_size>>4`, rewind on wrap) | ~18 instr |
+| B | `stage * copy_size` via multiply + sign-extend chain | ~4 instr |
+| C | `S2UR SR_CgaCtaId` re-read though loop-invariant | 1-2 instr |
+| D | phase flip on the VECTOR path (`ISETP`/`SEL`/`LOP3` on R7/R12) | 3 instr |
+
+A, B and C are one change: keep the descriptor base live across iterations. That is the
+last structural difference from cuBLAS's mainloop and the natural next knob (`DESC_ACCUM`).
