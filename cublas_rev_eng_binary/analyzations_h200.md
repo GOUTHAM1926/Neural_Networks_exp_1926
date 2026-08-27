@@ -22771,3 +22771,28 @@ them are within 0.8%.
 our BEST shape at equal clock. The obvious first question on V8: with K=512 and BK=64
 that is **8 mainloop iterations against a pipeline depth of 6** — the pipeline barely
 fills before it drains.
+
+#### §H27as OPEN TASK — `KLOOP_UNROLL`, kept as cleanup, NOT as a performance lever
+
+cuBLAS fits **16 static HGMMA per loop body against our 4**, so every loop-carried cost
+(branch, ISETP, `WARPGROUP.ARRIVE`, mbarrier wait, stage advance) is amortised 4x better
+on their side. Slot 33 `_KLOOP_UNROLL` exists in the template and has never been enabled
+on any shipping config.
+
+**Do it, but for the right reason.** §H27as refuted the performance case: instruction
+count anti-correlates with the deficit (r = −0.305) and the direct intervention bought
++0.58 clock points and zero cycles. So the expected gain is ~0, and it must be gated the
+same way everything else is — a config ladder, one knob at a time, bit-exact validation,
+and the paired null instrument.
+
+The reasons it is still worth doing:
+- it removes genuinely dead work at the source rather than by hand-patching sites, which
+  is what §H27ai had to do;
+- unrolling by `LOAD_PIPE_DEPTH` makes `stage` a COMPILE-TIME constant, which deletes the
+  stage-advance arithmetic entirely rather than merely cheapening it (§H27ai's `cs`);
+- it is the last remaining structural difference from cuBLAS in the mainloop, so leaving
+  it untested keeps an open question that will otherwise be re-litigated.
+
+**Explicitly NOT expected to help the low-K shapes.** Deeper unrolling of an 8-iteration
+mainloop (V8) makes the fill/drain problem worse, not better. Those need the opposite
+treatment.
