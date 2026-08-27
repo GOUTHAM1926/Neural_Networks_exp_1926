@@ -22554,3 +22554,139 @@ clock track is worth ~7 points and is cheap; it is not the path to 130%.
 
 **Falsifiable in one direction:** if V1's clock does not move on a cut that verifiably removed
 24.4% of k-loop instructions, the instruction→clock channel is dead and the track closes for real.
+
+---
+
+### §H27am — **THE INTERVENTION TEST: cutting 24.4% of k-loop instructions moves the clock by +0.58 points, against +3.70 predicted.** The channel is REAL — monotonic, drift-controlled, outside the control's own spread — but the true within-shape slope is **1.66% per 1.0x instruction ratio**, SIX TIMES shallower than §H27al's cross-shape fit. Even removing ALL remaining excess would recover only ~1.8 of V1's 6.74 points.
+
+`plain-fish-falls-fin-03`, H200 GPU 1, free clocks, §H27af protocol: 10 s windows, first
+4 s discarded, ~98 Hz sampling, ~2200 settled samples per arm, 3 reps.
+
+    arm      ours MHz   cuBLAS MHz   deficit    vs base
+    base       1429.0       1532.3    -6.74%      +0.0 MHz
+    +cs        1434.0       1531.0    -6.34%      +4.9 MHz
+    +cut       1439.2       1533.8    -6.16%     +10.2 MHz
+
+**All six arms at 693 W and cap_active 100%.** cuBLAS is the SAME binary in all three
+arms and its clock across them spans **2.8 MHz** — that is this measurement's own error
+on this quantity, so +10.2 MHz is real. The ordering confound also runs the wrong way:
+a warming card lowers clock over a session, and ours rose.
+
+#### THE PREDICTION FAILED BY 6x, AND THAT IS THE FINDING
+
+§H27al predicted −6.80% → −3.03%, a gain of **+3.70 points**. Measured: **+0.58**.
+Implied within-shape slope **1.66% per 1.0x** against the cross-shape fit's 10.62%.
+
+    local slope           1.66% clock per 1.0x ratio
+    current ratio         2.08x  (after the cut)
+    removing ALL excess   (2.08 - 1.0) x 1.66 = +1.8 points
+    V1's actual deficit   6.74 points
+
+**Perfect instruction parity with cuBLAS recovers under a third of the deficit.**
+Therefore the cross-shape correlation of §H27al (r = −0.996) is a PREDICTOR, not a
+CAUSE — something co-varies with instruction ratio across shapes and carries most of
+that relationship. **The intervention is the causal test and the correlation is not.**
+This is the second time a cross-shape number has failed to transfer (§H27ak was the
+first); the rule to take from it is that only a within-shape A/B establishes causation.
+
+---
+
+### §H27an — **DATA MOVEMENT IS NOT THE GAP. We move the SAME bytes as cuBLAS.** V1: ours 0.081 GB vs 0.082 GB, both at **1.02x the theoretical minimum**. V4: 3.869 vs 3.679 GB (**1.05x**, not 2.43x). §H27z.82's "10.12 GB vs 4.16 GB, reuse 76% vs 93%" **does not reproduce** — it was a different config, and the work since has closed it.
+
+    V1  2048x512x16384 tn      mandatory read 0.078 GB   write 0.002 GB
+        arm       DRAM rd   DRAM wr    total   x mand   L2 hit   reuse    tile
+        ours       0.078G    0.003G   0.081G    1.02x    69.8%   100.0%  128x128
+        cublas     0.078G    0.004G   0.082G    1.02x    49.5%   100.0%  128x128
+
+    V4  16384x50304x2048 nn    mandatory read 0.254 GB   write 1.535 GB
+        ours       2.339G    1.530G   3.869G    2.16x    87.3%    93.6%  192x192
+        cublas     2.150G    1.529G   3.679G    2.06x    88.7%    94.2%  192x192
+
+On V1 — the shape carrying the 6.74% clock deficit — we move **fewer** bytes than cuBLAS
+and our L2 hit rate is **better** (69.8% vs 49.5%). The hypothesis that DRAM traffic
+causes the clock deficit is **refuted on the shape it was invoked to explain**.
+
+§H27z.82 measured a `192x192x64_1x2_v` config; today's V4 pin is
+`192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl`. Quoting the old figure across that config
+change was the same carry-forward error as §H27ak. **Data movement is not a 130% lever;
+that claim is withdrawn.**
+
+---
+
+### §H27ao — **ACTIVITY CENSUS: total instruction issue is the ONLY counter that tracks the clock deficit.** And the opcodes we have been hunting are not the driver — `pipe_fma` (our IMAD) runs **273x–557x** cuBLAS and is WORST on V8d, the one shape with NO deficit.
+
+Four shapes chosen to span the deficit range, so a cause must be high where the deficit
+is high and ~1.0 where it is absent.
+
+    metric (ours/cuBLAS)      V1 -6.74%   V2c -5.7%   V7 -0.9%   V8d +0.4%   tracks?
+    smsp__inst_executed          2.54x       2.24x      1.81x      1.78x     YES
+    sm__inst_executed_pipe_fma 273.63x     359.72x     36.51x    557.54x     no
+    sm__inst_executed_pipe_alu   6.18x       9.13x      4.62x      5.78x     no
+    lts__t_requests              1.85x       1.48x      1.25x      1.45x     no
+    dram__bytes                  1.00x       1.99x      1.02x      1.42x     no
+    sm__pipe_tensor_cycles       1.00x       1.00x      1.00x      1.00x     CONTROL
+
+`sm__pipe_tensor_cycles_active` is **1.00x on all four** — identical tensor work, which
+is what makes the rest a fair comparison.
+
+**`pipe_fma` is the address arithmetic** (IMAD issues on the FMA pipe; §H27ah measured
+IMAD at 242x on V1 and this reports 273x on the same shape). 48 million against 86
+thousand on V8d — and V8d has the best clock of the four. **So the specific integer
+math §H27ah named, and §H27ai removed, is not what sets the clock.** That is consistent
+with §H27am measuring the intervention at only +0.58 points.
+
+---
+
+### §H27ap — **"LOCKED 1400" WAS NEVER A CONTROL. The lock BROKE on 6 of 15 variants under sustained load, asymmetrically, and worst exactly where the deficit is worst.** On V1 we ran **1332 MHz at 698 W** while cuBLAS ran **1410 MHz at 665 W** — cuBLAS stayed under the 700 W cap and held its clock; we reached the cap and the governor took 68 MHz.
+
+Re-reading §H27af's own locked-1400 per-instant data, 10 s sustained windows:
+
+    var    ours MHz   cuB MHz   ours W   cuB W   verdict
+    V1         1332      1410      698     665   LOCK BROKE   -5.6% at "equal" clock
+    V2c        1277      1373      698     698   LOCK BROKE   -7.0%
+    V4         1366      1380      698     697   LOCK BROKE   -1.1%
+    V5         1367      1361      698     698   LOCK BROKE   +0.5%
+    V7b        1384      1397      697     697   LOCK BROKE   -1.0%
+    V8d        1380      1387      698     697   LOCK BROKE   -0.5%
+    V2/V7c/V2b/V3/V8c/V6/V7/V8b/V8 ................ held at 1410
+
+**Two consequences.**
+
+1. **§H27ac's "100.42% of cuBLAS at equal clock" did not hold the clock equal on V1 or
+   V2c** under sustained load. V1's free deficit is −6.7% and its locked-1400 deficit is
+   −5.6%; locking barely changed the condition on the shapes that matter. (Short 400 ms
+   bursts DO hold 1410 — §H27aj measured min = max = 1410 — so the two regimes differ and
+   must not be conflated.)
+
+2. **It is also the cleanest causal statement so far**, because it is a direct
+   measurement with no fitting: *at the same clock target we demand 33 W more and pay
+   78 MHz for it.*
+
+#### WHY EVERY MEASUREMENT SO FAR WAS TAKEN IN THE WRONG CONDITION
+
+At **free** clocks both arms sit pinned at the cap (693 W / 100% both, §H27am). Power
+**cannot** differ there — the governor equalises it by taking our clock. So a free-clock
+power comparison is uninformative by construction, and a free-clock A/B on throughput
+carries a 3.16-point floor (§H27aj). At **locked 1400** the lock breaks on the
+power-hungry shapes, so that is not a control either.
+
+**THE CORRECT CONDITION: lock LOW enough that BOTH arms stay under the cap.** There the
+clock is equal by construction and the power difference is unclamped — a direct reading
+of excess activity in watts. `tools/h27ap_power_clock_sweep.sh` sweeps the lock down
+until that holds and then measures cuBLAS vs base vs cut.
+
+**FALSIFIABLE:** if the §H27ai cut does not lower our watts at a sub-cap clock, then
+removing instructions does not reduce activity, and the instruction→clock track closes.
+
+#### BUILD NOTE — CUDA 13.1 BREAKS THIS TREE
+
+`kind-data-thinks-fin-03` ships CUDA **13.1.115** alongside 13.0.88, and the Makefile
+auto-selects the highest (`ls /usr/local/cuda*/bin/nvcc | sort -V | tail -1`). Under
+13.1 all three variant TUs fail with `macro "__cudaLaunch" passed 2 arguments, but takes
+just 1` — nvcc's generated stub emits a two-argument call while its own
+`crt/host_runtime.h` defines the one-argument form. A trivial kernel compiles fine, so it
+is triggered by this tree specifically (very long mangled config names are the likely
+trigger). **Build with `make NVCC=/usr/local/cuda-13.0/bin/nvcc`** — `CUDA_PATH` is
+derived from the nvcc path so includes and libs follow consistently. Pinning 13.0 is
+required for continuity anyway: a toolkit change alters codegen and would void every
+instruction count in §H27ah/§H27ai/§H27ao.
