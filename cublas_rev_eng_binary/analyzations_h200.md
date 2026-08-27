@@ -23478,3 +23478,54 @@ set goes from 91.6% to ~96%. The spread at equal clock narrows to roughly 96-104
 after the clock and instruction variables were removed. The same question has not been asked of
 the other fourteen pins: for each, is the (tile, raster) pair cuBLAS chooses the one we pin?
 That is a cheap sweep and it is the natural next campaign.
+
+---
+
+### §H27b3 — **THE (tile, cluster, raster) AUDIT ACROSS ALL 15 PINS, ours vs cuBLAS. Matching cuBLAS is NOT automatically right: V2c gains +7.2 from matching, V4 LOSES 1.7 from it, V3 gains +0.9 from a raster cuBLAS does NOT use.**
+
+    var           our pin              cuBLAS chooses          mismatch        locked %
+    V1     128x128 2x1 v        128x128 1x2 h bz splitK      cluster+raster    104.4  (we lead)
+    V2     256x128 2x1 h        128x256 2x1 v coopA          tile+raster       100.1
+    V2b    256x128 2x1 h        128x256 2x1 v coopA          tile+raster        99.8
+    V2c    256x128 2x1 h        128x256 2x1 v coopA          tile+raster        91.6  -> 96.9 FIXED
+    V3     192x192 2x1 h        192x192 1x2 h coopB          cluster            98.6
+    V4     192x192 2x1 h        192x192 2x1 v coopB          raster only        98.0
+    V5     192x192 1x2 v        192x192 2x1 v coopB          cluster           100.2
+    V6     192x192 2x1 h        192x192 2x1 v coopB          raster only        98.5
+    V7/b/c 128x256 2x1 h        256x128 1x2 h coopA          tile+cluster    97.6-100.6
+    V8/b/c/d 128x256 2x1 h      256x128 1x2 h coopA          tile+cluster    97.6-100.1
+
+**Only V2c was badly wrong.** Everything else is within ~2 points of parity at equal clock,
+and two shapes (V1 at 104.4, V7c at 100.6) beat cuBLAS while running a DIFFERENT shape to it.
+
+#### MATCHING cuBLAS IS NOT A RULE — three outcomes from the same experiment
+
+Tested at locked 1400, two passes each:
+
+    V2c   match cuBLAS's (128x256, v)              89.7% -> 96.9%    +7.2   MATCHING WINS
+    V4    match cuBLAS's raster v                  98.4% -> 96.8%    -1.7   MATCHING LOSES
+    V6    match cuBLAS's raster v                  98.6% -> 98.4%    -0.2   no effect
+    V3    switch to v, which cuBLAS does NOT use   98.5% -> 99.2%    +0.9   NON-MATCHING WINS
+
+*(the v-raster arm lacks `pdl`, and `wlsm` on V6, so V4/V6 are confounded against their pins;
+V3's gain is despite that handicap, which makes it the more solid of the three.)*
+
+The V7/V8 family was already tested against cuBLAS's (256x128, 1x2) on V8 in §H27aw:
+`256x128x64_1x2_h_ep32s2` 88.3%, `256x128x64_1x2_h` 83.3%, against our 128x256 pin at 98.2%.
+**Matching cuBLAS there costs 10-15 points.** Seven pins confirmed better off as they are.
+
+#### THE STANDING CONCLUSION
+
+Tile/cluster/raster selection is a real lever — it is worth **+7.2 points on V2c** — but it is
+**per-shape and empirical**. cuBLAS's choice is a hypothesis worth testing, not an answer to
+copy: it wins on one shape, loses on another, and is beaten by a third option on a third.
+Any future sweep must measure each (shape, tile, cluster, raster) combination rather than
+infer from cuBLAS's dispatch.
+
+#### PINNING DECISIONS OUTSTANDING (none applied; dispatch table untouched)
+
+    V2c   -> 128x256x64_2x1_v_ep32s2_dh_shfl              +7.2 points, bit-exact
+    7 pins-> 128x256x64_2x1_h_ep64swz128_rot2_pdl_dh_shfl  +1.08%, 7/7, p=0.016
+    V2,V2b-> 256x128x64_2x1_h_ep32s2_pdl_dh_dw_uad_ubd_cs  +1.95 paired
+    V1    -> 128x128x64_2x1_v_sk2_dh_rot2_pdl_d6_shfl      ~0 perf, 76% vector-op cut
+    V3    -> a v-raster + pdl config does not exist yet    ~+0.9 indicated
