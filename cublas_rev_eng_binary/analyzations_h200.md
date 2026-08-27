@@ -23764,3 +23764,68 @@ step in the chain:
 
     box geometry (unknown)  ->  1.62x L2 sectors per TMA  ->  +12% power at equal clock
                             ->  100% cap saturation vs 47.7%  ->  -108 MHz  ->  free-clock deficit
+
+---
+
+### §H27b9/ba — **OUR TMA MULTICAST IS NEARLY INEFFECTIVE: disabling it costs only 2.5% of L2 reads.** We issue exactly as many `.MULTICAST` loads as cuBLAS (32,768) and get almost no sharing from them. Flipping the cluster axis with everything else held constant makes it WORSE, so it is not the operand choice.
+
+#### THE MULTICAST-OFF CONTROL
+
+Same config, `MULTICAST_A`/`MULTICAST_B` the only change, V1 shape:
+
+    arm                       L2 read sectors   MULTICAST loads   ourTF    %cuB
+    pin (multicast on)             12,781,162            32,768   613.64   100.0%
+    pin + _nomc (off)              13,104,924                 0   616.14    99.8%
+                                   ----------
+    saving attributable to multicast:  323,762 sectors = **2.5%**
+
+If 32,768 multicast loads each served two CTAs, disabling them would force ~32,768 extra
+independent fetches and add on the order of **6.4 M sectors**. It adds **0.32 M**. Our
+multicast is delivering roughly **5% of what the instruction is for**, and performance is
+unchanged either way (613.64 vs 616.14 TF) — we pay for the instruction and get nothing.
+
+#### THE CLUSTER AXIS, ISOLATED PROPERLY THIS TIME — AND STILL REFUTED
+
+§H27b6 compared cluster axes using STRIPPED base configs (no sk2/dh/rot2/pdl), which was not a
+valid isolation. Rebuilt as a true twin of the pin with only `2x1 -> 1x2` changed:
+
+    config                                      cluster   L2 read MB   ourTF    %cuB
+    128x128x64_2x1_v_sk2_dh_rot2_pdl_d6_shfl      2x1         391      625.01   97.9%
+    128x128x64_1x2_v_sk2_dh_rot2_pdl_d6_shfl      1x2         412      561.29   89.6%
+    cuBLAS (1x2)                                  1x2         241        --       --
+
+**1x2 gives us MORE L2 traffic and 8 points less performance.** The hypothesis that we
+multicast the small operand (B, 20% of bytes) where cuBLAS multicasts the big one (A, 80%) is
+arithmetically appealing and **empirically wrong** — switching axes does not transfer the
+saving to A. Do not revisit the axis.
+
+#### WHERE THIS LEAVES THE CHAIN
+
+Everything is now measured except one link:
+
+    ???  ->  1.62x L2 sectors per TMA  ->  +12% power at equal clock
+         ->  cap saturation 100% vs 47.7%  ->  -108 MHz  ->  free-clock deficit
+
+Eliminated by direct measurement, all of them:
+- more load instructions (identical counts, §H27b7)
+- missing multicast instructions (identical counts, §H27b7)
+- cooperative loading / coopA (would change the count; it does not)
+- wrong cluster axis (worse when isolated properly, above)
+- wider clusters (works, but size-4 strands 12 CTAs on H200, -36 pts)
+- load-path waste (we are at 1.015x the geometric minimum, §H27b6)
+
+What remains is that **the same instruction, issued the same number of times, with the same
+multicast annotation, moves 1.62x the L2 sectors** — and separately that **our multicast
+annotation buys only 2.5% where it should buy ~50% of its half**. Those two facts are probably
+the same fact. The variable neither of them can be explained without is the **TMA descriptor
+itself**: box dimensions, swizzle mode, and the multicast CTA mask actually programmed.
+
+**NEXT: dump our `CUtensorMap` fields (box dims, element strides, swizzle, interleave) and the
+multicast mask we pass, and compare against what the transfer size implies cuBLAS uses.** That
+is the last unexamined object in the path.
+
+#### AND THE STANDING THAT MATTERS
+
+At equal clock on V1 the pin now measures **97.9-104.4%** across runs. The deficit is a
+free-clock phenomenon caused by the power draw, and the power draw is caused by the L2
+traffic. Nothing in the compute path is behind cuBLAS.
