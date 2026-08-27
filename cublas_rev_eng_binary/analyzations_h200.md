@@ -23959,3 +23959,60 @@ multicast implementation (verified correct).
 Open: **what burns the 11-13% power at equal clock.** The next instrument is not another
 hypothesis — it is a counter that separates L2 array reads from delivered sectors, so the L2
 lead can be confirmed or dropped cleanly.
+
+---
+
+### §H27bd — **CAVEAT RESOLVED: IT IS NOT A COUNTER ARTIFACT. We issue 1.64x the L2 read REQUESTS and perform 2.35x the L2 HITS for identical DRAM traffic.** Requests are transactions, not deliveries, so multicast accounting cannot produce this. The extra traffic is entirely L2 hits — invisible in bandwidth, expensive in power — and it is the +12%.
+
+§H27bc flagged that `lts__t_sectors_op_read` might count delivered rather than fetched
+sectors, which would make multicast unable to reduce it. The request and lookup counters
+settle it:
+
+    metric                    ours          cuBLAS        ratio
+    lts__t_requests_op_read     3,228,232     1,968,138    1.64x   <- TRANSACTIONS
+    lts__t_sectors_lookup_hit   9,684,275     4,124,923    2.35x   <- L2 ARRAY accesses
+    lts__t_sectors_lookup_miss  4,851,385     4,195,929    1.16x
+    lts__t_sectors_op_read     12,760,819     7,988,075    1.60x
+    dram__sectors_read          2,622,424     2,622,160    1.00x
+
+**A request is a transaction issued to L2, not a sector delivered from it.** Multicast
+delivery accounting cannot inflate a request count. **We genuinely issue 1.64x the read
+transactions and perform 2.35x the hitting tag lookups.** The §H27bc caveat is withdrawn.
+
+The internal consistency is exact: **misses 1.16x, DRAM 1.00x, hits 2.35x.** Our excess
+traffic never reaches DRAM — it is all served out of the L2 array. That is precisely why it
+was invisible to every bandwidth-oriented measurement this week (DRAM bytes at parity,
+§H27an) while costing real energy: **an L2 hit is a tag lookup plus an array read, and we do
+2.35x as many of them.**
+
+#### THIS IS THE +12% POWER
+
+    2.35x L2 array accesses (all hits, none reaching DRAM)
+      -> +11-13% power at equal clock, measured below the cap (§H27b4)
+      -> 100% cap saturation vs cuBLAS's 47.7%
+      -> -108 MHz
+      -> the entire free-clock deficit
+
+Every link is now measured. The chain is closed from cause to effect for the first time.
+
+#### AND IT EXPLAINS THE WHOLE WEEK OF NULL RESULTS
+
+- Instruction cuts moved nothing (§H27am +0.58 pts, §H27b4 2.1% of power) because the power
+  was never in the instruction path.
+- Every power comparison at free clocks read 1.00x (§H27ag, §H27am) because both libraries
+  are clamped at the cap there.
+- Every memory-traffic comparison read parity (§H27an, 1.00x DRAM) because the excess never
+  reaches DRAM.
+- Tensor utilisation, compute throughput and duration at equal clock all matched or favoured
+  us, because the compute path was never the problem.
+
+**The one thing nobody measured until now was L2 hit volume**, and that is where the entire
+deficit lives.
+
+#### THE QUESTION THAT REMAINS
+
+Why do we issue 1.64x the L2 read transactions for the same data? Not multicast (verified
+correct, §H27bc), not load count (identical, §H27b7), not tile geometry waste (1.015x
+minimum, §H27b6), not cluster shape (refuted twice). The remaining candidates are how long a
+fetched line stays useful before being re-requested — smem residency, pipeline depth, and the
+order tiles are scheduled in — i.e. **reuse depth, not reuse ratio**.
