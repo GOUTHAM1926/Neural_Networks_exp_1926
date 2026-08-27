@@ -22690,3 +22690,84 @@ trigger). **Build with `make NVCC=/usr/local/cuda-13.0/bin/nvcc`** — `CUDA_PAT
 derived from the nvcc path so includes and libs follow consistently. Pinning 13.0 is
 required for continuity anyway: a toolkit change alters codegen and would void every
 instruction count in §H27ah/§H27ai/§H27ao.
+
+---
+
+### §H27as — **THE INSTRUCTION EXCESS IS NOT WHY WE ARE BEHIND. It ANTI-correlates with the deficit (r = −0.305, wrong sign). What predicts the deficit across all 15 variants is K (r = −0.730).** V1 has the MOST extra math (2.54x) and the SMALLEST cycle penalty (1.003x); V8 has BELOW-AVERAGE extra math (1.78x) and the LARGEST (1.079x). Tensor utilisation is at parity — mean gap −0.75 points, and we are AHEAD on V1 and V4.
+
+#### ABSOLUTE TENSOR UTILISATION, ALL 15, MEASURED ON THIS BOX
+
+`kind-data-thinks-fin-03`, CUDA 13.0, ncu `sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active`.
+Sorted by cycle penalty, which is the equal-clock performance deficit:
+
+    var    K      ours     cuBLAS    tensor gap   cycles vs cuBLAS   instr ratio
+    V8       512  70.55%    75.38%      -4.83        1.079x            1.78x
+    V7c     2048  86.22%    88.26%      -2.04        1.032x            1.81x
+    V8b     2048  90.66%    92.37%      -1.71        1.025x            1.78x
+    V6      2048  91.75%    92.81%      -1.06        1.023x            1.58x
+    V7      2048  90.76%    92.37%      -1.61        1.022x            1.81x
+    V5     16384  98.57%    98.67%      -0.10        1.016x            1.59x
+    V8c    11264  98.12%    98.44%      -0.32        1.016x            1.78x
+    V3      2048  91.94%    92.10%      -0.16        1.012x            1.57x
+    V7b     5632  96.41%    97.03%      -0.62        1.011x            1.81x
+    V4      2048  92.21%    92.01%      +0.20        1.008x            1.57x
+    V2c    16384  98.57%    98.91%      -0.34        1.007x            2.24x
+    V2b    16384  98.19%    98.55%      -0.36        1.007x            2.24x
+    V2     16384  97.47%    97.75%      -0.28        1.006x            2.24x
+    V8d    50304  99.58%    99.63%      -0.05        1.004x            1.78x
+    V1     16384  91.75%    90.86%      +0.89        1.003x            2.54x
+
+#### THE HYPOTHESIS UNDER TEST, AND ITS REFUTATION
+
+The standing hypothesis has been: the excess integer/address math is why we lose — it
+burns cycles and switching, so we do less useful work per cycle than cuBLAS. Correlating
+across all 15:
+
+    instruction ratio  vs  cycle penalty    r = -0.305     WRONG SIGN
+    instruction ratio  vs  tensor gap       r = +0.265     WRONG SIGN
+    log(K)             vs  cycle penalty    r = -0.730     strong, correct sign
+    log(K)             vs  tensor gap       r = +0.715     strong, correct sign
+
+**More extra math goes with LESS penalty.** The two extremes make it plain: V1 issues
+2.54x cuBLAS's instructions and is 0.3% behind in cycles; V8 issues 1.78x and is 7.9%
+behind. **K explains 73% of the variance; instruction count explains none of it with the
+right sign.**
+
+This is now the THIRD independent measurement agreeing:
+1. §H27am — the direct intervention: cutting 24.4% of k-loop instructions bought
+   **+0.58 clock points and zero cycles**.
+2. §H27ao — `pipe_fma` (our IMAD) runs 273x–557x cuBLAS and is WORST on V8d, the shape
+   with the BEST clock.
+3. This section — the cross-shape correlation has the wrong sign.
+
+**Conclusion: the excess instructions cost POWER, not TIME.** They are worth roughly 1.8
+clock points in total (§H27am's causal slope), and even that is mostly uncapturable.
+`STAGE_CSEL` should still ship — it is bit-exact and removes genuinely dead work — but
+**the instruction hunt is not the performance lever and should not be resourced as one.**
+
+#### WHY TENSOR CORES CANNOT BE THE ANSWER EITHER
+
+Mean tensor gap across the 15 is **−0.75 points**, and we are AHEAD on V1 (+0.89) and V4
+(+0.20). Tensor cores execute only `wgmma`; the integer math runs on the FMA, ALU,
+uniform and LSU pipes and never occupies a tensor core. It can only steal *issue slots*,
+and `wgmma` is asynchronous — one issue keeps the tensor pipe busy ~16-32 cycles, which
+is a large shadow. The measurements say that shadow is not being exhausted: our tensor
+utilisation matches cuBLAS's.
+
+The absolute headroom to 100% is real (V8 29.5 points, V7c 13.8) but **cuBLAS does not
+capture it either** (V8: they are at 75.38%). It is prologue fill, drain and wave
+quantisation, and it shrinks with K exactly as amortisation predicts:
+
+    K = 50304 -> 99.58%      K = 16384 -> 97-98%      K = 2048 -> ~91%      K = 512 -> 70.55%
+
+#### WHERE THE WORK ACTUALLY IS
+
+Five of fifteen are 2.2-7.9% behind and every one of them is low-K: **V8 (512), V7c,
+V8b, V6, V7 (all 2048)**. That is one mechanism, not five separate problems — fixing
+amortisation moves five variants at once. The remaining ten are within 1.6% and six of
+them are within 0.8%.
+
+**V8 alone is a larger deficit than everything chased on V1 over two days**, and V1 is
+our BEST shape at equal clock. The obvious first question on V8: with K=512 and BK=64
+that is **8 mainloop iterations against a pipeline depth of 6** — the pipeline barely
+fills before it drains.
