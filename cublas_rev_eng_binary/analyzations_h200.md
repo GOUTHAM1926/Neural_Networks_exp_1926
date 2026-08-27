@@ -23271,3 +23271,81 @@ literal via per-warpgroup specialisation — costs more than it saves here.
 Note also that `192x192` gets **12 wgmma per loop body against 128x256's 4**, so it amortises
 whatever per-body cost remains 3x better. Part of the 12x gap is the numerator and part is the
 denominator.
+
+---
+
+### §H27b0 — **`UNIFORM_A_SHFL`: one line, VECTOR ops cut 4x on the BM=128 tiles, +1.08% measured on 7 of 15 pins, bit-exact.** A warp broadcast tells ptxas `row0` is uniform without duplicating the mainloop — succeeding exactly where `UNIFORM_A_DESC` backfires.
+
+#### THE GAP IT FILLS
+
+§H27az established that on a SPLIT_M tile `row0 = g*WG_MATOMS*64` is the single per-thread
+value that drags A's whole descriptor chain onto the vector datapath, and that
+`UNIFORM_A_DESC` fixes it by folding `row0` to a literal — which requires instantiating the
+mainloop once per warpgroup. That pays on 256x128 (BM=256, 8 wgmma/body): vec/wgmma
+7.88 -> 1.62, **+1.95 paired**. On the BM=128 tiles it backfires: ptxas reads the cluster id
+with `S2R` instead of `S2UR` and moves the entire chain per-thread, 7.00 -> **11.25**, −0.32%.
+
+`row0` is warp-uniform in VALUE — it derives from `threadIdx.x/128` — but ptxas's divergence
+analysis cannot prove it. A warp broadcast states the fact directly (the CUTLASS
+`canonical_warp_group_idx` idiom), with no duplicated mainloop and no literal folding:
+
+```c
+row0_eff = __shfl_sync(0xffffffffu, row0, 0)
+```
+
+Guarded mutually exclusive with `UNIFORM_A_DESC` by static_assert — two ways to say the same
+thing; enabling both is meaningless.
+
+#### STATIC — the vector density collapses
+
+    config                 body  wgmma  VECTOR  uniform   vec/wgmma
+    128x256 +dh              78      4      28       31      7.00
+    128x256 +dh +shfl        69      4       7       42      1.75    -75%
+    128x128 +dh (V1)         78      4      33       28      8.25
+    128x128 +dh +shfl        61      4       8       36      2.00    -76%
+
+Eight of fifteen pins move from the worst vector density in the set into the same class as
+256x128's tuned 1.62, against 192x192's 0.58 reference.
+
+#### MEASURED — two independent passes, all bit-exact (maxRelErr 0.00000)
+
+    shape     pass1    pass2     mean
+    V7       +1.09%   +0.37%   +0.73%
+    V7b      +0.71%   +0.95%   +0.83%
+    V7c      -0.47%   +2.57%   +1.05%
+    V8       +0.84%   -0.11%   +0.36%
+    V8b      +0.21%   +1.51%   +0.86%
+    V8c      +0.60%   +0.57%   +0.58%
+    V8d      +1.17%   -0.02%   +0.57%
+    mean     +0.59%   +0.83%   +0.71%
+
+    per-shape means : 7/7 positive, sign-test p = 0.016
+    all 14 observations : 11/14 positive, p = 0.057
+    overall +0.71%, sd 0.76, sem 0.20
+
+The +0.71% sits below the 1.37-point paired floor, so the sign test across independent
+shapes is again the correct instrument; a single-shape paired run could not resolve it.
+Note V7c swings −0.47% to +2.57% between passes — single-shot free-clock noise on one shape
+is ~3 points, which is exactly why per-shape single observations are not claimable and the
+averaged 7/7 is.
+
+**On top of `dh` (+0.37%, §H27aw) the family gains +1.08% against its original pin.**
+
+#### V1 IS NOT SETTLED
+
+`128x128 +shfl` shows the same static collapse (8.25 -> 2.00) but measured **−0.93%** in one
+pass. V1's single-shot spread today has been 94.5 / 97.0 / 98.5%, so that is inside noise and
+one observation decides nothing. Needs a second pass before any conclusion.
+
+#### THE STANDING PICTURE
+
+    family    pins   vec/wgmma   state
+    192x192      4       0.58    optimal, nothing to do
+    256x128      3       1.62    done, +1.95 paired  (via uad)
+    128x256      7       1.75    done, +1.08 total   (via dh + shfl)
+    128x128      1       2.00    static win, perf unresolved
+
+**All four families are now within 0.58-2.00 vec/wgmma**, from a starting spread of
+0.58-9.25. The remaining question is whether anything below ~1.6 is reachable, and 192x192
+suggests it is — but 192x192 also gets 12 wgmma per loop body against the others' 4-8, so
+part of its advantage is the denominator, not the numerator.
