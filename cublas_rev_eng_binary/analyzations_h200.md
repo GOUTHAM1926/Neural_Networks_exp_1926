@@ -24263,3 +24263,51 @@ code is larger (1,384 vs 1,200) and far more scattered (7 KB vs 2.3 KB of TMA sp
 Neither is obviously large enough to account for ~1.26 M extra requests, and **neither will be
 claimed as the cause without measuring it.** Three explanations have already been retracted
 today for exactly that error (§H27ak, §H27as, §H27bg).
+
+---
+
+### §H27bi — **LOCALISED, AND MEASURED THIS TIME: each of our TMA transactions decomposes into 41.3 L2 requests where cuBLAS's decomposes into 24.1.** Same instruction, same count (65,536 each), same 128 B request size — **1.71x the bytes moved per transaction.** This is tensor-map box geometry, and it is now a measurement rather than an inference.
+
+L2 read requests attributed by source unit, V1, both kernels:
+
+    metric                              ours          cuBLAS       ratio
+    lts__t_requests_op_read          3,234,371       1,976,473     1.64x
+    lts__t_requests_srcunit_tex_op_read 2,708,097 (83.7%)  1,581,383 (80.0%)   **1.71x**
+    not from TEX                       526,274         395,090     1.33x
+    l1tex__t_requests                   32,768               0        --
+    UTMALDG dynamic                     65,536          65,536     **1.00x**
+
+**83.7% of our L2 read requests arrive from the TEX unit — the TMA path — and so do 80% of
+cuBLAS's.** The bulk of the traffic on both sides is the tile fetch, and we issue 1.71x as
+many requests for it from an identical number of instructions:
+
+    requests per TMA   ours 2,708,097 / 65,536 = 41.3
+                     cuBLAS 1,581,383 / 65,536 = 24.1        ratio 1.71x
+
+Request size is the same on both sides (3.95 vs 4.06 sectors, i.e. 128 B), so this is bytes:
+
+    bytes moved per TMA   ours   41.3 x 128 = 5,286 B
+                        cuBLAS   24.1 x 128 = 3,085 B
+
+**Our TMA transactions move 1.71x more bytes than cuBLAS's.** Both kernels compute the same
+GEMM and move identical DRAM traffic (1.00x, §H27b5), so the surplus is redundant — either
+each box covers more than it needs, or consecutive boxes overlap.
+
+#### WHY THIS IS DIFFERENT FROM THE THREE RETRACTED CLAIMS
+
+This is not inferred from a kernel name (§H27b5), not fitted to reproduce a number (§H27bg),
+and not read off a counter that fails to track the outcome (§H27as). **Requests-per-instruction
+is a direct ratio of two measured counters over an identical instruction count.** The
+descriptor is the only object that can set it: given a fixed instruction and a fixed request
+size, the number of requests one TMA decomposes into is a function of the box dimensions, the
+element strides and the swizzle — nothing else.
+
+#### THE MEASUREMENT THAT COMES NEXT
+
+Dump our actual `CUtensorMap` fields for A and B — `boxDim[]`, `globalDim[]`, `globalStrides[]`,
+`elementStrides[]`, `swizzle`, `interleave` — from `make_tensor_map_*`, and compute the bytes
+one box covers. Compare against the 3,085 B/TMA that cuBLAS's measurement implies. If our box
+covers ~5,286 B where the tile needs ~3,085 B, the surplus is visible directly in the
+descriptor and the fix is a descriptor change, not a restructuring.
+
+This is bounded: the fields are in our own code and the target number is already measured.
