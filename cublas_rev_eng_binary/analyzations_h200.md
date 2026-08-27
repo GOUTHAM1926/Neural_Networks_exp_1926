@@ -24079,7 +24079,15 @@ If yes, that is the 1.64x, and retaining it is the fix.**
 
 ---
 
-### §H27bf — **THE CULPRIT, FOUND. Our rasterisation deliberately puts consecutive tiles on the same N so B is reusable — and the load path re-issues the B TMA every tile anyway.** The re-fetches are all L2 hits, which is why they were invisible to every DRAM and bandwidth measurement while costing 2.35x the L2 array accesses and +12% power.
+> **RETRACTED IN FULL BY §H27bg, before any code was written.** The fix is physically
+> impossible: B's K-extent on V1 is **4.00 MB** against **228 KB** of shared memory that is
+> already 100% used. The pipeline holds 6 of 256 k-iterations, capping cross-tile B retention
+> at **2.3%**, not the 1.64x claimed. And the `A x2 + B x7 = 1,966,080` that matched cuBLAS so
+> neatly was a CURVE-FIT — the B multiplier was solved for to reproduce their measurement, then
+> presented as a mechanism. The same error as the coopA naming in §H27b5. The MEASUREMENTS in
+> this section stand; the explanation does not.
+
+### §H27bf — ~~**THE CULPRIT, FOUND.**~~ *(RETRACTED — see banner)* Our rasterisation deliberately puts consecutive tiles on the same N so B is reusable — and the load path re-issues the B TMA every tile anyway.** The re-fetches are all L2 hits, which is why they were invisible to every DRAM and bandwidth measurement while costing 2.35x the L2 array accesses and +12% power.
 
 #### THE RASTER ALREADY CREATES THE REUSE
 
@@ -24143,3 +24151,60 @@ unexplained term in the chain.
 
 **Predicted effect:** B x8 -> B x~2-4 on V1 gives roughly 2.3-2.6 M requests against cuBLAS's
 1.97 M, closing most of the 1.64x and therefore most of the 12% power and the 108 MHz.
+
+---
+
+### §H27bg — **§H27bf RETRACTED BEFORE IMPLEMENTATION. Cross-tile B retention is physically impossible (4.00 MB of B against 228 KB of smem, already fully used), and my model of cuBLAS's kernel over-predicts their request count by 1.6x — so it does not describe their kernel and must not be built on.**
+
+#### THE ARITHMETIC THAT KILLED THE FIX
+
+    B across ALL K   BN x K x 2 = 128 x 16384 x 2 =   4.00 MB   <- what retention needs
+    one pipeline stage BN x BK x 2               =  16.0 KB
+    whole B pipeline (depth 6)                   =  96.0 KB
+    H200 smem per CTA                            = 228.0 KB     (already 100% used, §H27zY)
+
+    the pipeline can hold 6 of 256 k-iterations  = 2.3%
+    -> ceiling on cross-tile B retention: **2.3%**, against the 1.64x it was proposed to fix
+
+**B cannot be retained across tiles.** Its K-extent exceeds shared memory by 18x. §H27bf's
+"the schedule creates the reuse and the loader throws it away" is wrong: the loader cannot
+keep it. The rasterisation comment it quoted (`Mx1 -> v, reuses B's N-tile`) refers to **L2**
+reuse across tiles, which is exactly what we already get — those re-fetches ARE the hits.
+
+#### AND THE cuBLAS MODEL DOES NOT FIT
+
+    model of their 128x128 / 1x2 / splitK kernel:
+        A multicast over 2 N-peers   524,288 x 4 / 2 = 1,048,576
+        B not multicast              131,072 x 16    = 2,097,152
+        total                                          3,145,728
+    cuBLAS MEASURED                                    1,968,138   -> model over-predicts 1.6x
+
+The `A x2 + B x7 = 1,966,080` quoted in §H27bf as "fitting cuBLAS exactly" was obtained by
+**solving for the B multiplier that reproduces their number**, then presented as a discovered
+mechanism. It is a curve-fit with one free parameter through one data point. Same failure mode
+as naming `coopA` off a kernel-name string (§H27b5).
+
+#### WHAT SURVIVES, AND IT IS NOT NOTHING
+
+Directly measured, no model in between:
+
+    +11-13% power at equal clock BELOW the cap        (§H27b4, three lock points)
+    100% cap saturation vs cuBLAS's 47.7%, -108 MHz   (§H27b4)
+    L2 read REQUESTS 1.64x, lookup HITS 2.35x         (§H27bd)
+    L2 misses 1.16x, DRAM reads 1.00x                 (§H27bd) -- the excess never reaches DRAM
+    our request count matches OUR structure           3,145,728 predicted vs 3,228,232 measured
+    everything else at parity; at equal clock we are FASTER (59.14 vs 59.39 us)
+
+#### THE OPEN QUESTION, STATED CORRECTLY
+
+**Why does cuBLAS need 1.6x fewer L2 read requests than any model of a 128x128 / BK=64 /
+depth-6 / 1x2-cluster / split-K GEMM predicts?** Our own structure is fully explained by such
+a model to 2.6%. Theirs is not explained by it at all. Something about their kernel's data
+movement is outside this model, and until it is identified from measurement — not from kernel
+names, not from curve-fits — no fix should be attempted.
+
+**METHOD NOTE, third instance today.** §H27ak retracted a conclusion from a power reading taken
+in the wrong condition; §H27as retracted one built on a counter that does not track throughput;
+this retracts one built on a curve-fit. All three were caught before shipping, and this one
+before a line of code. The recurring failure is **explaining a measurement with a mechanism
+that was not independently observed.** The measurement is not the explanation.
