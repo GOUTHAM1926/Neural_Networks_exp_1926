@@ -23589,3 +23589,67 @@ twice as often for the same data, and our L2 hit rate is correspondingly higher 
 **NEXT CAMPAIGN: why do we make 1.85x the L2 requests for the same bytes?** That is now the
 best-defined open question in the project, and unlike the instruction hunt it has a measured
 power excess of ~12% behind it, worth roughly 8 points of clock.
+
+---
+
+### §H27b5 — **THE L2 EXCESS IS ENTIRELY ON THE READ PATH, AND THE CLUSTER-AXIS HYPOTHESIS IS REFUTED.** Writes match cuBLAS to the sector, DRAM reads match to 56 sectors out of 2.6M, and reads are **1.24-1.62x**. Switching to cuBLAS's cluster axis makes us WORSE. The signature points at **coopA/coopB — cooperative tile loading across the cluster — which we have never implemented.**
+
+#### READ vs WRITE — the write path is exonerated completely
+
+    shape   L2 writes (ours / cuBLAS)      L2 reads (ours / cuBLAS)        DRAM reads
+    V1        393,289 /   393,291  =1.000    12,776,156 /  7,882,457 =1.62   2,622,272 / 2,622,216
+    V7      3,146,082 / 3,146,017  =1.000    36,122,548 / 29,163,296 =1.24   2,663,800 / 2,526,024
+    V8b     3,145,922 / 3,145,908  =1.000    36,299,954 / 29,219,361 =1.24   2,686,032 / 2,541,608
+
+**Writes are identical to the sector** on all three — the epilogue, the C store path and
+split-K's partial traffic are all exactly cuBLAS's. **DRAM reads are identical too** (V1
+differs by 56 sectors in 2.6 million). The entire excess is L2 READS: we pull the same bytes
+out of L2 far more often than cuBLAS does.
+
+#### THE CLUSTER-AXIS HYPOTHESIS, TESTED AND REFUTED
+
+The natural explanation was multicast operand choice. Our 2x1 cluster spans M, so the two CTAs
+share N and B is multicast; cuBLAS's 1x2 spans N, so they share M and A is multicast. On V1
+A is 67 MB and B is 17 MB, so cuBLAS would be multicasting the operand 4x larger. Tested on
+V1's shape, same tile, only the cluster axis and raster varying:
+
+    config              cluster   L2 read sectors   DRAM read   L2rd per DRAMrd
+    128x128x64_2x1_v      2x1        10,676,964     2,622,360        4.07   <- our best
+    128x128x64_1x2_h      1x2        12,929,942     2,622,400        4.93
+    128x128x64_1x2_v      1x2        13,738,888     2,622,352        5.24
+    128x128x64_2x1_h      2x1        15,240,327     2,622,344        5.81
+    cuBLAS (128x128 1x2)  1x2         7,882,457     2,622,216        3.01
+
+**Switching to cuBLAS's cluster axis makes us WORSE, not better** (4.07 -> 4.93/5.24). DRAM
+reads are constant across every arm, confirming the metric isolates L2 reuse cleanly. Our best
+arrangement still re-reads each fetched line **4.07 times against cuBLAS's 3.01, a 1.35x gap.**
+
+#### WHAT THE EVIDENCE POINTS AT — `coopA` / `coopB`
+
+Every cuBLAS kernel on our pinned shapes carries a `coopA` or `coopB` tag:
+
+    nvjet_sm90_tst_128x128_64x6_1x2_h_bz_splitK_NTT     V1
+    nvjet_sm90_tst_256x128_64x4_1x2_h_bz_coopA_NNT      V7 / V8 family
+    nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_NTN      V2 family
+    nvjet_sm90_tst_192x192_64x3_*_bz_coopB_*            V3 / V4 / V5 / V6
+
+§H27-roadmap already records these as *"NOT multicast — tile-shape cooperative variants"* and
+lists them as **undone structural work**. The mechanism fits the measured signature exactly:
+if the CTAs of a cluster each fetch a FRACTION of the shared tile from L2 and exchange the
+rest through distributed shared memory, then **L2 reads for the shared operand halve while
+DRAM traffic and writes are untouched** — reads 1.24-1.62x, DRAM 1.00x, writes 1.000x.
+
+**This is a hypothesis consistent with all the evidence, not yet a proven cause.** What would
+confirm it: DSMEM traffic counters on cuBLAS's kernel (a coop implementation must show
+cluster-local shared-memory traffic our kernel does not have), or implementing coopA on one
+config and checking the L2 read ratio falls toward 3.
+
+#### WHY THIS MATTERS MORE THAN ANYTHING ELSE FOUND TODAY
+
+§H27b4 measured the power excess at **1.11-1.13x at equal sub-cap clock**, and proved it is not
+instructions (76% vector-op removal bought 2.1%). L2 traffic is the only major counter still
+far from parity, and L2 access is energy-expensive. If the L2 read excess is the power excess,
+then closing it addresses **~12% power -> cap saturation -> ~8 points of clock** — an order of
+magnitude more than everything the instruction hunt yielded.
+
+**NEXT CAMPAIGN: implement `coopA` on one config and measure the L2 read ratio.**
