@@ -23126,3 +23126,61 @@ Three consequences:
 
 **NEXT: enable `_KLOOP_UNROLL` on the 256x128 and 128x256 families and measure it with the
 vector/uniform split reported, not the total.**
+
+---
+
+### §H27ay — **`KLOOP_UNROLL` IS REFUTED, AND THE VECTOR MODEL PREDICTED IT.** Unrolling cuts TOTAL instructions 6.8% and raises VECTOR instructions **36%** — it moves work off the uniform datapath onto the vector one. Performance follows VECTOR: flat (654.21 vs 654.14), and unroll-without-`dw` is **−14%**. §H27ax's metric made an out-of-sample call it could have failed.
+
+§H27ax argued the excess is VECTOR, not total, and §H27ax's consequence 2 named
+`KLOOP_UNROLL` as the designed fix for the remaining descriptor rebuild. That second claim
+is now tested and **wrong**, by the metric from the first claim.
+
+`192x192x64_1x2_v_rs8`, shape `2048x11264x16384 tn`, one config per process:
+
+    config                  ourTF    %cuB      total       uniform       VECTOR
+    dh_ubd_dw_skew_lsw     654.14   95.0%   161,497,515   78,653,388   82,844,127
+    dh_ubd_dwunr_skew_lsw  654.21   94.6%   150,481,284   37,690,092  112,791,192
+    dh_ubd_unr_skew_lsw    562.85   81.6%   166,941,675   53,657,868  113,283,807
+
+                            total      uniform      VECTOR     %cuB
+    +unroll (on top of dw)  -6.8%       -52.1%      +36.1%     flat
+    +unroll (without dw)    +3.4%       -31.8%      +36.7%     -13.4 points
+
+**Unrolling halves the uniform count and inflates the vector count by a third.** Making
+`stage` a compile-time literal does remove the multiply, the modulo and the barrier-offset
+arithmetic — all of which were UNIFORM ops, the cheap kind — while the D literal bodies
+apparently expand vector-datapath work. Net: the metric that carries no signal improves,
+the metric that predicts performance gets worse, and performance is flat.
+
+**THIS IS THE VALIDATION OF §H27ax.** Total instructions said the change was good (−6.8%);
+vector said it was bad (+36%); the hardware agreed with vector. Had we still been judging by
+`smsp__inst_executed.sum` — as the template comment beside these very configs instructs
+("judge these by smsp__inst_executed.sum first (exact, noise-free), %cuB second") — we would
+have adopted a change worth nothing and then extended it to ten more pins.
+
+#### CONSEQUENCES
+
+- **Do NOT extend `KLOOP_UNROLL` to the non-SKEW mainloop.** That work is cancelled; it
+  would have been the largest implementation task on the board (256x128 and 128x256 = ten of
+  fifteen pins) for a change that worsens the governing metric.
+- **§H27ax's consequence 2 is withdrawn.** The parking note on §H27as was right for the
+  wrong reason: KLOOP_UNROLL is indeed not a lever, though not because instruction count is
+  irrelevant — because it raises VECTOR count.
+- **`DESC_ACCUM` stays unwritten**, now for a second independent reason. Both remaining
+  forms of "make the stage term cheap" — carried state (STAGE_SPECIALISE, +30.7%) and
+  literal bodies (KLOOP_UNROLL, +36% vector) — have now been measured and both fail.
+- **The per-iteration descriptor rebuild stays.** It is ~18 instructions, but they are
+  UNIFORM ones (`UIMAD`/`ULOP3`/`USHF`/`UIADD3`), which the correlation says do not cost
+  performance. §H27au's remaining-dead-work list was ranked by instruction count and is
+  re-ranked by this: items A, B and C are all uniform-datapath and are NOT worth chasing.
+  Item D — the phase flip on the VECTOR path (`ISETP`/`SEL`/`LOP3` on R7/R12) — is the only
+  one that targets the right datapath, and it is 3 instructions.
+
+#### WHERE THE VECTOR EXCESS ACTUALLY IS
+
+With uniform at parity and vector at 2.35-3.67x, the hunt should now enumerate VECTOR ops in
+the mainloop and ask of each: why is this per-thread? The known answer for the biggest one is
+already recorded at slot 34 (§H27zm) — on SPLIT_M tiles `row0 = g * WG_MATOMS * 64` with `g`
+runtime lands `LEA / LOP3 / SHF / VIADD` on the vector path and then `R2UR` back, and that is
+what `UNIFORM_A_DESC` fixes. It affects **ten of fifteen pins** (256x128 x3, 128x256 x7),
+which is consistent with §H27au measuring +1.95 on V2c where `uad` took R2UR 16 -> 1.
