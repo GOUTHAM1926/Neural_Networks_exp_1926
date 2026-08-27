@@ -23898,3 +23898,64 @@ box geometry making a half-K slice touch the same number of L2 sectors as the fu
 
 **The first check is the cheapest: print the runtime `ctaMask` and confirm it names two CTAs,
 and confirm `cudaOccupancyMaxActiveClusters` reports the cluster is actually co-resident.**
+
+---
+
+### §H27bc — **CAVEAT ON THE L2 FINDING, AND THE HONEST LIMIT OF THIS INVESTIGATION.** The multicast implementation is verified correct in code, end to end. But `lts__t_sectors_op_read` may count sectors DELIVERED rather than FETCHED, in which case multicast can never reduce it and the 1.62x is partly an artifact. **I cannot currently distinguish "our multicast is broken" from "the counter cannot see it working."** What survives regardless is the **+12% power at equal clock**, measured directly.
+
+#### THE MULTICAST CODE IS CORRECT — verified line by line
+
+    launch          cudaLaunchAttributeClusterDimension, clusterDim.x = CLUSTER_SIZE = 2   OK
+    rank decode     cluster_local_m = rank % CLUSTER_M ; cluster_local_n = rank / CLUSTER_M  OK
+    V1 (2x1)        local_m in {0,1}, local_n = 0  -> the two CTAs share N, differ in M     OK
+    who multicasts  NEEDS_B_MULTICAST = MULTICAST_B && (CLUSTER_M > 1) = true               OK
+                    NEEDS_A_MULTICAST = MULTICAST_A && (CLUSTER_N > 1) = false  (A not shared) OK
+    mask            b_mask = ((1<<CLUSTER_M)-1) << (local_n*CLUSTER_M) = 0b11 -> BOTH CTAs  OK
+    slice width     B_MN_SLICE_K = BK / CLUSTER_M = 32  (half of K per peer)                OK
+    slice index     b_slice = cluster_local_m -> 0 and 1, different halves                  OK
+    pattern         every peer issues its own slice with a full mask (the CUTLASS pattern)  OK
+
+Nothing in the implementation is wrong. One stale comment was found — line ~6835 says
+`// 1D: CLUSTER_M==1 always (static_assert)` and **no such static_assert exists**; V1 runs
+CLUSTER_M=2. The comment is wrong, the code is not.
+
+#### THE CAVEAT I SHOULD HAVE RAISED BEFORE CHASING THIS
+
+`lts__t_sectors_op_read` may count sectors **delivered to requestors**, not sectors **fetched
+from the L2 array**. A multicast performs one fetch and replicates to N CTAs; if the counter
+charges all N deliveries, **multicast cannot reduce this metric by construction**, and the
+measured 2.5% is what a correctly-working multicast would look like.
+
+Supporting arithmetic: **B is 16 MB and the H200 L2 is 60 MB, so B is L2-resident.** Its 8-16
+re-reads are L2 HITS whether or not multicast dedupes them. Multicast would save request
+bandwidth, not fetches — and hits are counted.
+
+**Both readings fit every number collected.** Distinguishing them requires a counter that
+measures L2 array activity rather than delivered sectors (`lts__t_sector_op_read_hit/miss`
+breakdowns, or an L2-fabric-side metric), which was not captured.
+
+#### WHAT SURVIVES THE CAVEAT, AND IT IS THE IMPORTANT PART
+
+The power measurement is direct and physical, not a counter inference:
+
+    lock 1000   cuBLAS 427 W   ours 472 W   1.11x   both under cap
+    lock 1200   cuBLAS 540 W   ours 612 W   1.13x   both under cap
+    lock 1400   cuBLAS 696 W   ours 698 W   1.00x   ours 100% capped / theirs 47.7%
+                                                    clock 1301 vs 1409  (-108 MHz)
+
+**We burn 11-13% more power than cuBLAS at the same clock, below the cap.** That is real,
+settled, reproducible, and it is the whole free-clock deficit. Removing 76% of the k-loop
+vector ops recovered 2.1% of it (§H27b4), so the instruction path is not it. **What consumes
+the other ~10% is still unidentified**, and the L2 read counter was the lead that may or may
+not be pointing at it.
+
+#### THE STATE TO HAND OVER
+
+Measured and closed: load counts, multicast counts, DRAM traffic, L2 writes, load-path
+geometry (1.015x minimum), tensor utilisation, compute throughput, duration at equal clock
+(we are FASTER: 59.14 vs 59.39 us), cluster axis (refuted twice), coopA/coopB (refuted),
+multicast implementation (verified correct).
+
+Open: **what burns the 11-13% power at equal clock.** The next instrument is not another
+hypothesis — it is a counter that separates L2 array reads from delivered sectors, so the L2
+lead can be confirmed or dropped cleanly.
