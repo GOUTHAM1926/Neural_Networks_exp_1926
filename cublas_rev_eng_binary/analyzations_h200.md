@@ -23184,3 +23184,90 @@ already recorded at slot 34 (§H27zm) — on SPLIT_M tiles `row0 = g * WG_MATOMS
 runtime lands `LEA / LOP3 / SHF / VIADD` on the vector path and then `R2UR` back, and that is
 what `UNIFORM_A_DESC` fixes. It affects **ten of fifteen pins** (256x128 x3, 128x256 x7),
 which is consistent with §H27au measuring +1.95 on V2c where `uad` took R2UR 16 -> 1.
+
+---
+
+### §H27az — **THE VECTOR CENSUS. Every k-loop instruction classified by datapath, all rungs. `vec/wgmma` explains every result of the day.** 192x192 runs at **0.58**, 256x128+uad at **1.62**, and the 128x256 family — SEVEN pins — is stuck at **7.00**, a 12x gap. Two concrete mechanisms found: ptxas computes the descriptor chain on BOTH datapaths and feeds the tensor core from the VECTOR copy; and on 128x256 `uad` flips `S2UR` to `S2R`, moving the whole chain to the vector path.
+
+Instructions are classified as UNIFORM (`U`-prefixed, one lane per warp), VECTOR (per-thread,
+32 lanes), or crossings (`R2UR`/`S2UR`, charged to VECTOR since the value was born on the
+wrong side). Static, innermost HGMMA loop, `cuobjdump`.
+
+    config                              body  wgmma  VECTOR  uniform   vec/wgmma   measured
+    192x192  dh dw ubd                   102     12       7       69      0.58      cleanest family
+    256x128  +dh +dw +uad (+ubd)(+cs)     74      8      13       39      1.62      +1.95  WIN
+    256x128  +dh                         104      8      54       29      6.75
+    256x128  base                        124      8      62       41      7.75
+    256x128  +dh +dw   (no uad)          136      8      63       52      7.88      worse
+    128x256  +dh +dw +uad +ubd +cs        74      4      26       27      6.50      -0.16%
+    128x256  +dh                          81      4      28       34      7.00      +0.37%  WIN
+    128x256  base                         98      4      37       43      9.25
+    128x256  +dh +dw +uad                 75      4      45       10     11.25      -0.32%  worse
+
+**`vec/wgmma` predicts every measured outcome.** `uad` on 256x128 takes it 7.88 -> 1.62 and
+won +1.95; the identical knob on 128x256 takes it 9.25 -> **11.25** and regressed. That is why
+one knob behaved oppositely on two tiles, and total instruction count could never have
+explained it (256x128 −38.7% and 128x256 −23.5%, both "improvements").
+
+#### MECHANISM 1 — ptxas COMPUTES THE DESCRIPTOR TWICE AND USES THE VECTOR COPY
+
+From `128x256 +dh`, the winning rung, these appear as adjacent pairs:
+
+```
+>> LOP3.LUT  R4,   R4,  0x3fc00, RZ,  0xc0      <- VECTOR
+   ULOP3.LUT UR4,  UR4, 0x3fc00, URZ, 0xc0      <- UNIFORM, same operation
+>> SHF.R.U32.HI  R4,  RZ,  0x4, R4              <- VECTOR
+   USHF.R.U32.HI UR4, URZ, 0x4, UR4             <- UNIFORM, same
+>> LOP3.LUT  R18,  R4,  0x10000, RZ,  0xfc      <- VECTOR
+   ULOP3.LUT UR26, UR4, 0x10000, URZ, 0xfc      <- UNIFORM, same
+>X R2UR UR24, R18                                <- HGMMA is fed from the VECTOR copy
+```
+
+repeated for all four k-step offsets (`0x10000/2/4/6`). **The uniform results (`UR26`) are
+computed and never consumed.** Cost per body: ~8 vector ops + 8 `R2UR` crossings + 8 dead
+uniform ops.
+
+The trigger is visible two lines up:
+
+```
+>> IMAD.U32 R5, RZ, RZ, UR10    <- copies a UNIFORM register INTO a vector register
+>> LEA      R4, R3, UR4, 0xd    <- R3 is per-thread and poisons the chain
+```
+
+`R3` is the warpgroup index `g` — exactly what slot 34 (§H27zm) recorded on the 256x128 tile
+as `LEA R11, R3, UR16, 0xe` (shift differs because WG_MATOMS differs). `row0 = g*WG_MATOMS*64`
+with runtime `g` is the single per-thread value that drags the whole descriptor chain onto the
+vector datapath.
+
+#### MECHANISM 2 — ON 128x256, `uad` FLIPS THE DATAPATH THE WRONG WAY
+
+The first instruction of the loop, same tile, two rungs:
+
+    +dh            S2UR UR24, SR_CgaCtaId      cluster id -> UNIFORM register
+    +dh +dw +uad   S2R  R21,  SR_CgaCtaId      cluster id -> VECTOR register
+
+With `uad` on, ptxas reads the cluster CTA id into a vector register and then runs **the
+entire** address chain per-thread — every address computation, the mbarrier addressing, the
+`PRMT`, the arrive addresses. The uniform count collapses 34 -> 10 while vector rises 28 -> 45.
+
+`uad` folds `row0` to a literal and specialises the mainloop per warpgroup (two copies).
+On 256x128 that lets the chain go uniform and R2UR drops 16 -> 1. On 128x256 the same change
+makes ptxas abandon the uniform datapath entirely. **The knob's effect is a ptxas scheduling
+decision, not a property of our source**, which is why it cannot be predicted from the source
+and must be read out of SASS per tile.
+
+#### WHAT THIS MAKES THE NEXT TARGET
+
+The 128x256 family is **seven of fifteen pins at 7.00 vec/wgmma against 192x192's 0.58**. The
+prize is real: if that family reached even 256x128's post-`uad` 1.62, it would be the largest
+single improvement available. But the two obvious routes are both closed —
+`uad` flips the datapath (mechanism 2) and `dw` needs `uad`.
+
+The open question is therefore narrow and concrete: **how do we make `g` warp-uniform to ptxas
+on this tile without triggering the S2R flip?** `g` is warp-uniform in VALUE (it is
+`threadIdx.x / 128`) but ptxas cannot prove it, and `uad`'s way of telling it — folding to a
+literal via per-warpgroup specialisation — costs more than it saves here.
+
+Note also that `192x192` gets **12 wgmma per loop body against 128x256's 4**, so it amortises
+whatever per-body cost remains 3x better. Part of the 12x gap is the numerator and part is the
+denominator.
