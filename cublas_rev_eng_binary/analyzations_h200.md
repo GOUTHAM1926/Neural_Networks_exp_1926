@@ -23653,3 +23653,66 @@ then closing it addresses **~12% power -> cap saturation -> ~8 points of clock**
 magnitude more than everything the instruction hunt yielded.
 
 **NEXT CAMPAIGN: implement `coopA` on one config and measure the L2 read ratio.**
+
+---
+
+### §H27b6 — **OUR LOAD PATH HAS NO WASTE. Measured L2 reads are 1.015x what our tile geometry REQUIRES.** The excess is not inefficiency to remove — it is that our tile x cluster structure needs more L2 traffic than cuBLAS's. And the hard fact: **cuBLAS uses a size-2 cluster and achieves 241 MB where the best any size-2 geometry can do on this shape is 384 MB.**
+
+#### THERE IS NOTHING REDUNDANT IN THE LOAD PATH
+
+V1, `2048x512x16384 tn`, tile 128x128, cluster 2x1, split-K 2. A = 64 MB, B = 16 MB,
+M-tiles 16, N-tiles 4. Each A row-panel is needed by every N-tile; each B col-panel by every
+M-tile; our 2x1 cluster spans M so the two CTAs share N and **B** is multicast /2:
+
+    required = A x 4  +  B x (16/2)  =  256 + 128 = 384 MB = 12,582,912 sectors
+    MEASURED                                                 12,776,156 sectors
+    ratio                                                         1.015
+
+**Every L2 read we issue is required by the structure we chose.** §H27b5 framed this as an
+excess to hunt; it is not. The load path is already minimal. DRAM reads match cuBLAS to 56
+sectors in 2.6 M and L2 writes match to the sector (§H27b5), so loads, stores and DRAM are all
+clean. The only variable left is the structure itself.
+
+#### BIGGER CLUSTERS DO CUT L2 TRAFFIC, EXACTLY AS THE ARITHMETIC SAYS
+
+Same shape, cluster shape varied, base configs (no sk2/dh/pdl/rot2 — the TFLOPS column is
+therefore NOT comparable to the pin and is omitted):
+
+    cluster   L2 read MB   geometric prediction
+    1x2            421         384
+    2x1 (pin)      333         384
+    1x4            347         320
+    4x1            333         320
+    2x2            324         256
+    4x2            278         192
+    2x4            262         192
+    cuBLAS (1x2)   241          --
+
+Direction confirmed: widening the cluster shares each fetched line across more CTAs and the L2
+read volume falls. 2x4 reaches 262 MB, within 9% of cuBLAS.
+
+#### BUT THE OCCUPANCY WALL IS ALREADY DOCUMENTED
+
+§H27-persistent-grid records that on H200 a **size-4 cluster strands 12 CTAs** and costs
+**-36 points of %cuB** unless the grid is sized via `cudaOccupancyMaxActiveClusters`. Size-8
+(2x4, 4x2) is worse. So the L2 saving from wide clusters is paid for in occupancy, and that
+trade has already been measured as a loss.
+
+#### THE FACT THAT REMAINS, AND IT IS ARITHMETIC NOT SPECULATION
+
+    cuBLAS cluster on V1                     1x2  (size 2)
+    cuBLAS measured L2 reads                 241 MB
+    BEST any size-2 geometry achieves here   384 MB   (2x1 or 1x2, either operand multicast /2)
+
+**cuBLAS obtains L2 reuse that a size-2 multicast cannot produce, without paying the size-4
+occupancy penalty.** Their loading scheme shares each fetched line more widely than two CTAs.
+That is a measured contradiction with the simple geometric model, and it is the whole gap.
+
+**WHAT IS NOT ESTABLISHED:** the mechanism. §H27b5 proposed `coopA`/`coopB` from the kernel
+name alone — that is inference from a string, not evidence, and it is withdrawn as a claim.
+Naming the mechanism requires reading their load instructions out of SASS: how many TMA/LDG
+issues, of what transfer size, with what multicast mask. Until that is done the honest
+statement is the arithmetic one above.
+
+**NEXT: disassemble cuBLAS's V1 kernel and count its load instructions and their multicast
+masks against ours.** That is the only way to name what produces 241 MB from a size-2 cluster.
