@@ -24076,3 +24076,70 @@ is the "reuse DEPTH not reuse RATIO" distinction §H27bd pointed at, now with an
 
 **NEXT: does our persistent tile loop re-issue the B TMA for consecutive tiles that share N?
 If yes, that is the 1.64x, and retaining it is the fix.**
+
+---
+
+### §H27bf — **THE CULPRIT, FOUND. Our rasterisation deliberately puts consecutive tiles on the same N so B is reusable — and the load path re-issues the B TMA every tile anyway.** The re-fetches are all L2 hits, which is why they were invisible to every DRAM and bandwidth measurement while costing 2.35x the L2 array accesses and +12% power.
+
+#### THE RASTER ALREADY CREATES THE REUSE
+
+From the template's own cluster/raster pairing rule:
+
+```
+// 1xN (A-multicast across N) -> h (RASTER=1, N-fastest, reuses A's M-tile);
+// Mx1 / MxN (B-multicast across M) -> v (RASTER=0, M-fastest, reuses B's N-tile).
+```
+
+V1 pins `2x1` + raster `v`, which is the correct pairing: **M-fastest, so consecutive tiles
+visited by a CTA share the same N and therefore the same B tile.**
+
+#### AND THE LOAD PATH IGNORES IT
+
+There is no retention anywhere — `same_n`, `same_m`, `prev_tile`, `last_n`, `skip_load` return
+nothing in the whole template. The persistent loop
+
+    for (int task_id = cluster_id; task_id < total_tiles; task_id += num_clusters)
+
+re-enters the mainloop per tile and re-issues **both** operands' TMA loads from scratch. **The
+schedule sets up B-reuse and the loader throws it away.**
+
+#### IT FITS EVERY NUMBER COLLECTED THIS SESSION
+
+    B re-requested once per M-tile (16x, halved to 8x by multicast) where consecutive
+    tiles could share it
+      -> L2 read requests 1.64x, and A x4 + B x8 = 3,145,728 vs measured 3,228,232 (+2.6%)
+      -> the re-requests are all HITS: lookup_hit 2.35x, lookup_miss 1.16x
+      -> nothing extra reaches DRAM: dram__sectors_read 1.00x
+      -> invisible to every bandwidth measurement all week (§H27an read parity)
+      -> 2.35x L2 array accesses -> +11-13% power at equal clock (§H27b4)
+      -> 100% cap saturation vs 47.7% -> -108 MHz -> the free-clock deficit
+
+And it fits cuBLAS: **A x2 + B x7 = 1,966,080 against their measured 1,968,138.** B fetched ~7
+times where the tile count says 16 — consistent with retaining B across roughly half the tiles
+a CTA visits. Note this ALSO explains why their 1.97 M is **below what any size-2 clustering
+can reach** (3.15 M): they are not getting it from multicast, they are getting it from not
+re-fetching.
+
+#### WHY EVERY OTHER EXPLANATION FAILED, IN ONE LINE EACH
+
+    load instruction count      identical (§H27b7) -- it is not how many TMAs we issue
+    multicast implementation    verified correct line by line (§H27bc)
+    cluster axis 1x2            trades A's multicast for B's, same 3.15 M (§H27ba, §H27be)
+    cluster 2x2                 cuts requests 14.6% but -36.8 pts to occupancy (§H27be)
+    coopA / coopB               would change the load count; it does not (§H27b7)
+    tile geometry               we are at 1.015x our own minimum (§H27b6)
+    instruction / vector path   +0.58 pts, 2.1% of power (§H27am, §H27b4)
+
+Every one of these is a property of a SINGLE tile. The waste is **between** tiles, which is
+why nothing that looked inside one tile could see it.
+
+#### THE FIX
+
+Retain the B tile in shared memory across consecutive tiles that share N, and skip its TMA
+issue. Requires the producer to compare the incoming tile's N against the previous tile's and
+suppress the B load plus its share of the barrier transaction bytes. Real work — the pipeline
+is currently per-tile with no cross-tile state — but well defined, and it is the last
+unexplained term in the chain.
+
+**Predicted effect:** B x8 -> B x~2-4 on V1 gives roughly 2.3-2.6 M requests against cuBLAS's
+1.97 M, closing most of the 1.64x and therefore most of the 12% power and the 108 MHz.
