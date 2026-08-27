@@ -24426,3 +24426,48 @@ carry the same defect as V2c's and have not been re-measured.
 `128x256x64_2x1_v_ep32s2_dh_shfl` beats the dispatched config by 1.4-2.2 points and is
 bit-exact. Retargeting that one row is justified. It was deliberately left out of §H27bm's
 retarget pending exactly this verification.
+
+---
+
+### §H27bn — **THE TUNED DISPATCH IS 1.4% SLOWER ON THE TRAINER. Every rung was gated and bit-exact standalone; the package is a net LOSS end to end. Dispatch reverted.**
+
+§H27bm retargeted 10 dispatch rows at today's tuned configs. Same trainer, same box, same
+shards, same 15-step config, same 34 C cold start as the baseline it is measured against:
+
+    dispatch        tok/s     clock      power        vs baseline
+    baseline       27,995   1812 MHz   665 W mean        --
+    tuned          27,606   1781 MHz   664 W mean     **-389 tok/s = -1.4%**
+
+Build was clean (rc=0, 0 errors) and all 10 rows verified retargeted before the run.
+
+**The gap is far outside the noise.** The baseline repeated to **1 tok/s** across a cold/warm
+pair (27,995 / 27,996) and all four free-clock campaign runs sat within 5 tok/s. A 389 tok/s
+difference is ~80x that spread.
+
+#### EVERY RUNG WAS PROPERLY GATED, AND THE PACKAGE STILL LOST
+
+    _dh_shfl on 128x256 (7 rows)   +1.08% standalone, 7/7 shapes, sign-test p = 0.016
+    _dh_dw_uad_ubd_cs on 256x128   +1.95 points paired, null-controlled, floor 1.37
+    _d6_shfl on 128x128            perf-neutral, vector ops per wgmma 8.25 -> 2.00
+    all arms                       maxRelErr 0.00000
+
+This is the sharpest methodological result of the day: **standalone gains, individually
+measured with paired null controls and sign tests across independent shapes, did not merely
+dilute end to end — they reversed.**
+
+#### LEADING HYPOTHESIS, NOT TESTED (future work)
+
+The standalone bench measures ONE shape in isolation at 100% duty cycle. The trainer drives 21
+call sites whose shapes differ from the pinned ones. Retargeting a dispatch ROW changes the
+config for **every shape that routes through it**, and only the pinned shape was validated.
+A config better for the pin can be worse for its neighbours. Untested; a candidate, not a
+conclusion.
+
+Clock also fell 1812 -> 1781 MHz at equal power (665 vs 664 W), which is consistent with the
+tuned kernels doing more work per unit time somewhere, but that is one observation.
+
+#### ACTION TAKEN
+
+`Bgemm_sm90_dispatch_table.h` **reverted** to the baseline configs (commit 4563c3b). The tuned
+configs remain compiled and available — nothing is deleted — they are simply not dispatched.
+The trainer is back to the state that measures **100.01% of cuBLAS free / 99.94% locked**.
