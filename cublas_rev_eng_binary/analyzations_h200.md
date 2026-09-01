@@ -26524,3 +26524,103 @@ Remaining 18.7 s of GEMM deficit, now spread evenly at 86-93% rather than concen
     320x128 slot          13.6     12.5    91.9%   1.1
     192x192 NTN           11.7     10.8    92.3%   0.9
     192x192 2x1 NNN        2.4      2.2    91.7%   0.2
+
+---
+
+### §H64 — **KOTA'S BLAS HEAD-TO-HEAD, AND THE TRAINER TURNS OUT TO BE THE BIGGER LEVER. On our tree his BLAS is 98.4% of cuBLAS against our 89.1%. On the PRODUCTION tree the same BLAS does 37,875 tok/s at 55.57% MFU — +25.9% — and none of that gain is the GEMM.**
+
+#### PART 1 — HEAD-TO-HEAD ON OUR OWN TREE (pure relink)
+
+Identical `_zero_runner` and `libtensor.so` byte-for-byte; only `libblublas.so` swapped.
+Verified at runtime by reading `/proc/<pid>/maps` on BOTH workers and md5-matching the mapped
+file against the build. Kota's tree = `ea666ab` (2026-08-31); all 12 symbols `libtensor` needs
+are exported; 14 files correctly get `sm_90a` from his per-directory gencode.
+
+    arm            tok/s     MFU      total GPU   GEMM      GEMM %cuB   e2e %cuB
+    cuBLAS         30,299   44.45%      349.6 s   153.5 s      --         --
+    KOTA           30,078   44.13%      352.1 s   156.0 s     98.4%      99.3%
+    ours pinned    28,703   42.11%      367.9 s   172.2 s     89.1%      94.7%
+    ours pre-pin   27,247   ~40%        387.6 s   190.4 s     80.6%      89.9%
+
+**The control that makes this trustworthy:** non-GEMM time is 196.1 / 196.1 / 195.7 s across
+cuBLAS / Kota / ours — identical to 0.2%. The relink is clean and ONLY the GEMM differs.
+
+**His 32.4K claim does not reproduce in absolute terms, and neither does his 32.2K cuBLAS
+baseline.** Both his arms sit ~7% above both of ours — including cuBLAS itself, which is the
+same library in both places, so that 7% is environment, not BLAS. His RATIO (near-parity with
+cuBLAS) does reproduce: he claimed 100.6%, we measure 99.3%. Like-for-like, his BLAS is 4.8%
+ahead of ours end-to-end and 10.4% ahead on GEMM.
+
+**81.6% of his GEMM time is 128x256** (three configs) where cuBLAS and we use 256x128 and
+192x192, and he merges cuBLAS's two nn kernels (122,400 + 24,480 launches) into one
+146,880-launch config. He is not copying cuBLAS's dispatch; he found a flatter answer that
+lands within 1.6% of it. His template parameter ORDER differs from ours, so cluster and raster
+cannot be read off by position — decode his header before comparing knob-for-knob.
+
+#### PART 2 — THE REPO PICTURE, SETTLED
+
+`kathir-23s/BluBridge-BLAS` and `BlubridgeAI/BluBridge-BLAS` are **ONE repository** — the
+personal URL 301-redirects to the org (`full_name: BlubridgeAI/BluBridge-BLAS`, `fork: false`),
+`.gitmodules` simply still records the old address. There is no separate "Kota version".
+Production pinned `35e51a0`, two commits behind master's `ea666ab`; the gap is one "optimized
+addmm kernel" commit over four files, and the pin already contains the entire SM90/H200 module.
+
+Vendored as `blutrain_prod/` (flat copy, git stripped, `PROVENANCE.md` is the only origin
+record), taking the LATEST head of each repo rather than the pins:
+
+    BlubridgeAI/BluTrain                master  0095fee
+    BlubridgeAI/Tensor-Implementations  master  1c84859   (BluTrain pinned a4c80c17)
+    kathir-23s/BluBridge-BLAS           master  ea666ab   (Tensor-Impl pinned 35e51a0)
+
+#### PART 3 — PRODUCTION BLUTRAIN, SAME BLAS: 30,078 -> 37,875 tok/s
+
+4B, 10 steps, ZeRO-1 v2 symmetric/NVLS with both overlaps on, config from the team sheet
+(3072 / 36 / 24:8 / head_dim 128 / ffn 8192 / tying OFF / global_batch 2,097,152 ->
+grad_accum 128). Log: `blutrain_prod/runs/prod4b_blublas.log`.
+
+    basis                          tok/s     MFU
+    steady state (steps 1-8)      37,875    55.57%    <-- the number to quote
+    peak (steps 7-8)              37,958    55.69%
+    all 10 incl. warmup + val     36,251    53.18%
+
+Production prints no `throughput:` summary line, so these are computed from the per-step lines.
+Step 9 is a validation pass (val 11.42 -> 10.76) and costs 87.7 s against 55.2 s; on the old
+tree the val step was nearly free, so val is configured differently between the two.
+
+#### THE VERIFICATION THAT MATTERS — IS THE WORK THE SAME?
+
+A 26% jump demands proof the trainer is not simply doing less. Three checks:
+
+  1. arithmetic self-consistent: 2,097,152 / 55.2468 s = 37,960 tok/s; x 29.03 GFLOP/token
+     = 1102 TFLOP/s; / 1979 peak = 55.68% against the logged 55.69%.
+  2. identical MFU basis in both trees — 29.03 GFLOP/token, H200 x2 bf16 peak 1979 TFLOP/s.
+  3. **GEMM launches per step 85,064 -> 83,371 = 98.0%.** Same work, not fewer micro-steps.
+
+#### AND THE GAIN IS NOT THE GEMM
+
+    per step            OLD tree    PRODUCTION
+    GEMM time            31.20 s      32.95 s     +5.6%   <-- slightly SLOWER
+    non-GEMM             39.22 s      25.41 s     -35.2%
+    total GPU            70.42 s      58.36 s     -17.1%
+    kernels             416,626      390,615      -6.2%
+
+**The BLAS got slightly slower; the entire 26% came from non-GEMM kernels** — attention, norms,
+converts, comms — which is exactly what the Tensor-Implementations commit "All sm90 optimized
+kernels for production" claims to do.
+
+The strategic consequence: GEMM is **56.5% of GPU time on production against 44.3% on the old
+tree**. Our work matters MORE on this tree, not less, and every per-shape conclusion in §H63
+was drawn on a trainer whose non-GEMM side was 35% heavier than production's.
+
+#### OPEN
+
+**cuBLAS on production is not yet measured**, so 37,875 has nothing to be measured against and
+we do not know whether Kota's BLAS leads or trails cuBLAS on this tree. Both arms are built and
+snapshotted (`arms_prod/cublas` 0 blublas syms, `arms_prod/blublas` 12), `_train_runner` is
+compiled for both, `4B.yaml` is committed. Also pending: 120M / 600M / 1.7B on production, and
+the hybrid built on top of Kota's tree.
+
+Two operational notes for the next run. Rank 0's nsys export HUNG on the BluBLAS run (defunct
+launcher, partial `.qdstrm` frozen) while rank 1's 336 MB report wrote fine — profile ONE rank,
+not both. And `sm90_kernels.gqa` is annotated "head_dim 64 only; aborts at 128" in the shipped
+config yet ran fine at head_dim 128, so that note describes the v44 backward, not this path.
