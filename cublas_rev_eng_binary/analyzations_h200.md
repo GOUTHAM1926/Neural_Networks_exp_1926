@@ -24471,3 +24471,2056 @@ tuned kernels doing more work per unit time somewhere, but that is one observati
 `Bgemm_sm90_dispatch_table.h` **reverted** to the baseline configs (commit 4563c3b). The tuned
 configs remain compiled and available — nothing is deleted — they are simply not dispatched.
 The trainer is back to the state that measures **100.01% of cuBLAS free / 99.94% locked**.
+
+---
+
+### §H28a — **§H27bj AND §H27bn ARE VOID. Both arms of yesterday's "parity" run executed cuBLAS.** `WITH_BLUBLAS` is baked into a single `libtensor.so`; building `=1` then `=0` overwrites the first with the second, so both runners loaded the cuBLAS library. **The corrected end-to-end result is 98.36% free / 99.83% locked, not 100.01% / 99.94%.**
+
+`hazy-earth-laughs-fin-03`, GPU 0, CUDA 13.1, same 1.7B production config, same `flux_*` shards.
+
+#### THE DEFECT
+
+`BluTrain/Makefile:85` reads `WITH_BLUBLAS ?= 0`, and the flag selects what
+`Tensor-Implementations/lib/libtensor.so` is **linked against**. There is exactly one such file.
+The §H27bj procedure built `=1`, ran two arms, built `=0`, ran two arms — by which point the
+`=0` link had already replaced the `=1` library on disk. Both "BluBLAS" runs loaded cuBLAS.
+
+The tell was present in the published numbers and was misread as a strength:
+
+    §H27bj    BluBLAS free 27,995   cuBLAS free 27,992     <- 3 tok/s apart
+              BluBLAS lock 24,775   cuBLAS lock 24,790     <- 15 tok/s apart
+
+Four runs agreeing to 5 tok/s is not repeatability, it is the same binary four times. **The only
+genuine BluBLAS run in that session was the "tuned" one (27,606), because it was rebuilt `=1`
+last.** §H27bn therefore did not measure "tuned dispatch vs baseline dispatch" at all — it
+measured BluBLAS against cuBLAS, and its headline "the tuned dispatch is 1.4% slower" is void.
+
+#### WHAT IS AND IS NOT AFFECTED
+
+**Affected (retracted):** every trainer-level number in §H27bj and §H27bn, and the §H27bj
+conclusion that "the GEMM's +12% power and -108 MHz do not reach the application" — §H28c below
+shows they do.
+
+**Not affected:** all standalone GEMM work. `test_bgemm_sm90_matrix` links `libmyblas.so`
+directly and names each config on the command line; `libtensor.so` is not in its address space.
+Every ncu/nsys/SASS result from §H27a* through §H27bi stands.
+
+#### THE PROCEDURE THAT REPLACES IT — THREE INDEPENDENT CHECKS PER RUN
+
+    CHECK 1  before  nm -D --undefined-only libtensor.so | grep -c blublas
+                     -> 12 = BluBLAS, 0 = cuBLAS. Run ABORTS and emits no number on mismatch.
+    CHECK 2  during  grep -c libblublas /proc/<pid>/maps      -> 5 = ours mapped, 0 = not
+    CHECK 3  after   GEMM kernel names in the nsys trace      -> bgemm_sm90_* vs nvjet_sm90_*
+
+Each backend is built once into its own snapshot directory (`/root/libs_blublas`,
+`/root/libs_cublas`) and copied in before each run, so build order can never again decide which
+library is measured. All three checks were green on all six runs in §H28b-d:
+
+    backend_live.log:  [cublas_free]  libblublas_mapped=0     [blublas_free]  libblublas_mapped=5
+                       [cublas_lock]  libblublas_mapped=0     [blublas_lock]  libblublas_mapped=5
+    nsys fingerprint:  cuBLAS trace  -> cuBLAS-named GEMM kernels 9, BluBLAS-named 0
+                       BluBLAS trace -> cuBLAS-named GEMM kernels 0, BluBLAS-named 9
+
+**Rule:** a trainer A/B is not measurable by build order. Snapshot each backend, verify the
+symbol count before every run, and confirm the kernel names afterwards.
+
+---
+
+### §H28b — **CORRECTED TRAINER RESULT: 98.36% at free clocks, 99.83% locked.** Fifteen steps per arm, unprofiled, both backends verified three ways. BluBLAS is slower on **every single step** at free clocks and within noise when the clock is pinned.
+
+Pre-warm 60 s before the first timed run (32 C -> 47 C), so no arm is cold. Steady state =
+step >= 3; warmup_steps = 2.
+
+    FREE CLOCKS                                     LOCKED 1400 MHz
+    step   cuBLAS     BluBLAS    delta   %cuB       step   cuBLAS     BluBLAS    delta   %cuB
+      0   27,028.43  26,368.68  -659.75  97.56%       0   23,508.60  23,068.78  -439.82  98.13%
+      1   27,881.51  27,537.59  -343.92  98.77%       1   24,746.46  24,658.94   -87.52  99.65%
+      2   27,993.42  27,832.60  -160.82  99.43%       2   24,919.60  24,880.74   -38.86  99.84%
+      3   28,239.29  27,869.04  -370.25  98.69%       3   24,924.96  24,882.04   -42.92  99.83%
+      4   28,238.00  27,877.35  -360.65  98.72%       4   24,926.81  24,884.26   -42.55  99.83%
+      5   28,290.22  27,859.43  -430.79  98.48%       5   24,932.74  24,886.71   -46.03  99.82%
+      6   28,236.93  27,749.41  -487.52  98.27%       6   24,929.84  24,885.34   -44.50  99.82%
+      7   28,213.59  27,719.38  -494.21  98.25%       7   24,930.26  24,886.38   -43.88  99.82%
+      8   28,278.02  27,759.55  -518.47  98.17%       8   24,929.69  24,885.88   -43.81  99.82%
+      9   28,203.77  27,710.34  -493.43  98.25%       9   24,930.09  24,886.19   -43.90  99.82%
+     10   28,185.94  27,687.28  -498.66  98.23%      10   24,930.83  24,885.85   -44.98  99.82%
+     11   28,174.97  27,692.20  -482.77  98.29%      11   24,930.34  24,886.37   -43.97  99.82%
+     12   28,179.76  27,691.33  -488.43  98.27%      12   24,931.60  24,887.92   -43.68  99.82%
+     13   28,169.39  27,681.90  -487.49  98.27%      13   24,931.85  24,907.20   -24.65  99.90%
+     14   28,181.05  27,726.60  -454.45  98.39%      14   24,930.57  24,885.38   -45.19  99.82%
+
+    all 15      28,099.62  27,650.85  -448.77   98.40%     24,822.28  24,750.53  -71.75  99.71%
+    steady >=3  28,215.91  27,751.98  -463.93   98.36%     24,929.96  24,887.46  -42.50  99.83%
+
+No step overlaps at free clocks (range -360.65 to -518.47), so the gap is not launch noise.
+
+**Numerics are sound.** Loss is bit-identical at step 0 (11.234715 both) and diverges only
+~0.01 by step 14 (9.211263 vs 9.220827) — the expected consequence of a different accumulation
+order, not an error. The gap is speed alone.
+
+---
+
+### §H28c — **THE POWER-TO-CLOCK MECHANISM REACHES THE TRAINER, AND IT IS THE WHOLE GAP.** At equal clock we are at parity but draw **+2.69% power**; with clocks free both arms pin the 700 W cap **100% of the time**, and that extra power costs us **30 MHz of median clock**. This directly refutes §H27bj.
+
+Per-moment sampling at ~3 Hz, `power.draw.instant`, persistence on, samples filtered to
+util >= 95. **Distributions, not means.**
+
+    run             n     clk p5   p25   MED   p75   p95   min   max   pwr MED    p95    max   cap%  temp
+    cublas_free   2677     1710   1770  1815  1860  1890  1530  1935    691.0   753.5  830.1  100%   65
+    blublas_free  2602     1665   1740  1785  1815  1875  1530  1965    692.7   758.2  833.8  100%   67
+    cublas_lock   2893     1410   1410  1410  1410  1410  1410  1410    523.8   556.4  618.2     0%   58
+    blublas_lock  2898     1410   1410  1410  1410  1410  1410  1410    537.9   572.1  640.6     0%   59
+
+    LOCKED : same 1410 MHz, we draw +14.1 W median (+2.69%), p95 +15.7 W, peak +22.4 W
+    FREE   : same 700 W cap, both Active on 100% of samples, we get 30 MHz less median clock
+
+#### THE CLOCK HISTOGRAM IS THE CLEAREST VIEW
+
+    cublas_free                              blublas_free
+      1890-1919 MHz  10.0%                     1890-1919 MHz   4.3%
+      1860-1889 MHz  17.6%                     1860-1889 MHz   6.3%
+      1830-1859 MHz  19.1%                     1830-1859 MHz  13.1%
+      1800-1829 MHz  21.1%                     1800-1829 MHz  20.6%
+      1770-1799 MHz  12.6%                     1770-1799 MHz  18.9%
+      1740-1769 MHz   9.1%                     1740-1769 MHz  12.6%
+      1710-1739 MHz   5.6%                     1710-1739 MHz  10.6%
+      1680-1709 MHz   2.7%                     1680-1709 MHz   7.2%
+
+    time above 1830 MHz:   cuBLAS 47.5%   BluBLAS 23.7%
+
+**cuBLAS spends half the run above 1830 MHz; we spend a quarter.** Ten equal time slices show the
+two arms diverging as the card heats — cuBLAS drifts up and holds, we drift down:
+
+    cublas_free   1800 1800 1830 1830 1830 1830 1830 1830 1815 1815 MHz
+    blublas_free  1800 1800 1800 1800 1785 1785 1770 1770 1785 1770 MHz
+    cublas_lock    531  531  524  522  521  521  521  522  522  523 W
+    blublas_lock   538  540  540  539  537  540  539  536  537  536 W
+
+#### WHY §H27bj CONCLUDED THE OPPOSITE
+
+§H27bj recorded both arms at **665 W against a 700 W cap** and reasoned that, being under the
+cap, neither could be cap-limited. That reading came from the corrupted comparison. Measured
+correctly the trainer sits at **691-693 W with the cap flag Active on 100% of samples** — it is
+cap-saturated, exactly the condition §H27bj argued the trainer never creates.
+
+    trainer gap, free    1.64%
+    trainer gap, locked  0.18%
+    clock deficit, free  1.93%   (1814 -> 1779 mean, 1815 -> 1785 median)
+
+The arithmetic closes: remove the clock and the gap collapses from 1.64% to 0.18%.
+
+#### CAVEAT — THE FREE-CLOCK ARM HAS AN UNCONTROLLED ORDER, AND §H27zD SAYS ORDER MATTERS
+
+cuBLAS ran **first** in both clock modes, and §H27zD established that on the standalone bench the
+arm measured first on a cold card gets the boost clock — the free-clock gap there was **order, not
+power**. That control was not run here, so it must be stated rather than hidden.
+
+Three things argue the free-clock result is not the §H27zD artefact, but none of them is the
+control itself:
+
+1. **The thermal trajectories overlap.** Per-slice temps are 61/62/64/64/66/65/67/68/68/67 C for
+   cuBLAS against 61/63/65/65/67/66/67/67/68/68 C for us. Both arms reach the same steady state
+   despite ours starting 9 C hotter (49 vs 40 C at launch).
+2. **The clocks move in OPPOSITE directions over that same ramp.** cuBLAS goes 1800 -> 1830 MHz
+   while heating; we go 1800 -> 1770. A thermal or cold-card advantage pushes **both** arms down.
+   cuBLAS *gaining* 30 MHz as it heats is the opposite of the §H27zD signature.
+3. **The locked pair has no order freedom at all** — clock pinned at 1410 on both, temps 58 vs
+   59 C — and still shows +14.1 W median, +15.7 W p95, +22.4 W peak. That measurement carries the
+   claim, and it does not depend on the free-clock arm.
+
+**The control that would close it:** re-run the free-clock pair with BluBLAS **first**. If the
+30 MHz survives the swap it is ours; if it flips sign it was order. Queued in §H28g.
+
+**Until that runs:** the +2.69% power at equal clock is a measurement; the 98.36% free-clock
+figure is a measurement of this particular run order and should be quoted with the order named.
+
+---
+
+### §H28d — **KERNEL-LEVEL: our GEMM costs +6.12% inside the trainer, and the 192x192 family alone is 73.3% of that deficit.** The non-GEMM half of the run is +0.82% slower on byte-identical code — an independent confirmation of the clock mechanism.
+
+`nsys profile -t cuda,nvtx,osrt`, 5 steps, free clocks, both arms. 44 distinct kernels each.
+
+                         cuBLAS ms     BluBLAS ms      delta ms   delta %   share cuB  share Blu
+    GEMM kernels        140,097.68     148,667.00     +8,569.32    +6.12%      37.24%     38.44%
+    everything else     236,137.40     238,066.33     +1,928.93    +0.82%      62.76%     61.56%
+    TOTAL               376,235.08     386,733.33    +10,498.25    +2.79%     100.00%    100.00%
+
+**The +0.82% is the clock mechanism seen a second way.** That is identical non-GEMM code in both
+runs. Memory-bound kernels are untouched (`swiglu_backward_kernel_vec` +0.01%,
+`add_inplace_kernel<float>` -0.01%); compute-bound ones pay the clock (`gqa62` +3.11%,
+`generic_strided_copy` +1.46%, `gqa_backward_v26_kv` +0.95%).
+
+#### WHERE THE GEMM DEFICIT LIVES
+
+Call sites paired by tile, layout and instance count. Per-call time is the honest comparison.
+
+    family          cuBLAS kernel                       us    our config          us   per-call   ms lost   share
+    192x192 NN      192x192_64x3_1x2_h_bz_coopB_NNN   987.08  192x192 cl2x1   1096.37   +11.07%   +3219.7   37.6%
+    192x192 TN      192x192_64x3_2x1_v_bz_coopB_NTN   970.51  192x192 cl1x2   1103.22   +13.67%   +3057.6   35.7%
+    128x256 NN      256x128_64x4_1x2_h_bz_coopA_NNT   181.16  128x256 cl2x1    191.71    +5.82%   +1215.4   14.2%
+    128x256 NT      256x128_64x4_1x2_h_bz_coopA_TNT   304.62  128x256 cl2x1    313.04    +2.76%    +975.4   11.4%
+    128x128 splitK  128x128_64x6_1x2_h_bz_splitK_NTT   47.55  128x128 cl2x1     58.68   +23.41%    +512.9    6.0%
+    splitK reduce   cublasLt splitKreduce               4.70  blublas reduce     5.79   +23.19%     +50.2    0.6%
+    128x256 NT#2    192x192_64x4_2x1_v_bz_coopB_TNN   503.41  128x256 cl2x1    504.26    +0.17%     +19.6    0.2%
+    256x128 big     192x192_64x3_2x1_v_bz_coopB_NNN  4358.81  256x128 cl1x2   4087.82    -6.22%    -173.4   -2.0%
+    256x128 TN      128x256_64x4_2x1_v_bz_coopA_NTN   315.97  256x128 cl2x1    314.44    -0.48%    -308.0   -3.6%
+
+    >>> 192x192 family  +6,277.4 ms = 73.3% of the entire GEMM deficit
+    >>> all others      +2,292.0 ms = 26.7%
+
+Subtracting the 1.93% clock deficit, which a compute-bound GEMM pays in full, the **intrinsic**
+per-call gaps are approximately: 192x192 NN +9.14%, 192x192 TN +11.74%, 128x256 NN +3.89%,
+128x256 NT +0.83%, 128x128 splitK +21.48%.
+
+**We are ahead on two of nine call sites** (256x128 TN -0.48%, 256x128 big -6.22%).
+
+---
+
+### §H28e — **AT SEVEN OF EIGHT PRODUCTION CALL SITES, WE LOSE EXACTLY WHERE OUR CLUSTER ORIENTATION IS FLIPPED RELATIVE TO cuBLAS'S, AND TIE OR WIN WHERE IT MATCHES.** Both 192x192 rows — 73% of the deficit — are flipped.
+
+Reading tile and cluster off both sides of the trace:
+
+    call site       cuBLAS tile / cluster            our tile / cluster    cluster    result
+    192x192 NN      192x192  1x2 h coopB             192x192  2x1          FLIPPED   +11.07%
+    192x192 TN      192x192  2x1 v coopB             192x192  1x2          FLIPPED   +13.67%
+    128x256 NN      256x128  1x2 h coopA             128x256  2x1          FLIPPED    +5.82%
+    128x256 NT      256x128  1x2 h coopA             128x256  2x1          FLIPPED    +2.76%
+    128x128 splitK  128x128  1x2 h splitK            128x128  2x1          FLIPPED   +23.41%
+    128x256 NT#2    192x192  2x1 v coopB             128x256  2x1          MATCHES    +0.17%
+    256x128 TN      128x256  2x1 v coopA             256x128  2x1          MATCHES    -0.48%
+    256x128 big     192x192  2x1 v coopB             256x128  1x2          FLIPPED    -6.22%   <- exception
+
+This is §H27b2 ("tile and raster are COUPLED") appearing at eight real production call sites
+rather than on a bench pin, and it survives the one counter-example. It is stated as a **strong
+pattern, not a mechanism** — no causal claim is made here, and the 640-call exception is not
+explained.
+
+**It is directly testable and cheap:** flip the cluster axis on the 192x192 dispatch rows to
+match cuBLAS's, rebuild, re-run §H28b. If the pattern holds it should recover a large part of
+the 6,277 ms. Queued as a future task rather than claimed.
+
+---
+
+### §H28f — **THE TRAINER-VERSUS-STANDALONE DISCREPANCY IS CLOSED: there was never one.** Both move the same way when the clock is controlled. The standalone bench simply runs free-clock by default, which is where the power penalty shows.
+
+Standalone, one process per config, `BLUBLAS_BENCH_TARGET_MS=400`, all PASS `maxRelErr 0.00000`.
+
+    pin    shape                lay  free %cuB   locked %cuB   gain
+    V1     2048x512x16384       tn      95.3%      105.6%     +10.3
+    V2     2048x2048x16384      tn      96.8%      100.4%      +3.6
+    V2b    5632x2048x16384      tn      95.0%      100.1%      +5.1
+    V2c    2048x50304x16384     tn      91.1%       89.3%      -1.8
+    V3     16384x11264x2048     nn      93.8%       99.2%      +5.4
+    V4     16384x50304x2048     nn      96.2%       99.2%      +3.0
+    V5     2048x11264x16384     tn      95.7%      100.5%      +4.8
+    MEAN (these 7)                      94.84%      99.19%     +4.34
+
+    all 15 pins, free clocks: mean 95.59%, min 91.1 (V2c), max 98.3 (V7c)
+
+Side by side with the trainer:
+
+                          LOCKED 1400    FREE
+    trainer                  99.83%      98.36%
+    standalone GEMM mean     99.19%      95.60%
+
+**Same direction, same cause.** Locking the clock moves standalone +4.34 points and the trainer
++1.47 points; the trainer moves less because its GEMM is only ~38% of the run.
+
+---
+
+### §H28g — **OPEN AT 2026-08-28. What was measured, what was not, and what to do next.**
+
+#### CARRIED FORWARD, NOW BETTER LOCALISED
+
+1. **Flip the 192x192 cluster axis to match cuBLAS (§H28e).** Highest expected value in the
+   list: 73.3% of the GEMM deficit sits on two call sites whose cluster orientation is flipped.
+   Cheap to test — dispatch-table change plus a rebuild.
+2. **The +2.69% power at equal clock (§H28c) is the root cause of the free-clock gap.** The
+   standing suspect remains the 1.64x L2 read-request excess (§H27bi: 41.3 L2 requests per TMA
+   transaction against cuBLAS's 24.1, tensor-map box geometry). **The L2 -> power arrow is still
+   untested** — four candidate mechanisms have already been retracted (§H27be, bf, bg).
+3. **`128x128 splitK` is +23.41% per call in the trainer** while standalone V1 measures 105.6%
+   locked. That contradiction is unexplained and the shapes are probably not the same; check what
+   the trainer actually dispatches for it before drawing any conclusion.
+4. **V2c is the only pin that gets WORSE when locked** (91.1% -> 89.3%). Every other pin gains.
+   Unexplained.
+
+#### NOT MEASURED THIS SESSION — RE-RUN NEEDED
+
+5. **The tuned-dispatch arm never produced a number.** It built cleanly (12 syms, libtensor md5
+   `a07f1e3a389d` against baseline `5d971abf1b56`), the baseline table was restored
+   (md5 `58d32d6db8e4` verified), and the snapshot survives at `/root/libs_blublas_tuned`, but the
+   box was released during step 0. **§H27bn's verdict on the tuned dispatch is void (§H28a) and
+   the question is simply open.** One command re-runs it: `/tmp/h28c.sh`.
+6. **Our own ncu counters were not captured.** `--launch-skip 3 --launch-count 1` landed on the
+   bench's cuBLAS reference kernel, so all four reports profile cuBLAS. They are still useful as
+   target numbers — cuBLAS `192x192_64x3_1x2_h_coopB_NNN`: 1,572,183 cycles, 49.58M TEX/TMA L2
+   read requests, 155.86M L2 sectors hit / 31.16M miss (83.34% hit), 549 MB DRAM read, 109.42M
+   smsp instructions, 90.47% SM throughput, 168 regs/thread, 188.6 KB smem, 14.82% occupancy.
+   Re-run with a launch index that selects our kernel.
+7. **Standalone locked covered 7 of 15 pins** before the run was stopped.
+
+**8b. RUN THE REVERSED-ORDER CONTROL for the free-clock pair.** cuBLAS ran first in every arm of
+§H28b, and §H27zD showed that order alone produced the standalone free-clock gap. Re-run the
+free-clock pair with BluBLAS **first**: if the 30 MHz deficit survives the swap it is ours, if it
+flips sign it was order. The locked result (+14.1 W at a pinned 1410 MHz on both arms) does not
+depend on this control.
+
+#### PROCESS RULES ADDED
+
+8. **A trainer A/B cannot be done by build order (§H28a).** Snapshot each backend; verify the
+   symbol count before every run; confirm kernel names in nsys afterwards.
+9. **`pkill -f <pattern>` kills the shell running it** whenever the pattern appears in that
+   shell's own command line. Four kill attempts this session reported success while the target
+   kept running. Use the bracket form: `pkill -f "[h]28c"`.
+10. **`make all` does not build `libtensor.so`**; `make train-bin MODE=production` does. And
+    every object must be compiled by one toolkit — mixing CUDA 13.1 objects with a 13.0 link
+    fails with `nvlink fatal: input file newer than toolkit (131 vs 130)`.
+
+---
+
+### §H29 — **THE TUNED DISPATCH IS +0.41% ON THE TRAINER, NOT −1.4%. It wins on 7 of 7 steady steps.** Three arms in one session, free clocks, cuBLAS deliberately LAST — and cuBLAS still took the highest clock from the hottest card, which kills the §H27zD order confound for the trainer.
+
+`hazy-earth-laughs-fin-03`, GPU 0, CUDA 13.1, 1.7B production config, 10 steps per arm,
+unprofiled, 60 s pre-warm, order `tuned -> baseline -> cuBLAS`. Every arm gated on the
+libtensor symbol count and confirmed live in `/proc/<pid>/maps`.
+
+    step      tuned     baseline      cuBLAS   tuned-base   tuned %cuB
+      3    27887.32    27800.31    28174.33      +87.01       98.98%
+      4    27912.17    27792.65    28197.66     +119.52       98.99%
+      5    27903.69    27789.57    28219.21     +114.12       98.88%
+      6    27852.65    27730.27    28066.02     +122.38       99.24%
+      7    27796.67    27727.41    28060.82      +69.26       99.06%
+      8    27873.19    27708.50    28070.52     +164.69       99.30%
+      9    27807.79    27694.22    28052.19     +113.57       99.13%
+
+    STEADY (>=3, n=7)   tuned 27861.93   baseline 27748.99   cuBLAS 28120.11
+    tuned - baseline    +112.94 tok/s  (100.41%)   ahead on 7 of 7
+    tuned  vs cuBLAS    -258.18 tok/s  ( 99.08%)
+    base   vs cuBLAS    -371.12 tok/s  ( 98.68%)
+
+**This replaces §H27bn.** That section concluded the tuned dispatch was 1.4% SLOWER; it was
+measured on the corrupted A/B where both arms ran cuBLAS (§H28a), so what it actually compared
+was BluBLAS against cuBLAS. Measured correctly the sign reverses.
+
+Honest limit on the claim: the tuned and baseline per-step ranges OVERLAP (27797-27912 against
+27694-27800), so +113 tok/s is a small effect. What carries it is 7-of-7 in the same direction
+in one session at matched thermal state — a coin does that 1 time in 128.
+
+#### THE ORDER CONFOUND IS DEAD FOR THE TRAINER
+
+    arm         slot    clock     power    temp    cap active
+    tuned       1st    1790 MHz   691.1 W  63.1 C    100%
+    baseline    2nd    1782 MHz   688.8 W  64.4 C    100%
+    cuBLAS      3rd    1805 MHz   691.5 W  65.0 C    100%
+
+cuBLAS ran **last**, on the **hottest** card, and still took the **highest** clock and won.
+§H27zD's cold-card/order effect cannot explain the trainer gap. This closes §H28g item 8b.
+
+`H29` commit `3310fe8` makes the tuned table the baseline and additionally fixes two defects in
+`7f5a14c`: it had retargeted only `src/level3/.../Bgemm_sm90_dispatch_table.h` and never the
+VENDORED copy the trainer builds from (so as committed it could not have changed the trainer at
+all), and the vendored tree was 343 lines behind main on the warpspecialized template plus 23 on
+the config registrations, so the four tuned configs were not even compiled there.
+
+---
+
+### §H30 — **CLOSED CYCLE LEDGER, 15 PINS, BOTH ARMS. At a locked clock we are 0.6% slower while issuing 81% more instructions — so instructions are NOT the time bottleneck, and there is almost no work gap left to close.**
+
+Method: ncu warp-state sampling. The 19 warp states partition every warp-cycle, so the
+decomposition is forced to close — the bottleneck names itself instead of being hypothesised.
+
+#### APPARATUS VALIDATION (run BEFORE any result was read)
+
+    NULL ARM   same kernel profiled twice, 65 metrics compared
+               max absolute difference 0.20 pp (gmma 11.75 vs 11.95)
+               -> NOISE FLOOR = 0.20 pp; anything above ~0.4 pp is real
+    CLOSURE    the 19 states sum to 100% of warp-cycles on 29 of 30 measurements
+               (V7c cuBLAS 98.99%, i.e. 1.01 pp — rounding across 19 two-decimal values)
+
+#### THE CORRECTION THAT MATTERED — OCCUPANCY IS NOT TIME
+
+The first ledger was built on `smsp__warps_active.sum` and reported a **+27.06% warp-cycle
+excess** that closed to a 0.7% residual. It is arithmetically correct and answers the wrong
+question: `warps_active.sum` is a warp-SLOT OCCUPANCY budget, not a time budget. The same run
+showed a duration ratio of 1.006. Both cannot describe time. **We keep 27% more warp-slots
+resident for the same wall-clock.** The table is retained below as a description of where
+resident warps sit, and is NOT a cost attribution.
+
+#### THE TIME-BASED RESULT (locked 1400 MHz, all 15 pins summed)
+
+    TIME               1.006x    we are +0.6% slower  <- THE REAL WORK GAP
+    ELAPSED CYCLES     1.007x    consistent with time, as it must be at fixed clock
+    INSTRUCTIONS       1.811x    we ISSUE +81% more instructions for the same math
+    WARP-SLOT CYCLES   1.271x    we keep +27% more warp-slots resident
+
+**We issue 81% more instructions and finish in the same time.** Instructions are therefore not
+the time limiter — there is large instruction slack — which is why the §H27b4 `_shfl` cut (76%
+of k-loop vector ops) moved performance by nothing. It also means "catch cuBLAS's kernel" is
+essentially finished: 0.6% is all that remains, worth about 170 tok/s end to end.
+
+#### WHERE RESIDENT WARPS SIT (mean over 15 pins, share of warp-cycles; floor 0.20 pp)
+
+    warp state             ours     cuBLAS     diff
+    barrier              35.47%     27.18%    +8.29
+    long_scoreboard      29.04%     20.90%    +8.14
+    wait                 12.39%      8.55%    +3.84
+    selected              7.72%      5.34%    +2.38
+    gmma                  4.08%     20.50%   -16.42
+    short_scoreboard      3.01%      0.20%    +2.81
+    mio_throttle          2.11%     13.96%   -11.85
+    branch_resolving      1.84%      0.35%    +1.49
+    dispatch_stall        1.73%      0.28%    +1.45
+    math_pipe_throttle    0.39%      1.42%    -1.03
+
+Both kernels ISSUE on only 5-8% of warp-cycles (ours 7.72%, cuBLAS 5.34% — we issue more). The
+remaining ~92% is warps parked waiting on the tensor pipe. They park on `gmma` + `mio_throttle`;
+we park on `barrier` + `long_scoreboard`. Different places, same outcome, 0.6% apart in time.
+**No causal claim is made from this table** — it describes residency, not cost.
+
+---
+
+### §H31 — **TENSOR PIPE IS AT PARITY AND, ON SIX OF FIFTEEN SHAPES, BOTH KERNELS SIT AT 97-99.6% OF PEAK. That is the hardware ceiling, and it is why a large win is not available on these tiles at this precision.**
+
+ncu counters, all 15 pins, both arms, locked 1400 MHz. Ratios are ours/cuBLAS.
+
+    pin    time  L2 rd req  TEX/TMA  L2 hit  L2 miss  DRAM rd  inst exec  uniform  tensor% o/c
+    V1    1.017      1.633    1.708   2.333    1.141    1.000      2.543    1.362   91.1/90.7
+    V2    1.021      1.641    1.691   1.951    1.125    1.000      2.241    1.169   97.4/97.7
+    V2b   1.004      1.364    1.462   1.723    0.853    0.862      2.243    1.170   98.2/98.5
+    V2c   1.012      1.415    1.431   1.408    1.629    2.057      2.239    1.167   98.5/98.9
+    V3    1.010      1.218    1.240   1.261    0.883    0.797      1.568    1.436   91.5/92.0
+    V4    0.997      1.020    1.011   1.143    0.819    0.881      1.567    1.433   92.1/91.9
+    V5    1.007      1.435    1.480   1.447    0.851    0.746      1.595    1.500   98.6/98.6
+    V6    1.013      1.141    1.144   1.181    1.113    1.099      1.578    1.497   91.8/92.8
+    V7    1.019      1.219    1.220   1.260    1.130    1.040      1.808    1.155   90.7/92.3
+    V7b   1.013      1.239    1.256   1.384    1.038    1.000      1.808    1.171   96.4/97.0
+    V7c   1.032      1.383    1.395   1.654    1.114    1.005      1.810    1.154   86.1/87.8
+    V8    1.078      1.204    1.211   1.185    1.042    1.002      1.784    1.098   70.5/75.1
+    V8b   1.026      1.238    1.240   1.280    1.089    1.042      1.779    1.166   90.5/92.3
+    V8c   1.012      1.254    1.270   1.409    1.058    1.000      1.777    1.189   98.1/98.4
+    V8d   1.000      1.270    1.280   1.437    1.347    1.067      1.777    1.193   99.6/99.6
+    MEAN  1.018      1.312    1.336   1.470    1.082    1.040      1.875    1.257   92.7/93.5
+
+**Tensor pipe utilisation is at parity — 92.7% ours against 93.5% theirs, 0.8 pp.** On V8d, V5,
+V2c, V2b, V8c and V2 BOTH kernels run at 97-99.6% of peak sustained tensor throughput. Neither
+library can go faster on those shapes without issuing less math.
+
+**CORRECTS THE HEADLINE L2 NUMBER.** The project has been quoting "1.64x L2 read requests" as a
+general property. It is not: 1.64x is V1 (1.633x here, reproduced). The 15-pin mean is **1.312x**,
+ranging 1.020x (V4) to 1.641x (V2). Statements about L2 excess must name the shape.
+
+**DRAM is at parity (1.040x)**, confirming §H27an across all 15 pins rather than one.
+
+**The only shape with real headroom is V8** (`16384x2048x512 nt`, K=512): tensor 70.5/75.1 for
+both, and our worst time ratio at 1.078x. Low-K wave quantisation, not a kernel-quality gap.
+
+#### WHAT THIS MEANS FOR THE 105-109% TARGET
+
+GEMM is 37.24% of trainer kernel time (§H28d), so `our_total = 0.6276 + 0.3724 x g`. Reaching
+105% needs g = 0.872, i.e. our GEMM **12.8% FASTER** than cuBLAS; 109% needs **22.2% faster**.
+With both libraries tensor-bound at 92-99% of peak, a 13-22% GEMM speedup does not exist to be
+found on these tiles at bf16. The realistic GEMM ceiling is a few percent, worth ~1.9% end to
+end; adding the power/clock recovery (~1.5%) lands near **103%**.
+
+Beating cuBLAS by 30% therefore requires leaving the apples-to-apples frame — different tiles,
+different features, or removing work from the 62.76% that is NOT the GEMM. The largest single
+candidate there is the conversion kernels: `convert_type_kernel` bf16->float 11.0% plus
+float->bf16 10.2% = **21.2% of total GPU time in separate kernels**. Parked previously on the
+grounds that speeding them up helps cuBLAS equally — true only while they remain separate
+kernels. Fusing them into our GEMM prologue/epilogue removes them from OUR arm only. Not
+attempted, not measured; recorded as the largest identified candidate.
+
+---
+
+### §H32 — **THE SUB-CAP POWER MEASUREMENT IS STILL OUTSTANDING. The attempt at lock 1400 is INVALID: a back-to-back GEMM loop sits ON the 700 W cap at that lock, so power is clamped and cannot differ between arms.**
+
+    lock 1400, 15 s windows, instant field at 2 Hz:
+      every pin, both arms:  cap active 100.0%,  700-750 W
+      the single pin that "settled" (V4) read ours/cuBLAS 0.99x  <- that is the CLAMP, not a result
+      13 of 15 pins were refused by the tool as "still moving" and reported no ratio
+
+This is the trap already recorded in [[project_power_clock_solved]]: *"lock LOW enough that BOTH
+arms stay under the cap; at the cap power CANNOT differ."* The trainer measurement in §H28c is
+unaffected — it ran at 1410 MHz with `sw_power_cap` **Not Active (0%)** on both arms and measured
+a real **+14.1 W median (+2.69%)**. Only this standalone per-pin attribution needs redoing, at
+**lock 1200**, where §H27b4 previously held both arms sub-cap (cuBLAS 540 W, ours 612 W).
+
+Kept as `test_reports/h27af_lock1400_capped/` so the failure mode is on record.
+
+#### THE PRE-REGISTERED TEST, WRITTEN BEFORE THE DATA EXISTS
+
+Correlate each pin's **power excess** at lock 1200 against its **instruction excess** (spread
+1.567x to 2.543x) and its **L2 read-request excess** (spread 1.020x to 1.641x), across 15 pins.
+
+    |r| < 0.4 for instructions  ->  instruction -> power is REFUTED
+    |r| < 0.4 for L2            ->  L2 -> power is REFUTED
+    both below 0.4              ->  neither drives it; the +2.69% is unidentified, and that is
+                                    what gets reported. No third variable is to be introduced
+                                    after seeing the data.
+
+This matters because power is the only lever large enough for the near-term goal: closing the
++2.69% is worth ~420 tok/s end to end, where closing the entire 0.6% work gap is worth ~170.
+
+---
+
+### §H33/§H34 — **THE SUB-CAP PER-PIN POWER TEST COULD NOT BE EXECUTED ON THIS BOX. The clock lock is not enforced, a back-to-back GEMM loop therefore sits on the 700 W cap, and 12 of 15 pins had power clamped. The pre-registered correlation is NOT REFUTED — it was never run.**
+
+#### WHAT WAS ATTEMPTED
+
+Correlate each pin's power excess against its instruction excess (spread 1.567x-2.543x, §H31)
+and its L2 read-request excess (spread 1.020x-1.641x). Kill criterion fixed BEFORE any data
+existed: `|r| < 0.4` refutes that lever; both below 0.4 means the +2.69% (§H28c) is unidentified.
+
+#### FINDING 1 — THE CLOCK LOCK IS NOT ENFORCED ON THIS BOX
+
+`nvidia-smi -lgc` reports success and does nothing. Measured directly, one bench process, nothing
+else running:
+
+    requested lock 1200  ->  observed under load 1380-1500 MHz
+    requested lock 1000  ->  observed under load 1365-1425 MHz
+    `-ac 3201,1200` sets clocks.applications.graphics=1200 but clocks.sm still runs 1500
+
+Persistence is Enabled, compute mode Default, no other process on the GPU, driver 580.126.09.
+Earlier the same day the trainer held exactly 1410 MHz for 2,900 samples at `-lgc 1400`, so this
+is not a permanent property of the box — but it cannot be relied on.
+
+#### FINDING 2 — WITHOUT A LOCK, THE STANDALONE LOOP CLAMPS AT THE CAP
+
+15 pins, both arms, one process at a time, 24 s windows with 10 s discarded:
+
+    pin    cuB W   our W   ratio   cuB cap  our cap   cuB clk  our clk   verdict
+    V1     689.4   696.2   1.010      96%     100%      1494     1395    DISCARD
+    V2     691.8   700.1   1.012     100%     100%      1500     1458    DISCARD
+    V2b    696.5   700.1   1.005       0%     100%      1500     1482    DISCARD
+    V2c    692.8   687.0   0.992     100%     100%      1451     1350    DISCARD
+    V3     697.6   690.5   0.990     100%     100%      1470     1453    DISCARD
+    V4     693.1   712.0   1.027     100%     100%      1437     1451    DISCARD
+    V5     689.5   691.3   1.003     100%     100%      1430     1451    DISCARD
+    V6     687.2   681.1   0.991     100%     100%      1480     1464    DISCARD
+    V7     673.5   673.7   1.000       0%       0%      1500     1500    VALID
+    V7b    683.0   709.0   1.038     100%     100%      1482     1462    DISCARD
+    V7c    693.3   686.9   0.991     100%     100%      1485     1455    DISCARD
+    V8     602.6   611.2   1.014       0%       0%      1500     1500    VALID
+    V8b    674.1   676.8   1.004       0%       0%      1500     1500    VALID
+    V8c    695.3   680.4   0.979     100%     100%      1456     1451    DISCARD
+    V8d    704.1   676.5   0.961     100%     100%      1440     1455    DISCARD
+
+Gate: an arm is usable only if `capped_pct < 5%` AND the two arms' clocks match within 1%.
+**3 of 15 pins pass.** On the other 12 power is clamped at ~690-700 W, so it physically cannot
+differ, and on several the arms did not even share a clock (V2c 1451 vs 1350, a 7.0% gap).
+
+#### FINDING 3 — THE SURVIVORS CARRY NO PREDICTOR SPREAD, SO THE TEST IS DEAD
+
+    pin   instruction ratio   L2 ratio   power ratio
+    V7          1.808           1.219       1.000
+    V8          1.784           1.204       1.014
+    V8b         1.779           1.238       1.004
+
+Instruction-ratio range among usable pins: **1.779 to 1.808** — a range of 0.029 against the
+1.567-2.543 spread the test was designed around. Every pin carrying the spread was discarded.
+**The correlation cannot be computed. Not refuted, NOT EXECUTED.** Per the pre-registration no
+substitute analysis is performed on the clamped data, and no third variable is introduced.
+
+The three survivors give a mean power ratio of 1.006. They are the three LOWEST-power pins —
+that is precisely why they stayed sub-cap — so this is not a representative sample and **must
+not be quoted as "our power excess is 0.6%"**. The trainer's +2.69% (§H28c) remains the only
+valid power measurement in the project.
+
+#### WHY THE TRAINER MEASUREMENT SURVIVES AND THIS ONE DOES NOT
+
+The trainer at `-lgc 1400` ran with `sw_power_cap` **Not Active on 100% of samples** at 523-538 W
+against a 700 W cap. Its duty cycle is low enough to stay sub-cap. A back-to-back GEMM loop at
+100% duty cycle is not, and no lock is available here to bring it down. **The trainer is the only
+rig on this box that can measure power differences at all.**
+
+#### WHAT REPLACES IT — AN INTERVENTION TEST, NOT A CORRELATION
+
+Rather than correlate power against instruction count across pins, change the instruction count
+and see whether power moves:
+
+    arm A   trainer, current TUNED dispatch
+    arm B   trainer, dispatch routed to the LOWEST-instruction configs available
+    both    locked 1400, where the trainer is demonstrably sub-cap (cap 0%, 523-538 W)
+    read    trainer power at matched clock
+
+If instruction count drives power, arm B must draw measurably less. If power does not move,
+instructions are refuted as the power driver — end to end, causally, with no correlation needed
+and no dependence on a clock lock that does not work.
+
+#### PROCESS FAILURES ON THIS RUN, RECORDED SO THEY ARE NOT REPEATED
+
+1. **A launch was placed inside a retry loop.** When SSH dropped before printing its
+   confirmation the loop assumed failure and relaunched — **eight concurrent copies of the
+   script and four concurrent GEMM processes** ended up sharing the GPU. Every number taken
+   while that was true is void. **Killing is idempotent and safe to retry; launching is not.
+   On an uncertain outcome, reconnect and COUNT, then decide.**
+2. Those same retry loops reconnected every 20-25 s and **took the box's sshd down**, which is
+   what produced the long run of connection failures.
+3. `pkill -f <pattern>` and `pgrep -f <pattern>` **match the shell running them** whenever the
+   pattern appears in that shell's own command line — including through the `"[h]33"` bracket
+   form once the bracketed text itself is in the command. Repeatedly produced false "still
+   running" counts and self-kills. **Count by exact argv element read from `/proc/<pid>/cmdline`,
+   skipping `$$`.**
+4. A log redirect was pointed into a directory the script itself creates, so the redirect failed
+   and the run never started, silently. **mkdir before redirect, always.**
+
+---
+
+### §H36 — **REVERSE-ENGINEERED FROM SASS: cuBLAS keeps the packed GMMA descriptor in a UNIFORM register for the whole kernel and advances it with one `UIADD3` of an immediate. We DECODE AND RE-ENCODE it from a per-thread base for every single wgmma, on the vector datapath, and then cross it back with `R2UR`. That one difference is 44.6% of our instruction excess, and a second copy of the same arithmetic on the uniform path is another 25.7%.**
+
+Full per-opcode census with dynamic execution counts, both kernels, same shape
+`2048x2048x16384 tn` — ours `256x128x64_2x1_h_ep32s2_pdl`, cuBLAS
+`nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_NTN` (what each library actually dispatches).
+`ncu --section SourceCounters --page source --print-source sass`, ncu clock-locked.
+
+                            ours          cuBLAS        excess
+    TENSOR (HGMMA)     10,223,616      18,350,080    -8,126,464
+    EVERYTHING ELSE    35,672,802      13,954,931   +21,717,871   <- 2.56x cuBLAS
+    TOTAL              45,896,418      32,305,011   +13,591,407
+
+#### THE MECHANISM, SIDE BY SIDE
+
+cuBLAS, per wgmma:
+
+    UIADD3  UR16, UR16, 0x80, URZ                       one uniform add of an IMMEDIATE
+    HGMMA   R24, gdesc[UR16].tnspA.tnspB, R24
+    ...ring wrap is UIADD3 +0x200 then UIADD3 -0x180. Still just adds.
+
+Ours, per wgmma:
+
+    LEA          R11, R3, UR16, 0xe            vector: base built from a PER-THREAD reg (R3)
+    LOP3.LUT     R12, R11, 0x3fc00, RZ, 0xc0   vector: mask out the address field
+    SHF.R.U32.HI R12, RZ, 0x4, R12             vector: shift right 4
+    LOP3.LUT     R12, R12, 0x2000000, RZ, 0xfc vector: OR in the layout flag
+    R2UR         UR36, R12                     CROSS vector -> uniform
+    HGMMA        R24, gdesc[UR36].tnspA.tnspB, R24
+    VIADD        R12, R11, 0x800               vector: next address, start over
+
+**cuBLAS never re-packs the descriptor.** They chose the bit layout so that advancing the
+address is a plain add on the ENCODED value. We unpack, shift, re-pack and cross, every time.
+
+**And we do it TWICE.** The identical arithmetic appears on both datapaths with the same
+constants — `ULOP3.LUT UR17,UR17,0x3fc00` beside `LOP3.LUT R12,R11,0x3fc00`,
+`USHF.R.U32.HI` beside `SHF.R.U32.HI`. Both results are kept.
+
+**Root cause:** our chain starts at `LEA R11, R3, UR16, 0xe` where `R3` is thread-dependent.
+Once the base is per-thread everything downstream is forced onto the vector path and must be
+crossed back. cuBLAS's base is uniform and never touches a thread index.
+
+#### THIS CORRECTS A CLOSED ITEM
+
+`project_kloop_unroll_future` records: *"don't write DESC_ACCUM; the descriptor rebuild is
+uniform-datapath so leave it."* **That premise is false.** The rebuild is substantially VECTOR —
+`LEA`/`LOP3`/`SHF`/`VIADD` on R-registers plus 4.19M `R2UR` crossings against cuBLAS's 5,120.
+DESC_ACCUM — hold the packed descriptor in a uniform register, advance by constants — is
+precisely what cuBLAS does and must be reopened.
+
+#### THE COMPLETE WORK LIST — 97.7% of the excess in SEVEN groups
+
+Nothing here is to be dropped because an earlier item disappoints. Each group is independently
+testable with the same census on the same shape.
+
+    A. DESCRIPTOR RE-ENCODED PER WGMMA                       13,309,184   44.6%
+         LOP3.LUT +4,713,728 (69/22)   R2UR +4,189,184 (16/7)
+         SHF.R.U32.HI +2,097,152 (12/2)   VIADD +1,646,080 (64/0, cuBLAS ZERO)
+         SHF.L.U32 +393,728 (34/2)   LEA +269,312 (85/2)
+       FIX: DESC_ACCUM. Packed descriptor in a UR, advanced by immediate constants.
+
+    B. THE SAME DESCRIPTOR COMPUTED A SECOND TIME (uniform)   7,667,200   25.7%
+         ULOP3.LUT +2,490,752   UMOV +1,692,032   ULEA +1,305,600 (ZERO)
+         USHF.R.U32.HI +1,048,576 (ZERO)   USHF.R.S32.HI +400,896 (ZERO)
+         ULEA.HI +399,872 (ZERO)   UIMAD +329,472
+       FIX: emit ONE descriptor computation, not two. Follows from A.
+
+    C. DIVERGENT CONTROL FLOW                                 4,300,352   14.4%
+         @!P1 +1,184,961 (129 static, cuBLAS ZERO)   BSYNC +502,912 (51/0, ZERO)
+         BSSY +402,944 (51/0, ZERO)   SEL +395,264 (ZERO)   @P0 +399,872 (ZERO)
+         ISETP.NE.AND +430,080   PLOP3.LUT +270,014   ISETP.LE.AND +267,264 (ZERO)
+       cuBLAS has 51 fewer divergent reconvergence points -- ZERO. Their control flow is
+       uniformly predicated throughout. Matches the H27bh ELECT finding, but it is the whole
+       structure, not a few ELECTs.
+       FIX: uniform predication instead of per-thread branch + ELECT.
+
+    D. MBARRIER SPIN-POLLING                                  1,209,296    4.1%
+         SYNCS.PHASECHK.TRANS64.TRYWAIT +1,110,992  (ours 1,149,610 vs cuBLAS 38,618 = 30x)
+         SYNCS.ARRIVE.TRANS64(.A1T0) +98,304 (cuBLAS ZERO)
+       Our hottest single non-tensor instruction. Consistent with the H30 warp-state ledger
+       (barrier 35.47% ours vs 27.18% theirs).
+       FIX: fewer try-wait iterations / different wait construct.
+
+    E. REGISTER-PRESSURE ARTIFACTS                            2,114,048    7.1%
+         IMAD.MOV.U32 +1,600,000 (17/0, cuBLAS ZERO)   MOV +447,488   CS2R +66,560 (ZERO)
+       IMAD-as-MOV is what ptxas emits when it runs out of movable registers.
+       FIX: falls out of A/B (fewer live values), re-check after.
+
+    F. DATAPATH CROSSINGS, OTHER                                424,576    1.4%
+         S2UR +424,576 (21/4)
+    G. MISC / SHARED MEMORY                                     131,072    0.4%
+         STS +65,536 (128 static vs 1)   UTMALDG.3D +65,536 (28/4)
+
+    accounted 29,155,728 of 29,842,259 positive excess = 97.7%
+
+#### cuBLAS WEAKNESSES FOUND (to be exploited, not just matched)
+
+1. **They issue 1.79x MORE tensor instructions than us** — 18,350,080 HGMMA against our
+   10,223,616 for the same GEMM. Their kernel is tensor-dense; ours is overhead-dense. The ratio
+   is not yet explained across differing tiles and is recorded as an OBSERVATION, not a finding.
+2. **They stall more** — H30: cuBLAS issues on 5.34% of warp-cycles against our 7.72%, with
+   `gmma` 20.50% and `mio_throttle` 13.96% against our 4.08% and 2.11%.
+3. **Shared weakness, low K:** on V8 (`16384x2048x512 nt`) BOTH libraries reach only 70.5% /
+   75.1% of peak tensor. 25-30% of the pipe is unclaimed by either. Wave quantisation.
+
+#### WHAT THIS LEVER IS AND IS NOT WORTH
+
+Removing the full 21.7M overhead is ~47% of our instructions, about 4x the tuned change that
+returned +0.41% end to end, so **roughly +1.6%, landing near 100.7%**. That is an estimate by
+linear scaling of a measured anchor, not a measurement. It makes us faster than cuBLAS; it does
+not reach 105%. Per §H31 that still requires the conversion kernels (21.2% of total GPU time).
+
+---
+
+### §H37 — **§H36's HEADLINE NUMBERS ARE MEASURED ON A CONFIG PRODUCTION DOES NOT RUN. Against the DISPATCHED config our overhead is 1.67x cuBLAS, not 2.56x; the existing dead-work knobs already removed 12.4M instructions (34.8%), and `R2UR` — which §H36 called the 19% culprit — is already 94% gone.**
+
+Same shape `2048x2048x16384 tn`, same census method, same cuBLAS arm. The only change is
+profiling what the DISPATCH TABLE names instead of what `pins.sh` names.
+
+    cuBLAS  nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_NTN   13,954,931 non-tensor   1.00x
+    ours    256x128x64_2x1_h_ep32s2_pdl          (BARE)      35,672,802             2.56x   <- H36
+    ours    ..._ep32s2_pdl_dh_dw_uad_ubd_cs (DISPATCHED)     23,270,454             1.67x   <- real
+
+    ALREADY BANKED by dh/dw/uad/ubd/cs:
+      R2UR      4,194,304 -> 262,144   (cuBLAS 5,120)    -94%
+      LOP3.LUT  4,728,832 ->  534,528  (cuBLAS 15,104)   -89%
+
+**§H36's mechanism is still correct** — cuBLAS holds the packed descriptor in a UR and advances
+it with `UIADD3 UR16,UR16,imm` while the bare kernel decodes/re-encodes from a per-thread base.
+What is wrong is the SIZE and the PRIORITY: that work is already largely done in production, and
+a work list built on §H36 would have sent us to re-fix `R2UR`.
+
+**This is the third time `pins.sh` vs the dispatch table has produced a wrong headline** —
+§H27bl (V2c +7.2 -> +1.4), §H31 (the "1.64x L2" that is V1-only), and now this.
+
+#### THE REMAINING EXCESS — 9.3M net, and it is a DIFFERENT list
+
+    opcode                          dispatched      bare     cuBLAS      excess    %
+    UIADD3.64                        2,752,512         0     67,712  +2,684,800  15.0%
+    @!P1                             1,184,068 1,184,961          0  +1,184,068   6.6%
+    SYNCS.PHASECHK.TRANS64.TRYWAIT   1,147,643 1,149,610     38,618  +1,109,025   6.2%
+    ULOP3.LUT                        1,050,112 2,493,952      3,200  +1,046,912   5.9%
+    UMOV                             1,274,240 2,040,192    348,160    +926,080   5.2%
+    ULEA                               781,312 1,305,600          0    +781,312   4.4%
+    UIADD3.X                           591,488    67,200          0    +591,488   3.3%
+    USHF.R.S32.HI                      529,920   400,896          0    +529,920   3.0%
+    USHF.R.U32.HI                      524,288 1,048,576          0    +524,288   2.9%
+    LOP3.LUT                           534,528 4,728,832     15,104    +519,424   2.9%
+    BSYNC                              503,936   502,912          0    +503,936   2.8%
+    YIELD                              459,886         0          0    +459,886   2.6%
+    ISETP.NE.AND                       433,152   433,152      3,072    +430,080   2.4%
+    S2UR                               428,672   428,672      4,096    +424,576   2.4%
+    BSSY                               403,968   402,944          0    +403,968   2.3%
+    LEA                                403,712   270,336      1,024    +402,688   2.3%
+    @P0 / SEL / USEL / SHF.L.U32       ~1.58M combined, cuBLAS ZERO on three of four
+
+#### TWO STRUCTURAL OBSERVATIONS
+
+**1. The knobs traded VECTOR ops for UNIFORM ops — the right trade — but emit many of them.**
+`UIADD3.64` goes 0 -> 2,752,512, `UIADD3.X` 67,200 -> 591,488, and `USEL`/`YIELD` appear from
+nothing. A 1-lane op is far cheaper than a 32-lane one, so this is progress, but cuBLAS's entire
+descriptor advance is a single `UIADD3` of an immediate and ours is now a uniform-path
+computation of its own. `DESC_WALK`, `UNIFORM_B_DESC` and `STAGE_SPECIALISE` already exist as
+template knobs, are documented in the template header as the correct implementation, and are
+bit-exact 12/12 on 192x192 — they are simply not enabled on any dispatched config.
+
+**2. Three groups are untouched by every knob we have**, and are now proportionally the largest
+un-attacked targets:
+  * divergent control flow — `@!P1` 1.18M (134 static), `BSYNC` 503,936 and `BSSY` 403,968
+    (53 static each), `SEL` and `@P0` ~0.8M. **cuBLAS executes ZERO of BSYNC, BSSY, SEL, @P0.**
+    Their control flow is uniformly predicated end to end.
+  * mbarrier spin-polling — `SYNCS.PHASECHK.TRANS64.TRYWAIT` 1,147,643 against 38,618, unchanged
+    by any knob. The template already has `_MBAR_SLEEP_TICKS`, which emits the 3-operand form
+    that lowers to NANOSLEEP on a miss — "exactly what cuBLAS's SASS does (0xc350 = 50000)" —
+    and it has never been enabled on a dispatched config.
+  * `S2UR` 428,672 vs 4,096.
+
+#### REVISED SIZE OF THE LEVER
+
+The remaining 9.3M is ~28% of our instructions, about 2.3x the tuned change that returned
++0.41% end to end, so roughly **+0.95%, landing near 100%**. Linear scaling of a measured
+anchor, an estimate. §H36 said +1.6% / 100.7% on the bare-config numbers; that is withdrawn.
+105% still requires the conversion kernels (§H31).
+
+---
+
+### §H38 — **`MBAR_SLEEP_TICKS` IS A NO-OP. The tick operand never reaches SASS: the TRYWAIT site is byte-identical with and without it, and `NANOSLEEP` is never emitted. Slot 28 has been a documented "fix" since §H27zc7 that does nothing.**
+
+Item 3 of the work list ([[project-instruction-excess-worklist]]): mbarrier spin-polling,
+`SYNCS.PHASECHK.TRANS64.TRYWAIT` at 30x cuBLAS, PC-sampling showing the four spin back-edges as
+**23.90% of all samples** against cuBLAS's 0.01%.
+
+Three `_tk50k` / `_tk12k` configs and one `..._pdl_tk50k` already existed and were already
+compiled — never measured, exactly as the template header said.
+
+#### THROUGHPUT — FLAT (and this is why it would have been adopted by mistake)
+
+V3 shape `16384x11264x2048 nn`, 400 ms, one config per process, all `maxRelErr 0.00000`:
+
+    192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl          644.55 TF   98.7%   <- DISPATCHED
+    192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_tk50k    645.09 TF   99.0%
+    192x192x64_2x1_v_rs8_dh_ubd_skew_lsw                 645.03 TF   98.9%
+    192x192x64_2x1_v_rs8_dh_ubd_skew_lsw_tk50k           645.55 TF   99.0%
+    192x192x64_2x1_v_rs8_dh_ubd_skew_lsw_tk12k           644.03 TF   98.9%
+
++0.08%, inside the cuBLAS reference's own 651-653 TF wobble. Bit-exact and harmless-looking.
+
+#### THE CENSUS SAYS IT IS WORSE, AND THE SASS SAYS IT DID NOTHING
+
+    non-tensor total          base 165,815,609   tk50k 176,160,131   +6.2%
+    @!P1 (spin back-edge)        7,647,686            14,676,823     +92%
+    SYNCS.PHASECHK...TRYWAIT     6,085,974             5,673,584     -6.8%
+    IMAD.U32                       913,320             3,779,155     +2.87M
+    NANOSLEEP                            0                     0     <- NEVER EMITTED
+
+And the instruction itself, at the same address in both builds:
+
+    base :  SYNCS.PHASECHK.TRANS64.TRYWAIT P1, [UR11], R24
+    tk50k:  SYNCS.PHASECHK.TRANS64.TRYWAIT P1, [UR11], R24
+
+**Byte-identical, two operands, no hint.** The PTX we emit is
+`mbarrier.try_wait.parity.acquire.cta.shared::cta.b64 P, [%0], %1, %2;` — ptxas accepts it and
+**silently discards the suspend-time hint**. The +6.2% / +92% deltas are register-allocation
+differences between two builds of logically identical code, not a real regression.
+
+#### CONSEQUENCES
+
+1. **Do not adopt any `_tk*` config.** It buys nothing and the knob does not do what its
+   documentation claims.
+2. **Item 3 is NOT refuted — it is UNIMPLEMENTED.** The spin is still 30x cuBLAS and still the
+   hottest thing in the kernel by PC samples. What is refuted is this particular PTX spelling.
+   Getting an actual `NANOSLEEP` needs a different formulation (the qualifier combination
+   `.parity.acquire.cta.shared::cta` with a hint operand appears not to be honoured), or an
+   explicit `nanosleep.u32` in the spin body.
+3. **A throughput-only A/B would have adopted this.** +0.08% and bit-exact looks like a free
+   win. Only the instruction census showed the mechanism never engaged. Census every knob whose
+   claim is "it changes which instructions we emit".
+
+---
+
+### §H39 — **THE nanosleep BACK-OFF WORKS AND IS STILL A LOSS. `NANOSLEEP` now emits (0 -> 4,096,310) and the spin branch is 96% gone, but the POLL COUNT DOES NOT MOVE (-0.7%), total instructions rise 1.5% and throughput falls 1.1%. The real finding: we attempt the try-wait 6.04M times against cuBLAS's 38,618 — 156x. The problem is not HOW we wait, it is that we WAIT.**
+
+Follow-up to §H38, which showed the `MBAR_SLEEP_TICKS` hint was silently discarded by ptxas.
+Fixed in `b7c8e07` with an explicit `nanosleep.u32` on the miss path plus `_tk32` / `_tk128` on
+the V3 dispatched base (correct unit: nanoseconds, not the mbarrier hint's abstract ticks —
+cuBLAS's 0xc350 would have been a 50 us sleep).
+
+#### THE MECHANISM NOW ENGAGES — confirmed in SASS
+
+    0x...8e10  SYNCS.PHASECHK.TRANS64.TRYWAIT P1, [UR11], R24
+    0x...8e30  @P1  BRA 0x...8e70              <- hit: leave
+    0x...8e40  NANOSLEEP 0x20                  <- miss: back off 32 ns
+    0x...8e50  SYNCS.PHASECHK.TRANS64.TRYWAIT P1, [UR11], R24
+
+12 static `NANOSLEEP`, against 0 before. Structurally identical to cuBLAS's spin.
+
+#### AND IT IS A NET LOSS ON BOTH AXES
+
+    V3 shape 16384x11264x2048 nn, all maxRelErr 0.00000
+      ..._dw_skew_lsw_pdl          653.33 TF  100.3%
+      ..._dw_skew_lsw_pdl_tk32     646.06 TF   99.2%    -1.1%
+      ..._dw_skew_lsw_pdl_tk128    645.86 TF   99.1%    -1.1%
+
+    census, base vs tk32
+      NANOSLEEP                        0 ->  4,096,310    +4.10M
+      BRA (spin back-edge)     1,646,425 ->     68,304    -95.9%
+      @!P1                     7,649,288 ->  5,659,559    -1.99M
+      @P1                      2,511,308 ->  4,458,140    +1.95M
+      SYNCS.PHASECHK...TRYWAIT 6,087,627 ->  6,044,726    -0.7%   <- UNCHANGED
+      non-tensor total       165,820,516 -> 168,252,770   +1.5%
+
+We removed 1.58M branches and added 4.10M sleeps. **DO NOT ADOPT `_tk32` / `_tk128` / `_tk50k` /
+`_tk12k`.** The fixed implementation is kept because it is now correct and is the right tool if
+the poll count is ever brought down; the configs stay compiled and undispatched.
+
+#### THE ACTUAL FINDING, WHICH REDIRECTS THE ITEM
+
+    try-wait attempts   ours 6,044,726    cuBLAS 38,618    156x
+
+The spin construct was never the problem. **We attempt the barrier 156x more often than cuBLAS
+does.** A back-off changes what a warp executes *while* waiting; it cannot reduce *how often the
+barrier is not ready when checked*. That is a pipeline-depth and producer-scheduling property,
+not a wait-construct property.
+
+This also explains why PC-sampling made the spin look like the cause (23.90% of samples on the
+four back-edges): those samples are the SYMPTOM of 156x the waits, and moving the samples onto a
+NANOSLEEP instruction does not remove them.
+
+**Item 3 is re-pointed:** stop trying to change the wait instruction. Find why the full/empty
+barriers are so much less often ready at check time — candidates are LOAD_PIPE_DEPTH, the
+producer's issue rate (already measured at 33.05% of kernel against cuBLAS's 8.27%), and the
+TMA-arrival timing. None of these has been measured against cuBLAS directly.
+
+---
+
+### §H40 — **THE DESCRIPTOR ADD'S WIDTH IS NOT THE PROBLEM. Making it a low-word 32-bit add eliminates all 2,752,512 `UIADD3.64` — and ptxas pays for it with exactly 2,752,512 new `UMOV`. Net +7.3% instructions, 1.67x -> 1.79x. Reverted. The lever is IN-PLACE ACCUMULATION, not the add.**
+
+Work-list item 1. `DESC_WALK`'s own comment has always claimed the advance is *"a single add to
+the low word, exactly as CuTe's DescriptorIterator and cuBLAS's UIADD3 chain do"*. The code added
+to the whole `uint64_t`, so ptxas emitted `UIADD3.64` into a new uniform register PAIR per
+descriptor. Implemented the low-word form (`desc_add_lo`) and measured it.
+
+#### CORRECTNESS FIRST — all 15 pins, `maxRelErr 0.00000`, PASS
+
+The numerical-identity argument (18-bit address field in the low word, 32 B-aligned offsets,
+~127 KB of a 256 KB field, so no carry) holds in practice, not just on paper.
+
+#### AND IT IS A NET LOSS
+
+    dispatched 256x128 ..._dh_dw_uad_ubd_cs, 2048x2048x16384 tn
+      UIADD3.64      2,752,512 ->         0    ELIMINATED  <- target hit
+      UIADD3.X         591,488 ->    67,200    -524,288
+      USHF.R.U32.HI    524,288 ->         0    -524,288
+      USHF.R.S32.HI    529,920 ->     5,632    -524,288
+
+      UIADD3                 0 -> 4,112,384    +4,112,384
+      UMOV           1,274,240 -> 4,026,752    +2,752,512   <- EXACTLY the removed count
+
+      non-tensor    23,270,454 -> 24,975,129   +7.3%
+      vs cuBLAS          1.67x ->      1.79x
+
+`UMOV` rising by precisely the number of `UIADD3.64` removed is the whole story:
+`(d & 0xFFFFFFFF00000000ull) | ((uint32_t)d + off)` forces the compiler to RECONSTRUCT the pair —
+copy the high word, add the low. One instruction became two.
+
+#### THE REAL MECHANISM, NOW CLEAR
+
+`HGMMA gdesc[URn]` reads a 64-bit uniform register PAIR. **Every distinct descriptor therefore
+needs its own pair, with the high word duplicated into it.** We precompute EIGHT descriptors per
+issue group, so we pay eight high-word copies no matter how the add is spelled. cuBLAS keeps ONE
+pair and advances it in place, interleaved with the issues:
+
+    HGMMA  gdesc[UR16]
+    UIADD3 UR16, UR16, 0x80, URZ
+    HGMMA  gdesc[UR16]
+
+**The lever is in-place accumulation inside the issue loop, not the width of the add.** That is a
+change to how `issue_atoms` sequences its wgmma, and it conflicts with the current design, which
+computes all offsets up front so `acc[a][nc]` stays compile-time indexed.
+
+Reverted in `bcb83ba`. `desc_add_lo` is removed; the tree is back to `b7c8e07` behaviour.
+
+#### METHOD NOTE
+
+Throughput was never consulted for this decision. The change was bit-exact and would likely have
+measured neutral-to-noise; the census is what showed it costs 1.7M instructions. Third time today
+that the census overturned what a benchmark would have waved through (§H38, §H39, §H40).
+
+---
+
+### §H41 — **THE CEILING OF THE APPLES-TO-APPLES APPROACH IS ~102.8%, AND IT IS A HARDWARE LIMIT, NOT A SEARCH PROBLEM. The tensor pipe is already 92.7% full on average; 130% would require it to run at 244% of peak. Beating cuBLAS by 30-40% needs CHEAPER MATH (fp8 / sparsity), not a better variant.**
+
+New box `clear-rain-echoes-fin-03`, H200, CUDA 13.0 only. Repo at `bcb83ba`.
+
+Tensor pipe as % of PEAK sustained, measured §H31 across all 15 pins, ours / cuBLAS:
+
+    V8   70.5 / 75.1      V7c  86.1 / 87.8     V8b  90.5 / 92.3    V7   90.7 / 92.3
+    V1   91.1 / 90.7      V3   91.5 / 92.0     V6   91.8 / 92.8    V4   92.1 / 91.9
+    V7b  96.4 / 97.0      V2   97.4 / 97.7     V8c  98.1 / 98.4    V2b  98.2 / 98.5
+    V2c  98.5 / 98.9      V5   98.6 / 98.6     V8d  99.6 / 99.6
+    MEAN ours 92.7%   cuBLAS 93.6%
+
+**If every shape hit 100% of peak: GEMM 1.078x faster = +7.8%, and since GEMM is 37.24% of the
+trainer, +2.78% end to end — about 102.8% of cuBLAS. That is the ceiling of tile/raster/feature
+search, reached only in the impossible limit of a perfectly full pipe.**
+
+What each target would demand of the pipe:
+
+    trainer 105%  ->  tensor at 106% of peak
+    trainer 110%  ->  tensor at 123% of peak
+    trainer 130%  ->  tensor at 244% of peak
+    trainer 140%  ->  tensor at 398% of peak
+
+The pipe cannot exceed 100%. **Anything past ~103% is arithmetically impossible by scheduling,
+tiling, or instruction removal.** There is only 7.3% of idle tensor pipe in the entire kernel set;
+30% would need 144%.
+
+**THE ONLY ROUTES PAST IT are to do less math or cheaper math per FLOP:**
+  * **fp8** — Hopper tensor cores run ~1979 TFLOPS fp8 against ~990 bf16, a clean 2x. This is
+    where DeepGEMM's advantage actually comes from; it is a PRECISION change, not a tiling one.
+  * **structured sparsity** — another 2x on the same principle.
+  * **fusion** — fewer GEMMs issued at all.
+None of these is an apples-to-apples comparison, which is exactly why they can exceed the ceiling.
+
+**Also settled here:** cleaning up our instruction excess does NOT unlock tensor headroom — the
+two are independent. We execute 81% more instructions than cuBLAS **in the same wall time at
+parity tensor utilisation**, so the overhead is not starving the pipe. And decisively, on V8
+cuBLAS — which carries almost none of our redundant work — is also stuck at 75.1%. The idle pipe
+there is a property of the shape, not of our integer math.
+
+    instruction hunt  -> power/clock path   ceiling ~ +0.95%
+    tensor headroom   -> time path          ceiling ~ +2.78%
+    independent and additive
+
+---
+
+### §H42 — **251-CONFIG SWEEP ON V8 (`16384x2048x512 nt`), THE SHAPE WITH THE MOST IDLE TENSOR PIPE. No variant claims the 29 idle points. The best is `_dh` at +1.72% over the dispatched config, and that is inside the cuBLAS reference's own run-to-run spread.**
+
+V8 was chosen because it has by far the largest headroom (70.5% ours / 75.1% cuBLAS) and because
+BOTH libraries are poor there, so the idle is genuinely unclaimed.
+
+#### WHY V8 IS LOW — wave quantisation is NOT the answer
+
+    tile      tiles   waves   wave-waste   k-iters (BK=64)
+    128x256    1024    7.76      3.0%           8
+    256x128    1024    7.76      3.0%           8
+    192x192     946    7.17     10.4%           8
+    128x128    2048   15.52      3.0%           8
+
+Wave waste at the dispatched 128x256 is only **3.0%**, nowhere near 29 points. The structural
+suspect is **8 k-iterations**: with K=512 and BK=64, a warp-specialised pipeline of depth 3-6
+spends its fill AND drain inside those 8 steps, leaving almost no steady-state wgmma window.
+That is consistent with cuBLAS being stuck at 75.1% on the same shape.
+
+#### THE SWEEP — 251 configs, 0 FAIL, all bit-exact
+
+    128x256x64_2x1_h_ep64swz128_rot2_pdl_dh                562.40 TF   <- best
+    128x256x64_2x1_h_ep64swz128_rot2_pdl_dh_shfl           559.25
+    128x256x64_2x1_h_ep64swz128_pdl                        556.53
+    128x256x64_2x1_h_ep64swz128_rot2_pdl_dh_dw_uad_ubd_cs  553.65
+    128x256x64_2x1_h_ep64swz128_rot2_pdl                   552.89   <- DISPATCHED
+    128x176x64_2x1_h                                       540.19   <- a tile in NO pin
+    128x176x64_1x2_h                                       534.14
+
+**`_dh` is +9.51 TF (+1.72%) over the dispatched config** — same tile, raster and cluster, only
+`DESC_HOIST` differs.
+
+**NOT YET A RESULT.** One 400 ms run per config, and the cuBLAS reference wobbled **571-594 TF**
+across the sweep — a 4% spread, wider than the effect. The `%cuB` column of this sweep is
+therefore meaningless and must not be quoted; only raw TFLOPS compare. Confirming needs the top
+three repeated against the dispatched config several times.
+
+**AND IT DOES NOT ANSWER THE HEADROOM QUESTION.** The whole top of the table sits in a ~10 TF
+band and nothing approaches the ~29 points of idle pipe. Next measurement should be **tensor %**
+on the top configs, not TFLOPS — TFLOPS cannot say whether a variant actually claimed headroom.
+
+---
+
+### §H43 — **CORRECTION TO THE DIVERGENT-CONTROL-FLOW GROUP (§H36/§H37 item 2): predicate REGISTER NAMES are not comparable across compilers. `@!P1` and `@P0` must come out of the ledger, and `@!P1` belongs to the mbarrier spin (item 3), not to divergence. Real item 2 is ~2.7M, not 4.3M.**
+
+ptxas assigns predicate registers arbitrarily, so "`@!P1` 1,184,068 vs cuBLAS ZERO" says nothing —
+cuBLAS simply names the same predicate differently (it has no `@!P1` but does have `@!P0` doing an
+equivalent job). Three of the seven rows in the item-2 group were this artifact.
+
+    REMOVE from the divergence group:  @!P1 1,184,068   @P0 399,872   (naming artifacts)
+    @!P1 is the mbarrier try-wait spin back-edge -> it belongs to item 3, which is CLOSED
+    SOUND cross-kernel comparisons are OPCODES only:
+        BSSY   51 static vs cuBLAS 0
+        BSYNC  51 static vs cuBLAS 0
+        SEL     9 static vs cuBLAS 0
+    revised item 2 size: ~2.7M dynamic, not 4.3M
+
+#### UNVERIFIED LEADS FROM THE SAME INVESTIGATION — recorded, NOT believed
+
+A fan-out investigation was run and **13 of its 16 agents died on a session limit**, so nothing in
+it was adversarially verified and the surviving-findings list is empty. It also worked from
+SUBSTITUTE SASS dumps of the BARE config, because the paths it was given did not exist on this
+box. Its claims are recorded here as leads to check, explicitly not as findings:
+
+  * that there are **no "spurious" BSSY at all** — that all 51 resolve to ~13 lane-election
+    points each diverging at exactly 1/4, and the uniform code inside is merely scheduled into an
+    already-open region. **This directly contradicts the earlier read that half were spurious**,
+    and it is the single most important thing to settle before touching item 2.
+  * that the split is 0 spurious / 13 real / 38 never-executed.
+  * that converting these sites to uniform predication would be **WORSE by ~211.8M instructions**.
+  * that cuBLAS's zero BSSY comes from the warp-uniform branch form `BRA P, target`, not from
+    predication as assumed.
+  * that `release_empty`'s lane guard is 65.8% of all BSSY, and predicating it would cost ~+47M.
+  * that CUTLASS is **not** at `external/cutlass` — the Makefile's `-Iexternal/cutlass/include`
+    is a dangling include path.
+
+Every one of these needs re-deriving from the DISPATCHED config's own SASS before use.
+
+---
+
+### §H44 — **128x176 CONFIGS ADDED.** `static_assert(BN % EPI_TILE_N == 0)` constrains the epilogue tile: 176 = 16x11, so only 8/11/16/22/44/88 divide it.
+
+Three configs registered — `128x176x64_2x1_h_pdl`, `_pdl_dh`, `_ep16swz32_pdl_dh` (commit
+`0ee3417`). The epilogue-tile divisor rule is the reason the usual `ep32`/`ep64` knobs cannot be
+carried over to this tile: they do not divide 176.
+
+**Result: 128x176 is the BUSIEST tile on the tensor pipe and among the SLOWEST.** That is the
+concrete refutation of "pick the shape with the most idle tensor pipe" as a selection rule
+(§H41/§H42 reached the same conclusion from the other direction).
+
+---
+
+### §H45 — **THE FULL CARTESIAN SWEEP WAS ABANDONED, TWICE, ON COST.** Sized at 8,820 runs (~10 h), then re-sized two-stage and still on pace for ~18 h at ~22 s/config.
+
+The 22 s/config figure was real **for that binary**: CUDA was loading 1,327 kernels per process.
+§H48 later measured **2.7 s/config** on the same box with `--cfg=` selecting one kernel, because
+CUDA module loading is lazy and only the selected kernel is materialised.
+
+**Process lesson: measure the per-config cost before sizing a sweep, not after.** An 8x error in
+that constant is the difference between a 45-minute screen and an abandoned 18-hour one.
+
+---
+
+### §H46 — **ORIENTATION TWINS REGISTERED** (commit `bdaf731`).
+
+Configs added so that each production pin has its mirror-orientation counterpart available for
+a like-for-like test: `128x256x64_1x2_v_ep64swz128_rot2_pdl_dh_shfl`,
+`192x192x64_1x2_v_rs8_dh_ubd_dw_skew_lsw_pdl`, `256x128x64_1x2_v_ep32s2_pdl_dh_dw_uad_ubd_cs`.
+
+These exist to test §H28e ("we lose where our cluster orientation is flipped") without
+substituting a different tile — see the apples-to-apples rule.
+
+---
+
+### §H47 — **ABBA + NULL ARM: ONE OF THE TWO CANDIDATE WINS IS REAL, THE OTHER WAS PURE ORDER.** The null floor is +0.14%; V2c is +1.03% at t=2.83; the wQ/wO candidate collapses from +0.83% to +0.02%.
+
+`clear-rain-echoes-fin-03`, HEAD `bdaf731`. ABBA design: arm A in slots 1 and 4, arm B in slots
+2 and 3 of every round, 6 rounds = 12 runs per arm. One config per process,
+`BLUBLAS_BENCH_TARGET_MS=400`, every run gated on `PASS` and `maxRelErr 0.00000`.
+
+    pair                                   paired delta      t      verdict
+    NULL (same config both arms)              +0.14%       0.50    the floor
+    V2c  incumbent vs knobbed twin            +1.03%       2.83    REAL (7x floor)
+    wQ/wO  2x1_h vs 1x2_v                     +0.02%       0.15    INSIDE FLOOR - killed
+
+**V2c is `lm_head-wgrad` = `2048x50304x16384 tn`**, not `gate_up-fwd`. The dispatched config is
+`256x128x64_1x2_v_ep32s2`.
+
+Two corrections this run produced. A previously reported **+1.25%** from a 3-rep unalternated
+test became **+1.03%** once alternated — it survived. Its companion **+0.83%** became **+0.02%**
+— it did not. **A 3-rep unalternated comparison cannot distinguish a 1% effect from run order.**
+
+---
+
+### §H48 — **THE 192x192 VARIANT SEARCH IS CLOSED: BOTH PINNED CONFIGS RANK #1 OF 112 UNDER THE BETTER-CONTROLLED PROTOCOL. There is no better variant among the 123. And measurement ORDER is worth +7.6 points, which reorders half the top ten.**
+
+`clear-rain-echoes-fin-03`, GPU 0, HEAD `bdaf731`. **470 measurements**: 123 configs x 2 shapes
+x 2 measurement protocols, plus 44 incumbent drift anchors. One config per process
+(§test2 measurement traps: many-configs-in-one-process deflates some configs 6-8%, which would
+corrupt the only thing a screen produces). `BLUBLAS_BENCH_TARGET_MS=400` throughout.
+
+The two shapes are the 73.3% of the GEMM deficit identified in §H28d:
+
+    role            shape                  layout   dispatched config (verified against the TABLE)
+    gate_up-fwd     16384x11264x2048       nn       NN_192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl
+    gate_up-wgrad   2048x11264x16384       tn       TN_192x192x64_1x2_v_rs1_dh_ubd_dw_skew_lsw_pdl_wlsm
+
+`profiling_reports/blutrain_1p7b_dispatch_expected.tsv` is **STALE** — it names `256x128` for
+gate_up-fwd where the live table names `192x192`. The live table was used.
+
+#### THE ANCHORS ARE THE POINT
+
+The incumbent was re-measured every 12th config, 11 times per shape per protocol, so the noise
+floor is measured on the day rather than assumed:
+
+    protocol    shape           anchors  mean %cuB   min     max     sd     peak-to-peak
+    default     gate_up-fwd       11       96.22    95.26   97.41   0.55       2.15 pts
+    default     gate_up-wgrad     11       96.17    94.65   97.23   0.70       2.58 pts
+    preheat     gate_up-fwd       11      104.97   102.82  106.04   1.06       3.22 pts
+    preheat     gate_up-wgrad     11      104.85   102.36  106.51   1.14       4.14 pts
+
+**No config in either shape's top 25 clears its own band.** The best apparent gain in the
+default arm was +1.17 against a 2.15-point band. Without the anchors, `..._skew_lsw_pdl_a1b0`
+would have been reported as a +1.17% winner.
+
+#### THE ORDER ARTEFACT, AND WHY THE FIRST CANDIDATE LIST WAS WRONG
+
+`BLUBLAS_PREHEAT_MS=500` (§H27zzu) preheats cuBLAS so both arms measure at steady-state clock.
+Default order times cuBLAS COLD and us WARM, because the harness times cuBLAS first.
+
+    quantity (71 configs in both arms, gate_up-fwd)   default     preheat    change
+    ours                                             593.31 TF   605.91 TF   +2.12%
+    cuBLAS                                           666.66 TF   626.67 TF   -6.00%
+    %cuB                                              89.00%      96.69%     +7.69 pts
+
+    level shift, all configs   gate_up-fwd +7.59 pts     gate_up-wgrad +7.68 pts
+
+Two independent shapes agreeing to 0.09 points makes this a systematic property of the protocol.
+**Almost the entire swing is cuBLAS getting slower, not us getting faster.**
+
+Spearman rank correlation between arms is **0.966** — but that is driven by the wide gap between
+good and terrible configs. **Top-10 overlap is 5 of 10.** `..._rs8_dh_ubd_skew_lsw_pdl_a1b0` is
+rank 1 in the default arm and **rank 23** in the preheated one. The incumbent is rank 7 default,
+**rank 1 preheat**.
+
+**Neither arm's absolute number is production truth** — 106% cannot be reconciled with §H28d's
+in-trainer +6.12% *slower*. What both arms agree on is the incumbent's standing.
+
+#### RESULT
+
+    shape            rank-1 config in the preheated arm                          %cuB    rank in default
+    gate_up-fwd      192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl   (PINNED)     106.78         7
+    gate_up-wgrad    192x192x64_1x2_v_rs1_dh_ubd_dw_skew_lsw_pdl_wlsm (PINNED)  106.37         6
+
+#### CLUSTER ORIENTATION REPLICATES A THIRD TIME
+
+    gate_up-fwd (nn)      n    mean %cuB      gate_up-wgrad (tn)    n    mean %cuB
+    2x1_h                54      89.86        1x2_v                26      91.67
+    1x2_v                26      85.35        1x2_h                 3      87.57
+    2x1_v                19      81.13        2x1_h                54      82.39
+    every exotic geometry (4x1, 2x4, 4x2, 2x2, 1x4), n=1 each:  78-87
+
+Each shape prefers its own orientation by **8.7 and 9.3 mean points**, and the mirror is
+catastrophic. **Both incumbents already have the right orientation** — so §H28e's "flip the
+192x192 cluster axis" is already satisfied at these two call sites and is not available as a win.
+
+#### THE KNOBS ARE WORTH FAR MORE THAN ANY TOP-OF-RANKING DIFFERENCE
+
+    knob   n with   mean with   mean without   delta
+    ubd      67       89.63        82.18       +7.45
+    rs8      57       89.97        83.18       +6.80
+    skew     53       89.89        83.71       +6.19
+    wlsm      4       90.47        86.49       +3.98
+    rs4       6       90.04        86.44       +3.60
+
+The pinned configs already carry the full stack, which is why everything near the top is within
+noise of everything else near the top.
+
+#### `MBAR_SLEEP_TICKS` DEADLOCKS AT LARGE VALUES — 22 CONFIGS HANG
+
+Every `slp*` variant and every `tk50k` / `tk12k` hangs: 100% GPU utilisation at 130 W, which is a
+spin, not work. `tk32` and `tk128` complete normally, so **the cliff is between 128 and 12,000
+ticks.** Reaped by a wall-clock timeout; recorded as `CRASH` rows by the binary's own
+`--inflight` journal and skipped. This is a real defect in the sleep-ticks path, independent of
+anything the screen was looking for. It is consistent with §H38/§H39, which found the tick
+operand reaching SASS only after the nanosleep rework.
+
+#### REFERENCE SANITY — ONE CONTENDED ROW OUT OF 224
+
+cuBLAS is re-timed in every process, so its TFLOPS must be constant. On gate_up-fwd the median
+was 667.05 TF with an interquartile of 664.9-669.5, and exactly one row deviated >10%:
+`192x192x64_2x1_h_rs8_dh_ubd_skewq` measured ours 336.07 / cuBLAS 348.88 — **both arms halved**,
+i.e. contention. %cuB is a same-process ratio so it survives (96.33%), but the row is flagged.
+gate_up-wgrad had zero. **This check is now permanent in the report script.**
+
+#### CONCLUSION
+
+**Brute-force search across the 192x192 variant set is exhausted.** All 123 configs are one
+template (`Bgemm_sm90_warpspecialized_template.cuh`) with different template parameters — they
+are not separate implementations, so "optimising the other variants" means enabling the knobs
+they lack, which reproduces the pinned config. The remaining work must make the PINNED kernel
+better. `rs` (RASTER_SWIZZLE, the grouped-rasterisation lever from §H27y.20) is already tuned
+and pinned on both shapes, so that avenue is spent too.
+
+---
+
+### §H49 — **DISCARDED: A COUNTER CAPTURE RUN WITHOUT AUTHORISATION ON A SHARED BOX.** Retained as `test_reports/h49_PROVISIONAL_DISCARDED/`, used for nothing.
+
+The evidence suggests it was NOT contaminated — both arms' bench TFLOPS agreed within 0.5% and
+sat above the screen median, which is the opposite of what contention does. **That is evidence,
+not proof.** Superseded entirely by §H50, which re-measures the same counters with a hard
+GPU-free guard in front of every capture. No conclusion in this document rests on §H49.
+
+**Process rule added:** the Verda boxes are shared. Ask before EVERY GPU run, announce when the
+card is released, and never chain a second measurement off the first without a fresh go-ahead.
+`nvidia-smi` reading 0 MiB does not mean the card is free — a colleague's job may be between
+phases.
+
+---
+
+### §H50 — **AT LOCKED CLOCK WE ARE AT CYCLE PARITY ON BOTH 192x192 CALL SITES (1.010x and 0.996x) AND WE MOVE 15-25% LESS DRAM. The whole gap is 62M excess instructions, and it is `uniform` + `alu`, not the descriptor and not `fma`.**
+
+`clear-rain-echoes-fin-03`, GPU 0, ncu 2025.4.1 from the CUDA 13.1 toolkit,
+`--clock-control base` (ncu locks the clocks itself, so this isolates WORK from the clock/power
+effect). **Kernels selected BY NAME** — `-k regex:bgemm_sm90_kernel` and `-k regex:nvjet` —
+which is the fix for §H28 item 6, where `--launch-skip 3 --launch-count 1` landed on the bench's
+cuBLAS reference and all four reports profiled cuBLAS. Every metric name validated against
+`--query-metrics` first, because a misspelled metric returns EMPTY rather than erroring.
+
+Guard: 8 captures, each preceded and followed by a check for foreign compute processes.
+**0 contamination flags**, and the bench's own TFLOPS stayed inside 741-780 across all 8.
+
+    kernels compared, verified by name
+      ours   gate_up-fwd    bgemm_sm90_kernel<Sm90WarpspecConfig<192,192,64,2,1,...>, 0>
+      cuBLAS gate_up-fwd    nvjet_sm90_tst_192x192_64x3_1x2_h_bz_coopB_NNN
+      ours   gate_up-wgrad  bgemm_sm90_kernel<Sm90WarpspecConfig<192,192,64,1,2,...>, 1>
+      cuBLAS gate_up-wgrad  nvjet_sm90_tst_192x192_64x3_2x1_v_bz_coopB_NTN
+
+#### THE CONTROL IS EXACT
+
+**Tensor-pipe instructions are identical to the instruction**: 15,587,328 vs 15,587,328 on
+gate_up-fwd, 16,220,160 vs 16,220,160 on gate_up-wgrad. Identical tensor work. Everything below
+is pure overhead.
+
+    metric                          ours          cuBLAS      ratio
+    gate_up-fwd  cycles          1,601,756       1,585,322    1.010x
+    gate_up-wgrad cycles         1,537,965       1,544,601    0.996x   <- we are FASTER
+    gate_up-fwd  DRAM read       459.0 MB         543.5 MB    0.845x
+    gate_up-wgrad DRAM read      705.6 MB         945.3 MB    0.746x
+    gate_up-fwd  L2 tex requests 61,064,336     50,994,471    1.197x
+    gate_up-wgrad L2 tex req     77,868,201     53,632,299    1.452x
+    gate_up-fwd  L2 read MISSES  23,420,188     22,667,248    1.033x
+    gate_up-wgrad L2 read MISSES 33,067,104     38,490,480    0.859x
+    tensor pipe active %             92 / 99        92 / 99    1.00x
+    warps active %                   19 / 19        15 / 15    1.26x
+
+**The in-trainer +9.14% / +11.74% (§H28d) is entirely a clock/power effect.** At equal clock the
+kernels take the same number of cycles, and our memory-hierarchy behaviour is BETTER, not worse.
+
+#### WHERE THE 62M EXCESS INSTRUCTIONS ARE
+
+Total: **1.568x** (gate_up-fwd, +62,164,622) and **1.594x** (gate_up-wgrad, +61,688,978).
+
+    gate_up-fwd (nn)                                          gate_up-wgrad (tn)
+    pipe        ours       cuBLAS   ratio   share             ours       cuBLAS   ratio   share
+    uniform  76,688,968  53,386,524  1.44x  37.5%          80,734,236  53,837,850  1.50x  43.6%
+    alu      24,351,168  11,968,049  2.03x  19.9%          20,780,392   8,376,107  2.48x  20.1%
+    cbu       4,597,736   1,329,370  3.46x   5.3%           4,767,076   1,366,683  3.49x   5.5%
+    fma      11,286,352     369,684 30.53x  17.6%           3,000,096      51,260 58.53x   4.8%
+    adu       5,753,556   4,657,374  1.24x   1.8%           5,804,596   4,484,151  1.29x   2.1%
+    lsu       3,047,700   2,733,603  1.11x   0.5%             203,940   1,684,584  0.12x  -2.4%
+    tensor   15,587,328  15,587,328  1.00x   0.0%          16,220,160  16,220,160  1.00x   0.0%
+    unattrib                                17.5%                                        26.3%
+
+    VECTOR (total - uniform)   1.694x  and  1.696x   <- two shapes, three decimal places
+    UNIFORM                    1.436x  and  1.500x
+
+#### THREE PRIOR BELIEFS CORRECTED
+
+1. **"Uniform is at parity; the excess is all VECTOR at 2.35-3.67x."** Not on these kernels.
+   Uniform is **1.44-1.50x** and is the LARGEST single contributor at 37-44% of the excess.
+   Vector is **1.69x**, not 2.35-3.67x.
+2. **"L2 read requests are 1.64-1.71x" (§H27bi).** That was V1. On 192x192 it is **1.197x**
+   (fwd) and **1.452x** (wgrad), with L2 MISSES at 1.033x and **0.859x**. The tensor-map
+   box-geometry lead is much weaker here than V1 implied, and DRAM traffic favours us.
+   **This was measured before spending a session on the descriptor.**
+3. **`pipe_fma` is not the driver.** 30.5x and 58.5x ratios, but 17.6% of the excess on one shape
+   and 4.8% on the other. That inconsistency matches §H27ao, which found `pipe_fma` worst on V8d
+   — the one shape with NO deficit.
+
+#### THE CONSISTENT TARGET
+
+**`uniform` + `alu` = 57.4% (fwd) and 63.7% (wgrad) of the excess.** Those two are the only
+contributors that are both large and consistent across shape and layout. `cbu` is remarkably
+stable at 3.46x/3.49x but small.
+
+#### AN OPEN CONTRADICTION, RECORDED NOT RESOLVED
+
+§H27al set the target as "get the instruction ratio below ~1.8x and the clock deficit
+disappears", fitted to a zero-crossing of 1.77x/1.80x. **These kernels are at 1.568x and 1.594x
+already and are still behind in the trainer.** Either that fitted threshold is wrong, or the
+relationship is not what it was fitted to. Do not plan against the 1.8x number until this is
+settled.
+
+#### NEXT MEASUREMENT
+
+The pipe census says WHICH DATAPATH, not WHICH CODE. A **PC-sample census** is needed to locate
+where the `uniform` and `alu` issue actually happens, because static counts mislead — 5% of the
+code has been 50% of the samples before, and LDG at 168 static instructions was 0.00% of samples.
+Run the census BEFORE proposing any fix.
+
+
+---
+
+### §H51 — **THE DYNAMIC PER-OPCODE CENSUS LOCALISES THE 70M EXCESS. `UMOV` is the single largest item on BOTH shapes (19.1% / 23.0%), and with `ULEA`+`USHF`+`UIADD3` it forms one block — uniform-datapath descriptor/address arithmetic — worth ~34M and ~42M. Five opcodes cuBLAS emits ZERO of account for a further ~16M.**
+
+`clear-rain-echoes-fin-03`, GPU 0, ncu 2025.4.1 / CUDA 13.1, `--clock-control base`,
+`--section SourceCounters --section InstructionStats`, kernels selected BY NAME, guard clean.
+
+**KERNELS MATCHED: 1, 1, 1, 1** — printed explicitly for every capture. A census that silently
+matches zero kernels has broken three times before; the count is now non-optional output.
+
+    capture         kernel matched
+    fwd   ours      bgemm_sm90_kernel<Sm90WarpspecConfig<192,192,64,2,1,...>>
+    fwd   cuBLAS    nvjet_sm90_tst_192x192_64x3_1x2_h_bz_coopB_NNN
+    wgrad ours      bgemm_sm90_kernel<Sm90WarpspecConfig<192,192,64,1,2,...>>
+    wgrad cuBLAS    nvjet_sm90_tst_192x192_64x3_2x1_v_bz_coopB_NTN
+
+    totals (dynamic, SASS census)   ours          cuBLAS        ratio
+    gate_up-fwd                  181,409,154    110,884,590    1.636x
+    gate_up-wgrad                178,650,561    104,751,246    1.705x
+
+#### THE CENSUS
+
+    opcode      fwd ours     fwd cuBLAS    fwd excess  share | wgrad excess  share
+    UMOV      17,036,684      3,556,492   +13,480,192  19.1% |  +16,976,234  23.0%
+    BRA       13,318,716      4,398,770    +8,919,946  12.6% |  +11,428,184  15.5%
+    ULEA       7,517,176              0    +7,517,176  10.7% |   +7,399,656  10.0%
+    UIADD3    54,365,516     47,354,546    +7,010,970   9.9% |  +10,471,846  14.2%
+    USHF       5,812,048        181,946    +5,630,102   8.0% |   +7,460,596  10.1%
+    UIMAD      7,125,412      1,160,114    +5,965,298   8.5% |   +2,619,672   3.5%
+    SYNCS      7,226,405      3,701,808    +3,524,597   5.0% |   +5,382,974   7.3%
+    R2UR       3,369,136        170,837    +3,198,299   4.5% |   +2,230,712   3.0%
+    S2UR       2,428,672         43,760    +2,384,912   3.4% |   +2,527,492   3.4%
+    PLOP3      4,182,706      1,298,944    +2,883,762   4.1% |   +4,125,491   5.6%
+    BSYNC      2,491,408              0    +2,491,408   3.5% |   +2,655,708   3.6%
+    BSSY       1,993,760              0    +1,993,760   2.8% |   +2,090,352   2.8%
+    SEL        1,950,000              0    +1,950,000   2.8% |   +2,029,632   2.7%
+    ELECT      1,136,576              0    +1,136,576   1.6% |   +1,520,640   2.1%
+    SHF        1,972,176        245,664    +1,726,512   2.4% |   +2,010,536   2.7%
+    ISETP      4,277,472      3,095,742    +1,181,730   1.7% |   +1,343,496   1.8%
+    UTMALDG    1,136,576        811,840      +324,736   0.5% |     +337,920   0.5%
+    FMUL       5,845,248              0    +5,845,248   8.3% |     +760,320   1.0%  <- INCONSISTENT
+
+#### GROUP 1 — UNIFORM DESCRIPTOR / ADDRESS ARITHMETIC. ~34M (fwd), ~42M (wgrad). THE TARGET.
+
+`UMOV` + `ULEA` + `USHF` + `UIADD3` + `UIMAD`. This is one block and it is the largest thing in
+the census. cuBLAS emits **zero `ULEA`** and effectively zero `USHF`, and 4.8-6.3x fewer `UMOV`.
+
+This is the worklist item already on record: **cuBLAS keeps the packed GMMA descriptor in a
+uniform register and adds an immediate; we re-encode it from a per-thread base on every wgmma.**
+
+**It also explains why §H40 failed.** Narrowing the descriptor add to a 32-bit low-word add
+removed all 2,752,512 `UIADD3.64` and ptxas paid for it with **exactly 2,752,512 new `UMOV`** —
+a 1:1 trade, net +7.3% instructions, reverted. The census shows that trade was structural: the
+value has to be materialised somewhere every iteration because it is being REBUILT. §H40's own
+conclusion stands and is now supported by a dynamic count: **the lever is IN-PLACE ACCUMULATION
+of the descriptor across the k-loop, not the width of the add.**
+
+#### GROUP 2 — OPCODES cuBLAS EMITS ZERO OF. +16.1M (fwd), +15.6M (wgrad).
+
+    ULEA    7.52M / 7.40M     uniform effective-address computation
+    BSYNC   2.49M / 2.66M     divergent-branch region close
+    BSSY    1.99M / 2.09M     divergent-branch region open
+    SEL     1.95M / 2.03M
+    ELECT   1.14M / 1.52M     per-TMA lane election
+
+`BSSY`/`BSYNC` and `ELECT` match §H27bh's SASS read — we ELECT per TMA where cuBLAS uses uniform
+predication. These are structural differences in packaging, not a different algorithm: §H27bh
+already established the load paths are equivalent (same 2 multicast + 2 plain per stage, same
+descriptor, same order, same counts).
+
+**CAUTION on the BSSY group.** The claim that converting these sites to uniform predication
+would be WORSE by ~211.8M instructions comes from the fan-out investigation whose 13-of-16
+agents died, working from SUBSTITUTE SASS of the BARE config. **It is unverified and must be
+re-derived from the DISPATCHED config's own SASS before anyone acts on it.**
+
+#### GROUP 3 — VECTOR/UNIFORM CROSSINGS. ~5.6M / ~4.8M.
+
+`R2UR` + `S2UR`, against cuBLAS's ~0.2M / ~0.03M. Every crossing is a value computed in the
+wrong datapath and then moved.
+
+#### `FMUL` IS A RED HERRING — CONFIRMED FOR THE THIRD TIME
+
+8.3% of the excess on gate_up-fwd, **1.0%** on gate_up-wgrad, cuBLAS zero on both. The same
+inconsistency the pipe census showed for `pipe_fma` (17.6% vs 4.8%) and the same pattern §H27ao
+found when `pipe_fma` was worst on V8d, the one shape with NO deficit. **Do not chase it.**
+
+#### WHY THIS MATTERS AT ALL, GIVEN CYCLE PARITY
+
+§H50 measured cycle parity at locked clock (1.010x / 0.996x) with identical tensor-pipe counts.
+So this excess does not cost CYCLES — it costs POWER, and power costs clock under the 700 W cap,
+which is the mechanism already measured end to end. Removing instructions is worth doing here
+**only in so far as it reduces power**; that link must be re-measured after any change rather
+than assumed, and §H27b4 already showed one 76% k-loop vector-op cut recovering only 2.1% of the
+power gap.
+
+
+---
+
+### §H52 — **SOURCE-LEVEL ATTRIBUTION. Two lines carry 30% of the kernel: the A and B descriptor adds (5533 / 5589). A third line — the stage modulo at 4741 — costs 7.8M / 10.8M and is fixed by a knob that already exists and had never been built for 192x192.**
+
+Rebuilt the two SM90 variant objects with `-lineinfo` (`make lib LINEINFO=1` after removing the
+objects by hand — **make does not track header deps**), then re-ran the §H51 census.
+
+**CODEGEN VERIFIED UNCHANGED, on the pinned kernel itself.** `cuobjdump -sass -fun <mangled>` on
+the lineinfo lib and on the backed-up non-lineinfo lib: **2,768 opcodes each, identical streams**.
+The Makefile's claim that `-lineinfo` does not perturb codegen is therefore not taken on faith.
+(A first attempt at this check compared two EMPTY files and "passed" — the kernels live in
+`libmyblas.so`, not in the test binary. A vacuous pass is worse than a failure.)
+
+    kernels matched per capture: 1, 1, 1, 1 — printed, non-optional
+
+#### THE ATTRIBUTION (dynamic, ncu SourceCounters, `--print-source cuda,sass`)
+
+    line   source                                                fwd share   wgrad share   dominant opcodes
+    5533   (a_desc_stage + (uint64_t)(a_walk_off >> 4))            17.1%        17.7%      UIADD3 27.0M / 28.3M + HGMMA
+    5589   (b_desc_stage + (uint64_t)(b_walk_off >> 4))            12.9%        13.5%      UIADD3 16.1M, UMOV 9.1M / 9.5M
+    5789   mbarrier_wait_impl(full_mbar_addr + stage*8, phase)      5.9%         7.6%      BRA, SYNCS
+    5431   (a_desc_tile + (uint64_t)((st * copy_size) >> 4))        4.7%         4.8%      USHF 5.1M / 5.4M, UIMAD 2.6M
+    4741   else { return (s + 1) % DEPTH; }                         3.6%         4.8%      7.8M / 10.8M total
+    3563   mbarrier try_wait asm                                    4.7%         6.0%      BRA, SYNCS, BSSY
+
+**The `UMOV` mystery is closed.** It was the #1 opcode in §H51 (17-20M, 4.8-6.3x cuBLAS) and
+**9.1-9.5M of it is one line — 5589, the B-descriptor add.** Not the epilogue, not spills.
+
+**The `USHF` excess is one line.** 5.1M of the 5.6M excess is line 5431 alone; cuBLAS emits ~0.
+
+**The two descriptor adds are ~54M and ~55M of address arithmetic** once the HGMMA sharing those
+lines is subtracted — by far the largest block, structurally identical across both shapes.
+
+#### THE STAGE MODULO — AND TWO CORRECTIONS TO THIS DOCUMENT'S OWN CLAIMS
+
+§H27ai states the `% LOAD_PIPE_DEPTH` is "the ENTIRE source of our ULEA count". **That was V1 at
+depth 6 and it does not hold on 192x192**, where ULEA is dominated by the descriptor arithmetic
+above. First correction.
+
+A follow-up grep for the `/3` magic constants (`0x2aaaaaab` etc.) found 24 sites / 1.96M on
+gate_up-fwd and **exactly 0 on gate_up-wgrad**, which looked like it made the knob worthless on
+wgrad. **That was also wrong** — the grep only matched the `/3` form. Source attribution shows
+line 4741 costing **7.8M (fwd) and 10.8M (wgrad)**. Second correction.
+
+**Why it costs anything at depth 4 at all:** `advance_stage(int s)` takes a **SIGNED** int, and a
+signed `% 4` does not reduce to a single AND — it needs the sign-correction sequence, which is
+exactly the `USHF` / `ULOP3` / `UIADD3` / `ULEA` group the census attributes to that line. The
+depths are confirmed by two independent routes: `DERIVED_PIPE_DEPTH = (231,424 - STORE_BUF) /
+49,152` gives 3 for the fwd pin (STORE_BUF = BM*BN*2 = 73,728) and 4 for the wgrad pin
+(`wlsm` -> warp-local -> STORE_BUF = 2*4*1024*2 = 16,384), and the `/3` magic constants appear on
+fwd and not on wgrad.
+
+    LESSON: a grep for one expected constant is not a census. The source attribution is
+    authoritative; the opcode histogram alone was not enough to localise anything.
+
+#### WHAT WAS BUILT (commit `c6839be`)
+
+`STAGE_CSEL` is an existing, validated knob — it emits cuBLAS's `++s; return (s == DEPTH) ? 0 : s`
+and ships on `256x128x64_1x2_v_ep32s2_pdl_dh_dw_uad_ubd_cs` (V2c's pin). **It had never been
+instantiated for 192x192**, the tile carrying 73.3% of the trainer GEMM deficit.
+
+    192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_cs          (gate_up-fwd pin + cs)
+    192x192x64_1x2_v_rs1_dh_ubd_dw_skew_lsw_pdl_wlsm_cs     (gate_up-wgrad pin + cs)
+
+Each differs from its pin in **exactly one behavioural slot**, verified slot-by-slot. 192x192
+configs in the main list: 123 -> 125. No kernel code changed.
+
+**NOT YET MEASURED.** Bit-exactness is a property of the construction (both forms agree for every
+`s` in `[0, DEPTH)`, the only range `stage` holds) but is gated on `maxRelErr 0.00000` regardless,
+and the gain is gated on ABBA + null against the incumbent — never on a ranking.
+
+#### THE REAL TARGET REMAINS THE DESCRIPTOR
+
+`cs` is worth ~8-11M of a ~70M excess. **Lines 5533 + 5589 + 5431 are ~65M** and are where
+"keep the packed descriptor in a uniform register and add an immediate" applies. That is design
+work, not a knob, and it is the next thing after `cs` is gated.
+
+Also unchanged from §H50: at locked clock these kernels are at **cycle parity** (1.010x / 0.996x)
+with identical tensor-pipe counts, so instructions cost POWER, not cycles. Any instruction cut
+must be re-measured for power rather than assumed to convert — §H27b4 cut 76% of the k-loop
+vector ops and recovered only 2.1% of the power gap.
+
+
+---
+
+### §H53 — **`cs` IS NULL ON BOTH PINS (−0.075 ± 0.231). AND THE 6-ROUND ABBA GATE PRODUCED A t = 4.63 FALSE POSITIVE — the same measurement at 12 rounds swings 1.245 points the other way. Every 6-round gate in this document is now suspect, including §H47's V2c.**
+
+#### THE GATE ON `cs` (§H52's two new configs)
+
+Bit-exact first: both new configs `PASS` with `maxRelErr 0.00000` on their own shapes, as the
+construction predicted. 125 configs in the binary, 2 with `_cs` (stale-binary check passed).
+
+    §H52 ABBA + null, 6 rounds, preheat ON, one config per process
+    shape           pair                          paired delta      t       reading
+    gate_up-fwd     NULL                             +0.059      +0.35     clean floor
+    gate_up-fwd     ..._pdl_cs                       -0.259      -0.59     no effect
+    gate_up-wgrad   NULL                             -0.658      -2.17     SHOULD BE ZERO
+    gate_up-wgrad   ..._wlsm_cs                      +0.982      +4.63     looked like a win
+
+The wgrad NULL arm is the incumbent measured against ITSELF and it did not read zero. That is
+either a slot effect (which must be SUBTRACTED, making cs ~+1.64) or noise (in which case the
++0.982 is partly the same artefact). Six rounds cannot separate them, so §H53 ran a crossover.
+
+#### THE CROSSOVER — 12 ROUNDS, THE PAIR RUN BOTH WAYS
+
+With S = slot effect (slots 2,3 minus slots 1,4 for an IDENTICAL config) and D = the true
+difference, running the pair in both arrangements gives obs1 = +D + S and obs2 = -D + S, so
+**D = (obs1 - obs2)/2** and **S = (obs1 + obs2)/2** — both recovered without assuming either.
+
+    pair   n   mean(inner-outer)     sd      se        t
+    arr1  12       -0.263          0.787   0.227    -1.16     inc in 1,4 ; cs  in 2,3
+    arr2  12       -0.112          1.391   0.401    -0.28     cs  in 1,4 ; inc in 2,3
+    null  12       +0.170          0.875   0.253    +0.67     inc in all four
+
+    D (cs minus incumbent) = -0.075 +/- 0.231   t = -0.33     NO EFFECT
+    S (slot effect)        = -0.188 +/- 0.231   t = -0.81     NO SLOT EFFECT
+    S from the NULL arm    = +0.170 +/- 0.253   t = +0.67     independent, agrees
+
+**`cs` is null on both pins.** Combined with gate_up-fwd's -0.259, `STAGE_CSEL` removes 7.8M /
+10.8M real instructions and buys nothing — exactly what §H50's cycle-parity result predicts:
+at locked clock these kernels take the same cycles as cuBLAS, so instructions cost POWER, not
+time. Consistent with §H27b4, where cutting 76% of the k-loop vector ops recovered 2.1% of the
+power gap. **The configs stay compiled and registered; they are NOT pinned.**
+
+#### THE INSTRUMENT FINDING, WHICH MATTERS MORE THAN THE RESULT
+
+    same shape, same arrangement, same script -- only the round count differs
+    §H52  cs on wgrad, 6 rounds    +0.982   t = +4.63
+    §H53  arr1, identical design, 12 rounds   -0.263   t = -1.16
+    swing between two runs of the SAME measurement: 1.245 points
+
+**A 6-round ABBA reported t = 4.63 on an effect that is zero.** Its null arm was wrong by the
+same magnitude in the opposite direction (-0.658, t = -2.17, now measured at +0.170).
+
+The cause is that the six rounds inside one run are CORRELATED — one process pool, one thermal
+state, one session — so the within-run standard error understates the true run-to-run variance.
+**The paired t from a single short ABBA is not a valid significance test.**
+
+    CONSEQUENCE: every 6-round gate in this document is suspect, including §H47's V2c
+    (+1.03%, t = 2.83), which was reported as REAL. At 6 rounds this instrument produced
+    t = 4.63 on a null, so t = 2.83 does not clear anything. V2c must be re-run as a
+    12-round crossover before its pin is believed.
+
+    NEW STANDARD: 12 rounds minimum, and the pair run BOTH WAYS so the slot term is solved
+    for rather than assumed. A null arm alone is necessary but demonstrably not sufficient.
+
+#### WHAT IS STILL THE TARGET
+
+`cs` addressed ~8-11M of a ~70M excess and converted at zero. Lines 5533 + 5589 + 5431 — the A
+and B descriptor adds and the tile-descriptor computation — are **~65M**, five times larger, and
+are where "keep the packed descriptor in a uniform register and add an immediate" applies. That
+is design work, not a knob. But §H53 also raises the prior against ANY instruction cut paying
+off: two independent cuts (§H27b4's 76% vector reduction, and this one) both converted at
+essentially zero, because the kernels are already at cycle parity.
+
+
+---
+
+### §H54 — **V2c's PIN IS GENUINELY WRONG: the knobbed config beats the DISPATCHED one by +1.384 ± 0.121 (t = +11.39) under the corrected instrument. §H47's +1.03% was directionally right and slightly understated. A null arm alone is unreliable even at 12 rounds — the crossover is the estimator.**
+
+12-round crossover on **V2c = `lm_head-wgrad` = `2048x50304x16384 tn`**. Measured against the
+DISPATCH TABLE (`TN_256x128x64_1x2_v_ep32s2`, line 630), not `pins.sh`. Preheat ON, one config
+per process, gated bit-exact, guard clean, 144 runs.
+
+    pair   n   mean(inner-outer)     sd      se        t     slots1,4 -> slots2,3
+    arr1  12       +1.475          0.643   0.186   +7.95   ep32s2 -> ep32s2_pdl_dh_dw_uad_ubd_cs
+    arr2  12       -1.292          0.543   0.157   -8.24   ep32s2_pdl_dh_dw_uad_ubd_cs -> ep32s2
+    null  12       -0.434          0.622   0.180   -2.42   ep32s2 -> ep32s2
+
+    D (candidate minus incumbent) = +1.384 +/- 0.121   t = +11.39    REAL
+    S (slot effect)               = +0.091 +/- 0.121   t =  +0.75    none
+
+    raw arm means:  incumbent  102.93%  (n=96, sd 0.70)
+                    candidate  104.27%  (n=48, sd 0.64)     gap +1.34, matches D
+
+#### WHY THIS ONE IS BELIEVABLE WHERE §H52's WAS NOT
+
+**The two arrangements are equal in magnitude and opposite in sign** (+1.475 / -1.292). Flipping
+which slots hold the candidate flipped the sign and preserved the size. That is the signature of
+a real effect with no positional bias, and it is not something noise produces — §H52's false
+positive had no such cross-check, which is the entire reason the crossover exists.
+
+#### THE NULL ARM IS STILL NOT TRUSTWORTHY, EVEN AT 12 ROUNDS
+
+The null reads **-0.434 (t = -2.42)** while the crossover solves the same slot term as
+**+0.091 (t = +0.75)**. They disagree by half a point and the null is again nominally
+"significant" on an effect that is zero by construction.
+
+**The crossover estimate is the robust one:** it averages two independent 12-round runs and
+cancels config-specific offsets, where the null arm is a single run of one config against itself
+and carries its own run-level offset. This strengthens §H53 rather than softening it:
+
+    A NULL ARM IS NECESSARY BUT NOT SUFFICIENT, AT ANY ROUND COUNT.
+    Run the pair BOTH WAYS and solve for the slot term. That is the standard.
+
+#### STATUS: NOT PINNED YET, AND DELIBERATELY SO
+
+`256x128x64_1x2_v_ep32s2_pdl_dh_dw_uad_ubd_cs` beats the dispatched config by +1.38% standalone.
+The dispatch-table change is **not** made on that alone, because §H27bn is the precedent where
+every rung gated bit-exact standalone and the tuned dispatch still came out SLOWER end-to-end,
+and this session produced two instruction-level wins (§H53 `cs`, §H27b4) that converted at zero.
+
+**Next step is the 1.7B trainer A/B on the dispatch arm**, snapshotted backends with the symbol
+count verified before each run (§H28a) — pin only if it survives that.
+
+#### THE TWO INSTRUMENT LESSONS FROM THIS SESSION, TOGETHER
+
+    §H53   a 6-round ABBA reported t = 4.63 on a confirmed-zero effect
+    §H54   a 12-round NULL arm reported t = -2.42 on a slot term the crossover puts at +0.09
+    => neither round count nor a null arm makes a single-arrangement gate valid.
+       Solve for the nuisance term by running the pair both ways.
+
+
+---
+
+### §H55 — **THE HYBRID PLAN. Two approaches, one library. Level 1 = hardcoded pins (ours, 967 lines + his 6 grid-keyed overrides), level 2 = his wave-utilisation heuristic, which we have no equivalent of. The merge is decided by running BOTH against cuBLAS on every model config, not by argument.**
+
+#### THE TWO APPROACHES, STATED FAIRLY
+
+**Ours.** Every matmul shape taken from the Qwen technical reports, the variant cuBLAS issues
+recorded for each, then those variants reimplemented apples-to-apples across nn/nt/tn — ~750
+variants generated from ONE composable template (`Bgemm_sm90_warpspecialized_template.cuh`,
+8,217 lines) driven by a 967-line hardcoded shape->config table behind a thin 270-line
+dispatcher. Only the configs the 1.7B model actually uses were then optimised. §H41 established
+the ceiling of this approach at **102-105%** and §H50-§H54 explain why: at locked clock we are
+already at cycle parity with identical tensor-pipe counts, so the remaining gap is power/clock,
+not work. **Currently at par, not ahead.**
+
+**Kota's.** Far fewer variants, each optimised harder, built as SEVERAL SPECIALISED templates
+rather than one parameterised one, behind a 969-line rule dispatcher. **Beats cuBLAS by
+100-200 tok/s** on 4B, 1.7B and the other configs in the training yaml, and is the version
+accepted for porting into BluTrain.
+
+The apples-to-apples programme was not wasted — it produced the ceiling proof, the clock/power
+chain, the orientation law, the instruction census and the measurement instrument. But for
+production models the target is to go FURTHER than par, and that argues for taking his kernels
+where they win.
+
+#### WHAT HIS DISPATCHER ACTUALLY IS (05 Aug snapshot — STALE, re-verify)
+
+Not "a heuristic function", and not "hardcoding". **Three tiers:**
+
+    1  legality guards      N%64==0 && K%16==0 ; tn needs M%128==0 ; a narrow-K special path
+    2  an occupancy model   sm90_wave_utilization(tiles,sms) = tiles / (ceil(tiles/sms)*sms)
+                            BN=192 needs >= 3/4*SM_COUNT
+                            BN=256 wins if its utilisation >= BN=128's
+                            BM=192 needs >= 1.15x BN=256's
+                            validated by a dense N-sweep, 29/29 points
+    3  hardcoded overrides  split-K factor keyed on (grid_m, grid_n, batch) -- NOT raw M/N, so it
+                            survives batch and padding changes -- 6 entries, each with the
+                            measured TFLOPS in the comment, default 4
+
+**So his design is already two-level, just interleaved.** Tier 3 is a level-1 pin table; tiers
+1-2 are the level-2 heuristic. That is why the proposed split maps onto it cleanly.
+
+He also carries 10 research documents (~6,573 lines) on CUTLASS, DeepGEMM, ThunderKittens,
+cuBLAS SASS, tile shapes and swizzle strategy. We have no equivalent.
+
+#### A WEAKNESS HE DOCUMENTS HIMSELF — AND WHERE WE MAY BE STRONGER
+
+His own comment, on the narrow-M/N huge-K `tn` family: even at each shape's individually
+measured-best split_k, **none of the 6 calibrated shapes reach past ~50-65% of cuBLAS**, and he
+attributes the remaining gap to architecture (BM=128xBN=64 tile + atomicAdd epilogue) rather than
+calibration. **Our 256x128 and 192x192 tn work sits exactly on that family** — §H54 measured
+`lm_head-wgrad` at 102.9-104.3% of cuBLAS. That is a concrete place the hybrid should take OUR
+kernel, and it is the first thing the head-to-head should confirm.
+
+#### THE METHOD — MEASURED, NOT ARGUED
+
+Run **both libraries and cuBLAS** on every model config in the training yaml (120M, 600M, 1.7B,
+4B, any others), free clocks, same box, same day, changing only the BluTrain link and nothing
+else. That produces a per-shape winner table, and **that table IS the hybrid level-1 dispatch**.
+Then re-run the full training scripts on the hybrid and confirm it reproduces the per-shape wins
+seen during design.
+
+**DO NOT COMPARE VARIANT COUNTS.** Ours are knob combinations of one template; his are distinct
+templates. The number is meaningless. Compare, per production shape, what each dispatches and how
+fast it runs.
+
+The working assumption — port our large variant set, pin his best variants — is **an assumption,
+not a finding**, and is to be decided after the data.
+
+#### SCOPE
+
+**Only the SM90 module differs**; the rest of both trees is the same and is not to be disturbed.
+That should be verified by diff before any merge, not assumed.
+
+#### BLOCKER AT THE TIME OF WRITING
+
+`github.com/BlubridgeAI/BluBridge-BLAS` is private and the credential in this repo's remote
+(personal account `GOUTHAM1926`) **cannot see it** — `git ls-remote` returns "Repository not
+found" for both `BlubridgeAI` and `Blubridge-Tech`. The repo's listed contributors are different
+accounts. The two local `*_kota` folders are **stale plain copies** (05 Aug, 21 Jul) with no
+`.git`, and the repo merged a PR the same hour this was written, so every reading above must be
+re-verified against a fresh clone.
+
+
+---
+
+### §H56 — **KOTA'S SM90 READ AT CODE LEVEL, NOT BY NAME. His coopA/coopB and cluster_2d ARE our cluster-orientation knobs and we have them more completely; his `regsplit`, `pingpong`, smem-overlap and SM90 addmm are real and we do not have them. The A/B is a clean relink — verified.**
+
+Cloned `github.com/BlubridgeAI/BluBridge-BLAS` master @ `ea666ab` to
+`BLUBLAS_kota/BluBridge-BLAS-kota`; dated safety copy without `.git` at
+`Neural_Networks_exp_1926/BluBridge-BLAS_29_aug_kota`. **Every label below was checked by
+reading the code and diffing his own variants against each other — not inferred from a name.**
+
+#### WHAT HIS LABELS ACTUALLY MEAN
+
+    his label          what the CODE does                                    do we have it?
+    coopA / coopB      cluster along N (A-multicast) / along M               YES, AND MORE.
+                       (B-multicast). Diffing his cluster_nn_template        NEEDS_A_MULTICAST = MULTICAST_A && CLUSTER_N>1
+                       against cluster_nn_coopB_template, the ONLY           NEEDS_B_MULTICAST = MULTICAST_B && CLUSTER_M>1
+                       structural change is _CLUSTER_N=2 -> _CLUSTER_M=2.    195 x 2x1 + 91 x 1x2 configs, every tile,
+                       His words: "loads B ONCE per cluster pair (by         all 3 layouts. His: 2 NN-only files.
+                       rank 0) and multicasts it, while A stays local".
+    cluster_2d         2x2, DUAL-operand multicast (A and B on               YES - 35 registered _2x2_ configs, and our
+                       orthogonal axes)                                      derivation gives both operands at 2x2.
+                                                                             ALREADY MEASURED LOSING (§H48):
+                                                                             2x2_h 84.26%, 2x2_v 81.63%.
+    persistent         persistent grid-stride loop                           YES, BY DEFAULT. His are separate files
+                                                                             because his baseline is not persistent.
+    pipelined_overlap  NOT PDL. A ThunderKittens trick: ALIAS the load       NO - but we solve the SAME problem with
+                       ring onto the tail of the store buffer to fit         EPI_WARP_LOCAL (STORE_BUF 73,728 -> 16,384
+                       LOAD_PIPE_DEPTH=4 where a naive layout fits 3.        => depth 4). We BOTH have PDL separately
+                                                                             (griddepcontrol, both trees).
+    pingpong           REAL, and correctly reasoned. Each consumer           NO - genuinely missing.
+                       warpgroup owns ALTERNATING whole tiles, so WG-A's
+                       EPILOGUE overlaps WG-B's MAINLOOP. Cooperative
+                       (what BOTH of us do today) forces both warpgroups
+                       to the same epilogue barrier so that overlap can
+                       never happen. Cites CUTLASS
+                       sm90_gemm_tma_warpspecialized_pingpong.hpp.
+    regsplit           REAL setmaxnreg. PRODUCER_REGS=24, CONSUMER_REGS=240, NO. Ours PASSES 40/232 in every config but
+                       budget-checked 128*24+256*240=64512<=65536. LIVE in   `setmaxnreg` appears ONLY IN COMMENTS -- one
+                       21 files as setmaxnreg_dec/_inc.                      reads "deliberately NOT used here".
+                                                                             A DEAD KNOB on our side.
+    fused swiglu       a SEPARATE entrypoint. His GEMM dispatcher has        irrelevant to the GEMM comparison. It was
+                       ZERO swiglu references.                               tested, did not perform in the trainer, and
+                                                                             he stopped developing it.
+
+#### THE ARCHITECTURAL TRADE, STATED PLAINLY
+
+**His = one FILE per structural idea**, each with its own Config struct — which is why
+`coopB_v2`, `coopB_persistent`, `cluster_2d_sliced`, `cluster_2d_persistent` all exist: a
+COMBINATION needs a new file. **Ours = one template, every feature a composable knob.**
+
+**That trade is exactly why `setmaxnreg` lives on his side and died on ours.** His hand-written
+files do not have to compose with anything; ours had to compose with ~40 other knobs, and it was
+dropped. The knob design bought us breadth and the ability to sweep; it cost us a real capability.
+
+**He is NOT apples-to-apples.** He ports ideas from CUTLASS / ThunderKittens / DeepGEMM and keeps
+whatever wins. We reimplemented cuBLAS's chosen variant per shape. Different methods, and his is
+not bounded by the constraint we imposed on ourselves.
+
+#### HIS OWN MEASURED LIMITS, QUOTED FROM HIS COMMENTS
+
+    best non-clustered kernel   "still trails the baseline by a uniform 0.4-9%"  (2026-08-06)
+    coopB at large squares      LOSES to single-CTA: 8192^3 93.5%, 16384^3 94.7%
+    narrow-M/N huge-K tn        "none of the 6 calibrated shapes reach much past ~50-65% of cuBLAS",
+                                which he attributes to architecture (BM=128xBN=64 + atomicAdd epilogue)
+
+That last family is exactly where §H54 measured OUR `lm_head-wgrad` at 102.9-104.3%.
+
+#### TILE LADDERS — THE CLEAREST COMPLEMENTARITY
+
+    ours (17)  64x64 64x128 64x320 64x448 128x64 128x112 128x128 128x144 128x168 128x176
+               128x192 128x256 128x320 192x128 192x192 256x128 320x128
+    his  (11)  128x8 128x16 128x32 128x64 128x128 128x160 128x192 128x256 192x128 192x192 256x128
+
+**He has narrow-N (8/16/32/160) we do not; we have 64x* and 320x128 he does not.**
+
+#### THE HYPOTHESIS THIS PRODUCES — TESTABLE, AND THE FIRST THING TO SEPARATE
+
+§H41's 102-105% ceiling was derived on the LARGE 1.7B shapes, where §H50 shows we are already at
+**cycle parity** with a 92-99% full tensor pipe — there is almost no cycle headroom there, and
+neither `regsplit` nor `pingpong` adds math throughput. **So his 100-200 tok/s most plausibly
+comes from the SMALL/MEDIUM shapes** — 120M and 600M, narrow-N, low tile counts — where wave
+quantisation dominates and his occupancy heuristic and narrow tiles pay, and where we never
+looked because we optimised only the 1.7B set. Run the small models FIRST; they settle it
+cheapest.
+
+#### THE A/B IS A CLEAN RELINK — VERIFIED, NOT ASSUMED
+
+    121 exported symbols on each side; blublasBgemmStridedBatched BYTE-IDENTICAL signature
+    only 4 symbols differ:  ours   blublasBgemmAddmm_sm89, blublasHgemmAddmm_sm89
+                            his    blublasBgemmSwigluStridedBatched(_dispatcher)
+    NONE of the four are called by BluTrain's own code -- every hit was inside the VENDORED
+    copy at BluTrain/Tensor-Implementations/BluBridge-BLAS/ (the library calling its own
+    internals), not BluTrain calling the library.
+
+**Swap mechanism: replace the VENDORED copy** at `BluTrain/Tensor-Implementations/BluBridge-BLAS/`
+(currently holding our 7 SM90 files), rebuild, run. **No BluTrain source change at all.**
+
+#### A FIFTH GAP FOUND WHILE CHECKING THE API
+
+He has `blublasBgemmSM90_dispatch_addmm` and the FP16 twin. **We have SM103 addmm and NO SM90
+addmm.** On H200 our addmm path falls back to something generic where his has a dedicated one.
+That is a whole call site, not a tuning knob.
+
+#### THE PORT LIST
+
+    gap                        our status                          port as
+    regsplit (setmaxnreg)      knob EXISTS, emit site removed      revive the knob -- cheapest, most concrete
+    small tiles 128x8/16/32/160 template is BM/BN/BK-parameterised new instantiations (watch the static_asserts:
+                                                                   BN % EPI_TILE_N == 0, and the BN in {64,128,256}
+                                                                   paths)
+    smem-overlap depth-4       we solve it via EPI_WARP_LOCAL      knob, then A/B the two solutions
+    pingpong                   absent                              a DELIBERATE FORK, not a knob -- it changes tile
+                                                                   OWNERSHIP (indexing, accumulator ownership,
+                                                                   epilogue barrier, ring consumption). Forcing it
+                                                                   into one template doubles the validation matrix
+                                                                   for every future knob, permanently.
+    SM90 addmm                 absent                              port the call site
+
+**NOTHING IS DELETED FROM EITHER SIDE.** His coopB loses at large squares where ours wins; his
+narrow tiles serve shapes ours does not. The hybrid keeps both and routes.
+
+#### THE MEASUREMENT THAT DECIDES THE MERGE
+
+Three arms — **ours / his / cuBLAS** — on the training scripts for every model config in the
+yaml, free clocks, same box, same day. **Per-SHAPE, not per-model:** `nsys` per-kernel paired by
+call site, exactly as §H28d did, because the decision being made is per-call-site routing and a
+per-model tok/s number cannot inform it. Backends swapped by SNAPSHOT with the symbol count
+verified before every run (§H28a — a build-order A/B once gave us cuBLAS vs cuBLAS for a whole
+day). Order **120M -> 600M -> 1.7B -> 4B** per the hypothesis above.
+
+The resulting (shape x library x us/call) table **is** the hybrid's level-1 dispatch. Level 2 is
+his wave-utilisation heuristic, which we have no equivalent of. Then re-run the full training
+scripts on the hybrid and confirm it reproduces the per-shape wins seen during design.
+
+**STATUS: all of the above is local analysis. Nothing measured yet. Waiting on the GPU.**
+
+
+---
+
+### §H57 — **V2c pin adopted: `TN_256x128x64_1x2_v_ep32s2_pdl_dh_dw_uad_ubd_cs`, +1.384% over the DISPATCHED config (t=11.39, 12-round crossover).**
+
+Three coordinated edits, because the table is enum-driven and not name-driven: the enum entry
+(`= 30`, appended so no existing id shifts — the table stores these numbers), the shape row for
+`2048 x 50304 x 16384`, and the `case` in `call_tn`. Verified 31 enums / 31 cases afterwards.
+
+The gate is a **12-round crossover**, not the 6-round ABBA that produced a t=4.63 on a known
+null (§H47). Baseline is the config the DISPATCH TABLE actually selects, not the one `pins.sh`
+names — those two disagree, and taking `pins.sh` as truth once inflated a claim 3x (§H27bl).
+
+### §H58 — **End-to-end value of the V2c pin on the 1.7B trainer: +7.15 tok/s, t=1.35. NOT significant.**
+
+A real standalone win that does not reach the application. Recorded so it is not re-litigated:
+the pin stays (it costs nothing and is bit-exact) but it is not evidence that standalone gains
+transfer. Compare §H27bn, where every rung gated bit-exact standalone and the tuned dispatch
+came out **1.4% SLOWER** end-to-end.
+
+### §H59 — **DESC_FROZEN ceiling probe: removing 47.2M instructions buys −0.70% cycles and −0.154% power (t=−0.08). The instruction-excess programme is CLOSED.**
+
+`_DESC_FROZEN` is template slot 42 and is **wrong by design** — it feeds the stage descriptor
+without the per-tile offset, so results are garbage. That is the point: it is an upper bound on
+what perfect descriptor arithmetic could ever buy, obtained by deleting the arithmetic entirely.
+
+The answer is ~30 tok/s against a 223 tok/s deficit. Together with cycle parity (§H50) and the
+two null cuts (§H53, §H27b4) that is four independent bounds on the same claim. **Do not reopen
+instruction counting without a new mechanism.** Note the earlier "65% of excess" sizing was
+wrong: static was 5.8%, dynamic 27.5%.
+
+### §H60–§H62 — **The 4B trainer (`bluscript_zero.cpp`, ZeRO-1, NP=2) brought up on H200 x2.**
+
+`d_model=3072, n_layers=36, q_heads=24, kv_heads=8, head_dim=128, ffn_hidden=8192,
+vocab=50304, weight_tying=false`. Config is hardcoded in the script, not YAML.
+
+Three fixes were needed to make it run and to make it MEASURABLE:
+
+  §H60  ZeRO-1 + comm sources vendored in (`dist/zero/`, `ProcessGroupNCCL`,
+        `NcclSymmetricAllocator`); `Batch` gained `shard_index`/`token_offset`; the staged
+        param-refresh overlap disabled (no `register_forward_pre_hook` in this Module).
+  §H61  `global_batch` corrected 524288 -> **2097152** (grad_accum=128). The earlier number
+        did not match the config sheet, so every throughput figure before this is void.
+  §H62  Checkpointing DISABLED. A 30 GB step-15 checkpoint auto-resumed under `BLU_MAX_STEPS=5`,
+        printed "Training complete", exited 0, ran **zero steps**, and nsys captured only init.
+        Exit code said success. **Check the kernel list, never the exit code.**
+
+### §H63 — **4B: cuBLAS is 11.2% AHEAD end-to-end and 24% ahead on GEMM, and 97% of the gap is dispatch, not kernels. 13 of 15 shapes now pinned to the geometry cuBLAS itself issues.**
+
+#### THE MEASUREMENT
+
+Both arms, same script, same box, same day, 5 steps, nsys on each, backend verified by symbol
+count (12 vs 0) before either ran.
+
+    arm       tok/s     MFU      total GPU    GEMM      ours as % of cuBLAS
+    cuBLAS    30,299    44.45%     349.6 s    153.5 s   --
+    BluBLAS   27,247    ~40%       387.6 s    190.4 s   89.9% e2e / 80.6% GEMM
+
+**36.9 of the 38.0 s gap is the GEMM (97%).** Converts, attention and norms are identical
+between arms, so on 4B there is nothing else to chase.
+
+#### THE CAUSE
+
+Read off the nsys template parameters, every one of our ten 4B kernels is `RS=0 DH=0 DW=0
+UAD=0`, and six of twelve call sites run **cluster 1x1**. cuBLAS clusters AND rasters *every
+single GEMM it issues* — 8 distinct kernel names over 6 geometries, no exceptions. Tier-2's
+fitted tree simply never had these shapes.
+
+#### CENSUS, 1.7B vs 4B
+
+Both models have the identical structure: 5 weight groups x 3 passes = 15 distinct shapes.
+
+    model   d_model  ffn    shapes  cuBLAS kernel names  cuBLAS geometries  GEMM s
+    1.7B     2048    5632     15            8                   5           11.2
+    4B       3072    8192     15            8                   6          153.5
+
+`256x128 1x2 h` is **41.0% of GEMM time on both models**. cuBLAS uses split-K on 1.7B
+(`128x128 1x2 h splitK`, 1.2%) and **nowhere on 4B**.
+
+#### A WRONG TURN, RECORDED SO IT IS NOT REPEATED
+
+Reading cuBLAS's kernel names out of the trainer trace, the suffixes were mapped
+`TNT = tn (wgrad)`, `NTN = nt (dgrad)`. That is **exactly inverted**: ask cuBLAS for `nt` and it
+runs a TNT kernel. The derivation leaned on instance counts and per-kernel FLOPs, but **every
+shape in a fwd/dgrad/wgrad triple is the same three dimensions multiplied and therefore has
+identical FLOPs** — FLOPs could never have separated them. The inference was unsound, not
+unlucky, and it sent 10 of 15 pins to the variant for the other pass.
+
+The fix is not a better reading of names. To learn which variant cuBLAS uses for a
+(shape, layout), **run that shape and layout standalone and read the kernel out of the
+profile.** Under the corrected attribution, standalone cuBLAS and trainer cuBLAS agree on
+**all 15 shapes** — so the standalone bench does reproduce the trainer's dispatch.
+
+#### APPLES-TO-APPLES: OUR CONFIG == cuBLAS'S VARIANT, SAME SHAPE
+
+One config per process (§H27z test-2: many-per-process deflates some 6-8%), locked 1200 MHz
+verified via `clocks.sm`, verdict from **nsys kernel time** not `--bench` (which
+`kernel_bench.sh` records moving up to 2.73x run-to-run). Every row bit-exact; every pin
+confirmed by reading the kernel back out of its own profile.
+
+    lay shape             pinned = cuBLAS's variant   ours us   cuB us   %cuB   was (bare)
+    nn  8192x1024x3072    256x128 1x2 h                  98.2     91.5   93.2     91.8
+    nn  8192x3072x3072    256x128 1x2 h                 296.8    265.0   89.3     77.0
+    nn  8192x16384x3072   192x192 1x2 h                1518.5   1433.1   94.4     92.8
+    nn  8192x3072x8192    256x128 1x2 h                 722.7    677.2   93.7     71.4
+    nn  8192x50304x3072   192x192 2x1 v                4506.0   4261.3   94.6      --
+    nt  8192x3072x1024    256x128 1x2 h                 118.7    100.8   84.9     82.9
+    nt  8192x3072x3072    256x128 1x2 h                 297.4    265.5   89.3     75.4
+    nt  8192x3072x16384   256x128 1x2 h                1387.4   1335.0   96.2     69.9
+    nt  8192x8192x3072    320x128 1x2 h                 920.1    718.3   78.1     90.3   <-- WORSE
+    nt  8192x3072x50304   256x128 1x2 h                4121.9   4053.7   98.3      --
+    tn  3072x1024x8192    128x192 2x1 v                 187.9     89.1   47.4     50.2   <-- WORSE
+    tn  3072x3072x8192    192x192 1x2 h                 264.7    257.2   97.2     72.1
+    tn  3072x16384x8192   128x256 2x1 v                1425.9   1347.8   94.5     92.4
+    tn  8192x3072x8192    128x256 2x1 v                 710.7    675.9   95.1     91.4
+    tn  3072x50304x8192   192x192 1x2 h                4443.6   4060.9   91.4      --
+
+Mean **89.2%** of cuBLAS. Ten shapes improve, several by 12–26 points.
+
+#### WHAT WAS PINNED, AND WHAT WAS DELIBERATELY NOT
+
+13 rows added to level-1. **Two shapes are deliberately left OUT** so they keep falling through
+to tier-2, because matching cuBLAS there is not an improvement:
+
+  `nt 8192x8192x3072` on 320x128 1x2 h -> 78.1%, twelve points WORSE than the 256x128 1x2 that
+  tier-2 already picks.
+
+  `tn 3072x1024x8192` on 128x192 2x1 v -> 47.4%. Our worst shape anywhere, and matching
+  cuBLAS's own geometry does not move it.
+
+Mechanics worth remembering: `lookup()` is a **binary search on (M,N,K)**, so rows must be
+inserted in sorted position — appending would silently break the table. `kTableSize_nn/nt/tn`
+went 147/148/142 -> 152/152/146. No new entry points were needed:
+`BLUBLAS_SM90_CLUSTER_GRID` expands the canonical `CFG_FOREACH` list for every layout and
+pastes the names together, so a literal grep for an entry point finds nothing even though it
+exists — grepping for the name and concluding it was absent produced three duplicate
+definitions and one broken build.
+
+#### FUTURE TASK — WHY IS OUR `128x192 2x1 v` 2.1x SLOWER THAN cuBLAS'S ON THE SAME GEOMETRY?
+
+**PARKED, not closed.** On `tn 3072x1024x8192` we run the same tile, same cluster, same raster
+as cuBLAS and land at **47.4%**. This is the one 4B shape where the deficit is **not** dispatch:
+no table entry can fix it, because we are already asking for exactly what cuBLAS asks for.
+
+Two facts to start from: `128x192 2x1` has only **2 registered configs** and no knob stacks at
+all (no `dh`/`ubd`/`rs`/`skew`), and the shape is small (M=3072, N=1024) so wave quantisation
+and epilogue cost weigh heavily. Candidate first steps — compile knobbed `128x192 2x1_v`
+variants and re-race; check the wave count and cluster waste (§H27 odd-tile: clusters round the
+clustered axis up and burn whole tile rows with `maxRelErr` staying 0); and diff our SASS
+against cuBLAS's `128x192_64x5_2x1_v_bz_coopB` — note their `64x5` pipe depth against ours.
+
+#### GATED END-TO-END: 27,247 -> 28,703 tok/s (+5.34%), 89.9% -> 94.7% of cuBLAS
+
+Same script, same box, same day as the cuBLAS arm; backend verified by symbol count (12 vs 0)
+before either ran; BluTrain's VENDORED SM90 copy synced first (it was six of seven files behind
+and had zero of these rows — building against it would have run the OLD table under the label
+"pinned" and produced a meaningless null).
+
+    arm                 tok/s     MFU      total GPU   GEMM      GEMM %cuB   e2e %cuB
+    cuBLAS              30,299   44.45%      349.6 s   153.5 s      --          --
+    BluBLAS pre-pin     27,247   ~40%        387.6 s   190.4 s     80.6%       89.9%
+    BluBLAS PINNED      28,703   42.11%      367.9 s   172.2 s     89.1%       94.7%
+
+The pins took: kernel counts now match cuBLAS 1:1 across all eight slots, and the template
+params show `RS=1` and the clustered shapes where the table asks for them. The two
+deliberately-unpinned shapes still show `cluster 1x1` / `256x128`, as intended.
+
+**The standalone measurement transferred.** Projection from the apples-to-apples table was
++1,550 tok/s / 95.2%; actual +1,456 / 94.7%. This is worth stating explicitly because §H27bn is
+the counter-example — there every rung gated bit-exact standalone and the tuned dispatch came
+out 1.4% SLOWER end-to-end. Standalone evidence is not self-validating; it happened to hold here.
+
+Remaining 18.7 s of GEMM deficit, now spread evenly at 86-93% rather than concentrated:
+
+    slot                  ours    cuBLAS   %cuB    loss
+    128x192 NTN (PARKED)   6.1 s    3.1 s  50.8%   3.0 s   <-- 16% of what is left
+    256x128 NNT           28.9     24.9    86.2%   4.0
+    192x192 NNN           29.8     26.3    88.3%   3.5
+    256x128 TNT           41.4     38.0    91.8%   3.4
+    128x256 NTN           38.3     35.7    93.2%   2.6
+    320x128 slot          13.6     12.5    91.9%   1.1
+    192x192 NTN           11.7     10.8    92.3%   0.9
+    192x192 2x1 NNN        2.4      2.2    91.7%   0.2
