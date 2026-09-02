@@ -26624,3 +26624,203 @@ Two operational notes for the next run. Rank 0's nsys export HUNG on the BluBLAS
 launcher, partial `.qdstrm` frozen) while rank 1's 336 MB report wrote fine — profile ONE rank,
 not both. And `sm90_kernels.gqa` is annotated "head_dim 64 only; aborts at 128" in the shipped
 config yet ran fine at head_dim 128, so that note describes the v44 backward, not this path.
+
+---
+
+### §H65 — **HYBRID STEP 1: 5,586 lines (26%) of the production SM90 module are not compiled at all. Removed, with every parked idea and every hard-won finding recorded here first.**
+
+Base tree for all hybrid work is `blutrain_prod/Tensor-Implementations/BluBridge-BLAS` (production
+BluBLAS @ `ea666ab`, Kota's latest). Pristine copy frozen at `hybrid_baseline_ea666ab/` so the
+final change set comes out of `diff -ruN`, not hand-notes. **Performance floor is HIS numbers**,
+because every change lands on top of his tree: 1.7B 36,099 tok/s, 600M 80,612 (production
+BluTrain, 1×H200, 30 matched steps).
+
+#### HOW REACHABILITY WAS ESTABLISHED (and two labels I had to retract)
+
+Transitive include closure: start from every `.cu` in the module, follow every `#include "..."`,
+repeat to fixpoint. Anything outside the closure cannot affect the build.
+
+Two of my first-pass labels were WRONG and are corrected here:
+  - `wgmma_ops.cuh` (712), `epilogue_swizzled.cuh` (141), `bf16.cuh` (550) are **helper headers**
+    included BY the dispatched templates. They looked "never dispatched" only because they define
+    no `launch_*` symbol. They are live.
+  - `swiglu_fused_template.cuh` (4307) **is** dispatched — through its own
+    `Bgemm_sm90_swiglu_fused_dispatcher.cu` (`blublasBgemmSM90_dispatch_swiglu_nn/nt`). I had
+    searched only the main dispatcher.
+
+Also retracted: I had earlier recorded pingpong and the smem-overlap trick as "gaps we should take
+from him". They are not in his build, so they contribute **nothing** to his measured 98.4% of
+cuBLAS. They are unproven experiments — the same status as our own parked branches.
+
+Final classification of the 20 `.cuh` files:
+
+    LIVE          warpspecialized_template  2356   32 dispatched entry points
+                  swiglu_fused_template     4307   own dispatcher
+                  cluster_nn_v2_template     453    1 dispatched entry point
+                  wgmma_ops / epilogue_swizzled / bf16.cuh   1403  helpers
+    COMPILED,     cluster_nn_template        722 |  coopB  491 |  coopB_v2  488
+    0 DISPATCH    = 1701 lines. These DO change the .so, so they are a separate decision.
+    NOT COMPILED  the 11 files below = 5586 lines. Provably cannot change the build.
+
+#### THE 11 REMOVED FILES — MOTIVATION, MECHANISM, AND WHAT WAS ACTUALLY CONCLUDED
+
+Recorded because for HIM these did not pay off on the variants he tried, which is not the same as
+the mechanism being worthless. Applied to the right variant at the right time they may still pay.
+
+**1. `pingpong_template.cuh` (680)** — ping-pong scheduling of the non-clustered warp-specialised
+kernel. Motivation 2026-08-06: his best real-shape kernel `bn256_rs`
+(`Sm90Config_128x256x64_regsplit`) already beat both his cluster kernels at every real 1.7B shape
+but still trailed the reference by a uniform 0.4–9%; the reference ships TWO non-clustered SM90
+kernels with the same 1-producer/2-consumer structure, "cooperative" and ping-pong.
+**VERDICT RECORDED: none.** Motivation only — abandoned or unfinished, not measured-and-rejected.
+
+**2. `pipelined_overlap_template.cuh` (573)** — the `SAFE_STAGES_BETWEEN_BLOCKS` smem-overlap
+trick, ported from real source (`prototype/lcf/lcf.cuh:60-146`). Mechanism: the epilogue store
+buffer sits at the END of the smem budget and the load-pipeline ring at the START, so the two
+overlap in the address range that the pipeline has already drained. Header also records, usefully,
+that the register-split hypothesis was **empirically disproven** in that session —
+`setmaxnreg(40,232)` is ignored by ptxas for this kernel, giving a flat 154 registers with or
+without it. **VERDICT RECORDED: none** for the overlap itself.
+
+**3-5. `cluster_2d_template` (521), `cluster_2d_sliced` (476), `cluster_2d_persistent` (461)** —
+2×2 cluster with DUAL-operand multicast. Motivation: his 1D cluster kernels multicast only A,
+while the reference multicasts BOTH A and B on orthogonal cluster axes on top of a smaller
+per-CTA tile — "we're paying full cluster-sync overhead for half the bandwidth benefit".
+`_sliced` is a from-scratch reimplementation of the REAL mechanism (every CTA issues its own TMA
+transaction; no leader/no-op scheme) verified against `copy_traits_sm90_tma.hpp:990-1003`, where
+`make_tma_copy_desc` truncates the TMA box's outermost mode by the multicast group size.
+**VERDICT RECORDED — AND THIS ONE IS VALUABLE:** `cluster_2d` and `cluster_2d_sliced` BOTH
+**crashed on hardware at 8192³** (4096³ passed) despite sharing almost no multicast logic. The
+mechanism-independent failure pointed at the one thing both shared: **a literal unbounded
+`(grid_m, grid_n, batchCount)` grid launch with clustering enabled.** A reference check found the
+reference NEVER launches a literal unbounded grid with clustering on any architecture.
+→ This is the same lesson we reached independently (see the persistent-clustered-grid-sizing
+memory: never `sm_count/cluster_size`, query `cudaOccupancyMaxActiveClusters`). Two independent
+arrivals at the same rule is strong evidence it is real.
+
+**6. `cluster_nn_persistent_template` (637)** — persistent grid + grouped rasterisation on the
+coopA cluster kernel, targeting an L2-sector-efficiency gap (baseline 2.39 bytes/sector vs
+`bn256_rs` 1.74). **VERDICT RECORDED: "measured 10-20% slower than the non-persistent kernel"** —
+because it still paid a full cluster-wide sync + mbarrier re-init at EVERY tile boundary.
+
+**7. `cluster_nn_coopB_persistent_template` (420)** — the M-axis mirror of the above. Its header
+claims the non-persistent coopB is "hardware-validated 6/6, live in production dispatcher
+routing", which **contradicts** our finding that `coopB` has 0 main-dispatcher references. Either
+his comment is stale or routing changed after he wrote it — worth resolving before touching the
+Category-B files.
+
+**8. `cluster_nn_v3_flowing_template` (475)** — persistent-grid cluster with a CONTINUOUSLY
+FLOWING pipeline across tile boundaries, i.e. the fix for exactly the sync-per-tile cost that made
+file 6 slow. **VERDICT RECORDED: none for v3 itself**, but its header states the v2 class was
+"measured SLOWER than our own non-clustered kernel at every real production shape tested".
+
+**9. `nn_rs_experimental` (417)** — eliminates the software transpose entirely using wgmma RS mode
+(A from registers) + `ldmatrix.trans` for hardware transpose-on-load, instead of the
+raw-load + smem-transpose path the default NN kernel uses. Ported from the SM89 core template
+which already does this. **VERDICT RECORDED: "EXPERIMENTAL, NOT WIRED INTO THE DISPATCHER."**
+
+**10. `nn_clustered_experimental` (477)** — 2×1 cluster + TMA multicast for A.
+**CONTAINS A REAL BUG FIX WORTH KEEPING INDEPENDENTLY OF THE KERNEL:** the RECEIVING (non-issuing)
+CTA must independently call its OWN `mbarrier.arrive.expect_tx` before a multicast completion can
+satisfy it — **the multicast signal only DECREMENTS a pending-bytes counter, it does not arm one.**
+Found while fixing the sibling NT file. Any future multicast work must honour this.
+
+**11. `nt_clustered_experimental` (449)** — 2×1 cluster + multicast for B. Records that the
+reference DISABLES multicast for its Batched GEMM type, and that this is an implementation gap in
+THEIR scheduler (flat linear indexing does not guarantee two cluster-paired CTAs share a tile
+neighbourhood, which multicast requires) — **not** a finding that clustering cannot help batched
+GEMM. His own `task_id` decomposition does not have that defect.
+
+#### WHAT SURVIVES THE DELETION AS REUSABLE KNOWLEDGE
+
+1. Never launch a literal unbounded grid with clustering enabled (crashes at large shapes).
+2. In a multicast, the receiving CTA must arm its own `expect_tx`; the multicast only decrements.
+3. `setmaxnreg` is ignored by ptxas for this kernel shape — register split is not available here.
+4. Persistent grid without fixing the per-tile cluster sync is a 10–20% LOSS, not a win.
+5. The reference's batched-GEMM multicast exclusion is a scheduler limitation, not a law.
+
+---
+
+### §H66 — **BOTH HYBRID BLOCKERS CLEARED, CPU-ONLY. `BK==64` was an over-strict assert, and `lda/ldb/ldc` is now a defaulted knob that leaves all 3,526 symbols byte-identical.**
+
+The hybrid puts OUR template into HIS tree, keeping his dispatcher logic frozen. Two capabilities
+stood in the way. Both are now in, neither needed a GPU.
+
+#### THE TILE / CONFIG PICTURE THAT MOTIVATED THIS
+
+Tile shape (BM x BN x BK) and config (tile + every other knob) are different things:
+
+    ours   17 tile shapes, 14-128 configs each = 466 registry entries x 3 layouts = 1,398
+    his    14 tile shapes,   1-5  configs each =  27 (tile,variant) pairs  ~= 75 entry points
+
+Ours is DEEP, his is WIDE. His 192x192x64 has exactly ONE bare variant; ours has 128. But he
+covers 7 dimensional cases we could not express: 320x64x64, 128x160x64, **128x128x32,
+128x128x16**, 128x32x64, 128x16x64, 128x8x64 -- and his dispatcher structurally REQUIRES them
+(`switch(bn_choice)` cases 32/16/default, and `sm90_try_narrow_k`). That is what makes his
+dispatcher generic: every N and every K lands on a real kernel.
+
+Boilerplate cost per new tile: **ours 2 lines** (typedef + one X() registry line, macro generates
+all 3 layouts by token pasting); **his 43 lines** (14-line hand-written entry point x 3 layouts,
+no generating macro anywhere -- the only #defines in his module are include guards). Reaching our
+466 configs by his method would be ~19,600 lines of hand-written boilerplate.
+
+#### BLOCKER 2 (BK != 64) -- IT WAS JUST AN OVER-STRICT ASSERT
+
+    static_assert(BK == 64, "BK must be 64 (one 128B-swizzle atom; K-major descriptor
+        math below assumes this)");
+
+**The descriptor math does not assume it.** §H22 had already decoupled the two: the TMA box's
+inner K dim is the SWIZZLE ATOM width, not BK, and the producer issues BK/atom_w boxes -- which is
+exactly why `256x128x64_1x2_h_sw64` and `_sw32` already shipped and worked at atom widths 32 and
+16 with BK=64. `K_STEPS = BK / MMA_K_STEP` is derived and the consumer loop runs to it; a grep for
+hardcoded 64-in-K or 4-K-steps finds nothing.
+
+Of the 5 asserts mentioning BK, only one is the real invariant -- `BK_ % AW == 0` ("BK must be a
+whole number of swizzle atoms"), asserted at the issue site. Note his own template is the STRICTER
+one: `static_assert(BK == SWIZZLE_ELEMS)` forces BK to EQUAL the atom width, which is why his
+narrow-K tiles must be named `_sw64` and `_sw32`.
+
+Replaced line 474 with the invariants the code actually enforces (BK a whole number of MMA
+K-steps; BK*2 16-byte aligned) and instantiated `128x128x32_sw64` + `128x128x16_sw32`.
+**RESULT: compiles with 0 errors, 3 entry points each (nn/nt/tn).** Nothing else assumed BK=64.
+
+One process note: the first probe reported "0 errors AND 0 entry points" -- which looked like
+success and proved nothing. `BLUBLAS_SM90_CFG_FOREACH` is defined TWICE, a minimal list under
+`#ifdef BLUBLAS_SM90_FAST_BUILD` and the real 466-entry list in the `#else`; the registration had
+landed in the first, which a normal build does not compile. A passing build with zero new symbols
+is a null result, not a pass.
+
+#### BLOCKER 1 (lda/ldb/ldc) -- A REAL MISSING CAPABILITY
+
+`lda` appeared **0 times** in our template against **21** in his. Not a missing knob -- a missing
+capability. And his dispatcher depends on it:
+
+> "NON-PACKED LEADING DIMENSIONS. TMA-encodable (ld % 8 == 0): the descriptors carry the stride
+> directly and the non-padded fast path runs with zero copies. **This is the case the model
+> actually produces.**"
+
+So the trainer really does hand it non-packed strides. Porting our template in without this would
+push every such call onto the `cudaMemcpy2DAsync` padded path and look like our kernels being slow.
+
+Added additively: `launch_bgemm_sm90` gains `int lda = 0, ldb = 0, ldc = 0` as DEFAULTED trailing
+parameters; each of the four descriptor inits gains `uint64_t ldElems = 0` with
+`row_stride = ldElems ? ldElems : <natural extent>`. Threaded to all five call sites with the
+matching dimension (A K-major and A MN-major -> lda, B K-major and B MN-major -> ldb, C -> ldc).
+
+**THE CORRECTNESS-CRITICAL PART IS THE DESCRIPTOR CACHE.** A TMA descriptor encodes the row
+stride, so a cached descriptor built for packed strides is WRONG for a non-packed call on the same
+pointers and extents -- and would be reused SILENTLY, giving a wrong answer with no error.
+`lda/ldb/ldc` are now part of the cache key, compared on lookup and recorded on fill. **This
+change must never be separated from the descriptor change.**
+
+**RESULT: compiles with 0 errors and the symbol list is byte-identical, 3,526 -> 3,526.** That is
+the proof the change is inert for every existing config -- the defaulted-parameter discipline
+working exactly as intended.
+
+#### WHAT IS NOT YET PROVEN (both need the GPU)
+
+1. **Numerical correctness of the narrow-K tiles.** Compiling is not correctness. `128x128x32_sw64`
+   and `128x128x16_sw32` need a bit-exact check against cuBLAS before they are trusted.
+2. **That a non-zero ld actually works.** Every test so far passed 0 (packed). A GPU test with
+   genuinely non-packed strides is required, and it is the case where a cache-key mistake would
+   show up as silent corruption rather than a failure.
