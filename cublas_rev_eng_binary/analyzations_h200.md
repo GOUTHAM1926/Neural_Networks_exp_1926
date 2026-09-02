@@ -26873,3 +26873,139 @@ is correctness, and every case is bit-exact.
 **STATUS: both hybrid blockers are closed and validated.** Our template can now express the 7
 tile shapes only his tree had, and carries the non-packed leading-dimension fast path his
 dispatcher depends on. The tile union is next: 24 shapes, ~24 registry lines.
+
+---
+
+### §H67 — **HYBRID BLUBLAS: THE TILE UNION. Every step, every decision, and the one verification left open.**
+
+#### THE PLAN AND WHY
+
+Base = **Kota's production tree** (`blutrain_prod/Tensor-Implementations/BluBridge-BLAS` @ ea666ab),
+not ours. His dispatcher is GENERIC -- every path ends in a real kernel so any (M,N,K) lands
+somewhere -- while ours is shape- and model-specific, returning 0xFFFF on a miss and falling to a
+weak fitted tree. **His dispatcher logic is FROZEN.** Only what our changes force may move: entry
+point names and added template parameters. Our tier-1 pin table stays in our own repo and does not
+go to production; it can be layered on top later.
+
+Performance floor is **HIS** numbers, because every change lands on his tree:
+1.7B 36,099 tok/s, 600M 80,612. Ours (36,190 on 1.7B) is NOT the target -- it came from a
+shape-specific pin table that does not survive into his generic design.
+
+**Pristine baseline frozen at `hybrid_baseline_ea666ab/`** before touching anything, so the final
+patch comes out of `diff -ruN` rather than hand-notes, which drift.
+
+**The rule that makes "no performance loss" true:** same dispatcher logic means the same entry
+point is chosen BY NAME, but that alone does not guarantee identical performance -- the kernel
+behind that name would be our implementation. It is only safe if we templatise BY ADDITION with
+behaviour-preserving defaults: every new knob last in the parameter list, defaulted to today's
+behaviour, so existing configs compile byte-for-byte identically.
+
+#### STEP 1 -- REMOVE THE 11 FILES THAT ARE NOT COMPILED AT ALL (5,586 lines, §H65)
+
+Transitive include closure from every .cu. Verified inert: forced clean rebuild produced a
+**byte-identical library, 2361 -> 2361 symbols, zero difference**. Each file's motivation and
+verdict recorded first; five findings kept as reusable knowledge, notably "never launch a literal
+unbounded grid with clustering enabled" (both cluster_2d kernels crashed at 8192-cubed for this,
+the same rule we reached independently) and "in a multicast the receiving CTA must arm its own
+expect_tx -- the multicast only DECREMENTS a pending-bytes counter".
+
+Retracted here: I had recorded pingpong and the smem-overlap trick as gaps worth porting from him.
+They are not in his build and contribute nothing to his 98.4%.
+
+#### STEP 2 -- REMOVE coopB / coopB_v2 (1,183 lines)
+
+Reading the code rather than the name: **"coopB" is not a coop feature.** It is B-multicast on an
+M-axis cluster with `static_assert(CLUSTER_M == 2, "only 2-CTA clusters are wired up in this first
+cut")`. We already have exactly that as a general knob -- `MULTICAST_B` + `CLUSTER_M>1` -- across 7
+cluster shapes with no 2-CTA limit.
+
+    his coopA == our MULTICAST_A=true + CLUSTER_N>1
+    his coopB == our MULTICAST_B=true + CLUSTER_M>1
+
+**Runtime-dead, proven empirically, not just statically.** The switch does hold three cluster_v2
+entry points, but nsys from the real runs shows NO cluster kernel ever executes: 600M and 1.7B
+both ran 100% `Sm90WarpspecConfig`, zero `Sm90ClusterNN*`. Static reachability and runtime
+selection are different things. His own comments give the verdict: coopB measured "74-94 pct of
+the baseline vs bn256_rs's 96-99 pct" and "coopB_v2's own throughput was NEVER measured".
+
+Removal was wider than two files -- 6 #includes, 6 entry-point definitions, 6 orphan declarations
+-- which is why the reference pre-check now ABORTS instead of warning. Verified at symbol level:
+**2361 -> 2355, exactly the 6 coopB entry points gone and nothing else**, cluster_v2 nn/nt/tn all
+still present.
+
+SM90 module: 28 files / 21,161 lines -> 15 files / 14,392 lines (32% removed).
+
+#### THE CENSUS THAT SET THE DIRECTION
+
+Tile shape (BMxBNxBK) and config (tile + every other knob) are DIFFERENT things:
+
+    ours   17 tile shapes,  14-128 configs each = 466 registry entries x 3 layouts = 1,398
+    his    14 tile shapes,   1-5   configs each =  27 (tile,variant) pairs ~= 75 entry points
+
+Ours is DEEP, his is WIDE. His 192x192x64 has ONE bare variant; ours has 128. Boilerplate per new
+tile: **ours 2 lines** (typedef + one X() entry, macro generates all 3 layouts by token pasting);
+**his 43** (14-line hand-written entry point x 3 layouts -- he has NO generating macro at all, the
+only #defines in his module are include guards). Reaching our 466 by his method would be ~19,600
+lines. Layout handling is identical in both (same enum, same A_IS_MN/B_IS_MN semantics), so that
+part of the merge is free.
+
+#### THE TWO BLOCKERS (§H66) -- BOTH CLEARED AND VALIDATED, CPU + GPU
+
+**lda/ldb/ldc** appeared 0 times in ours vs 21 in his -- a missing CAPABILITY, not a knob. His
+dispatcher depends on it ("the descriptors carry the stride directly and the non-padded fast path
+runs with zero copies -- this is the case the model actually produces"). Added as defaulted
+trailing parameters + defaulted ldElems on all four descriptor inits. Symbol list byte-identical,
+3,526 -> 3,526. **The cache key is the correctness-critical part**: a descriptor encodes the row
+stride, so a cached one built for packed strides is wrong for a non-packed call on the same
+pointers -- reused silently. Negative control proves it: with the ld terms removed from the key,
+check 3 fails at **maxRelErr=36.19, 65472/65536 elements bad**. Validated 9/9 bit-exact across
+NN/NT/TN (all three matter -- they drive different descriptor functions).
+
+**BK==64** was an over-strict assert, not a real constraint. §H22 had already decoupled BK from the
+descriptor (box inner K dim is the swizzle ATOM width; producer issues BK/atom_w boxes), which is
+why sw64/sw32 configs already shipped at BK=64. K_STEPS is derived. Replaced with the real
+invariants; `128x128x32_sw64` and `128x128x16_sw32` now compile and validate **36/36 bit-exact**
+including residue and batched shapes.
+
+#### THE TILE UNION ITSELF
+
+    320x64x64    free -- BM=320 already ships, BN=64 transcribed
+    128x32x64    free -- BN=32 transcribed, 32 % 16 == 0
+    128x160x64   needed wgmma N=160 AND a per-config WGMMA_N override
+    128x16x64    needed wgmma N=16
+    128x8x64     needed wgmma N=8, and is NT-ONLY
+
+**128x8x64 is NT-only on purpose**: BN=8 fails the MN-major B rule (BN % 16 == 0, the narrowest
+swizzle atom) that NN and TN both need. Supporting it there requires padding the MN extent to 16
+and masking the store. `128x168x64` is already NT-only for exactly the same reason (168 % 16 == 8),
+so this follows the existing convention rather than inventing one -- and is registered honestly
+rather than silently broken for two layouts.
+
+wgmma forms N=8/16/160 transcribed to the documented mechanical rule (A = N/2 accumulators at
+%0..%(A-1), desc_a=%A, desc_b=%(A+1), scale_d=%(A+2), immediates %(A+3)..%(A+6)), which reproduces
+the shipped m64n32k16 form exactly. Result: all 19 new entry points compile, 0 errors.
+
+**A first attempt failed, correctly.** There are TWO lists that must agree -- the transcribed-N
+static_assert and `kWgmmaNCand`, which the work-grid picker actually walks. I extended the first
+and not the second, so BN=16/8 found no candidate, the picker returned 0, and BN/0 followed. Both
+loop bounds now derive from `kWgmmaNCandCount` so they cannot drift apart again.
+
+#### THE ONE THING LEFT OPEN -- READ THIS FIRST TOMORROW
+
+I appended 8 and 16 to `kWgmmaNCand` and claimed it "cannot change a tile that compiles today".
+**That claim is WRONG and a simulation of the picker caught it.** Of 300 combinations, 58 changed,
+and 12 are NOT "0 -> something" but real changes to configs that already worked:
+
+    BN=96   with BM in {64,192,320}   wn: 32 -> 16
+    BN=160  with BM in {64,192,320}   wn: 32 -> 16
+
+Cause: with split_m=False the picker PREFERS a symmetric split, and BN=96 at wn=16 gives 6 chunks
+(symmetric) where wn=32 gives 3 (not). Adding 16 makes it switch.
+
+**We appear to ship none of these** -- our BN set is {32,64,112,128,144,168,176,192,256,320,448},
+no BN=96, and the only BN=160 is the new 128x160x64 where BM=128 gives split_m=True. **But that is
+reasoning, and the reasoning above was already wrong once.** The empirical SASS before/after
+comparison was started and did NOT complete -- the box disconnected mid-run. **Tomorrow: finish
+that comparison before trusting the tile union.** If any shipped kernel's instruction count moved,
+the fix is to give BN=160 the same per-config WGMMA_N override treatment and drop 16 back out of
+the shared list.
