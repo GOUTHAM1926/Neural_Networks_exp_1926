@@ -26824,3 +26824,52 @@ working exactly as intended.
 2. **That a non-zero ld actually works.** Every test so far passed 0 (packed). A GPU test with
    genuinely non-packed strides is required, and it is the case where a cache-key mistake would
    show up as silent corruption rather than a failure.
+
+#### §H66 VALIDATION ON HARDWARE — BOTH BLOCKERS CONFIRMED CORRECT
+
+**Leading dimensions: 9/9 checks, all three layouts, all bit-exact.**
+
+    layout  check                     lda   ldb   ldc   maxRelErr  bad  unwritten
+    NN      1.PACKED                  128   256   256   0.00000    0    0
+    NN      2.NON-PACKED (poisoned)   160   288   288   0.00000    0    0
+    NN      3.CACHE KEY                                  0.00000    0    -
+    NT      1.PACKED                  128   128   256   0.00000    0    0
+    NT      2.NON-PACKED (poisoned)   160   160   288   0.00000    0    0
+    NT      3.CACHE KEY                                  0.00000    0    -
+    TN      1.PACKED                  256   256   256   0.00000    0    0
+    TN      2.NON-PACKED (poisoned)   288   288   288   0.00000    0    0
+    TN      3.CACHE KEY                                  0.00000    0    -
+
+All three layouts matter because they exercise DIFFERENT descriptor functions: NN is A K-major +
+B MN-major, NT is A K-major + B K-major, TN is A MN-major + B MN-major. Testing NN alone would
+have left `init_4d_tma_B_NK` entirely uncovered.
+
+**THE NEGATIVE CONTROL IS THE IMPORTANT RESULT.** A passing test proves nothing unless it would
+fail without the fix. Removing ONLY the `lda/ldb/ldc` terms from the cache-hit test and rebuilding:
+
+    3. CACHE KEY   maxRelErr=36.18536   bad=65472 / 65536 elements   FAIL
+
+Nearly every element wrong. So the cache-key change is REQUIRED for correctness, not a nicety --
+a non-packed call following a packed one on the same buffers returns garbage without it. The
+library was rebuilt from the restored source afterwards and re-verified clean; the weakened build
+did not survive the session.
+
+**Does keying on ld cost cache misses?** No. The key only misses when the leading dimensions
+actually CHANGE. In steady-state training the same GEMM runs with the same shapes and the same
+strides, so it hits exactly as before. A miss happens only when reusing the descriptor would be
+wrong. Cost is three int compares per launch.
+
+**Narrow-K tiles: 36/36 cases bit-exact**, both configs x 3 layouts x 6 shapes including residue
+(520x1032x264) and batched:
+
+    128x128x32_sw64   18/18 PASS  err=0.00000   43.5-88.3% of cuBLAS
+    128x128x16_sw32   18/18 PASS  err=0.00000   14.4-91.9% of cuBLAS
+
+The low %cuB is expected and not a defect: these are NARROW-K fallbacks and the harness ran them
+on wide-K shapes (K=256..1024) where they are the wrong tool. The dispatcher only selects them
+via `sm90_try_narrow_k`, i.e. when K is genuinely small and nothing else fits. What matters here
+is correctness, and every case is bit-exact.
+
+**STATUS: both hybrid blockers are closed and validated.** Our template can now express the 7
+tile shapes only his tree had, and carries the non-packed leading-dimension fast path his
+dispatcher depends on. The tile union is next: 24 shapes, ~24 registry lines.
