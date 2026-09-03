@@ -27009,3 +27009,72 @@ comparison was started and did NOT complete -- the box disconnected mid-run. **T
 that comparison before trusting the tile union.** If any shipped kernel's instruction count moved,
 the fix is to give BN=160 the same per-config WGMMA_N override treatment and drop 16 back out of
 the shared list.
+
+---
+
+### §H68 — **CROSS-VERIFICATION ON A THIRD BOX WITH THE TEAM'S OWN CONFIG. Kota holds ~98.5-98.9% of cuBLAS, and the clock mechanism reproduces at 2.9-4.4% on every measurement so far.**
+
+New box `quick-name-fades-fin-02`, 1x H200. Re-measured because a box change voids prior timings.
+Config switched to match what the team actually runs
+(`BLU_ZERO_V2=1 BLU_SYMMETRIC=1 make run-mpi FILE=bluscript_zero.cpp NP=1`): **B=2 (not 4),
+global_batch 524288 (not the sheet value), ZeRO-1 v2 symmetric ON**. Three changes plus the box,
+so only the RATIO is comparable to yesterday, not absolute tok/s -- which is fine, the ratio is
+the BLAS question.
+
+15 measured steps (auto-stop at 16 so validation stays out of the window).
+
+    model  arm       tok/s     MFU      min      max   spread
+    600M   cuBLAS   78,511   46.81%   77,891   78,930   1.33%
+    600M   kota     77,343   46.12%   77,188   77,544   0.46%
+    1.7B   cuBLAS   35,656   50.39%   35,489   35,740   0.71%
+    1.7B   kota     35,256   49.82%   35,193   35,288   0.27%
+
+    600M   kota/cuBLAS = 98.51%     1.7B   kota/cuBLAS = 98.88%
+
+#### THE RATIO REPRODUCES ACROSS TWO BOXES AND TWO CONFIGS
+
+    model   2026-09-02 (box 2, B=4, sheet gb, no ZeRO)   2026-09-03 (box 3, B=2, 524288, ZeRO-1 v2)
+    600M                99.05%                                        98.51%
+    1.7B                98.12%                                        98.88%
+
+Within ~0.8 points across a box change AND a config change. **Kota sits 1-1.5% behind cuBLAS**, and
+that is now a reproduced result rather than a single measurement.
+
+#### THE CLOCK MECHANISM REPRODUCES TOO -- AND AT EQUAL POWER
+
+Measured over COMPUTE-ONLY samples (utilization >= 99; the first pass wrongly averaged in idle
+ramp-up, which is why a 641 W mean sat next to a "75% of samples >= 690 W" figure -- both were
+computed over a window that included the card at 345 MHz / 78 W):
+
+    run             clock MHz   power W   temp C   %>=690W
+    600M cuBLAS        1829       692.1      63       81%
+    600M kota          1753       692.3      64       80%
+    1.7B cuBLAS        1710       693.2      66       87%
+    1.7B kota          1661       692.8      65       84%
+
+    600M  cuBLAS holds +77 MHz (+4.4%) at -0.3 W
+    1.7B  cuBLAS holds +49 MHz (+2.9%) at +0.4 W
+
+**At essentially IDENTICAL power draw, cuBLAS sustains 3-4% more clock.** Both arms sit pinned at
+the 700 W cap for 80-87% of the run. Across all four measurements to date the clock advantage is
+2.9-4.4%, and the throughput gap 1.1-1.9% -- so per clock cycle Kota's kernels remain the more
+efficient ones, and the deficit is what the card gives back in frequency.
+
+Note this box runs 13-17 C cooler than the previous one (62-66 C vs 79 C) and still shows the same
+gap, which rules out thermal throttling as the explanation.
+
+    GEMM share       600M  44.2% / 44.7%      1.7B  51.5% / 51.7%   (cuBLAS / kota)
+    GEMM seconds     600M  46.6 / 48.8        1.7B  118.2 / 122.6
+    kota GEMM slower by    +4.7%                     +3.7%
+
+#### OPERATIONAL NOTES FOR THE NEXT BOX
+
+New Verda boxes arrive missing **yaml-cpp, MPI (mpic++ AND mpirun) and ncu**, and with no data
+shards. `apt-get install -y libyaml-cpp-dev openmpi-bin libopenmpi-dev` plus a 764 MB shard upload
+is the standing setup. Also: `parallelism.enabled=true` at one rank prints
+"WARN: only 1 rank -- running single-GPU", but ZeRO-1 v2 DOES initialise; what self-disables at
+W=1 is `symmetric` and the overlaps (`symmetric=off  overlap=-/-`), which means the colleague's
+`BLU_SYMMETRIC=1` at `NP=1` is equally inert and the two setups match.
+
+`nsys stats` still returns EMPTY reports when run ~25 s after the kill; generating them post-hoc
+in a separate pass works every time. Do that rather than sleeping longer inline.
