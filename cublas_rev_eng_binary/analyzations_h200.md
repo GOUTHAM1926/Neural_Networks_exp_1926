@@ -27078,3 +27078,31 @@ W=1 is `symmetric` and the overlaps (`symmetric=off  overlap=-/-`), which means 
 
 `nsys stats` still returns EMPTY reports when run ~25 s after the kill; generating them post-hoc
 in a separate pass works every time. Do that rather than sleeping longer inline.
+
+#### §H67 VERIFICATION CLOSED — the candidate-list change moves NOTHING that already existed
+
+The open risk from §H67 is settled empirically. Two full builds, SASS dumped from each, every
+kernel fingerprinted by instruction count, compared on the kernels present in both:
+
+    BUILD A  HEAD                        2,470 kernels
+    BUILD B  c9a7638 (candidate list still 9 entries)   2,463 kernels
+
+    kernels compared          : 2,463
+    instruction-count CHANGES : 0
+    kernels only in the new build : 7   (128x160x64 x3, 128x16x64 x3, 128x8x64 NT-only)
+
+So appending 8 and 16 to `kWgmmaNCand` changed **zero** pre-existing kernels, and the +7 delta is
+exactly the three tiles step 2 added. The earlier reasoning -- that the affected cases are BN=96
+and BN=160 with odd BM, and we ship neither -- was right, and is now measured rather than argued.
+
+**Honest limit of this check:** identical instruction COUNT is strong evidence but not identical
+SASS; a different instruction could in principle keep the count. Combined with the picker
+simulation, which isolated the only divergent cases to BN in {96,160} with BM in {64,192,320},
+that residual risk is very small -- and no shipped tile is in that set.
+
+Method notes: the box clone is `--depth 1`, so checking out an older sha needs
+`git fetch --deepen=50` first (this failed twice before being noticed). The comparison script
+wraps its checkout in `trap restore EXIT INT TERM`, which is what made a mid-run connection drop
+harmless instead of leaving the tree on a foreign commit with a library built from it.
+
+**The tile union is now trusted. 24 tile shapes are expressible: our 17 plus his 7.**
