@@ -27106,3 +27106,3581 @@ wraps its checkout in `trap restore EXIT INT TERM`, which is what made a mid-run
 harmless instead of leaving the tree on a foreign commit with a library built from it.
 
 **The tile union is now trusted. 24 tile shapes are expressible: our 17 plus his 7.**
+
+---
+
+### §H69 — **HYBRID STEP 8 PREP: HIS 19 KNOBS AUDITED BY CODE MECHANISM, NOT BY NAME. 11 present, 1 partial, 7 absent — and the audit turned up a correctness bug HE has that WE fixed, plus three latent bugs of OUR OWN.**
+
+The port plan up to now rested on a name-level comparison of his `Sm90WarpspecConfig` slots against ours, which I was told
+explicitly not to trust (*"pls don't just assume or fix on something just based on names or nomenclature or variable names"*).
+So the comparison was re-done as a 22-agent adversarial audit: one agent per knob reads HIS code and finds the MECHANISM
+(what instructions change, what smem changes, what barriers change), then hunts OURS for that mechanism **by behaviour** —
+never by name — then a second agent tries to REFUTE the verdict. A final critic agent looks for knobs the sweep missed
+entirely. 22 agents, 0 errors, 408 tool calls, ~1.84M tokens.
+
+The refute pass was not cosmetic: it **overturned one verdict** (`EPILOGUE_DIRECT_STORE`, PRESENT → PARTIAL) and the critic
+found **4 knobs the sweep never enumerated**, one of which is the single biggest structural gap between the two trees.
+
+#### THE LEDGER — his 19 Config slots + his 4 kernel-template slots
+
+| # | HIS knob | verdict | OUR mechanism |
+|---|---|---|---|
+| 1-3 | `_BM/_BN/_BK` | PRESENT | same, template slots 1-3 |
+| 4 | `_LOAD_PIPE_DEPTH` | PRESENT | `LOAD_PIPE_DEPTH_OVERRIDE`, same name, same mechanism |
+| 5 | `_SUPER_M` | **PARTIAL** | `RASTER_SWIZZLE` — but ours is a LOG2 capped at 4 (group ≤16) and he ships 32 and 64; and his always groups M while ours groups whichever axis `RASTER` calls slow |
+| 6 | `_MIN_BLOCKS_PER_SM` | **ABSENT** | ours is the literal `1` at :4970; no grid multiplier, no `*MIN_BLOCKS` in the smem assert |
+| 7 | `_PRODUCER_REGS` | PRESENT | `PRODUCER_REGS`, slot 13 |
+| 8 | `_CONSUMER_REGS` | PRESENT | `CONSUMER_REGS`, slot 14 |
+| 9 | `_SWIZZLE_BYTES` | PRESENT | `SWIZZLE_BYTES`, slot 10 |
+| 10 | `_NUM_CONSUMER_WARPGROUPS` | **ABSENT** | **hardcoded `2` at OURS:375** — see below, the big one |
+| 11 | `_SPLITK_FP32_STORE` | **ABSENT** | ours is the deliberate *negation* (§H27zzg). **Also dead in HIS tree** — its only reader is smem sizing, and its only user config was reverted 2026-07-31 |
+| 12 | `_K_STEP_UNROLL` | **ABSENT** | ours is a bare `#pragma unroll`. **Also dead in HIS tree** — 105 instantiations parsed, every one passes 0; his own comment says "NOT YET VALIDATED" |
+| 13 | `_HOIST_DESC` | PRESENT | `DESC_WALK` |
+| 14 | `_SPLITK_WORKSPACE` | PRESENT | ours is hardwired to the ON mechanism as the only split-K path |
+| 15 | `_EPILOGUE_SHARED_STORE` | **ABSENT** | none |
+| 16 | `_K_LOOP_TWO_LEVEL` | **PARTIAL** | `KLOOP_UNROLL` — same shape, but ours is `static_assert`ed onto the SKEW mainloop only, which forces **BM ≥ 256**. 51 of his 53 aliases are BM ≤ 192, so our version cannot be instantiated on almost any of his tiles |
+| 17 | `_EPILOGUE_DEFER_STORE_WAIT` | PRESENT | `EPI_LATE_STORE_WAIT` |
+| 18 | `_EPILOGUE_DIRECT_STORE` | **PARTIAL** | `EPI_DIRECT_STG` — same store, but HIS knob also deletes **two 128-thread `BAR.SYNC`** per tile that ours leaves ungated (ours :6139-6142 and :6710-6718 have the barrier as an *ungated sibling* of the `if constexpr`). §H27z.98 measured barrier-count changes at 3.4 pts of barrier stall, so this is not free. Ours is a strict subset |
+| 19 | `_EPILOGUE_CHUNK_RING` | PRESENT | `USE_CHUNKED_EPILOGUE` + `EPI_TILE_N`/`EPI_STAGES` — ours is *more* general (both parametrised; his `RING_SLOTS` is hardcoded 2) and ours additionally fixes the §H27z.66 corruption via conditional `EPI_WG_SLOTSETS` |
+| K1 | `HasBeta` (kernel bool) | **ABSENT** | ours branches at runtime `if (beta != 0.0f)` :6503 |
+| K2 | `HasBias` + `BiasMode` | **ABSENT** | **`grep -ic bias` over our 8,427 lines returns 0.** He has a TMA'd bias tile, 4 bias shapes, and a whole `launch_bgemm_sm90_addmm` |
+| K3 | `UseSplitK` (kernel bool) | PARTIAL | ours is a Config slot carrying the split FACTOR at compile time; his is a kernel bool with the factor at launch via `gridDim.y` |
+
+**Score: 11 present, 3 partial, 7 absent** — not the "3 missing of 18" the name-level pass produced. Two of the seven
+absent ones (`SPLITK_FP32_STORE`, `K_STEP_UNROLL`) are **dead in his tree too**, so they cost nothing to skip.
+
+#### THE ONE THAT MATTERS MOST: `NUM_CONSUMER_WARPGROUPS`
+
+His: `NUM_CONSUMER_WARPGROUPS = (_NUM > 0) ? _NUM : (_BM/64)`, driving `NUM_THREADS`, the producer's warpgroup id,
+`WG_M = BM/NUM_CONSUMER_WARPGROUPS`, `CHUNKS_PER_WG = WG_M/64`, the empty-mbar arrive count and the shared-store turn count.
+He ships it ON at `Sm90Config_256x128x64_2WG` — BM=256 with 2 warpgroups instead of the derived 4.
+
+Ours: `static constexpr int NUM_CONSUMER_WARPGROUPS = 2;  // cooperative: both on one tile` (OURS:375). Hardcoded.
+**Our own file already concedes this**, at :2610-2611 — *"Matching cuBLAS properly needs NUM_CONSUMER_WARPGROUPS
+(template line 308) to become a knob -- a real WGrid/epilogue/barrier-accounting change"* — and :2623 warns *"the
+NUM_CONSUMER_WARPGROUPS refactor must not be started"*. That warning was written when it was a side quest. In the hybrid it
+is on the critical path, because it is what lets one template express both his 2WG configs and the cuBLAS-shaped variants.
+
+#### THE REVERSE GAP — A CORRECTNESS BUG IN HIS TEMPLATE THAT OURS DOES NOT HAVE
+
+`const int k_iters = (K / BK) / (int)gridDim.y;` (HIS:1060). **Integer truncation, with no ceil and no assert anywhere** —
+`grep "K / BK\|% BK"` over his file returns only :1060 and :1961. Ours ceils and lets the TMA zero-fill the OOB tail:
+`const int k_iters_total = (K + BK - 1) / BK;` (OURS:5162), which is the §H-documented residue support.
+
+**Consequence for the hybrid: routing any `K % BK != 0` shape to his template silently drops the K tail and returns a wrong
+answer with no error.** This is not a performance note. It is a hard gate on step 8 — his kernel bodies cannot be kept for
+general shapes, only for the K-aligned ones his dispatcher currently sees. Our residue handling has to come across with the
+template, not after it.
+
+The other direction of disjointness is already known and holds: `grep -c "cluster\|CLUSTER\|multicast"` over his tree
+returns **0**.
+
+#### SPLIT-K: OURS IS THE BETTER DESIGN, BUT THE LIVE-PATH PRECISION ARGUMENT IS A TIE
+
+A separate 5-agent dive settled the "is ours actually better" question that gated the decision.
+
+**What he has.** ONE split-K kernel body with an `if constexpr (Config::SPLITK_WORKSPACE)` fork:
+- **Path A (`false`)** — every split `atomicAdd`s fp32 into one shared slice; finisher is a pure fp32→bf16 *cast*, not a
+  reduction; host `cudaMemsetAsync` zeroes it. **Non-deterministic run-to-run** (hardware arrival order).
+- **Path B (`true`)** — each split writes its own private fp32 slice with a plain `float2` store; finisher is a real
+  `sm90_splitk_reduce_kernel_v4t<SPLITS>`; nobody zeroes it (safe — unconditional overwrite). **Deterministic.**
+
+**What actually fires in production.** Split-K is TN-only, 4 call sites, all in `do_tn`. On the real 600M and 1.7B profiles
+exactly one row fires — `{128, 2}` → `Sm90Config_128x128x64_regsplit_ws` → **Path B**. Path A (`bn64`) needs `K >= 16384`
+and production K is 8192, so `sm90_splitk_cast_kernel` appears **zero** times in either profile.
+
+| run | split-K GEMM | reduce `v4t<2>` | combined share |
+|---|---|---|---|
+| 600M blublas | 50,688 inst, 1.451 s (1.3%) | 50,688 inst, 0.132 s (0.1%) | **1.449%** |
+| 1.7B blublas | 74,884 inst, 2.345 s (1.0%) | 74,884 inst, 0.220 s (0.1%) | **1.081%** |
+| 600M / 1.7B cuBLAS | none | none | 0 |
+
+So on the live path both designs are fp32 partials + fp32 deterministic ascending sum + exactly one bf16 rounding.
+**Precision is a tie there.** Ours wins on five other counts, all read off code:
+
+1. His **atomicAdd path is still reachable** at `bn64, K>=16384` — which 4B/7B dW shapes can hit. Ours has zero atomics
+   anywhere in the SM90 BF16 or `splitk/` directories.
+2. His scratch is `static float* s_sk_scratch` — **not `static thread_local`, no mutex**, while the tensor-map caches in the
+   very same file *are* `thread_local`. Two host threads on different streams race on the buffer and on the
+   `cudaFree`/`cudaMalloc` regrow. It is also one cache **per template instantiation** — the exact cache-explosion bug we
+   already found and fixed in §H27z.27 (61 FAILs at maxRelErr exactly 1.00000).
+3. His **split-K epilogue ignores `ldc`** — `c_off = (batch*M + global_row)*N + global_col`, literally `N`, while every
+   other epilogue in the same function uses his `c_ld`.
+4. His factor **silently downgrades**: `while (sk > 1 && (k_units % sk != 0)) --sk;`. Ours partitions exactly via
+   `splitk_begin/splitk_end`, written specifically to kill that class of bug.
+5. **Two of his six plan rows are not split-K at all** — the `{192, 1}` entries route through the split-K entry point with
+   `sk=1`, which launches the ordinary non-split kernel with a `_ws` config.
+
+**Decision: our split-K goes in whole — workspace, exact partition, separate deterministic reduce — and his atomicAdd path
+is dropped, not ported.** It is dead on every measured production shape and it is the one path that cannot be made
+bit-reproducible.
+
+#### THREE LATENT BUGS THE DIVE FOUND IN *OUR* SPLIT-K
+
+Recorded now so the port does not carry them across:
+
+- **(a) PDL fires before the partials are written.** `griddepcontrol.launch_dependents` is at OURS:6091, *inside* the
+  persistent tile loop and *before* the epilogue, i.e. before the workspace `STG` at :6457. The reduce's
+  `griddepcontrol.wait` therefore does not order those writes. The in-code comment at :6086-6090 claims "the wait side alone
+  guarantees correctness" — true for a dependent reading *inputs*, false for one reading *this kernel's own output*.
+  `Sm90Config_128x128x64_2x1_v_sk2_dh_rot2_pdl_d6_shfl` sets both `SPLIT_K=2` and `PDL=true` and is dispatched for TN
+  2048x512x16384. It likely never fires because a GEMM CTA owns a whole SM — but that is an occupancy accident, not a
+  guarantee. **Real hazard, live config.**
+- **(b) Odd-N misalignment in the partial store.** `ws_off = ((slice*batchCount + batch)*M + global_row)*N + global_col`
+  feeds an 8-byte `float2` store. `global_col` is always even, but `*N` is odd for odd rows when N is odd → misaligned.
+  The odd-N *last column* is handled; the row-start parity is not. No assert. Not reachable today (every split-K dispatch
+  entry has even N).
+- **(c) `WGMMA_SKEW` + an empty slice would hang.** The SKEW peel at :5885-5893 issues a wgmma and waits unconditionally,
+  justified by "k_iters is >= 1 by construction (ceil)" — false under split-K when `S > k_iters_total`. Not reachable today
+  (all shipped `sk*` configs set `_WGMMA_SKEW=false`).
+- Housekeeping: **`Splitk_gating.cuh` is dead code** — `choose_split_factor` and `floor_pow2` have zero callers and the
+  header is included by nothing. Split-K reaches production only through the hardcoded dispatch table.
+
+#### OTHER STRUCTURAL DIFFERENCES THE CRITIC SURFACED (not knobs, but they gate the port)
+
+- **Host-built Hilbert / tall-ratio tile-order map — ABSENT in ours.** He builds a `(row<<16)|col` map on the host, caches
+  16 slots, selects it when `grid_m == grid_n` or `grid_m > TALL_RATIO * grid_n`, and the kernel indirects through it.
+  `grep hilbert|tile_map` over ours: **0 hits**. We have only the closed-form `decode_mega_tile`.
+- **Fused bias epilogue + `launch_bgemm_sm90_addmm` — ABSENT in ours** (0 bias hits). This is a whole feature, not a knob.
+- **`ldc` never reaches our kernel** — honoured only inside the C tensormap. With `EPI_DIRECT_STG=true` and `ldc != N` our
+  raw store and beta read-back write the wrong addresses. His uses `c_ld` in both.
+- **TMA descriptor cache depth.** His: 32-slot thread_local pool with an address-only fast path. Ours: a **single** entry,
+  invalidated by any change of A/B/C/M/N/K/batch/ld — it thrashes when a model alternates shapes. (This is the A6a item
+  already staged in the P1 campaign.)
+- **Env-var switches don't match.** His `BLUBLAS_NONPERSISTENT`, `BLUBLAS_TMAP_STATS`, `BLUBLAS_NO_PDL`; ours only
+  `getenv("blublas_NO_PDL")` — lowercase prefix, so the two trees do not respond to the same variable.
+
+#### WHAT THIS CHANGES ABOUT STEP 8
+
+The port is no longer "add 3 missing knobs". It is four separable pieces, in dependency order:
+
+1. **`NUM_CONSUMER_WARPGROUPS` must become a real knob first.** It is the only absent knob that blocks expressing his
+   configs in our template, and `K_LOOP_TWO_LEVEL`'s BM≥256 restriction dissolves once it exists.
+2. **Carry our K-residue with the template.** His truncating `k_iters` is a silent wrong-answer for `K % BK != 0`.
+3. **Take our split-K whole; drop his atomicAdd path.** Fix our (a) PDL ordering before it ships.
+4. **Then the cheap ones:** `ldc` through to the kernel, `MIN_BLOCKS_PER_SM`, `EPI_DIRECT_STG`'s two ungated barriers,
+   `RASTER_SWIZZLE` range 0..4 → 0..6, the 32-slot tmap cache. `SPLITK_FP32_STORE` and `K_STEP_UNROLL` are skipped on
+   evidence: both are dead in his own tree.
+
+Bias/addmm and the Hilbert map are **features, not knobs** — they are additive, they break nothing, and they are deferred
+past the perf gate.
+
+#### §H69 CORRECTIONS — the cross-tree synthesis overturned three of the split-K claims above
+
+The four split-K reports each read only one tree. A fifth pass compared them side by side and corrected the record.
+
+**CORRECTION 1 — THE BIG ONE. Our split-K does not fire on the shapes production runs today, and the reason is our own
+commit from this morning.** Our single pinned split-K row is keyed to **K=16384**. Commit `7ebfc65`, dated today, is
+*"mini_batch 4 -> 2 — B*T drops 16384 -> 8192"* — the colleague-matched config. Our TN table has rows for 2048x512 at
+K = 128 / 1024 / 4096 / 16384 only (`dispatch_table.h:625-628`) and no 1536x512 row at all, so under B=2 the lookup misses,
+tier 2 runs, and `tree_tn` sends both `M*N = 1,048,576` (1.7B) and `786,432` (600M) down the `M*N <= 1.38714e+06` branch to
+**`TN_64x128x64`** (`:932-940`) — which our own table comment calls **"our WORST site", 455.5 TF = 70.3% of cuBLAS**
+(`:629-630`).
+
+His fires: exactly one `UseSplitK=1` GEMM + `sm90_splitk_reduce_kernel_v4t<2>` in each profile, on `{128,2}`.
+
+**So the reduce-algorithm choice is worth ~1.0-1.4% of GPU time. The dispatch-rule choice is worth the 70.3% -> 93-98%
+swing, on two GEMMs per layer.** That reverses the priority: his SELECTION front-end is the valuable half, not his back-end.
+
+**CORRECTION 2 — `ldc` is NOT a discriminator; I claimed it as a win for us and it is not.** His split-K epilogue does
+hardcode `N` at :1496 where his other paths use `c_ld` — confirmed. But **ours has the same assumption on the output side**:
+our reduce writes `C[idx]` flat over `batchCount*M*N` (`Splitk_reduce.cuh:135`). Neither implementation enforces `ldc == N`;
+neither is better here. Strike it from the ledger.
+
+**CORRECTION 3 — our own alpha comment is mathematically wrong, and must not be cited against him.** Our
+template:6440-6445 claims applying alpha per-slice "would raise it to the S-th power". It would not: `Σ α·pₛ = α·Σ pₛ`.
+His alpha-per-split (his:1416-1418) is arithmetically **correct**; it costs S rounded multiplies instead of one, which is
+zero difference when `alpha == 1` — the training case. What ours genuinely gains here is **beta**: his split-K
+*structurally cannot* do it (`if (beta != 0.0f) { launch_bgemm_sm90<...>(); return; }` at his:1950-1953).
+
+**REFINEMENT to the K-truncation finding.** His floor-twice `k_iters` at :1060 serves the non-split kernel too, and his
+dispatcher does gate `K % 64 == 0` upstream at 659/690/709/768/1120 with `K_padded` at 1854/1917/2018. **But no such gate
+stands in front of his split-K branch** — dispatcher:1658 gates only on `K >= 4096 && beta == 0.0f`. So the hazard is real
+but narrower than stated: it is a *split-K front-end* gap, not a whole-template gap.
+
+**THE ONE SAME-SHAPE DATA POINT POINTS AGAINST US.** Same shape (2048x512x16384), same tile (128x128), same split factor (2):
+**his reads 98.5% of cuBLAS, ours reads 93.6%.** Different harnesses, different dates, no matched clock lock, code comments
+rather than a paired run — so per `feedback_apples_to_apples_never_substitute` this must **not** be quoted as "his is 5
+points better". But it is the only same-shape data that exists and it does not favour us. The paired 12-round ABBA
+crossover that would settle it has never been run, by either side.
+
+**CREDIT WHERE DUE — our determinism IS measured, contrary to the log.** `dispatch_table.h:634-636`: *"60/60 bit-exact,
+5/5 runs identical (deterministic, fixed-order fp32 reduce, no atomics)"*. The research log has no such experiment; the code
+does.
+
+**INTERNAL INCONSISTENCY IN OUR OWN PIN, to resolve before any head-to-head.** `dispatch_table.h:629-634` says *"The
+no-cluster form beats 2x1_v by 6.1% (607.6 vs 572.6), so the cluster is a liability at this shape"* — yet the pinned config
+on that row is the **clustered** `TN_128x128x64_2x1_v_sk2_dh_rot2_pdl_d6_shfl`, while an unused no-cluster enum
+`TN_128x128x64_sk2 = 24` sits at `:542`. Either the comment is stale relative to the dh/rot2/pdl/d6/shfl knobs (consistent
+with `feedback_measure_against_dispatch_not_pins`) or the pin is wrong. This decides which of our configs is the fair
+contender.
+
+**REVISED SPLIT-K RECOMMENDATION: take OUR back-end, take HIS front-end, retire his path A.**
+- Back-end (`splitk/Splitk_reduce.cuh` + `Splitk_workspace.cuh`) → ours. B and C are the *same algorithm*, so the
+  tiebreakers are: exact ceil partition vs floor + silent `sk` downgrade; beta supported vs structurally impossible; one
+  budgeted process-wide arena vs a per-instantiation unbudgeted `static` (the §H27z.27 bug); dtype-generic and reusable by
+  SM103 vs bf16-only inline. **None of these is a performance claim.**
+- Front-end (`sm90_tn_splitk_plan` + the three wide-tile TN entry points) → **his**. His rule fires on the shapes production
+  runs. Ours does not, since this morning.
+- Path A → retired. Only non-deterministic accumulation in either tree, and his own 16-pair measurement beats it
+  (+13.76% mean, positive on all 16).
+
+**BLOCKING TEST before any of this ships:** the PDL ordering hazard in ours, on hardware. His tree does not have it — his
+reduce/cast launch with plain `<<<>>>`, no PDL attribute, so no early launch is possible. Ours opts in
+(`Splitk_reduce.cuh:149-152`). Fix by moving `griddep_launch_dependents()` past the partial stores under `USE_SPLIT_K`, or
+by launching our reduce without PDL under split-K; then prove it with `BLUBLAS_NO_PDL` set vs unset, >=20 repeats,
+bit-identity checked.
+
+Also dead, so do not port: the split-K in `Bgemm_sm90_swiglu_fused_template.cuh` (its `launch_bgemm_sm90_splitk` is `static`
+with no caller; the swiglu dispatcher has zero `splitk` matches). Maintenance liability only.
+
+#### §H69 FIX APPLIED — the split-K PDL ordering bug, and the SASS proof that nothing else moved
+
+**The bug.** `griddep_launch_dependents()` sat at template:6091, inside the persistent tile loop, after the
+mainloop and BEFORE the epilogue. Under `SPLIT_K` the epilogue is what writes the fp32 partials (the
+`USE_SPLIT_K` branch ~360 lines below), and our own `splitk_reduce_kernel` is a real PDL dependent that
+does `sk_griddep_wait()` and then reads exactly those partials. So we released the reduce from its wait
+before a single partial existed — and because the line is inside the tile loop, it fired on the FIRST
+tile, when almost the whole output was still unwritten.
+
+The old comment claimed this was safe: *"Correctness-invariant hint -- the wait side alone guarantees
+correctness, so this can move freely."* That is true for a dependent reading our INPUTS. It is false for
+a dependent reading THIS KERNEL'S OWN OUTPUT, because `launch_dependents` is the very thing that releases
+that dependent. The comment has been replaced with the correct reasoning.
+
+It has probably never produced a wrong answer, because one GEMM CTA fills a whole SM (§H27zzf) so the
+reduce's blocks cannot become resident early. That is an occupancy accident, not a guarantee.
+
+**The fix, two edits.**
+1. template:6115 — `if constexpr (Config::USE_PDL && !Config::USE_SPLIT_K) griddep_launch_dependents();`
+   Non-split-K keeps the A9 position exactly as before.
+2. After the persistent tile loop closes, still inside the consumer branch —
+   `if constexpr (Config::USE_PDL && Config::USE_SPLIT_K) { __threadfence(); griddep_launch_dependents(); }`
+
+`__threadfence()` is the release half and is not optional. The partials are plain STGs and the ordering we
+would normally get for free — grid completion — is precisely what PDL skips. One `MEMBAR.GPU` per consumer
+thread per KERNEL, not per tile.
+
+`USE_SPLIT_K` is `(_SPLIT_K > 1)`, so for every non-split config edit 1 reads `USE_PDL && !false` = `USE_PDL`
+(unchanged) and edit 2 folds away entirely. The non-split path is byte-identical by construction.
+
+**SASS PROOF — `Bgemm_sm90_tn_variants.cu`, sm_90a, CUDA 13.0, before vs after, per-kernel instruction
+stream compared with addresses and encoded bits stripped:**
+
+| | count |
+|---|---|
+| kernels in the TU | **481** |
+| byte-identical | **471** |
+| changed | **10** |
+| changed that are NOT split-K | **0** |
+| kernels with `SPLIT_K>1` | 33 — of these 10 changed, 23 identical |
+
+Template slot 35 (`_PDL`) separates the two groups perfectly: every changed kernel has `_PDL=1`, every
+unchanged split-K kernel has `_PDL=0`. So the set of kernels that moved is exactly
+`{SPLIT_K > 1} AND {PDL = true}`, which is what the edit says and nothing more.
+
+Inside a changed kernel the instruction-level effect is exactly the intent:
+
+|  | before | after |
+|---|---|---|
+| `PREEXIT` (= `griddepcontrol.launch_dependents`) | index **488** | index **941** |
+| `MEMBAR.GPU` (= `__threadfence()`) | **absent** | index **937**, immediately before PREEXIT |
+
+The trigger moved ~450 instructions later, past the epilogue, with the release fence in front of it.
+Total instruction count is unchanged at 1,576 because ptxas dropped a now-redundant `BSSY` and the early
+`@P0 EXIT` became `@P0 BRA <tail>` to reach the new block.
+
+**Scope: 14 configs combine split-K with PDL; 5 of them are live dispatch-table entries.**
+
+**Still open (needs the GPU, not yet run):** the hardware confirmation — the `sk2 ... pdl_d6_shfl` pin at
+2048x512x16384, `BLUBLAS_NO_PDL` set vs unset, >=20 repeats, bit-identity checked. The fix is proven correct
+at the SASS level for what it intends to do; it has not yet been proven to change nothing measurable.
+
+---
+
+### §H70 — **HYBRID STEP 8a COMPLETE: all 13 shared features compared by CODE, whose is better, and why. Ours 7, his 3, merge 3. Plus the RASTER_SWIZZLE cap widened and blocker 1 scoped.**
+
+Step 8a asked one question, per the brief (*"in other features which he and we have both, then whichever best we will take that"*):
+for every mechanism BOTH trees implement, read both and pick the better one. Judged on, in priority order:
+correct on more inputs; works on more tiles without an assert blocking it; fewer instructions or less smem/registers;
+composes with more knobs. Never by name. This was done by hand with grep — the 16-agent attempt hit the account spend
+limit and returned 1 of 16 results, so the method changed, not the standard.
+
+| # | feature | winner | the deciding fact |
+|---|---|---|---|
+| 1 | TMA descriptor cache | **HIS** | 32-slot pool + `cuTensorMapReplaceAddress` fast path (his :1823-1829). Ours is ONE entry (:6938) and rebuilds through the driver on every call. Training reuses the same shape every step with new activation pointers, so we miss 100% and he hits 100%. |
+| 2 | integer divide | OURS | CUTLASS mul-shift, exact, uniform-datapath capable (:4132). His is an fp64 reciprocal + a ±1 fixup (his :479-485) on the vector pipe. |
+| 3 | producer/consumer registers | MERGE | OURS asserts the TOTAL fits (:405-413); HIS has no such check. HIS asserts each VALUE is legal (%8, 24..256, his :562/:568); OURS does not. Take both. Keep OUR 40/232 defaults — his are 0/0, which silently DISABLES the split. |
+| 4 | pipeline depth | OURS | ours reserves `SMEM_STATIC_RESERVE = 1024` (:828) for the static mbar arrays before dividing. His divides the full 232448 and reserves nothing, though he declares the same mbars (his :1012-1013) plus a bias mbar. He survives on the division remainder — luck, not a guard. |
+| 5 | persistent grid size | MERGE | ours queries `cudaOccupancyMaxActiveClusters` + CUTLASS GPC fallback and rounds to whole clusters (§H16.13, worth ~36 pts on size-4). His has NO cluster support. But his can do >1 CTA/SM and has a `BLUBLAS_NONPERSISTENT` debug escape. Ours as the base + both of his bits. |
+| 6 | deferred store wait | **HIS** | identical scheme both sides — wait for tile N's store at the START of tile N+1. But that covers every copy EXCEPT the last, which has no next tile. HIS drains it after the loop (his :1598). OURS has no wait outside the tile loop at all (every site 6165..6827 is inside). CUTLASS drains in the same place. |
+| 7 | TMA box over 256 | OURS | ours keeps the chunk a multiple of the swizzle atom (:3370); his only checks it divides evenly. **But his path is never dispatched** (his own comment: "NOT wired into the dispatcher -- standalone-testable only"), and I could NOT prove his 160-wide box illegal — for K-major A the swizzled dim is BK and A_BOX_M is the OUTER dim, which only needs <=256. Ours wins on being the exercised, documented one. NOT on his being wrong. |
+| 8 | direct store | HIS | HIS gates BOTH warpgroup barriers on the knob (his :1324, :1566); OURS leaves both UNGATED and gates only the fence (:6166, :6734, :6741), so ours still emits 2x BAR.SYNC(128) + 1x WARPSYNC per tile that his does not. Ours is a strict subset. **DEAD BOTH SIDES** — no config of his sets it, ours has 1 config and 0 dispatch rows. Free choice. |
+| 9 | tile order | MERGE | ours is division-FREE in the common case (mask + shift, :4193-4194) and can group either axis via RASTER; his `sm90_decode_tile_supergrouped` uses plain `/` and `%` on runtime values, paying a software divide per tile. But ours caps the group at 16 and he ships 32 and 64. Our maths, his range. |
+| 10 | descriptor hoisting | OURS | 3 modes (DESC_HOIST 124 configs, DESC_WALK 41, DESC_FROZEN 2; **30 live dispatch rows use `_dh`**) vs his single `HOIST_DESC`. DESC_WALK builds every k16 descriptor as an independent base+constant — the cuBLAS structure — where his walks a serial mutating chain (his :1244-1247). |
+| 11 | swizzle bytes | OURS | per-operand `A_SWIZZLE`/`B_SWIZZLE` auto-derived by a port of CUTLASS's `ss_smem_selector` (:3390/:3400), with an override. His is ONE global value welded to BK — his :117 requires `BK == SWIZZLE_BYTES/2`, so SW128 forces BK=64. Zero of his configs use anything but 128. His weld is the same over-strict assert we already relaxed in §H66. |
+| 12 | k-loop unroll | OURS (with a weld to remove) | same shape both sides. Ours is `static_assert`ed onto the SKEW mainloop only (:699-700), and SKEW needs MAX_ATOMS>=2 = BM>=256. **51 of his 53 aliases are BM<=192**, so our version cannot be built on nearly any of them. His works at any BM. Take ours, drop the weld — it dissolves with blocker 1. |
+| 13 | chunked epilogue | OURS | ours parametrises BOTH the slot count (EPI_STAGES) and chunk width (EPI_TILE_N); his hardcodes RING_SLOTS=2 and pins the width to the swizzle atom. Ours also has conditional `EPI_WG_SLOTSETS` (:648) fixing the §H27z.66 corruption. **One thing his does better:** he carries the slot index ACROSS tiles (`ring_base`, his :1182/:1562); ours restarts every tile. Parked as a perf idea. |
+
+**Score: OURS 7 · HIS 3 · MERGE 3.** Not one-sided in either direction, which is the point of having done it by code.
+
+#### WHAT WE TAKE FROM HIM — the concrete port list
+
+1. **32-slot TMA descriptor cache with the address-only fast path.** Biggest single item.
+2. **The tail drain** after the persistent tile loop.
+3. **Per-value register asserts** (`%8`, `24..256`) on both `warpgroup_reg_alloc`/`_dealloc`.
+4. **`BLUBLAS_NONPERSISTENT` escape** and the `MIN_BLOCKS_PER_SM` grid multiplier (with his
+   `SMEM_BYTES * MIN_BLOCKS_PER_SM <= SMEM_BUDGET` assert if that knob comes across).
+5. **His `EPILOGUE_DIRECT_STORE` barrier gating**, if that knob is ever enabled.
+
+#### CHANGE MADE THIS SESSION — RASTER_SWIZZLE cap 4 -> 6
+
+```
+-    static_assert(_RASTER_SWIZZLE >= 0 && _RASTER_SWIZZLE <= 4,
+-                  "RASTER_SWIZZLE is a LOG2 group size (0..4 => group 1..16)");
++    static_assert(_RASTER_SWIZZLE >= 0 && _RASTER_SWIZZLE <= 6,
++                  "RASTER_SWIZZLE is a LOG2 group size (0..6 => group 1..64)");
+```
+
+The cap was never a property of the maths, and that was verified before changing it rather than asserted:
+`decode_mega_tile` is masks and shifts on `S = 1 << SW` (`group = qf >> SW`, `idx & (S-1)`, `idx >> SW`) and
+`make_mega_div`'s tail is `slow_ex & (S-1)` with `md.tail = make_fastdiv(t ? t : S)` — every one of those scales to any
+power of two, and nothing else in the file reads `RASTER_SWIZZLE`. (The `SW` template parameters at :3962/:4028 are the
+smem SWIZZLE, a different quantity — checked, not assumed.)
+
+Why it matters: his `SUPER_M` ships at 32 and 64, and 32 is his DEFAULT for the 192-wide tile. `SUPER_M = S` maps to
+`RASTER=1, RASTER_SWIZZLE=log2(S)` — `RASTER=1` is the arm where M is the grouped axis (`slow_ex = mega_grid_m`,
+`mega_row = slow`, :4178/:4199), which is what SUPER_M always groups. Without the widening we cannot express his
+192-tile default at all.
+
+#### BLOCKER 1 SCOPED — the warpgroup-count refactor is SMALLER than our own warning implies
+
+Our file says at :2617-2630 that this needs *"a real WGrid/epilogue/barrier-accounting change"* and that the refactor
+*"must not be started"*. That note was written when it was a side quest. Scoping it properly:
+
+**Already parametric — no work needed.** `NUM_WARPGROUPS` (:384), `PRODUCER_WARPGROUP` (:386), the register budget
+assert (:413), `BM % NUM_CONSUMER_WARPGROUPS == 0` (:423), `EPI_WG_SLOTSETS` (:655), the two STORE_BUF sizings
+(:816-817), and the mbarrier arrive count (:5075) all already read the constant. Only :382 hardcodes `= 2`.
+
+**The actual work, three places, all the same root:**
+- `WGrid::SPLIT_M = (MATOMS % 2 == 0)` (:3483) and `EPI_SPLIT_M` (:654) — the `% 2` is the warpgroup count.
+- `NCHUNKS_WG0 = SPLIT_M ? NCHUNKS : (NCHUNKS + 1) / 2` (:3522) — the `/2` is the warpgroup count.
+
+**NOT the warpgroup count, do not touch:** `CREGS = BN / 2` (:522) and `CREGS_CHUNK = WGMMA_N / 2` (:5447) are the bf16
+accumulator packing. Two registers per lane hold two columns; that `/2` stays whatever the warpgroup count becomes.
+
+So the refactor is the work-grid split and the epilogue chunk split generalising from "2 warpgroups" to N — which is
+what the warning said, but it is three expressions, not a rewrite. The §H27zo probe the warning gated on
+(`256x128 sk4` reaching WG_MATOMS=2 through a bigger BM) was the right call at the time; it is no longer the only route.
+
+#### §H70 CORRECTIONS — three claims of mine in this session were wrong, checked against code
+
+**CORRECTION 1 — "his tree has ZERO clusters/multicast" is WRONG.** That grep was run over his
+*warpspecialized template only*. The vendored tree has cluster and TMA multicast in **separate template
+files**, and they are COMPILED, not dead:
+- `Bgemm_sm90_cluster_nn_template.cuh` — included by `Bgemm_sm90_{nn,nt,tn}_variants.cu`,
+  `Bgemm_sm90_dispatcher.cu`, `Bgemm_sm90_cluster_nn_v2_template.cuh` and the swiglu template.
+- `Bgemm_sm90_cluster_nn_v2_template.cuh` — included by the three variants files and `Bgemm_sm90_bf16.cuh`.
+
+Its own header says *"EXPERIMENTAL: 2-CTA thread block cluster + TMA multicast for NN's A operand"*, and the
+body does real multicast mechanics (remote mbar arming via `mapa.shared::cluster`, rank-0 multicast TMA).
+So the correct statement is: **his warpspecialized template cannot cluster; his tree can, through two separate
+older experimental templates that only do 2-CTA, A-operand, NN-oriented multicast.**
+
+This ADDS work to step 8 that was not on the list: those two files are live dispatch targets, so replacing
+them with our knobs is a dispatch change, not just a template change.
+
+**CORRECTION 2 — "KLOOP_UNROLL is blocked on BM>=256, 51 of his 53 tiles" is WRONG, twice.**
+- The BM figure: `MAX_ATOMS = WG_MATOMS = SPLIT_M ? MATOMS/2 : MATOMS`. Computed for real:
+  BM=64 -> 1 (blocked), BM=128 -> 1 (blocked), **BM=192 -> 3 (LEGAL)**, BM=256 -> 2 (legal), BM=320 -> 5 (legal).
+  Our own assert message says it outright: *"192x192 has 3; a SPLIT_M 128x256 has 1"*. So the blocked set is
+  BM in {64,128} = **45 of his 53 tiles**, not 51, and 192 was never blocked.
+- The direction: more warpgroups makes `WG_MATOMS = MATOMS/NCW` **smaller** under an M-split. What would
+  unlock BM=128 is `NUM_CONSUMER_WARPGROUPS = 1` (MATOMS 2 / 1 = 2), not 3 or 4.
+
+**CORRECTION 3 — the whole justification is void anyway: KLOOP_UNROLL is already REFUTED and CLOSED
+(§H27ay, measured).** total instructions -6.8% but **VECTOR +36%**, performance FLAT; the no-dw variant is
+-13.4 points. The standing instruction is *"Do NOT extend KLOOP_UNROLL to the non-SKEW mainloop. Cancelled."*
+So "unblock KLOOP_UNROLL" is not a reason to do anything.
+
+**CONSEQUENCE — BLOCKER 1 IS DEMOTED. It is a performance option, not a blocker.**
+Its two stated justifications both fail:
+- *unblock KLOOP_UNROLL* — refuted above, and we do not want KLOOP_UNROLL.
+- *express his configs* — his `Sm90Config_256x128x64_2WG` overrides to 2 warpgroups, which is **already our
+  default**. What we cannot express is his DERIVED defaults (BM=192 -> 3 WGs, BM=256 -> 4 WGs). Those are
+  alternative arrangements of tiles our tile union already covers at 2 WGs, so this is a measurement question,
+  not a coverage gap.
+
+The refactor is also bigger than §H70 first said. The two-warpgroup assumption is not three expressions: the
+work grid is written as an explicit PAIR — `NCHUNKS_WG0`/`NCHUNKS_WG1` (ceil/floor), `WG_NCHUNKS`,
+`ASYMMETRIC_N`, `WG_MATOMS = MATOMS/2`, plus the mainloop's 2-way specialisation
+(`if (g==0) run_mainloop(IC<0>{}); else run_mainloop(IC<1>{})`) and the epilogue's `row0 = g*WG_MATOMS*64`.
+Generalising is clean in principle (`nchunks(g) = NCHUNKS/NCW + (g < NCHUNKS%NCW)` reduces to today's
+ceil/floor at NCW=2) but it is a real change across WGrid, Config, mainloop and epilogue.
+
+**REVISED STEP-8 ORDER** — cheapest and safest first, all with a byte-identity SASS proof:
+1. the tail drain (one line, closes the §H70 #6 open door)
+2. per-value register asserts (two lines)
+3. his 32-slot TMA cache + address-only fast path (the real win)
+4. `BLUBLAS_NONPERSISTENT` + `MIN_BLOCKS_PER_SM`
+5. replace his two experimental cluster templates with our multicast/cluster knobs (dispatch change)
+6. `NUM_CONSUMER_WARPGROUPS` — LAST, and only if a measurement says his 3/4-WG arrangements win.
+
+#### coopA / coopB — SETTLED LONG AGO, AND WE DID NOT COPY THE MISTAKE
+
+Re-stating because it keeps coming up. §H17 PROVED (not inferred) that **coopA/coopB is NOT multicast**, and
+explicitly retracted an earlier planning note that claimed it was. The proof is from our own capture of 60,733
+cuBLAS kernel names: `1x2_h_bz_coopB` is the single most common kernel (23,325 shapes), and a 1x2 cluster
+multicasts **A** — so if `coopB` meant "B-multicast" that kernel could not exist.
+
+What it actually tracks is **tile shape**: coopA on 128x256 and 256x128 (both dims even multiples of 64),
+coopB on 192x192 / 320x128 / 192x128 / 128x192 (a dim is an ODD multiple of 64), no tag on 112x128 / 128x128 /
+176x128. Cooperative vs Pingpong are two CUTLASS *schedules* (separate files, not a flag); multicast is a
+separate axis derived only from cluster shape. §H12.5's adopted recommendation stands: **do not implement a
+coopA/coopB axis.**
+
+So OUR side never faked anything — we have honest, independent knobs: `_MULTICAST_A`/`_MULTICAST_B`
+(template slots 7/8) with `NEEDS_A_MULTICAST = MULTICAST_A && (CLUSTER_N > 1)` and
+`NEEDS_B_MULTICAST = MULTICAST_B && (CLUSTER_M > 1)` — A shared across the N-peers, B across the M-peers,
+any CLUSTER_M x CLUSTER_N, all three layouts, validated. The `coopB` NAME was Kota's, on a cluster template
+file, and that file was deleted in §H65; only stale comments referencing it remain in his dispatcher and
+`cluster_nn_template.cuh`, and those go with the files in item 5 above.
+
+### §H71 — **HYBRID STEP 8, ITEMS 1-3 LANDED AND SASS-PROVEN. Tail drain, setmaxnreg value guards, and the descriptor cache — with his 32 slots deliberately NOT copied.**
+
+All CPU-only. Each item built and diffed per-kernel against the previous build, addresses and encoded bits
+stripped, so the claim "nothing else moved" is measured rather than asserted.
+
+#### ITEM 1 — TAIL DRAIN (the §H70 open door)
+
+Added after the persistent tile loop, inside the consumer branch:
+```
+if constexpr (Config::EPI_LATE_STORE_WAIT && !Config::USE_SPLIT_K && !Config::EPI_DIRECT_STG)
+    if (lane_in_wg == 0) tma_store_wait<0>();
+```
+Guard mirrors the hoisted wait at :6163 — the exact set that can leave a store in flight. Split-K writes
+fp32 partials with plain STG and issues no TMA store; `EPI_DIRECT_STG` has no smem staging; `EPI_WARP_LOCAL`
+already drains unconditionally per tile at :6443. lane 0 alone suffices: a thread inside `wait_group` holds
+the CTA resident, which is the entire point.
+
+**SASS PROOF (`Bgemm_sm90_tn_variants.cu`, sm_90a, CUDA 13.0):**
+
+| | |
+|---|---|
+| kernels | 481 |
+| identical | **426** |
+| changed | **55** |
+
+The changed set is not merely plausible — it was solved for. Searching every (slot_a, slot_b) pair for a
+predicate matching the observed set exactly returns:
+`(slot 32 == 1) AND (SPLIT_K <= 1) AND (slot 36 == 0)` = `EPI_LATE_STORE_WAIT && !USE_SPLIT_K &&
+!EPI_DIRECT_STG` — character for character the guard written, no kernel more, no kernel fewer.
+
+Per-kernel opcode delta: **`DEPBAR.LE` +1** (the `cp.async.bulk.wait_group.read 0`), `@P3` +1 (the lane-0
+predicate), `NOP` +6 (alignment). One instruction per KERNEL, not per tile.
+
+#### ITEM 2 — setmaxnreg PER-VALUE GUARDS (ported from the production BLAS)
+
+`static_assert(RegCount % 8 == 0 && RegCount >= 24 && RegCount <= 256)` on both `warpgroup_reg_alloc` and
+`warpgroup_reg_dealloc`, and the template parameter changed `uint32_t -> int` so a negative fails the range
+test instead of wrapping. Config already checked the TOTAL (:405-413); nothing checked the individual value,
+and an illegal one is not a hard error — ptxas silently drops it as *"(C7507) setmaxnreg ignored"*, which
+:2035-2038 records as the failure mode that cost two days. Build passes, so every shipped config is already
+legal; this guards the next one. Zero runtime cost.
+
+#### ITEM 3 — DESCRIPTOR CACHE: POOL + ADDRESS-ONLY REPLACEMENT, RESIZED
+
+The valuable half is the **address-only path**: when a cached entry matches on everything except the
+pointers, `cuTensorMapReplaceAddress` patches the three addresses instead of three
+`cuTensorMapEncodeTiled` driver calls. Training runs the same shape every step with different activation
+buffers, so the old single-entry cache missed on essentially every call. This works at ANY pool size,
+including one.
+
+**HIS 32 SLOTS WERE DELIBERATELY NOT COPIED, on measurement.** This TU's `.tbss` is **244,224 bytes with one
+slot per cache** — ~550 live cache instances, because we instantiate the launcher per (Config, Layout) and
+carry 250+ config aliases against his 53. The pool is linear in thread-local storage, PER HOST THREAD:
+
+| slots | this TU | whole library (~3.5 TUs) |
+|---|---|---|
+| 1 | 0.23 MB | 0.8 MB |
+| **4 (chosen)** | **0.93 MB** | **3.3 MB** |
+| 8 | 1.86 MB | 6.5 MB |
+| 32 (his) | 7.45 MB | **26 MB** |
+
+32 is cheap in his tree and expensive in ours purely because of instantiation count. 4 keeps all of the
+address-only path and most of the multi-shape benefit. Behind `#ifndef BLUBLAS_SM90_TMAP_SLOTS` so it is
+retunable at build time without touching code.
+
+**MEASURED AFTER THE CHANGE:** `.tbss` 244,224 -> **1,037,952 bytes** (4.25x, the extra over 4x being the two
+`int` counters per instantiation) = 0.99 MB for this TU, matching the 0.93 MB prediction.
+
+**SASS PROOF: 481 kernels, 481 IDENTICAL, 0 CHANGED.** The cache is entirely host-side, so any device-code
+change would have meant a mistake. There was none.
+
+#### PERFORMANCE AND PRECISION EXPOSURE OF ITEMS 1-3 PLUS THE §H69/§H70 EDITS
+
+**Precision: no exposure. None of the five edits touches an add, a multiply, a rounding or an accumulation
+order.** The single theoretical path to a different result is `cuTensorMapReplaceAddress` producing a
+descriptor unlike a fresh encode; it is the documented API for exactly this and failure falls back to a full
+rebuild, but it goes on the validation list rather than being waved away.
+
+**Performance:**
+- setmaxnreg guards, RASTER_SWIZZLE 4->6: **exactly zero**, both proven by SASS (no kernel changed).
+- Tail drain: **near zero** — one instruction per kernel at the point where nothing remains to overlap, on a
+  copy that has already had a full epilogue to progress.
+- Descriptor cache: **expected gain**, host-side — 3 pointer patches replacing 3 driver encodes per call.
+  Costs a <=4-iteration lookup and ~3.3 MB TLS per thread.
+- **PDL fix (§H69): a real, UNMEASURED cost, and the only one.** Firing the trigger after the tile loop gives
+  the reduce less head start. §H27zu measured the GEMM->reduce transition at **+2,336 ns** against cuBLAS's
+  **-192 ns** and called it V1's entire remaining gap, so this is not nothing. Contained by two facts: it
+  affects **split-K only** (5 dispatched entries, 1.0-1.4% of GPU time), and the alternative — his design,
+  no PDL on the reduce at all — surrenders *all* the overlap where ours keeps the tail-stagger overlap. Of
+  the two correct options this is the faster one.
+
+**OWED ON HARDWARE, one run, one pinned shape:** (a) split-K pin with and without the PDL fix, bit-identity
+plus timing; (b) address-replace path bit-identical to a full rebuild; (c) no regression from the tail drain.
+
+### §H72 — **THE NAMESPACE FOR THE HYBRID MERGE, AND WHY THE COEXISTENCE PLAN WAS DROPPED. `namespace blublas_ws` is a SASS-proven no-op (474 of 481 kernels byte-identical, the other 7 are the tail-drain exclusion); the plan it served died on ADL and one shared include guard.**
+
+CPU-only. This is the section the `§H72` comments in the template point at.
+
+#### WHAT WAS DONE
+
+`Bgemm_sm90_warpspecialized_template.cuh` is wrapped in `namespace blublas_ws { ... }`. The namespace opens
+after the last `#include` (~:52, after the splitk includes) and closes at end of file. After the close:
+```
+#ifndef BLUBLAS_SM90_NO_GLOBAL_USING
+using namespace blublas_ws;
+#endif
+```
+In our own tree the `using` re-exports everything, so no existing reference changes.
+
+The splitk headers stay global on purpose. Their names (`splitk_reduce_kernel`, `launch_splitk_reduce`) do
+not collide with his (`sm90_splitk_reduce_kernel_v4t`), and keeping them global keeps the workspace arena a
+single process-wide instance.
+
+**SASS PROOF (`Bgemm_sm90_tn_variants.cu`):** kernels matched by demangled name with `blublas_ws::` stripped.
+
+| | |
+|---|---|
+| kernels | 481 |
+| byte-identical | **474** |
+| differed | **7** |
+
+The 7 are NOT the namespace. Each shows `DEPBAR.LE -1, @P3 -1` — the warp-local tail-drain exclusion made
+after the previous build — and they are exactly the 7 configs with `EPI_WARP_LOCAL=true`. So the namespace
+is a proven no-op. **MEASURED.**
+
+#### WHY IT WAS BUILT — and why that plan was dropped
+
+The purpose was to let both templates live in one translation unit during a gradual migration: his in the
+global namespace, ours in `blublas_ws`. A coexistence probe failed. Reading the errors made two causes clear.
+
+**(1) Argument-dependent lookup.** `prefetch_tma_descriptor(&A_tmap)` was ambiguous between his global one
+and our `blublas_ws` one. The argument type `CUtensorMap` lives in the global namespace, so ADL adds global
+back into the lookup even for a call made inside `blublas_ws`. **38 function names are shared between the two
+trees**, and any of them called with a `CUtensorMap*` or `__nv_bfloat16*` argument hits the same trap. A
+namespace does not isolate a function whose argument types are global.
+
+**(2) A shared include guard.** BOTH templates guard `enum class Sm90Layout` with the SAME macro,
+`SM90_LAYOUT_DEFINED` (his :41, ours :71). Whichever is included second has its enum skipped entirely.
+
+Fixing both across 8,500 lines was judged fragile. The plan was DROPPED.
+
+#### WHERE THAT LEAVES IT
+
+The namespace is kept as hygiene. It is no longer load-bearing. Copies of our template (as
+`Bgemm_sm90_blu_template.cuh`), our registry (as `Bgemm_sm90_blu_registry.cuh`) and our `splitk/` directory
+were placed in the vendored tree. They are present but NOT wired up.
+
+| item | state |
+|---|---|
+| `namespace blublas_ws` in our template | done; SASS no-op, 474/481 identical, 7 = tail-drain exclusion |
+| splitk headers | global on purpose, no collision with his names |
+| both templates in one TU | DROPPED — ADL on `CUtensorMap*` / `__nv_bfloat16*` (38 shared names) + shared `SM90_LAYOUT_DEFINED` |
+| `Bgemm_sm90_blu_template.cuh`, `Bgemm_sm90_blu_registry.cuh`, `splitk/` in the vendored tree | present, not wired up |
+
+### §H73 — **THE A1B0 WIRING FIX. The `alpha==1 && beta==0` epilogue was already written, already correct, and switched OFF in every kernel we ship. Wiring it as a kernel template parameter flips the vector-instruction comparison from 2 of 13 tiles to 13 of 13.**
+
+#### THE PROBLEM — a correct mechanism that nothing could ever select
+
+Our template already had `EPI_A1B0` (template slot 37, declared :252, aliased :732). It removes the whole
+alpha multiply and the whole C read-back, through five `if constexpr` sites in the epilogue. It has been
+correct since §H27zzn. The trouble was that it was a **CONFIG** slot, and the comment sitting on one of its
+use sites said exactly why that made it unusable:
+
+> "CORRECTNESS: only valid when alpha==1 && beta==0. The caller MUST guarantee it; a dispatcher may not
+> select this config otherwise."
+
+A dispatcher only knows shapes. It never sees the runtime values of alpha and beta, so nothing could
+guarantee the precondition. The result is what you would expect: **2 of 505 config aliases set the slot, and
+ZERO dispatch-table rows reach one.** Every kernel we shipped carried a beta epilogue that never executed.
+
+**MEASURED COST, 128x256x64, our kernel against the production BLAS's, static SASS:** FFMA **+128**, FMUL
+**+128**, PRMT **+64**, LDG **+62**. That is about **382 instructions**, more than half our entire excess on
+that tile, and all of it dead at `beta == 0`.
+
+#### HOW THE PRODUCTION BLAS SOLVES IT — we copied the WIRING, not the code
+
+He makes beta a **kernel template parameter**, compiles both instantiations —
+`bgemm_sm90_kernel<Config, Layout, false>` and `<..., true>` (his :1865-1866) — and picks between them inside
+the launcher on `const bool has_beta = (beta != 0.0f)` (his :1873). His dispatcher never sees it. The choice
+is made at the one place that actually holds the runtime values.
+
+#### THE FIX — three edits, all in our template
+
+1. The kernel gains a third template parameter, defaulted so that nothing else changes:
+   `template<typename Config, Sm90Layout Layout, bool A1B0_FORCE = false>`.
+2. Inside the kernel: `constexpr bool EPI_A1B0 = Config::EPI_A1B0 || A1B0_FORCE;` and all five epilogue sites
+   now read that local instead of `Config::EPI_A1B0`.
+3. The launcher compiles both and picks per call:
+```
+auto k_gen  = bgemm_sm90_kernel<Config, Layout, false>;
+auto k_fast = bgemm_sm90_kernel<Config, Layout, !CFG_A1B0>;
+const bool use_fast = (alpha == 1.0f && beta == 0.0f);
+```
+   The exact float compares are correct here, not sloppy: the specialisation is valid only for a literal 1.0
+   and a literal 0.0, so an exact compare is the right test.
+   `cudaFuncSetAttribute` for max dynamic smem is now called on **BOTH** kernels. Setting it on only the one
+   launched first fails with an opaque *"invalid argument"* the first time alpha or beta flips.
+
+**OURS FOLDS MORE THAN HIS.** His `HasBeta` gates beta only. Ours folds alpha as well, which additionally
+removes the 128 FMUL.
+
+#### VERIFICATION — `Bgemm_sm90_tn_variants.cu`, sm_90a, CUDA 13.0
+
+Per-kernel SASS compared with addresses and encoded bits stripped. 481 kernels became **956** (477 general +
+475 fast; 2 configs already pinned `EPI_A1B0` so their two instantiations coincide, plus 4 split-K reduce
+kernels).
+
+| check | result |
+|---|---|
+| CHECK 1 — all 477 general kernels vs before the change | **BYTE-IDENTICAL. 0 different.** |
+| CHECK 2 — one 128x256x64 example, general -> fast | 2304 instr -> **1464 instr (-840)** |
+
+Per-opcode on that example: FMUL 256->0, FFMA 128->0, LDG 64->0, PRMT 64->0, IMAD 173->59, ISETP 115->35,
+VIADD 86->21, F2FP 128->64, BRA 154->122.
+
+**COST:** compile time for that one TU went to **245 s**, roughly double; the object went **7.35 MB ->
+10.6 MB**. The library has four such files.
+
+#### THE RESULT — the conclusion from earlier in the session REVERSES
+
+Apples-to-apples means his beta-false kernel (what his launcher actually picks when `beta == 0`) against our
+A1B0 kernel (what ours now picks under the same condition), leanest variant on each side, counting **VECTOR**
+instructions only — uniform ops run once per warp, vector ops drive 32 lanes, per
+`feedback_vector_not_total_instructions`.
+
+| tile | HIS vector | OURS before | OURS after | change |
+|---|---|---|---|---|
+| 128x16x64 | 785 | 528 | **440** | -44% |
+| 128x32x64 | 827 | 605 | **446** | -46% |
+| 128x64x64 | 720 | 735 | **465** | -35% |
+| 128x128x16 | 1051 | 1152 | **694** | -34% |
+| 128x128x32 | 1033 | 1184 | **711** | -31% |
+| 128x128x64 | 835 | 854 | **549** | -34% |
+| 128x160x64 | 871 | 1279 | **695** | -20% |
+| 128x192x64 | 950 | 1318 | **630** | -34% |
+| 128x256x64 | 1067 | 1595 | **708** | -34% |
+| 192x128x64 | 827 | 1445 | **715** | -14% |
+| 192x192x64 | 1158 | 1344 | **749** | -35% |
+| 256x128x64 | 1095 | 1420 | **615** | -44% |
+| 320x64x64 | 904 | 1382 | **766** | -15% |
+
+**Ours is now leaner on 13 of 13 tiles. It was 2 of 13 before the fix.**
+
+#### CAVEATS, STATED PLAINLY
+
+- **(a) This is STATIC instruction counting, NOT a speed measurement.** Our own standing rule is samples, not
+  static counts, and instructions that never execute cost nothing.
+- **(b) The comparison picks the LEANEST kernel on each side.** We have 505 variants against his 53, so the
+  leanest of ours may not be the one actually dispatched. The honest next check is dispatched-config against
+  dispatched-config.
+- **(c) TN translation unit only.**
+- **(d) NOT PROVEN on hardware. Nothing here has been measured on a GPU.**
+
+#### METHOD NOTE
+
+The first pass concluded *"we are missing his HasBeta and should port it"*. That was wrong. We already had
+the mechanism; it was simply switched off everywhere. Only reading the code found that. Counting opcodes said
+where to look. It could not say why.
+
+### §H74 — **READING HIS TILED-VARIANT CODE. His `2WG` knob is a climb back to what we already do by default, and the real difference is the MN-major TMA descriptor: 42 UTMALDG on our 128x256 against 14 on his.**
+
+#### WHAT `_NUM_CONSUMER_WARPGROUPS` ("2WG") ACTUALLY IS — read from code, not from the name
+
+`NUM_CONSUMER_WARPGROUPS = (_NUM > 0) ? _NUM : (_BM / 64)` (his :82-83); `NUM_WARPGROUPS = NCW + 1` (his :85);
+`NUM_THREADS = NUM_WARPGROUPS * 128` (his :86); `PRODUCER_WARPGROUP = NCW` (his :87); `WG_M = BM / NCW`
+(his :123); `CHUNKS_PER_WG = WG_M / 64` (his :126), with `static_assert(WG_M % 64 == 0)`.
+
+So his design is **always an M-split**. Each consumer warpgroup takes a horizontal slice of M, and the
+warpgroup count grows with the tile. Ours hardcodes 2 consumer warpgroups (:382) but **chooses the split
+axis**: `SPLIT_M = (MATOMS % 2 == 0)` — M-split when the m64-atom count is even, N-split when it is odd.
+
+| tile | HIS default | OURS |
+|---|---|---|
+| BM=64 | 1 WG, 1 atom/WG, 256 threads | 2 WG, 1 atom/WG, 384 threads (N-split) |
+| BM=128 | 2 WG, 1 atom/WG, 384 threads | 2 WG, 1 atom/WG, 384 threads (M-split) |
+| BM=192 | 3 WG, 1 atom/WG, 512 threads | 2 WG, 3 atoms/WG, 384 threads (N-split) |
+| BM=256 | 4 WG, 1 atom/WG, 640 threads | 2 WG, 2 atoms/WG, 384 threads (M-split) |
+| BM=320 | 5 WG, 1 atom/WG, 768 threads | 2 WG, 5 atoms/WG, 384 threads (N-split) |
+
+**His atoms-per-warpgroup is 1 on every tile.** One atom is 4 wgmma, so he gets 4 wgmma per drain everywhere.
+§H27zo records that cuBLAS runs 2 warpgroups x 2 atoms = **8 wgmma per drain**, and that more wgmma per drain
+keeps the tensor pipeline better fed. Ours reaches 8, 12 and 20 on the larger tiles.
+
+**Registers per thread (65536 / NUM_THREADS):** his BM=128 **170**, BM=192 **128**, BM=256 **102**, BM=320
+**85**. Ours is **170 on all of them**. His own `CONSUMER_REGS` values shrink to compensate — 240 at NCW=2,
+160 at NCW=3, 96 at NCW=5 — which is the same fact seen from the other side.
+
+**WHAT `_2WG` IS FOR:** on 256x128 his default is 4 warpgroups. `_2WG` forces 2, giving 2 atoms/WG and 384
+threads. That is exactly our default. **His override exists to climb back to where we already are.**
+
+**VERDICT: we are not missing a capability.** We already do the good case by default, and his default is the
+weaker one. The knob is still worth adding, but as a **tuning axis**, and for a value he never uses: **NCW =
+1**. On BM=128 that gives 1 consumer warpgroup, 2 atoms/WG, 256 threads and 256 registers/thread — which is
+what `WGMMA_SKEW` needs and cannot currently have on 128-tiles
+(`static_assert(!SKEW || MAX_ATOMS >= 2)`). **41 of his 53 configs are BM=128**, and 128x128 / 128x256 are our
+largest production shapes. So: take the knob, for the opposite reason to his.
+
+#### CORRECTION TO AN EARLIER CLAIM IN THIS SESSION
+
+The claim *"KLOOP_UNROLL is blocked on BM>=256, 51 of his 53 tiles"* was wrong **twice**.
+
+Real `WG_MATOMS = SPLIT_M ? MATOMS/2 : MATOMS` values:
+
+| tile | WG_MATOMS | KLOOP_UNROLL |
+|---|---|---|
+| BM=64 | 1 | blocked |
+| BM=128 | 1 | blocked |
+| BM=192 | 3 | **LEGAL** |
+| BM=256 | 2 | legal |
+| BM=320 | 5 | legal |
+
+Our own assert message states it: *"192x192 has 3; a SPLIT_M 128x256 has 1"*. The blocked set is BM in
+{64,128} = **45 of his 53**, and **BM=192 was never blocked**. The direction was inverted too: MORE
+warpgroups makes `WG_MATOMS` SMALLER under an M-split, so **NCW=1 is what unlocks BM=128**.
+
+#### THE MN-MAJOR TMA DIFFERENCE — found by reading code, invisible to instruction counting
+
+**HIS issues ONE TMA for an MN-major operand:**
+`tma_4d_gmem2smem(A_smem, &A_tmap, 0, kp_g * BK, A_x / SWIZZLE_W, batch, mbar)` (his producer, ~:1111). He can
+do that because his descriptor is built 4-D, via
+`init_4d_tma_A_KM_mn_major_sm90(&A_tmap, A, K, M, BK, BM, ...)` — the swizzle atoms are a **dimension inside
+the box**, and the TMA engine walks them itself.
+
+**OURS issues one TMA PER SWIZZLE ATOM:** `issue_operand_3d_mn` contains
+```
+for (int i = 0; i < ATOMS; ++i)
+    tma_3d_gmem2smem(dst + i*ATOM_BYTES, tmap, mn0 + AW*i, k0, batch, mbar);
+```
+because our descriptor is 3-D — `init_3d_tma_MN_sm90(&A_tmap, A, K, M, A_BK_BOX, ...)` — with the box only
+one atom wide. For 128x256 TN that is A = 2 atoms + B = 4 atoms = **6 TMA per k-step where he issues 2**.
+
+**MEASURED:** every one of our 128x256x64 variants emits **42 UTMALDG**; every one of his emits **14**. This
+is structural, not config-specific.
+
+**STILL OPEN AND NOT EXPLAINED:** 6 static TMAs does not multiply to 42 on its own. There is a remaining
+factor of about **7** that has not been accounted for. Do not guess at it — it is the next thing to chase.
+
+#### SECOND DIFFERENCE — four k-loop bodies against his one
+
+Our consumer has **four** k-loop bodies: align, the unrolled ring, residue, and a plain fallback
+(:5994-6014). His has one. That is the price of our K-residue support: he truncates K and needs no tail, we
+round up and handle it. A correctness feature we have and he does not, paid for in code size.
+
+#### CANDIDATE TO ADOPT FROM HIM
+
+The **4-D MN-major descriptor** — one TMA instead of a per-atom loop. It must be checked against our
+multicast slicing first, which may well be the reason we went 3-D in the first place. NOT PROVEN either way
+yet.
+
+### §H75 — **READING HIS MAINLOOP AND EPILOGUE AGAINST OURS, INSTRUCTION BY INSTRUCTION. Two of our own guesses reversed by the SASS; one dynamic cost that static counting cannot see.**
+
+All numbers below are static SASS counts on 128x256x64 unless marked otherwise. Line numbers are "his :n" for
+his single-kernel template and "ours :n" for `Bgemm_sm90_warpspecialized_template.cuh`.
+
+#### HIS CONSUMER MAINLOOP, as read (his :1196-1262)
+
+A lambda `consume_stage(stage, scale_d_first)`:
+1. `mbarrier_wait(full_mbar + stage*8, phase)`.
+2. For each of `CHUNKS_PER_WG` atoms (always 1 for him): build `a_desc`/`b_desc`, or take the hoisted ones.
+3. For `ks` in `K_STEPS` (4 at BK=64): `wgmma(a_desc, b_desc, acc[c], scale_d = (ks==0) ? scale_d_first : 1)`,
+   then `a_desc = gmma_desc_advance_k16(a_desc)` — literally `desc + 2`, a serial chain.
+4. `wgmma_commit_group(); wgmma_wait_group<0>();` — a FULL drain every stage — then lane 0 arrives on the
+   empty barrier.
+
+`run_one_level` is `#pragma unroll 1 for k: consume_stage(stage, (k==0) ? 0 : 1)` with a runtime stage
+counter. Under `HOIST_DESC` the descriptor gets `+= DESC_NEXT` per stage and `+= DESC_WRAP` on wrap (his
+:1164-1165: `DESC_NEXT = STAGE_ENC`, `DESC_WRAP = -(DEPTH-1)*STAGE_ENC`). `K_LOOP_TWO_LEVEL` (his :1278-1292)
+only fires when `k_iters % LOAD_PIPE_DEPTH == 0`; otherwise it falls back to `run_one_level` — a runtime
+branch.
+
+#### FINDING 1 — ACCUMULATOR ZEROING: a DYNAMIC cost that static counting hides
+
+His passes `scale_d=0` on the first k-step of the first stage of EVERY TILE (`(k == 0) ? 0 : 1`). The first
+wgmma OVERWRITES the accumulator. There is no zeroing loop.
+
+Ours passes `/*scale_d=*/1` always (ours :5880) and zeroes explicitly at the end of every tile (ours :6890,
+`acc[a][nc][i] = 0.0f` over `MAX_ATOMS x WG_NCHUNKS x CREGS_CHUNK`, inside the persistent tile loop; also
+once at :5524).
+
+**MEASURED static CS2R: HIS 64, OURS 64 — IDENTICAL.** The static count shows NO difference. But the code
+says his 64 sit outside the per-tile path and ours run once per tile. That is a real per-tile cost of ~64
+CS2R per warpgroup that only dynamic sampling would show. A static tie is hiding a dynamic loss.
+
+**Adoptable.** Our SKEW peel (ours :5938-5960) issues atom 0 of stage 0 before the loop, so the tile's first
+wgmma is identifiable in both the peel and the loop. A `scale_d` flag on those two sites would do it.
+**NOT DONE, NOT MEASURED.**
+
+#### FINDING 2 — DESCRIPTOR HANDLING: our guess was wrong, the SASS says OURS is more uniform
+
+An earlier note this session speculated that his `+= DESC_NEXT` on a hoisted descriptor was closer to
+cuBLAS's "keep it in a uniform register and add an immediate" pattern (§H36).
+
+**MEASURED, leanest kernel each side:**
+
+| | HIS | OURS |
+|---|---|---|
+| R2UR (vector-to-uniform moves) | 37 | **10** |
+| UIADD3 (uniform adds) | 111 | 128 |
+
+Our `DESC_WALK` form (ours :5866-5880: `b_desc_stage + (b_walk_off >> 4)`, base plus compile-time offset)
+lands on the uniform path with FEWER vector-to-uniform crossings than his serial `desc + 2` chain. On this
+metric ours is closer to cuBLAS, not his. **The speculation is retracted.**
+
+#### FINDING 3 — DRAIN DEPTH
+
+His drains fully every stage (`wgmma_wait_group<0>`). Ours at `WGMMA_ROTATE=0` does the identical thing
+(ours :6088-6091, "the untouched original"). `WROT=1/2` hold one or two stages in flight via `drain_prev()`
+(ours :6082-6084), and `WGMMA_SKEW` carries atom 0 across the boundary.
+
+**MEASURED on the leanest kernels: HGMMA 4 vs 4, WARPGROUP.DEPBAR 1 vs 1** — identical structure in the
+plain config. We have knobs here that he lacks. Whether they pay is a separate, measured question: §H27zo and
+project_v1_drain_not_the_cost record that the drain count alone was not V1's lever.
+
+#### FINDING 4 — UMOV EXCESS, ours, uniform, cause NOT identified
+
+**MEASURED: UMOV HIS 60, OURS 168.** Of ours, 109 are `UMOV UR, UR` (uniform register copies) and 26 are
+`UMOV UR, immediate`. These are uniform-datapath, so cheap by our validated metric. But 109
+register-to-register copies is a codegen quality question. Cause NOT identified. Do not guess.
+
+#### FINDING 5 — K_LOOP_TWO_LEVEL
+
+His only engages when `k_iters` is an exact multiple of the pipeline depth; otherwise it falls back at
+runtime. Our `KLOOP_UNROLL` handles any `k_iters` with align/residue prologue and epilogue loops. Ours is
+more general. But §H27ay already REFUTED `KLOOP_UNROLL` on measurement, so this is noted, not pursued.
+
+#### HIS EPILOGUE AND INIT — read, nothing new
+
+His epilogue store path (his :1326-1345, :1563-1578) and mbarrier init (his :1035-1062) match what §H70 and
+§H74 already record: per-warpgroup `store_base`; `barrier_sync` + `tma_store_fence` + lane-0 TMA store per
+chunk; `full_mbar` init with `FULL_MBAR_ARRIVE_COUNT`, `empty_mbar` with `NUM_CONSUMER_WARPGROUPS` arrivals;
+`griddepcontrol_wait()` at kernel start. Seen again: the truncating `k_iters = (K / BK) / (int)gridDim.y`,
+and `inv_gmgn = 1.0 / (double)gmgn` — the fp64 reciprocal.
+
+#### WHAT REMAINS UNREAD in his single kernel body
+
+The Hilbert / tile_map path (`sm90_decode_tile_mapped`) and the bias/addmm path. Both are features we lack
+entirely (§H69 lists them), so reading them informs a future port, not the comparison verdict.
+
+#### SUMMARY
+
+| finding | his | ours | who is ahead | how known |
+|---|---|---|---|---|
+| zeroing | `scale_d=0` on first wgmma, no loop | 64 CS2R per tile | his (dynamic) | code read; static count identical |
+| descriptor uniformity | R2UR 37 | R2UR 10 | ours | SASS |
+| drain options | `wait<0>` only | ROTATE 0/1/2 + SKEW | ours has knobs; payoff unproven | code + prior measurements |
+| UMOV | 60 | 168 (109 UR copies) | his; cause unknown | SASS |
+| two-level k-loop | exact-divide only, runtime fallback | any `k_iters` | ours (but refuted anyway) | code |
+
+### §H76 — **HIS DESCRIPTORS TRUNCATE TO 64, SO IS HE BUGGY? NO. HE PADS ON THE HOST, THE GATING IS COMPLETE, AND IT NEVER FIRES ON ANY PRODUCTION MODEL. That makes his lean kernel the right trade for the trainer and ours the right trade for a general BLAS.**
+
+Line numbers are "his :n" in `BluBridge-BLAS_29_aug_kota/src/level3/batched_gemm/BF16/SM90/`. Kernel lines
+are in `Bgemm_sm90_warpspecialized_template.cuh`; dispatcher lines are in `Bgemm_sm90_dispatcher.cu`. All
+findings here are read from CODE. Nothing in this section was timed. Every cost figure is labelled as such.
+
+#### THE QUESTION §H74 LEFT OPEN
+
+§H74 found that all four of his TMA descriptor builders truncate one dimension by integer division on
+`swizzle_w` (64 at `SWIZZLE_BYTES=128`):
+
+| builder | his line | `globalDim` | truncated axis |
+|---|---|---|---|
+| A, K-major (nn/nt) | :769 | `{swizzle_w, M, K / swizzle_w}` | K |
+| B, K-major (nt) | :794 | `{swizzle_w, N, K / swizzle_w}` | K |
+| B, MN-major (nn) | :880 | `{swizzle_w, K, N / swizzle_w}` | N |
+| A, MN-major (tn) | :907 | `{swizzle_w, K, M / swizzle_w}` | M |
+
+Plus the k-loop count: `const int k_iters = (K / BK) / (int)gridDim.y;` (his :1060). Our §H16.15 retired
+exactly this descriptor form because it silently drops the MN tail when MN % 64 != 0 and drops the K tail
+when K % BK != 0. `maxRelErr` does not catch it on aligned tests. So the open question was: does his
+dispatcher guarantee the divisibility before any kernel sees the shape? If not, it is a wrong-answer bug.
+
+#### MY EARLIER ERROR, corrected here
+
+An earlier note this session cited `sm90_tile_aligned` (his :57-60, `(N % 64 == 0) && (K % 16 == 0)`) and
+`sm90_m_aligned` (his :89-93, `if (tn) return (M % 128 == 0)`) as "his gating". That was wrong. A grep for
+call sites shows **both are dead code**: defined, never called. The only other mentions (his :55, :498,
+:1058, :1488) are comments that point at `sm90_m_aligned`'s own comment. Citing them as the mechanism was
+my mistake. The real mechanism is below.
+
+#### THE REAL MECHANISM — host-side padding at the three entry points
+
+`blublasBgemmSM90_dispatch_nn` (his :1820), `_nt` (his :1888) and `_tn` (his :1951) each compute padded
+dimensions before anything is launched.
+
+nn and nt (his :1833-1854 and :1901-1917):
+
+```
+M_padded = M;
+N_padded = (N % 8 == 0) ? N : ((N + 63) / 64 * 64);
+K_padded = (K % 16 == 0 && N % 128 == 0) ? K : ((K + 63) / 64 * 64);
+```
+
+tn (his :1999-2005) additionally pads M:
+
+```
+m192_path_will_fire = (M % 64 == 0) && (N % 128 == 0) && (K % 64 == 0)
+                      && bn_pred != 160 && bn_pred != 192 && sm90_bm192_ok(M, N, batchCount);
+M_padded = (m192_path_will_fire || M % 128 == 0) ? M : ((M + 127) / 128 * 128);
+```
+
+Then (his :1856-1873):
+
+```
+needs_padding = (M_padded != M) || (N_padded != N) || (K_padded != K)
+             || (batchCount > 1 && strides are not the packed M*K / K*N / M*N)
+             || !((lda % 8 == 0) && (ldb % 8 == 0) && (ldc % 8 == 0));
+```
+
+If `!needs_padding`, the entry point calls `do_*(M, N, K, ...)` directly (his :1875). Else it calls
+`dispatch_padded_helper(..., launch_fn)` (his :1884, :1947, :2048) and `launch_fn` calls
+`do_*(M_padded, N_padded, K_padded, ..., lda=0, ldb=0, ldc=0)` (his :1881, :1944).
+
+Why M is not padded for nn/nt: there A is K-major, so M is a real TMA dimension (his :769, second slot).
+TMA bounds-checks it and zero-fills. No truncation. Only the `/ swizzle_w` slot needs protection.
+
+Why the B side is safe without a `% 64` check on N: the BN picker's swizzle is derived from BN.
+`sm90_c_swizzle_bytes(BN)` (`Bgemm_sm90_epilogue_swizzled.cuh:71-78`) returns 128/64/32/16 bytes by the
+divisibility of `BN * 2`, so `swizzle_w` for B is min(64, BN-derived), and N % BN == 0 implies
+N % swizzle_w == 0. Alignment to the tile is alignment to the swizzle atom by construction.
+
+His own comment in `dispatch_tn` (his :1982) states why M is padded to 128: TN's "OTHER (BM=128) kernels
+were never validated for ragged M ... letting ragged M reach that untested path would be a real,
+unvalidated risk." He knows his kernel cannot take ragged M, and he pads to protect it. That is a design
+choice made with open eyes, not an oversight.
+
+#### VERDICT ON COMPLETENESS
+
+His gating **is complete**. Every route from the three entry points either hands `do_*` an already-aligned
+shape or pads first. The truncating descriptors at :769/:794/:880/:907 and the truncating `k_iters` at
+:1060 never see a ragged dimension. **NOT A BUG.** Read from code; not fuzzed on hardware this session.
+
+#### WHAT `dispatch_padded_helper` COSTS WHEN IT FIRES
+
+The function is at his :1705, body to :1818 (~114 lines). Per CALL:
+
+| step | his line | operation |
+|---|---|---|
+| A | :1732, :1735, :1745 | `cudaMalloc(&A_padded)`, `cudaMemsetAsync`, `cudaMemcpy2DAsync` A in |
+| B | :1753, :1757, :1767 | `cudaMalloc(&B_padded)`, `cudaMemsetAsync`, `cudaMemcpy2DAsync` B in |
+| C | :1775, :1780, :1790 | `cudaMalloc(&C_padded)`, `cudaMemsetAsync`, `cudaMemcpy2DAsync` C in (for beta) |
+| run | :1796 | `launch_fn(...)` |
+| C out | :1807 | `cudaMemcpy2DAsync` C back |
+| free | :1813-1815 | `cudaFree` x3 |
+
+The mallocs and frees are NOT cached. Three synchronous `cudaMalloc` and three synchronous `cudaFree` per
+padded call, plus three or four device-to-device 2D copies. Severe when it fires. **NOT MEASURED** in this
+session; stated from code.
+
+#### DOES PADDING EVER FIRE IN PRODUCTION?
+
+Checked against the real shape lists, not the synthetic test sets.
+
+| model | source | distinct GEMM shapes | would trigger padding |
+|---|---|---|---|
+| 1.7B | `profiling_reports/blutrain_1p7b_shapes.tsv` + `_dispatch_expected.tsv` | 15 | 0 |
+| 600M | derived from `600M_colleague.yaml`: d_model 1536, kv 512, ffn 4096, vocab 50304, B*T 8192 | 18 | 0 |
+| 4B | derived from `4B.yaml`: d_model 3072, kv 1024, ffn 8192, vocab 50304, B*T 8192 | 17 | 0 |
+
+Every M, N, K in all three models is a multiple of 64. An earlier pass of this check showed 35 "hits", and
+ALL 35 came from `t2_isolation_cases.tsv`, the deliberately ragged residue TEST set. Zero came from any real
+shape file. So on the trainer his padding path is never entered and his descriptors' truncation is never
+exercised. The cost table above is a general-BLAS cost, not a trainer cost.
+
+#### THE DESIGN COMPARISON, stated as a trade and not a winner
+
+| | HIS: pad at entry, lean kernel | OURS: residue in kernel |
+|---|---|---|
+| aligned shapes (every trainer GEMM) | zero extra work; kernel has no residue code | kernel carries 4 k-loop bodies (align / ring / residue / fallback, ours :5994-6014) and the per-atom TMA loop (§H74: 6 UTMALDG per k-step vs his 2); the align/residue loops run 0 iterations but the code and the extra TMA issues are paid |
+| ragged shapes (general BLAS users) | 3 sync `cudaMalloc` + 3 sync `cudaFree` + 3-4 `cudaMemcpy2DAsync` per call | TMA zero-fill, works by construction, ~free |
+| correctness | depends on the entry-point padding being right | depends on nothing outside the kernel |
+| M/N granularity | 64 (128 for TN M unless bm192) | 8 |
+
+For the trainer his is strictly better. For a general BLAS ours is strictly better. Neither is a bug.
+
+#### RECOMMENDATION FOR THE HYBRID — a proposal, not a decision
+
+A third option that takes both, the same pattern §H73 just used for alpha/beta. Add a `RESIDUE_FREE` kernel
+template parameter. The launcher instantiates both and picks the residue-free kernel when
+`M % BM == 0 && N % BN == 0 && K % BK == 0`, the general one otherwise. Aligned shapes get his leanness with
+no padding copies. Ragged shapes get our in-kernel handling with no host cost.
+
+One caveat. The per-atom TMA loop is NOT residue-related. It comes from the 3-D descriptor (§H74) and would
+not be removed by `RESIDUE_FREE`. That is a separate question with its own gate (the multicast-slicing check
+§H74 named). **NOT IMPLEMENTED, NOT MEASURED.**
+
+### §H77 — **NUM_CONSUMER_WARPGROUPS BECOMES A KNOB, AND THE DEFINITIVE CENSUS OF HIS TREE. 956/956 kernels byte-identical at NCW=2, after a first attempt that changed 482 of them.**
+
+His tree is `BluBridge-BLAS_29_aug_kota/src/level3/batched_gemm/BF16/SM90/`. Ours is the vendored prod tree.
+Part A is a static census, read from code. Part B is a code change with a SASS check on hardware-targeted
+output. Part C is a set of aliases written but not yet run. Every claim below carries its own label.
+
+#### PART A — THE CENSUS, AND SIX CORRECTIONS TO EARLIER NUMBERS IN THIS LOG
+
+Earlier sections of this log quote several different figures for the size of his tree. They were produced by
+grep. They were wrong. A single parser was written for this section. It strips comments, splits template
+argument lists depth-aware on commas, and matches braces to find whole template blocks. Every number below
+is cross-checked two ways. Three parser bugs were found and fixed before the output was trusted: a regex
+that swallowed template parameters, a comma splitter whose lookahead misfired, and aliases whose definition
+has a `//` comment between the `=` and the constructor.
+
+| | HIS | OURS |
+|---|---|---|
+| template knob slots | 19 | 42 (43 after this section) |
+| `Sm90WarpspecConfig` aliases | 53 | 503 |
+| `Sm90ClusterNNConfig` aliases | 5 | - |
+| total distinct configs | 58 | 503 |
+| entry points DEFINED | 68 | 68 |
+| entry points his dispatcher CALLS | 36 | - |
+| dead (defined, never called) | 32 | - |
+| distinct configs REACHED | 15 | - |
+| distinct tiles REACHED | 11 | - |
+
+**CORRECTIONS.** "45 nameplates" and later "44" were both wrong. It is **36**. "18 distinct variants" was
+wrong. It is **15** configs. The 18 counted NAME SUFFIXES (`_regsplit`, `_ws`, `_sw32`) after stripping the
+layout prefixes, and several suffixes map to the same config. "13 tiles" was wrong. It is **11**. "our 466"
+and "our 505" were both wrong. It is **503** unique. The file has 505 `^using Sm90Config_` lines because two
+names are each defined TWICE. Both duplicate pairs were checked and are character-identical, which is why
+they compile at all; C++ would reject them otherwise.
+
+The 11 reached tiles: 128x8x64, 128x16x64, 128x32x64, 128x64x64, 128x128x64, 128x160x64, 128x192x64,
+128x256x64, 192x128x64, 192x192x64, 256x128x64.
+
+**THE MOST USEFUL FINDING OF THE CENSUS.** Across all 15 reached configs, only FOUR knobs ever move:
+
+| knob | values seen across the 15 |
+|---|---|
+| `_SUPER_M` | 8 or 32 |
+| `_PRODUCER_REGS` / `_CONSUMER_REGS` | 0/0, 24/240, or 24/160 |
+| `_NUM_CONSUMER_WARPGROUPS` | derived, or an explicit 2 on the one `_2WG` config |
+| `_SPLITK_WORKSPACE` | true on 3 |
+
+Every other one of his 19 slots sits at its default on every single reached config. His live surface is far
+smaller than his 58 configs suggest. **MEASURED** by parse, not by run.
+
+Also confirmed: 3 of the 36 called entry points (`tn_128x{128,192,256}x64_splitk_template`) are generated by
+the `BLU_SM90_TN_SPLITK_ENTRY` macro in `Bgemm_sm90_tn_variants.cu` (his :280, uses at :325, :327, :329,
+`#undef` at :332). That is why a direct function-definition search misses them. They resolve to
+`Sm90Config_128x{128,192,256}x64*_ws`.
+
+#### PART B — THE KNOB
+
+Our template hardcoded `static constexpr int NUM_CONSUMER_WARPGROUPS = 2;`. It is now template slot 43. It
+is **APPENDED LAST**, so all 503 existing aliases keep their positional meaning, and 0 means "keep the
+historical 2" so the default is unchanged. His template already has the same slot with the same
+zero-means-derive convention (`Bgemm_sm90_warpspecialized_template.cuh`, his :54, derived at :82-83).
+
+Sites generalised, all in our `Bgemm_sm90_warpspecialized_template.cuh`:
+
+| site | before | after |
+|---|---|---|
+| the constant | `= 2` | template slot, plus `static_assert(NCW >= 1 && NCW <= 8)` |
+| `Config::EPI_SPLIT_M` | `(MATOMS % 2 == 0)` | `(MATOMS % NUM_CONSUMER_WARPGROUPS == 0)` |
+| `WGrid::SPLIT_M` | same `% 2` | same change, with `static constexpr int NCW = Config::NUM_CONSUMER_WARPGROUPS;` |
+| `WGrid::WG_MATOMS` | `MATOMS / 2` | `MATOMS / NCW` |
+| N-chunk partition | hardcoded pair `NCHUNKS_WG0 = (NCHUNKS+1)/2` (ceil), `NCHUNKS_WG1 = NCHUNKS - NCHUNKS_WG0` (floor) | two constexpr functions, `nchunks_for(g)` and `nchunk0_for(g)` |
+| chunk-accounting assert | summed exactly two warpgroups | recursive constexpr `nchunks_sum` over all NCW |
+| consumer body | literal `nchunk0`, `my_nchunks` | computed from the two functions |
+| mainloop | two-way warpgroup specialisation | NCW-way |
+
+The two new functions are `nchunks_for(g) = NCHUNKS/NCW + (g < NCHUNKS%NCW ? 1 : 0)` and
+`nchunk0_for(g) = g*(NCHUNKS/NCW) + min(g, NCHUNKS%NCW)`. At NCW=2 these reproduce the old ceil/floor pair
+term for term. That was checked by hand before it was compiled.
+
+**THE MISTAKE, AND WHY IT MATTERS.** The first version wrote the general forms unconditionally. It compiled
+with 0 errors. It read as correct. It **changed 482 of 956 kernels**. **MEASURED:** one differing kernel
+went 2848 -> 2824 instructions with 2686 lines differing. That is a near-total reshuffle, not a small delta.
+**CAUSE:** `nchunk0_for(g)` takes a RUNTIME `g`, so it emits a multiply, a compare and a select where the old
+`g * WG_NCHUNKS` emitted a single multiply. The extra live value shifted register allocation and cascaded
+through the whole kernel. This is the same lesson as §H73 from the other direction: a change that is
+arithmetically identical is not necessarily identical in codegen.
+
+**THE FIX.** NCW==2 now takes the ORIGINAL expressions verbatim under `if constexpr`. Only other NCW values
+use the general path. The 503 existing configs do not pay for a knob they do not use. The mainloop
+specialisation likewise keeps its literal two-way `if (g == 0) ... else ...` at NCW==2 rather than routing
+through `stage_dispatch`, because `stage_dispatch` uses early-return where the original used `else`, and that
+is not guaranteed to generate the same code.
+
+**VERIFICATION.** `Bgemm_sm90_tn_variants.cu`, sm_90a, CUDA 13.0. Per-kernel SASS compared with addresses and
+encoded bits stripped, and the new trailing template argument normalised out of the mangled name.
+
+| | |
+|---|---|
+| kernels before / after | 956 / 956 |
+| matched by name | 956 |
+| **IDENTICAL** | **956** |
+| DIFFERENT | **0** (was 482 before the `if constexpr` fix) |
+
+**WHAT IT UNBLOCKS.** Of his 15 reached configs, 13 were already expressible in our template. 2 were not:
+`Sm90Config_192x128x64_regsplit` and `Sm90Config_192x192x64`. Both resolve to NCW=3, where ours was hardwired
+to 2. All 15 are now expressible.
+
+Separately, the knob makes NCW=1 reachable for the first time. On a BM=128 tile that gives one consumer
+warpgroup owning MATOMS=2 atoms. That is exactly what `static_assert(!SKEW || MAX_ATOMS >= 2)` requires and
+cannot currently have on a 128 tile. 41 of his 53 aliases are BM=128, and 128x128 and 128x256 are our largest
+production shapes. **NOT MEASURED.** It is noted as the reason the knob is worth having. That is NOT his
+reason for having it: his `_2WG` override exists to climb back DOWN to 2, which is already our default.
+
+#### PART C — THE 15 RE-EXPRESSED, AND WHAT IS STILL UNPROVEN
+
+A new header `Bgemm_sm90_kota_configs.cuh` defines `BluKota_<his config name>` for all 15. It is generated
+programmatically against the 43-slot parameter order, so positions cannot be miscounted, and every slot is
+written explicitly.
+
+The mapping:
+
+| his | ours |
+|---|---|
+| `_SUPER_M = S` | `_RASTER = 1` (group M) and `_RASTER_SWIZZLE = log2(S)` |
+| `_PRODUCER_REGS`, `_CONSUMER_REGS` | pass straight through |
+| (derived) | `_SWIZZLE_BYTES = 128` pinned; ours would auto-derive at 0, which would confound the comparison |
+| `_SPLITK_WORKSPACE = true` | `_SPLIT_K = 2`; his factor is a runtime `gridDim.y`, ours is compile-time, and 2 is what his own plan table selects for these shapes |
+| `_EPILOGUE_DEFER_STORE_WAIT` **defaults to TRUE** | our `_EPI_LATE_STORE_WAIT` defaults to FALSE, so it is set explicitly |
+
+That last row is easy to miss and would have silently changed the epilogue on all 15.
+
+All of our extra knobs are left OFF: no cluster, so multicast is inert; no SKEW, no PDL, no DESC_WALK, no
+DESC_HOIST, no chunked epilogue. The point is that the only remaining difference between his kernel and ours
+at the same config is the IMPLEMENTATION.
+
+**STATE: NOT PROVEN THAT OURS IS BETTER.** The standing evidence is two items and neither is enough:
+
+| evidence | strength |
+|---|---|
+| our vector-instruction count is lower on 13 of 13 shared tiles after the §H73 A1B0 fix | **STATIC ONLY** |
+| §H73 measured that a 34% static instruction cut bought +0.28% FLOP-weighted real speed | static overstates by roughly **seventy times** |
+
+Converting his 15 to our style is therefore **NOT yet justified**. The decision requires the A/B: his 15
+against these 15, same harness, 12-round crossover, clocks locked and verified, one config per process. Until
+that runs, these aliases are a comparison instrument and nothing more.
+
+### §H79 — **THE A/B AT LAST: HIS 14 REACHED CONFIGS AGAINST THE SAME 14 IN OUR TEMPLATE. He wins 10, we win 3, one tie. Mean -8.30%, and it contradicts §H73.**
+
+§H77 closed by saying the `BluKota_*` aliases were "a comparison instrument and nothing more" and that the
+decision needed the A/B. This section is that A/B. It ran. **MEASURED.**
+
+#### METHOD
+
+Both sides were compiled into two standalone binaries, `ab_his` and `ab_ours`, from one shared timing
+harness. They cannot live in one translation unit: the two templates share roughly 38 top-level names, which
+is the same collision §H72 recorded when the coexistence plan died on ADL and a shared include guard. Each
+binary takes a config index on argv and times exactly one shape in one process. That is the one-config-per-
+process rule from the measurement-traps memory, not a convenience.
+
+The config set is his 15 reached configs minus `128x8x64`. That one is excluded because our template requires
+`BN % 16 == 0` for an MN-major B operand and BN=8 fails it. It is also unreachable on every production shape,
+per §H76. So 14 configs.
+
+| control | setting |
+|---|---|
+| rounds | 12 paired rounds per config |
+| order | crossed over every round — HIS then OURS on odd rounds, OURS then HIS on even, so drift cancels |
+| clocks | locked to 1980 MHz, **and the lock read back and verified** before any timing |
+| binaries | md5 checksummed before and after the run: unchanged |
+| rows | 168/168 valid |
+| card | held exclusively, released and clocks reset afterwards |
+
+The 12-round crossover is the shape the paired-null memory demands. Six rounds is not enough; six gave t=4.63
+on a known null once.
+
+#### THE CONFIGURATION IS IDENTICAL ON BOTH SIDES. ONLY THE IMPLEMENTATION DIFFERS.
+
+This matters more than the numbers. The 14 configs on our side are the `BluKota_*` aliases from §H77 and
+§H78. Each one sets OUR knobs to the values HIS config resolves to. Every extra knob we own is OFF: no
+cluster, so multicast is inert; no SKEW; no PDL; no DESC_WALK; no DESC_HOIST; no chunked epilogue. So the
+only remaining difference between the two arms is the implementation of the kernel.
+
+**This does NOT measure our tuned production configs.** Those use exactly the knobs listed above and are
+pinned from their own measurements. A different question, not answered here.
+
+#### RESULT
+
+TFLOPS, mean of 12 paired rounds. Shape is 16384x2048x2048 nn for the dense configs, and the noted TN shapes
+for the three split-K ones.
+
+| config | HIS TF | OURS TF | delta | t | verdict |
+|---|---|---|---|---|---|
+| `128x64x64_regsplit` | 514.5 | 414.8 | **-19.38%** | -53.9 | HIS |
+| `128x192x64_ws` | 810.2 | 665.1 | **-17.91%** | -69.7 | HIS |
+| `128x16x64` | 160.9 | 133.9 | **-16.76%** | -72.4 | HIS |
+| `192x192x64` | 779.3 | 658.4 | **-15.51%** | -316.7 | HIS |
+| `128x160x64_regsplit` | 687.5 | 581.7 | **-15.39%** | -350.2 | HIS |
+| `128x192x64` | 845.8 | 720.1 | **-14.87%** | -213.9 | HIS |
+| `192x128x64_regsplit` | 855.4 | 768.2 | **-10.19%** | -155.5 | HIS |
+| `128x256x64_regsplit` | 873.8 | 794.7 | **-9.05%** | -244.1 | HIS |
+| `256x128x64_2WG` | 864.1 | 787.8 | **-8.83%** | -141.5 | HIS |
+| `128x128x64_ws` | 741.0 | 687.9 | **-7.17%** | -68.1 | HIS |
+| `128x256x64_ws` | 821.0 | 821.5 | +0.07% | 0.4 | tie |
+| `128x128x64_regsplit` | 715.7 | 733.5 | **+2.48%** | 5.8 | OURS |
+| `128x32x64` | 249.3 | 261.8 | **+5.03%** | 115.2 | OURS |
+| `128x64x64` | 440.6 | 490.2 | **+11.25%** | 157.2 | OURS |
+
+| | |
+|---|---|
+| HIS wins | **10** |
+| OURS wins | **3** |
+| tie | 1 |
+| mean delta | **-8.30%** |
+| median delta | **-9.62%** |
+
+The t values are very large. -350.2, -316.7, -244.1. This is not noise, and no amount of extra rounds will
+move it.
+
+#### THIS CONTRADICTS §H73
+
+§H73 reported that after the A1B0 wiring fix our VECTOR instruction count was lower on 13 of 13 shared tiles,
+and §H77 carried that forward as the standing evidence that our kernels were leaner. On hardware, at
+identical knob settings, his are faster on 10 of 14. **The static instruction comparison predicted the
+opposite of the truth.**
+
+§H73 also measured that a 34% static instruction cut bought +0.28% FLOP-weighted real speed. Put the two
+together and static instruction counting has now failed as a performance predictor twice on the same day, in
+the same direction, once by overstating a win by roughly seventy times and once by pointing at the wrong
+winner outright. **Do not quote a static count as evidence of speed again.** The standing memory already says
+count VECTOR instructions and never the total; this result says do not count either one and call it
+performance.
+
+#### LIMITS
+
+- **One shape per config.** A config's ranking can move with shape. The 12-round crossover controls noise. It
+  does not control shape coverage.
+- **NOT MEASURED:** whether our TUNED configs, with clusters, skew, PDL and the descriptor modes switched on,
+  beat his. This test deliberately switched all of that off to isolate the implementation.
+- `128x8x64` is untested on our side and cannot be tested without relaxing the `BN % 16 == 0` requirement.
+
+### §H80 — **WHERE THE TIME ACTUALLY GOES: WE EXECUTE 3.3x MORE INSTRUCTIONS AND SATURATE L1, WHICH STARVES THE TENSOR PIPE BY ROUGHLY 30 POINTS.**
+
+ncu on the two worst configs from §H79, both arms, same shape (16384x2048x2048 nn). **MEASURED.**
+
+#### `128x160x64_regsplit` — the -15.39% row
+
+| metric | HIS | OURS | delta |
+|---|---|---|---|
+| `gpu__time_duration.sum` | 2.165e5 | 3.118e5 | +44.0% |
+| `sm__cycles_elapsed.avg` | 2.983e5 | 4.295e5 | +44.0% |
+| **`smsp__inst_executed.sum`** | **3.208e7** | **1.048e8** | **+226.6%** |
+| `sm__throughput` (% peak) | 86.59 | 60.11 | -30.6% |
+| **`sm__pipe_tensor_cycles_active`** (% peak) | **91.13** | **62.62** | **-31.3%** |
+| `dram__bytes.sum` | 1.308e8 | 1.415e8 | +8.2% |
+| **`l1tex__throughput`** (% peak) | 69.05 | **98.25** | **+42.3%** |
+| stalled barrier / issue | 5.42 | 1.73 | -68.1% |
+| stalled long_scoreboard / issue | 4.24 | 1.42 | -66.5% |
+| stalled wait / issue | 1.74 | 0.62 | -64.4% |
+| waves/SM, occupancy_limit_registers | 1, 1 | 1, 1 | same |
+
+#### `192x192x64` — the -15.51% row
+
+Same direction, smaller size. `inst_executed` 3.173e7 -> 5.137e7, which is +61.9%. Tensor pipe 93.87 -> 80.49.
+`l1tex` 64.47 -> 77.42. Duration +17.0%.
+
+#### THE READING
+
+Our EXECUTED instruction count is 3.3x his on 128x160 even though our STATIC count is lower. That is not a
+contradiction. A small loop body run many times beats a large one run few times. Static counting cannot see
+the trip count, which is exactly the blind spot §H75 flagged as "one dynamic cost that static counting cannot
+see" and did not then price.
+
+Our L1 throughput is 98.25% of peak. That is saturated. His is 69%. Our tensor pipe sits at 62.6% against his
+91.1%. **We are not compute-bound. We are shared-memory-bound, and the tensor cores are waiting on L1.**
+
+Three things rule out the alternative explanations:
+
+| candidate cause | what the profile says | verdict |
+|---|---|---|
+| synchronisation | every stall metric is LOWER for us — barrier -68.1%, long scoreboard -66.5%, wait -64.4% | **REFUTED.** Our warps stall less. They simply do far more work per unit of output. |
+| occupancy | waves/SM 1 and occupancy_limit_registers 1 on both sides | **REFUTED.** Identical. |
+| register pressure / spill | both sides REG=168, zero spill on the big tiles; LOAD_PIPE_DEPTH computed by hand is identical — 128x160 5/5, 128x64 8/8, 192x192 3/3 | **REFUTED.** |
+
+DRAM traffic is +8.2%, near parity. So the extra L1 traffic is not extra data from memory. It is the same
+data requested in more, smaller pieces.
+
+#### RETRACTION OF §H74
+
+§H74 recorded the 42-vs-14 UTMALDG difference on 128x256 and dismissed it, on the grounds that UTMALDG is a
+uniform-datapath instruction and therefore cheap. **That dismissal was wrong and is retracted.** The cost is
+not the issue slot. The cost is the request volume hitting L1. The instruction is cheap; the traffic it
+generates is not.
+
+### §H81 — **THE CAUSE IS FORCED BY HARDWARE: A SWIZZLED TMA BOX CANNOT BE WIDER THAN ONE SWIZZLE ATOM. His 4-D descriptor is the whole 3x, and the fix is a second path, not a rewrite.**
+
+#### WHAT OUR CODE DOES
+
+`init_3d_tma_MN_sm90` sets `boxDim[0] = MN_ATOM = sw_atom_elems(SwizzleBytes)`. The box is exactly one swizzle
+atom wide. So `issue_operand_3d_mn` must loop `ATOMS = BMN / AW` times and issue one TMA per atom.
+
+TMA issues per k-step, **MEASURED**:
+
+| tile | OURS | breakdown | HIS |
+|---|---|---|---|
+| 128x160 | **7** | A 2 + B 5 | 2 |
+| 192x192 | **6** | | 2 |
+| 128x256 | **6** | | 2 |
+| 128x128 | **4** | | 2 |
+| 128x64 | **3** | | 2 |
+
+Two on every one of his. That is the 3x from §H80 in one line.
+
+#### CAN WE JUST MAKE THE BOX WIDER? NO. THE DRIVER REFUSES.
+
+The obvious fix is to widen `boxDim[0]`. A probe asked the driver directly — `cuTensorMapEncodeTiled`, rank 3,
+MN-major, bf16, `boxDim[0]` swept in multiples of the atom. **MEASURED:**
+
+| swizzle | atom | `boxDim[0]` = atom | `boxDim[0]` = 2*atom |
+|---|---|---|---|
+| 128B | 64 | OK | **FAIL: invalid argument** |
+| 64B | 32 | OK | **FAIL: invalid argument** |
+| 32B | 16 | OK | **FAIL: invalid argument** |
+
+With a rank-3 MN-major descriptor the hardware forces one TMA per swizzle atom. This is not a design choice we
+made and can unmake. It is a constraint of the encoding.
+
+#### SO HIS 4-D FORM IS NOT A STYLE DIFFERENCE
+
+His descriptor is `{swizzle_w, K, MN/swizzle_w, batch}`. That makes the atom a GMEM DIMENSION. The TMA engine
+walks the atoms itself, and one instruction covers all of them. **That is the entire 3x**, and it is why he is
+faster despite carrying a LARGER static instruction count — which is the §H79 contradiction explained.
+
+His price is the truncation recorded in §H74 and §H76. `MN / swizzle_w` is integer division, so MN must be a
+multiple of 64. His dispatcher guarantees it by padding on the host.
+
+#### THE TRADE, NOW PRICED
+
+Nobody had priced this before this profile. §H76 described the trade correctly in words — his lean kernel is
+the right trade for the trainer, ours the right trade for a general BLAS — but attached no number to it.
+
+| | ours (rank-3) | his (rank-4) |
+|---|---|---|
+| generality | MN % 8 | MN % 64, host padding required |
+| residue | by construction | by host padding |
+| TMA per k-step | 3 to 7 | 2 |
+| cost | **roughly 15% throughput on these tiles, through L1 saturation** | none measured |
+
+Neither side is wrong. Ours is right for a general BLAS. His is right for a trainer whose shapes are all
+multiples of 64.
+
+#### PROPOSED FIX — **NOT YET IMPLEMENTED, NOT MEASURED**
+
+Add the 4-D MN-major descriptor as a SECOND path, chosen at launch when `MN % 64 == 0`. Keep rank-3 for
+everything else. This is the same launch-time specialisation pattern §H73 used for alpha/beta, so the shape of
+the change is already proven in this tree.
+
+- Aligned shapes get the 2-TMA path and the tensor pipe back. Per §H76 that is every production GEMM: 0 of 15
+  shapes on 1.7B, 0 of 18 on 600M and 0 of 17 on 4B need padding.
+- Ragged shapes keep our rank-3 correctness, with no host padding and no `cudaMalloc`.
+- No dispatcher change.
+
+This is the highest-value item found today. It would address most of the 8.30% mean gap in §H79. It is a
+prediction and nothing else until it is built and timed under the same 12-round crossover.
+
+### §H82 — **THE RANK-4 MN-MAJOR TMA PATH, IMPLEMENTED AND PROVEN CORRECT. Bit-identical on all five cases, including the ragged shapes that must refuse it.**
+
+#### WHY
+
+§H80 and §H81 established the cause of our 8.30% deficit against the production BLAS. Our rank-3 MN-major
+descriptor sets `boxDim[0]` to exactly one swizzle atom. So `issue_operand_3d_mn` must loop `MN/atom` times —
+7 TMA per k-step on 128x160 against his 2. A driver probe proved the box CANNOT be widened:
+`cuTensorMapEncodeTiled` returns "invalid argument" at 2x the atom, on SW128, SW64 and SW32 alike. ncu priced
+it: our L1 saturates at 98.3% of peak while the tensor pipe idles at 62.6%, against his 69% and 91.1%, and we
+execute 3.3x his instruction count.
+
+#### WHAT WAS BUILT
+
+Four pieces, all in `Bgemm_sm90_warpspecialized_template.cuh`.
+
+| # | piece | what it is |
+|---|---|---|
+| 1 | `init_4d_tma_MN_sm90<SwizzleBytes>` | a rank-4 descriptor. `globalDim = {MN_ATOM, K, MN/MN_ATOM, batch}`, `boxDim = {MN_ATOM, BK_BOX, BMN_BOX/MN_ATOM, 1}`. Making the atom a gmem DIMENSION lets the TMA engine walk the atoms itself, so one instruction covers the whole MN extent. |
+| 2 | `issue_operand_4d_mn<MULTICAST, BMN, BK, SW>` | the single-issue device counterpart. Coordinates `(0, k, mn0/atom, batch)`, with a multicast arm mirroring the rank-3 one. |
+| 3 | `bool MN4D = false` | a fourth kernel template parameter, so every existing instantiation is unchanged. Two `if constexpr` sites in the producer pick the issue path. |
+| 4 | launcher gate + kernel pick | a 2x2 pick over (A1B0, MN4D), with `BLUBLAS_NO_MN4D` as an A/B kill-switch so one build serves both arms. |
+
+#### THE GATE
+
+```
+a_mn_ok  = !A_IS_MN || (M % A_ATOM == 0);
+b_mn_ok  = !B_IS_MN || (N % B_ATOM == 0);
+use_mn4d = a_mn_ok && b_mn_ok && !s_no_mn4d;
+```
+
+The test is on the GLOBAL extent, not the tile. The descriptor's `MN / MN_ATOM` term truncates, and that is
+exactly the defect §H16.15 retired the old 5-D descriptor for. A K-major operand does not constrain the choice.
+
+Crucially there is NO host padding and NO `cudaMalloc` on the ragged path. It simply takes rank-3. That is the
+difference from the production BLAS's approach (§H76), which pads on the host at a cost of 3 synchronous
+`cudaMalloc` + 3 `cudaFree` + 3-4 `memcpy2D` per padded call.
+
+#### A BUG THE CORRECTNESS GATE CAUGHT
+
+Recorded because the lesson generalises. The first version read the kill-switch ONLY at the kernel pick, while
+the descriptor was still built from the ungated flag. So `BLUBLAS_NO_MN4D=1` built a RANK-4 descriptor and
+launched the RANK-3 kernel. Result: "CUDA an illegal instruction was encountered" on TN and NN, while NT
+passed — neither operand is MN-major there, so the flag has no effect, which is also a useful confirmation
+that the gate is inert where it should be.
+
+The descriptor and the kernel are two halves of one contract and must be driven by ONE flag. They now are,
+with a comment at the definition saying why. **A throughput benchmark would have shown that arm simply
+failing and the harness would have been the first suspect. This is the concrete argument for running
+correctness before timing.**
+
+#### CORRECTNESS RESULT — **MEASURED**, all five cases BIT-IDENTICAL
+
+A 64-bit FNV digest over the entire output buffer, not a tolerance. Both paths feed the same wgmma the same
+data in the same order, so anything short of exact equality would indicate a mis-laid-out smem tile.
+
+| case | 4-D digest | 3-D digest | verdict |
+|---|---|---|---|
+| TN 2048x2048x1024 (A and B both MN-major) | `0612b6aac730ecc0` | `0612b6aac730ecc0` | identical |
+| NN 2048x2048x1024 (B MN-major) | `d2599aaa0faf2940` | `d2599aaa0faf2940` | identical |
+| NT 2048x2048x1024 (neither — control) | `77a55203f0aee989` | `77a55203f0aee989` | identical |
+| TN M=2056 (ragged, must refuse rank-4) | `5ffb651c5189e356` | `5ffb651c5189e356` | identical |
+| NN M=2056 (ragged, must refuse rank-4) | `fbffb0a08e2fa708` | `fbffb0a08e2fa708` | identical |
+
+The ragged rows matter most. M=2056 is not a multiple of 64, the gate correctly refused rank-4, and both arms
+fell through to rank-3. The harness also reports a nonzero-element count, so a descriptor covering fewer rows
+than it should would show up as missing output even if the checksum of the covered part looked plausible.
+
+#### A NOTE ON THE DESCRIPTOR CACHE
+
+Written into the code so it is not "fixed" later. `use_mn4d` changes WHICH descriptor is built, so it looks
+like it belongs in the TMA cache key. It does not. It is a pure function of M, N and two compile-time swizzle
+widths, and M and N are already in the key, so any two calls that hit the same entry necessarily agree on it.
+Contrast `lda`/`ldb`/`ldc`, which are genuinely independent of M and N and are in the key for that reason
+(§H66).
+
+#### BUILD COST
+
+| stage | kernels in the TN translation unit |
+|---|---|
+| before §H73 | 481 |
+| after §H73 | 956 |
+| **now** | **1,908** |
+
+A1B0 and MN4D each double the instantiation count. Object 16.9 MB. This is a real cost and is noted for the
+eventual decision about which specialisations to keep.
+
+#### STATE
+
+Correct. **NOT YET MEASURED FOR SPEED.** Whether the rank-4 path closes the 8.30% deficit is the open question,
+and it decides which template the hybrid keeps.
+
+---
+
+### §H83 — **HIS "TILE MAP" IS PLAIN ROW-MAJOR, WHICH IS A KNOB WE ALREADY SHIP, AND OUR TABLE ALREADY PICKS IT ON 8/8 TALL SHAPES. The rule is real but TILE-SPECIFIC: SW=0 wins on 128x256 and LOSES on 256x128.**
+
+I opened this expecting a port. There is nothing to port.
+
+**What his SM90 tile map actually builds.** `sm90_tile_map_cached` has two branches. The
+Hilbert one needs `grid_m == grid_n`. The other one — the one that fires on tall grids — is:
+
+```cpp
+} else {
+    for (int hy = 0; hy < grid_m; ++hy)
+        for (int hx = 0; hx < grid_n; ++hx)
+            hmap[idx++] = (hy << 16) | hx;      // plain row-major
+}
+```
+
+No curve. Row-major.
+
+**Both of his orders are existing values of our two knobs.** Traced through
+`decode_mega_tile` and `sm90_decode_tile_supergrouped` step by step, not by name:
+
+| his code | ours |
+|---|---|
+| `sm90_decode_tile_supergrouped(..., SUPER_M=S)` — band of S rows, sweep N inside, row cycles fastest | `RASTER=1, RASTER_SWIZZLE=log2(S)` |
+| tall map: `row = t/grid_n, col = t%grid_n` | `RASTER=1, RASTER_SWIZZLE=0` |
+
+He reads the order from a `cudaMalloc`'d array (one 4-byte global load per tile, plus a
+16-slot host cache with its own lifetime); we compute it with a `fast_divmod`. Same order,
+no memory.
+
+**Our dispatch table already lands on his rule, 8 times out of 8.** Every tall production
+shape (`grid_m > 4*grid_n`) is already pinned to `RASTER=1, SW=0`:
+
+```
+wQ-fwd nn 128x256 grid 128x8 | wQ-dgrad nt | wK-fwd nn grid 128x2 | wK-dgrad nt
+gate_up-dgrad nt | down-fwd nn | down-dgrad nt grid 128x22 | lm_head-dgrad nt
+                                     tall shapes: 8/15   ours == his map on 8/8
+```
+
+So on the shapes where his rule fires, we already emit the identical tile order, and it
+cannot be any part of the §H79 deficit there.
+
+**The rule itself, measured.** Four tall shapes, `RASTER_SWIZZLE` 0..3, 12 rounds, one
+config per process, ABBA crossover, clock verified under load:
+
+```
+shape           sw0        sw1        sw2        sw3
+wQ-fwd       756.25   -0.41%     -0.43%     -0.45%      (t = -31.6, -31.9, -49.0)
+wK-fwd       705.13   -0.25%     -0.28%     -0.31%
+down-dgrad   766.47   -0.37%     -0.47%     -0.40%
+lmhead-dgrad 836.92   -0.03%     -0.03%     -0.02%      (null: K=50304 dominates)
+```
+
+SW=0 wins on 3 of 4. **But on the 256x128 tile the sign REVERSES** (sw0 734.6, sw3 741.4).
+So his threshold is not a general rule and must never be adopted as one. Tier-2's `rs2`/`rs8`
+leaves sit on 256x128, so they are left alone.
+
+**TWO MEASUREMENT FAULTS IN THE FIRST ATTEMPT, both caught, both worth recording.**
+
+1. *The clock lock did not hold.* Asked for 1785; `clocks.sm` under load read **1710** on 31 of
+   42 samples. This card is 700 W capped. The previous harness checked
+   `clocks.applications.graphics`, which reads 1980 by default and therefore proved nothing —
+   the same vacuous-check shape as §H84 below. The fix is to sample `clocks.sm` WHILE A KERNEL
+   IS RUNNING, and to lock BELOW the sustainable ceiling: at 1600 the lock held 49/49 and 69/69.
+2. *`sw0` ran first in every round*, so any within-round sag was credited to it as a win.
+   Reversing the order on even rounds cancels it. The deltas survived unchanged
+   (wQ-fwd -0.41/-0.43/-0.45 after, vs -0.41/-0.40/-0.43 before), so the effect was real — but
+   that is a result of the crossover, not something that could be assumed without it.
+
+---
+
+### §H84 — **THE RANK-4 PATH OF §H82 WAS WRONG: 50% OF C CORRUPT ON EVERY NN SHAPE WITH A CLUSTER. §H82's "bit-identical on all five cases" was a VACUOUS check, and the +1.46% is void.**
+
+Found while chasing why NN checksums would not reproduce across processes during §H83.
+
+**The symptom.** With every element of A and B set to the same constant, every element of C
+must be the same value. It was not:
+
+```
+NN, tile 128x256x64, inputs all equal
+  M=16384 N=2048  K=2048   rank-3: 0 bad     rank-4: 16,777,216 bad = 50.0000%
+  M=16384 N=512   K=2048   rank-3: 0 bad     rank-4:  4,194,304 bad = 50.0000%
+  M=4096  N=2048  K=2048   rank-3: 0 bad     rank-4:  4,194,304 bad = 50.0000%
+  M=1024  N=256   K=256    rank-3: 0 bad     rank-4:    131,072 bad = 50.0000%
+```
+
+Exactly 50% on every shape, and every corrupt element was **exactly half** its true value
+(0x3E8A = 0.269531 -> 0x3E0A = 0.134766). Half the value means half the k-accumulation.
+Across processes the rank-4 answer was also non-deterministic — five runs, five checksums —
+while rank-3 was stable and, notably, a **different** number.
+
+**Isolating it.** Same kernel at cluster 1x1 is clean:
+
+```
+cluster 2x1 (B multicast along M)   rank-3: 0 bad    rank-4: 50% bad
+cluster 1x1 (nothing multicast)     rank-3: 0 bad    rank-4:  0 bad
+```
+
+So the fault is entirely in the MULTICAST branch of `issue_operand_4d_mn`.
+
+**The mechanism, and why no offset fixes it.** For an MN-major operand, multicast partitions
+along **K**: each CTA loads `B_MN_SLICE_K = BK/CLUSTER_M` of the k-range and multicasts it to
+its peers. The consumer expects the rank-3 smem layout, which is ATOM-major with the k-slices
+nested INSIDE each atom:
+
+```
+atom i, slice s   ->   i*ATOM_BYTES + s*slice_bytes        (STRIDED by ATOM_BYTES)
+```
+
+A single rank-4 TMA writes its box **contiguously from one base address**. It cannot scatter
+into a strided set of sub-blocks, so **no value of `dst` makes it land correctly**. The old
+code passed `dst + slice_idx*(AW*slice_k*2)`, which put slice 1 on top of slice 0 and cost
+exactly half the accumulation. The single-TMA shape and the K-sliced layout are not
+expressible together.
+
+**The fix, made structural rather than duplicated.** One predicate, used in BOTH places that
+have to agree:
+
+```cpp
+constexpr bool MN4D_OK = !(SmemL::A_IS_MN && Config::NEEDS_A_MULTICAST)
+                      && !(SmemL::B_IS_MN && Config::NEEDS_B_MULTICAST);
+auto k_gen4  = bgemm_sm90_kernel<Config, Layout, false,     MN4D_OK>;
+auto k_fast4 = bgemm_sm90_kernel<Config, Layout, !CFG_A1B0, MN4D_OK>;
+```
+
+so for such a config `k_gen4` **is** `k_gen` — the same instantiation, not merely the same
+intent — and there is no rank-4 multicast code to reach. The dead branch keeps a `__trap()`
+rather than being deleted, so a future re-route stops dead instead of returning 50% wrong.
+Re-validated: 0 bad on all four shapes, deterministic, matching the rank-3 value.
+
+**WHY §H82 PASSED A CHECK THAT COULD NOT FAIL.** NT's B is K-major, so MN4D does nothing there
+— the SASS for `MN4D=0` and `MN4D=1` is byte-identical (verified by hashing the opcode stream:
+`NT A1B0=0 MN4D=0` and `NT A1B0=0 MN4D=1` hash the same, for all four SW values). A
+bit-exactness check on NT therefore passes without testing the feature. **The +1.46% recorded
+in §H82 is void** — it was measured on this kernel.
+
+That makes three vacuous checks in two days: the `clocks.applications.graphics` lock (§H83),
+this one, and the §H85 run below that logged the shape NAME into the checksum column. The
+common shape is *a check whose passing state is reachable without the thing under test being
+correct*. The defence used from here on is to run the arm that would look identical on
+failure — for §H86's Hilbert that is the explicit `colmajor` arm, and it is why that test can
+distinguish "curve engaged" from "curve silently fell back".
+
+---
+
+### §H85 — **THE WIDE/COL-MAJOR THIRD HE NEVER PORTED TO SM90. His rule taken literally is the WORST of six arms (-7.62%); the WINNER is col-major WITH grouping, which his architecture cannot express.**
+
+**His design is three-way, and only on SM103.** The rationale is documented there
+(`Bgemm_sm103_cluster_template.cuh:1975`), not in the SM90 port:
+
+```
+Square (grid_m == grid_n): Hilbert  -- balanced A+B reuse (~sqrt(gm*gn)x each)
+Tall   (grid_m >  grid_n): row-major -- B footprint fits in L2 after wave 1
+Wide   (grid_n >  grid_m): col-major -- A footprint fits in L2 after wave 1
+                           ... much less than Hilbert's ~32MB working set for wide grids
+```
+
+**The SM90 port kept two thirds of it:**
+
+| | SM103 | SM90 |
+|---|---|---|
+| square | Hilbert | Hilbert |
+| tall | row-major, `gm > gn` | row-major, **`gm > 4*gn`** |
+| wide | **col-major** | **no branch — falls back to supergrouped** |
+
+Across our 15 production shapes x his 11 tiles, **59 of 165** combinations are wide grids
+where SM103 would reorder and SM90 does not.
+
+**We already own that order — it is `RASTER=0, SW=0`.** `decode_mega_tile<0,0>` gives
+`mega_row = t % mgm`, `mega_col = t / mgm`: sweep all rows per column. Identical to SM103's
+`for hx: for hy:`. Two of our four wide pins already use it (gate_up-wgrad, lm_head-wgrad).
+
+**Measured, 12 rounds, ABBA crossover, clock pinned (69/69 at 1605).** lm_head-fwd,
+16384x50304x2048, tile 192x192, grid 86x262:
+
+```
+  arm                                    mean TF   vs pin        t
+  r0_sw3   col-major + grouping           785.07   +0.84%    +34.6   <- BEST
+  r1_sw1                                  781.60   +0.39%    +17.8
+  r1_sw3   the current pin                778.56       --       --
+  r1_sw0                                  761.58   -2.18%     -120
+  r0_sw1                                  745.64   -4.23%     -118
+  r0_sw0   HIS EXACT WIDE RULE            719.24   -7.62%     -237   <- WORST
+```
+
+**His rule, applied literally, would cost 7.62% on this shape.** Pure col-major is the worst of
+the six arms. The best is col-major WITH grouping — and that combination is unreachable in his
+tree, because `sm90_decode_tile_mapped` ignores `SUPER_M` entirely: the moment his map fires,
+his grouping is gone. Our `RASTER` and `RASTER_SWIZZLE` compose, so we can reach it. This is the
+clearest measured case of our design being better rather than merely different.
+
+**Controls behaved.** gateup-wgrad, already pinned col-major, lost **1.59% (t=-51)** when
+flipped to row-major, so the harness is measuring tile order. The other two shapes are null:
+wQ-wgrad flat within +-0.03%, lmhead-wgrad flat within 0.13%. So "wide -> col-major" is no more
+a general rule than the tall one in §H83 — it is worth 0.84% on one shape and nothing on three.
+
+**Process fault, recorded.** The sweep's checksum column logged `$5` (the shape NAME, constant
+per shape) instead of `$4` (the checksum), so "checksum identical: YES" tested nothing — the
+third vacuous check in two days, see §H84. Timings were unaffected. All six arms were re-verified
+separately and are bit-identical.
+
+**CONFIRMED THROUGH THE REAL DISPATCHER (2026-09-04).** `feedback_measure_against_dispatch_not_pins`:
+the harness and the dispatch table have disagreed before, and taking a harness number cost a
+3x-inflated V2c claim. So the candidate was wired into the library properly — new config
+`Sm90Config_192x192x64_2x1_v_rs8_dh_ubd_dw_skew_lsw_pdl` (identical to the pin except RASTER
+h->v), registered in `CFG_FOREACH`, enum + `call_nn` case added, and the arm selected at RUNTIME
+by `BLUBLAS_H85_LMHEAD_V` so ONE BUILD SERVES BOTH ARMS (feedback_backend_ab_snapshot).
+
+```
+  base  (_h_rs8, the pin)   778.47 TF   sd 0.73
+  cand  (_v_rs8)            785.09 TF   sd 0.23
+  paired delta              +0.85%   t = 25.37   n = 12      (harness said +0.84%, t = 34.63)
+```
+
+Guards, all held: new config present in the .so before starting (6 symbols — a stale library
+would have made the whole A/B a null); library md5 unchanged across the run; clocks.sm 11/11 at
+1605 under load; ABBA crossover with `vcand` winning all 12 rounds in both orders.
+
+NOT YET PINNED — the dispatch-table row still reads `_h_rs8`, and the `BLUBLAS_H85_LMHEAD_V`
+hook in `do_nn` is TEMPORARY and must come out when the row is changed.
+
+---
+
+### §H86 — **TILE_ORDER: HILBERT IMPLEMENTED IN OUR VOCABULARY, ON-DEVICE, COMPOSING WITH CLUSTERS — which his SM90 cannot do at all. Correct, engaged, and worth +0.16%.**
+
+**Why a new knob and not another `RASTER` value.** `RASTER` answers *which axis is fast*;
+`RASTER_SWIZZLE` answers *how many slow-axis lines per band*. A space-filling curve has neither.
+Folding Hilbert into either knob leaves the other settable-but-meaningless — `HILBERT + rs8`
+would compile and mean nothing. So `TILE_ORDER` names the **order family** (0 = Raster,
+1 = Hilbert) and the two existing knobs become the raster family's parameters. Slot 49, last in
+the list, so all 241 registered configs are untouched. Two `static_assert`s refuse
+`Hilbert + RASTER_SWIZZLE != 0` and `Hilbert + RASTER != 0`; both were verified to fire.
+
+**Architecturally we get something neither of his trees has.** In his SM90:
+
+| file | tile map / Hilbert | clusters + multicast |
+|---|---|---|
+| `Bgemm_sm90_warpspecialized_template.cuh` | **yes** | **none** |
+| `Bgemm_sm90_cluster_nn_template.cuh` | none | yes (supergrouped only) |
+| `Bgemm_sm90_cluster_nn_v2_template.cuh` | none | yes |
+
+Separate files; Hilbert and clusters never meet. Ours runs on the cluster-collapsed **mega-grid**
+(`make_mega_div` divides by `CLUSTER_M`/`CLUSTER_N`), so order and clusters compose by
+construction — and grouping composes too, which even his SM103 cannot do.
+
+**On-device decode, and the hard constraint that shapes it.** His host builder COMPACTS the
+curve: `map[idx]` is the idx-th point that lands inside the real grid, outside points skipped.
+Reproducing that on device means answering "which is the t-th surviving point" — a rank query
+over the whole curve, O(n^2) per tile, against O(log n) for the decode itself. **Unless the grid
+is a power-of-two square**, where nothing is skipped and `t` maps straight through. So
+`md.hil_n` is the mega-grid side when it is a power-of-two square and 0 otherwise, and a
+Hilbert config falls back to raster when it is 0. Of the 9 square cases across our shapes x his
+tiles, **8 are power-of-two squares**; the exception is 11x11.
+
+**Measured, 12 rounds, ABBA crossover, clock 1605.**
+
+```
+128x256, mega-grid 64x64      pin 768.04 | colmajor 764.96 (-0.40%) | HILBERT 769.28 (+0.16%, t=13.1)
+192x192, mega-grid 8x8        pin 730.10 | colmajor 729.13 (-0.13%) | HILBERT 728.66 (-0.20%, t=-14.4)
+   bit-identical across all three arms: YES (both shapes)
+```
+
+**The `colmajor` arm is the point of the test, not padding.** A Hilbert config whose curve fails
+to engage falls back to plain column-major and would then be identical to that arm in BOTH time
+and checksum — a clean-looking null that tested nothing (§H84). Hilbert vs colmajor came out
+**+0.56%, t=39.0**, so the curve demonstrably ran.
+
+**Worth, honestly: small.** +0.16% on a large square mega-grid, -0.20% on a small one. Square
+grids are rare — 9 of 165 shape x tile combinations. The value is that we now HAVE it, as a
+guarded knob that composes with clusters and grouping, rather than as a feature we lack.
+
+---
+
+### §H87 — **`Sm90Config_64x8x64` WAS UNBUILDABLE AND NOBODY NOTICED, because nothing compiled the library after §H67 added it.**
+
+The first full library build after the tile-union work failed in `Bgemm_sm90_nt_variants.cu`:
+
+```
+error: no legal wgmma N gives a splittable, atom-aligned work grid for either warpgroup
+       arrangement (even M-split or ceil/floor N-split)
+       instantiation of Sm90WorkGrid<Sm90Config_64x8x64, Sm90Layout::NT>
+```
+
+The warpgroup split is forced, never chosen: split along M when the m64-atom count divides
+evenly across the consumers, else along N. This tile can do neither at NCW=2 —
+`BM=64 -> MATOMS=1`, and `1 % 2 != 0`, so no M-split; `BN=8` is the narrowest legal wgmma N, so
+`NCHUNKS=1` and the N-split needs >= 2. `wgmma_n_pick_free` returns 0 and the assert fires.
+
+Fixed with `NUM_CONSUMER_WARPGROUPS=1` — the §H77 knob exists for exactly this — rather than by
+deleting the tile, which would have quietly shrunk the union §H67 set out to complete.
+
+**The lesson is `feedback_make_lib_vs_tests` again, one level up.** `make` builds the library,
+not the tests, and a config that is only *registered* is not *compiled* until something
+instantiates it. A tile can therefore be added, reviewed, and committed while being incapable of
+compiling. Adding a tile must be followed by a full library build, not by a successful edit.
+
+
+**WHERE THE PIN BELONGS — AND WHY IT IS STAGED, NOT APPLIED.** The row was going to change in
+OUR tier-1 table. Two facts make that premature:
+
+1. **His NN dispatcher never emits 192x192 at all.** `do_nn`'s reachable set is
+   `192x128 regsplit | 256x128 2WG | 128x192 | 128x256 | 128x160 | 128x128 | 128x64 | 128x32`.
+   He also has NO exact-shape table — zero `{M,N,K,cfg}` rows — it is pure heuristic.
+2. For lm_head-fwd, `sm90_pick_bn(16384, 50304, 1)` returns **192**: `N % 192 == 0`
+   (50304 = 192*262), `N % 256 != 0` so the BN=256 pre-emption does not fire, and
+   `grid_m*(N/192) = 128*262 >> SM_COUNT*3/4`. So he routes it to **128x192**.
+
+So the two trees disagree on the TILE for this shape (ours 192x192, his 128x192), and tuning the
+raster of a tile his heuristic never selects only matters if our tier-1 survives as the hybrid's
+L1. The +0.85% stands as a measured property of the 192x192 kernel; the pin is left staged
+(config registered and reachable, `BLUBLAS_H85_LMHEAD_V` hook still in `do_nn`) until the
+hybrid's dispatcher shape is settled.
+
+**OPEN, and a better question than the raster tuning:** his 128x192 vs our 192x192 on
+lm_head-fwd, head to head. Note `project_128x192_kernel_weakness` records OUR 128x192 as 2.1x
+off cuBLAS on the same geometry — that is a statement about our kernel, not his, and must not be
+carried over to his without measuring.
+
+---
+
+### §H88 — **BIAS / addmm BUILT IN OUR VOCABULARY. His logic, his order, his measured design — plus a ragged-N guard he does not need. Final: we beat him 103.2–108.8% on wall clock, at 81.6% tensor pipe against his 76.4%.**
+
+We had ZERO bias support; he has 75 references plus a 235-line addmm dispatcher. This closes it.
+
+**SEMANTICS, from his entry point verbatim:** `C = alpha*(A x B) + beta * bias`, bias_numel in
+{1, N, M, M*N}. The bias is SCALED BY BETA -- PyTorch's addmm rule, where the "input" tensor is
+the bias. `+ bias` would be silently wrong for every beta != 1. When M == N the rule is ambiguous
+and N is tested FIRST, so a square problem gets PerCol; matched deliberately so a square addmm
+cannot change meaning between the two implementations.
+
+**THE SHAPE IS COMPILE-TIME, and we took that because it is MEASURED, not asserted.** His note:
+a runtime bias_numel emitted a 4-way chain per element across a fully unrolled epilogue --
+11,080 instructions deciding WHICH bias to add, against ~1,500 for the entire no-bias kernel;
+specialising took it to ~2,600 and cut the epilogue's cost over no-bias from +44.9% to +3.7%.
+Same rule we already apply everywhere (feedback_sm90_composable_knobs).
+
+**WHAT WE BUILT:** `Sm90BiasMode {Runtime, Scalar, PerCol, PerRow, Full}`; one
+`apply_bias_pair<MODE, N_ALIGNED>` called from all THREE of our value-forming paths
+(EPI_DIRECT_STG, EPI_USE_STSM, default c_buf) -- three inline copies would be free to drift,
+which is exactly how §H84 happened. Split-K deliberately gets no bias, matching him: it writes
+fp32 partials and the reduce applies alpha/beta, so per-slice bias would add it S times.
+
+**EXISTING KERNELS BYTE-IDENTICAL, 16/16**, across all four epilogue paths and all three layouts,
+verified against a machine-generated no-bias twin of the header.
+
+---
+**THREE BUGS OF MY OWN, AND WHAT EACH COST.**
+
+**(a) beta reused for two jobs -- the fused path read C back.** Our epilogue gates the C_in
+read-back on `beta != 0`; addmm needs beta != 0 to scale the bias. So every fused call re-read
+the entire output matrix -- re-adding precisely the pass fusing exists to delete. Measured
++47.12% / +62.25% / +28.76% SLOWER than unfused. HIS TREE DOES NOT HAVE THIS BUG: HasBeta and
+HasBias are independent template parameters there; collapsing them was our error, not his design.
+Fixed with `READ_C_IN`. Worse, the first correctness test PASSED because it memset C to zero, so
+the spurious `beta*C_in` term added nothing. The test now pre-fills C with 0x5C5C garbage.
+
+**(b) THE PER-ELEMENT BOUNDS GUARD -- 148,382 cycles, the single largest self-inflicted cost
+recorded in this document.** His compile-time PerCol does an UNGUARDED 2-element vector load,
+safe only because he pads on the host (§H76). We do not pad, so I added `if (pair)`. Correct,
+and a disaster: in a fully unrolled epilogue a PER-ELEMENT branch forces b0/b1 to be
+zero-initialised and conditionally selected at every element pair, destroying straight-line
+codegen. ~400 integer address ops to perform 128 FFMAs.
+
+```
+arm                              cycles    tensor pipe   instructions
+ours, no bias                   314,088       85.00%       27.06 M
+ours, per-ELEMENT guard         475,565       57.59%       39.97 M     <- the bug
+ours, per-TILE guard            402,552       68.61%       36.96 M     <- partial fix
+ours, N_ALIGNED template arg    328,289       81.57%       32.55 M     <- final
+ours, unguarded (his form)      327,183       81.77%       32.55 M     <- the ceiling
+his                             349,536       76.39%       37.58 M
+```
+
+The fix in two steps. Per-TILE (`block_col*BN + BN <= N`) recovered half -- but the else arm
+still existed and still cost scheduling. The real insight: whether ANY tile is partial is not a
+per-tile fact, it is a LAUNCH fact, `N % BN == 0`. So it belongs where A1B0 and MN4D already
+live -- a template parameter the host picks. At `BIAS_N_ALIGNED` the guarded arm is not in the
+compiled kernel at all and we emit his exact straight-line load; the final row matches the
+unguarded ceiling to within 1,106 cycles while KEEPING ragged-N correctness.
+
+**(c) A STALE .o FAKED A BYTE-IDENTITY PASS.** The re-check after adding the last two template
+parameters reported "BYTE-IDENTICAL 16/16" while the twin had 6 unreverted residuals and its
+compile had failed with 32 errors -- the comparison ran against an object left over from the
+earlier successful build. Caught only by a residual counter printed alongside. The harness now
+`rm -f`s both objects first and withholds the verdict on any nonzero error count. FOURTH vacuous
+check in two days; see feedback_vacuous_checks.
+
+---
+**RESULTS, 12-round ABBA crossover, one arm per process, clock verified 1605 MHz under load
+(32 C, 157 W -- no thermal or power confound).**
+
+Fused vs matmul-then-separate-bias-kernel (the pass we are deleting; the separate kernel is
+vectorised and grid-strided, not a straw man):
+```
+16384x2048x2048    0.2484 -> 0.1855 ms   -25.34%   t = -2095
+16384x11264x2048   1.2416 -> 0.9746 ms   -21.50%   t =  -555
+8192x8192x1024     0.3099 -> 0.2045 ms   -34.01%   t = -2089
+```
+
+Ours vs HIS addmm, his tree built from source and run on the same box, same shapes, same clock:
+```
+shape              ours ms    his ms   ours/his        t
+16384-2048-2048     0.1855    0.1914     103.2%   -149.6
+16384-11264-2048    0.9747    1.0170     104.3%   -138.6
+4096-4096-4096      0.1767    0.1831     103.6%   -219.8
+8192-8192-1024      0.2045    0.2225     108.8%   -527.0
+```
+
+**METHOD NOTE, and it is the important part of this section.** The first pass concluded from a
+static instruction COUNT that our bias cost "+1168 instructions, similar to his" and would have
+recorded "his is faster, we are at 87%" as the finding. The count was nearly a non-story --
+39.98 M vs his 37.58 M, 6.4% -- and he was reading MORE DRAM (199 MB vs our 178 MB) while
+winning. Only ncu showed the mechanism: tensor pipe 57.8% against his 76.4%. And only the
+bias-OFF control proved our base GEMM was already AHEAD of his (314k vs 349k cycles, 85% vs 76%
+tensor), which located the entire deficit in the epilogue I had just written. Instruction counts
+did not merely fail to explain this -- they pointed the wrong way. See
+feedback_samples_not_static_counts and feedback_vector_not_total_instructions.
+
+**STILL OPEN on this feature:** register the addmm entry in the dispatcher and build it into the
+library; `BIAS_SMEM_PREFETCH` (his Full-mode bulk-TMA bias prefetch, recorded by him as +23.5pp)
+is NOT ported; and addmm cannot use the A1B0 accumulator specialisation because beta != 0 --
+with READ_C_IN false that restriction is now unnecessary and worth revisiting.
+
+---
+
+### §H88f — **CORRECTION: 1785 MHz DOES HOLD. The "700 W cap" explanation in §H83/§H88 was wrong, and the addmm win is clock-independent (103.9–110.6% at 1600, 1785 and free).**
+
+**WHAT I GOT WRONG.** §H83 recorded that a 1785 lock "sagged to 1710 under the 700 W cap" and
+concluded the card could not hold it. Re-tested directly, under a SUSTAINED load:
+
+```
+asked 1980  -> held 1830 MHz (min 1830)  184 W  33 C
+asked 1785  -> held 1785 MHz (min 1785)  175 W  33 C   <-- holds exactly
+asked 1710  -> held 1710 MHz (min 1710)  171 W  33 C
+asked 1600  -> held 1605 MHz (min 1605)  161 W  33 C
+```
+
+1785 holds perfectly, and the stated mechanism is refuted outright: the card draws **175 W**, a
+quarter of the 700 W cap, at 33 C. Nothing was throttling. Only 1980 genuinely sags (-> 1830),
+which is a boost ceiling, not a cap.
+
+**WHY THE ORIGINAL READING WAS WRONG.** §H83 sampled `clocks.sm` every 0.5 s across ~200 SHORT
+processes, each ~2-3 s including CUDA context creation. Most samples landed during clock ramp-up
+rather than steady state, so the distribution was dominated by transitions. The fix that caught
+the vacuous `clocks.applications.graphics` check -- sample the real clock under load -- was
+right; sampling it across process startup was not. A clock probe has to run against a SUSTAINED
+load, not across a batch of short launches.
+
+Worth naming the second error underneath it: `project_power_clock_solved` established a genuine
+700 W-cap clock deficit -- for the FULL TRAINER, which actually reaches the cap. Carrying that
+mechanism over to a single-kernel benchmark drawing 175 W was applying a finding outside the
+regime it was measured in. The cap is real; it just was not present here.
+
+**CONSEQUENCE FOR §H88: none, and now positively confirmed.** The addmm comparison was re-run at
+three clocks, 12-round ABBA crossover, one arm per process:
+
+```
+shape              locked 1600   locked 1785   free (1952 MHz mean, min 1890)
+16384-2048-2048       103.2%        103.9%        103.9%
+16384-11264-2048      104.3%        104.3%        104.5%
+8192-8192-1024        108.8%        110.6%        110.5%
+```
+
+The margin is clock-INDEPENDENT. That is a considerably stronger claim than the single locked
+measurement, because a win that came from a compute/memory balance peculiar to one clock would
+have moved across a 350 MHz range; this does not. Free-clock and locked agree to within 0.2 pts,
+which also means the §H27zD measurement-ORDER effect is not in play here -- the crossover
+handles it.
+
+---
+
+### §H89 — **CATEGORY-1 RE-RUN, AND THE 192x192 DEFICIT READ OUT OF THE CODE: a missing wgmma width, a knob whose name means different things on the two sides, and a descriptor that we recompute where he increments.**
+
+§H79's -8.30% predates the A1B0 wiring, the rank-4 path and its 50%-wrong bug, the NCW knob and
+the dead-work changes, so it was re-run on current code. The harness had to be REBUILT: the
+original was lost with a released box (feedback_pull_run_artifacts_immediately, second time).
+
+#### THE RE-RUN, 14 configs, 12-round ABBA, clock 1785 held exactly (median=min=max=1785, 180 W)
+
+```
+128x64x64_rs   78.1  HIS     128x192x64      87.2  HIS     128x32x64      101.8  OURS
+128x16x64      80.3  HIS     128x192x64_ws   87.4  HIS     128x128x64_rs  102.3  OURS
+128x160x64_rs  82.6  HIS     192x128x64_rs   89.5  HIS     128x64x64      107.8  OURS
+192x192x64     84.6  HIS     128x256x64_rs   90.9  HIS     128x128x64_rs_ws 159.1 OURS
+128x256x64_rs_ws 86.9 HIS    256x128x64_2WG  91.0  HIS
+                              OURS 4 · HIS 10      median 88.5%
+```
+
+Two of the fourteen were MY harness bug: the three SPLITK_WORKSPACE configs sit at indices
+11/12/13 and the TN shapes were mapped to 12/13/14, so index 11 ran a split-K config on a dense
+K=2048 shape (a fake 50.7%) and index 13 got the wrong TN shape (a fake 77.7%, actually 159.1%).
+
+#### CROSS-VERIFYING THE TWINS BEFORE TRUSTING ANY OF IT
+
+Asked for, and it paid. His template has 19 parameters; ours has 49. A machine check resolved
+all 19 of his (explicit + defaults) against our twins' knobs -- **224 comparisons, 0 mismatches**,
+and the verifier was proved able to fail by injecting a wrong SUPER_M. Two of his semantics are
+not what the literal value suggests:
+  * `_NUM_CONSUMER_WARPGROUPS = 0` does NOT mean zero -- it means `BM/64`.
+  * `_SWIZZLE_BYTES = 128` applies to A only; B's is derived from BN separately.
+His `sm90_c_swizzle_bytes` works in bytes and our `sw_pick` in elements, but they are
+algebraically identical (`BN*2 % 128 == 0` <=> `BN % 64 == 0`).
+
+**BUT THE SWIZZLE STILL DIFFERED ON ONE TILE.** Printed from the real code, not re-derived:
+192x192 resolved ours B=64, his B=128, because our `sw_pick_symmetric_mn` takes the odd-M-split
+branch at BM=192 and narrows B for N-split symmetry (§H27z.3). Forcing 128 to match him:
+**644.8 -> 645.0 TF. A clean null** -- and verified non-vacuous, since the two configs produce 8
+genuinely different SASS kernels. Our narrowing costs nothing and matching him gains nothing.
+
+#### FINDING 1 — WE NEVER TRANSCRIBED wgmma m64n192k16
+
+```
+our transcribed set: {8,16,32,64,96,112,128,144,160,168,176,256}      192 ABSENT
+```
+
+An omission, not a judgement -- 176 and 256 are both present, and PTX allows any multiple of 8
+up to 256. The file's own §H67 note says to add a missing form rather than assume it illegal.
+Consequence: for BN=192 the picker fell back to **WGMMA_N=64, NCHUNKS=3** and issued THREE wgmma
+per atom where he issues one. All THREE BN=192 configs in the A/B were losses.
+
+Fixed by GENERATING the n192 form (96 accumulator registers) from the shipped n176 form -- same
+operand order, same immediates. Three separate places had to change, and the second and third
+were only found because the build failed:
+  1. the wgmma form itself,
+  2. `kWgmmaNCand`, a SEPARATE candidate list the picker searches (adding 192 there changes
+     only BN=192 and BN=384 -- verified by diffing all 136 (bn, grain, split_m) triples before
+     and after; we ship no BN=384 tile),
+  3. the `static_assert` CONDITION in the dispatch ladder -- I had updated only its message
+     string, so the message advertised 192 while the predicate still rejected it.
+
+**RESULT: tensor-pipe instructions 4,359,168 -> 1,453,056, which is EXACTLY his 1,453,056.**
+Total instructions 58.29M -> 36.51M against his 31.73M. ALU 19.72M -> 13.19M, now BELOW his
+14.99M. Throughput 84.5% -> 86.6%.
+
+#### FINDING 2 — HIS `HOIST_DESC=false` IS NOT OUR `DESC_HOIST=false`
+
+The A/B set our DESC_HOIST/DESC_WALK false "to match" his HOIST_DESC=false. Reading both:
+
+```
+HIS,  HOIST_DESC=false:   make_gmma_desc ONCE per chunk, then
+                          b_desc = gmma_desc_advance_mn_k16(b_desc)   -- an ADD, every k-step
+OURS, DESC_HOIST=false:   make_gmma_desc_mn_major(...)  -- a full RE-ENCODE every (ks, nc)
+```
+
+**He has no re-encode-per-step mode at all.** That mode is ours alone and it is the worst one, so
+mapping his `false` onto our `false` compared his best baseline against our worst. The correct
+mapping is our `DESC_WALK` (+`DESC_HOIST`, which a static_assert requires with it), which is his
+add. Worth **+2.1 points** on its own (84.5 -> 86.6 with the n192 fix also in).
+
+#### WHAT REMAINS, AND IT IS ONE THING
+
+```
+pipe        ours        his        ratio
+tensor    1,453,056   1,453,056    1.00   <- fixed
+alu        13.19 M     14.99 M     0.88   <- we are lower
+uniform     6.56 M      2.56 M     2.57   <- ALL of the remaining gap
+cycles     364,086     317,596     1.15      tensor active 81.75% vs 93.82%
+```
+
+Our best descriptor mode still recomputes an OFFSET from the loop indices and adds it to a base:
+`b_desc_stage + (b_walk_off >> 4)`, where `b_walk_off` is rebuilt from `ks` and `nc` each
+iteration. His mutates the descriptor IN PLACE by a compile-time constant. That is exactly
+`project_instruction_excess_worklist`'s note -- "cuBLAS keeps the packed GMMA descriptor in a UR
+and adds an immediate; we re-encode from a per-thread base every wgmma" -- and it is still true
+of us in our BEST mode, not just our default. Next step on this tile.
+
+#### METHOD NOTE
+
+Instruction COUNTS again failed to name the cause and the pipe BREAKDOWN found it immediately:
+the total was 1.84x, which says nothing, while tensor was 3.0x and uniform 7.0x, which says
+"wrong wgmma width" and "descriptor rebuild" respectively. And two claims had to be withdrawn
+mid-investigation for being per-OBJECT rather than per-KERNEL (our object holds 4 instantiations
+to his 2): "84 UTMALDG vs 28" was really 14 vs 14.
+
+
+#### §H89f — **THE 192x192 DEFICIT IS SHARED-MEMORY BANK CONFLICTS IN OUR EPILOGUE, AND THE SHIPPED PIN HAS THEM TOO.**
+
+Chasing the residual after the n192 and descriptor-mode fixes. PC-sample census, not counts:
+
+```
+op                     OURS samples / static      HIS samples / static
+STS                        1360 / 48                  106 / 96
+LEA.HI                      702 / 10                    0 /  6
+LEA                         475 / 29                   71 /  5
+ULEA                        145 /  9                  412 / 23
+```
+
+He issues TWICE our static shared stores (96 vs 48) and they cost 13x LESS (106 vs 1360 samples).
+Per instruction: ours stalls 28.3 samples, his 1.1 -- 26x. That is a bank-conflict signature, and
+the direct metric confirms it at identical instruction counts:
+
+```
+                                    OURS         HIS
+shared-store instructions         544,896     544,896   <- IDENTICAL
+shared-store bank conflicts     3,865,509      85,821   <- 45x
+store wavefronts                5,038,935     853,424   <- 5.9x
+```
+
+Same stores, same work, 45x the conflicts. The wavefront inflation is what backs up the MIO
+queue (mio_throttle 1692 vs 365, dispatch_stall 1029 vs 329 -- together 76% of the sample excess),
+which throttles issue, which starves the tensor pipe to 81.75% against his 93.82%.
+
+**MECHANISM, from the code.** `EPI_SPAN = EPI_SWIZZLE_BYTES / 16`, and
+
+```cpp
+int epi_swz_index(int row, int col, int width, int span, int shift)
+{
+    if (span == 0) return row * width + col;   // LINEAR
+    ...XOR swizzle...
+}
+```
+
+`EPI_SWIZZLE_BYTES = 0` gives a LINEAR epilogue layout. The file's own §H27zzz note already says
+"A LINEAR slot is why stmatrix cannot help us... Swizzled, conflicts go to zero."
+
+**AND THIS IS NOT A TWIN ARTEFACT.** The SHIPPED pin
+`Sm90Config_192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl` resolves EPI_SWIZZLE_BYTES=0,
+C_BOX_N=96, EPI_SPAN=0. Measured on gate_up-fwd (16384x11264x2048) exactly as dispatched:
+**9,168,516 bank conflicts on 2,922,624 stores (3.1 each), 12,106,150 wavefronts (4.1 per store,
+ideal 1)**, tensor pipe 91.27%.
+
+**THE FIX IS NOT A ONE-LINE KNOB.** Enabling the swizzle requires
+`C_BOX_N * 2 == EPI_SWIZZLE_BYTES`, and C_BOX_N auto-resolves to 96 for BN=192 -> 192, not a legal
+swizzle width. Narrowing to C_BOX_N=64 with SW128 (192 = 3 x 64) trips three further constraints:
+`EPI_TILE_N must divide WGMMA_N`, and `C_BOX_N must divide WG0's/WG1's N width exactly`. Left
+UNRESOLVED rather than forced -- these asserts exist because violating them routes a lane's value
+into the wrong chunk, which is a wrong-answer bug, not a perf regression.
+
+**STATE OF THE 192x192 INVESTIGATION**
+
+```
+as first measured                                     84.5%
++ swizzle matched to his (proven null, kept honest)   84.5%
++ DESC_WALK (his HOIST_DESC=false != our false)       86.6%
++ UNIFORM_A/B_DESC                                    86.2%  <- TESTED, does not pay, dropped
+remaining: epilogue bank conflicts, 45x                 open
+```
+
+Two fixes landed (§H89c the missing m64n192k16 form; §H89d the descriptor-mode mapping), one lead
+tested and rejected, and the residual is now one specific measurable defect that also affects a
+config we ship.
+
+---
+
+### §H89g — **THE 192x192 ROOT CAUSE IS OUR OWN NCW DEFAULT, NOT HIS DESIGN. One knob fixes three symptoms; +3.09% and +3.63% on two production shapes, bit-identical. And copying his register setup exactly would have LOST 8%.**
+
+Resolved values told the story once printed instead of reasoned about:
+
+```
+192x192 PROD pin   WGMMA_N=96   NCHUNKS=2  SPLIT_M=0  C_BOX_N=96   EPI_SWZ=0
+128x256 dh_shfl    WGMMA_N=256  NCHUNKS=1  SPLIT_M=1  C_BOX_N=64   EPI_SWZ=128
+```
+
+**ONE ROOT CAUSE, THREE SYMPTOMS.** MATOMS = 192/64 = 3 and our default NCW = 2. 3 % 2 != 0, so
+the M-split is illegal and the warpgroups split along N instead (SPLIT_M=0). An N-split needs
+NCHUNKS >= 2, which makes WGMMA_N=192 illegal, so the picker takes 96. C_BOX_N then derives as 96,
+and 96*2 = 192 is not a legal swizzle width, so the epilogue is LINEAR and collides on banks.
+Three separate observations -- half-width wgmma, 2x the wgmma count, and 9.18M bank conflicts --
+all fall out of one default.
+
+**HIS NCW is BM/64 = 3.** He splits M, each warpgroup owns one m64 atom and the full 192-wide N.
+He gets the wide wgmma and the swizzlable C box structurally.
+
+**THE FIX IS OUR OWN §H77 KNOB.** NCW=3 -> SPLIT_M, NCHUNKS=1, WGMMA_N=192, EPI_TILE_N=64 divides
+it, C_BOX_N=64 -> SW128 legal. Two constraints had to be paid on the way, both real:
+  * `40 + 3*232 = 736 > 512` register budget. His 192x192 runs 0/0 (split DISABLED), which is how
+    his NCW=3 fits.
+  * WGMMA_SKEW needs >= 2 m64 atoms per warpgroup; NCW=3 leaves exactly one. Skew comes off --
+    a real cost, §C7517 measured it at +0.53%.
+
+```
+arm                          conflicts   tensor pipe   TF      vs pin
+shipped pin (NCW=2)          9,183,727     91.23%     834.6      --
+NCW=3, regs 0/0 (HIS setup)    465,577     82.85%     766.4    -8.16%
+NCW=3, regs 40/152 + swzEPI    303,055     93.37%     860.3    +3.09%  t=16.1
+```
+
+**COPYING HIM EXACTLY LOSES 8%.** His 0/0 disables the register split; keeping ours at 40/152
+(inside the 512 budget: 40 + 3*152 = 496) is what turns the change from -8.16% into +3.09%. This
+is the clearest case yet for the standing rule: adopt his MECHANISM, keep our knob values, and
+measure -- do not transcribe his config.
+
+Bank conflicts 9.18M -> 303K, a 30x reduction. Bit-identical to the shipped pin on both
+production shapes (184,549,376 and 824,180,736 elements, zero mismatches).
+
+```
+gate_up-fwd  16384x11264x2048   834.6 -> 860.3 TF   +3.09%  t=16.1
+lm_head-fwd  16384x50304x2048   823.8 -> 853.7 TF   +3.63%  t=17.6
+```
+
+---
+
+### §H89h — **THE SAME FIX IS A NULL ON THE LONG-K PINS, AND THAT IS THE POINT: 85x fewer conflicts bought 0.06%.**
+
+31 of our 33 pinned configs have EPI_SWIZZLE_BYTES=0. On the 15 BluTrain shapes, 8 use the
+already-swizzled 128x256 pin and **7 use linear pins**. Applying the swizzle to the 256x128 family
+(wQ-wgrad, down-wgrad):
+
+```
+                    conflicts        speed
+pin (linear)         197,976           --
++SW64                  2,337        +0.06%  /  +0.11%
++SW128                 1,326        -0.80%  /  -1.88%
+```
+
+**Conflicts fell 85x and throughput did not move.** Both shapes are K=16384: the k-loop dominates
+and the epilogue is a negligible share of runtime, so removing its stalls buys nothing. SW128 is
+actively worse because widening C_BOX_N to 64 costs more than the conflicts it removes.
+
+This is `feedback_isolated_measurements_mislead` exactly: a counter improved 85x while the thing
+we care about did not. **The rule that comes out of it: the epilogue swizzle is worth fixing only
+where the epilogue is a real share of runtime -- short K. 192x192's shapes are K=2048; the
+256x128 and 128x128 pins are all K=16384.** Do not "fix" the remaining linear pins on conflict
+count alone.
+
+**NOT PINNED YET.** The 192x192 change is validated but the dispatch table still points at the old
+config, and `192x192x64_1x2_v_rs1_...` (gate_up-wgrad) has a different EPI slot pattern and was
+not converted.
+
+---
+
+### §H90 — **ENTRY POINT #1 OF 44 (`nt_128x128x32_sw64`): everything measurable is EQUAL to his and we are still 5% behind. Four causes tested and eliminated.**
+
+Walking his dispatcher's 44 entry points in order. #1 is the narrow-K NT path
+(`sm90_try_narrow_k`: K % 64 != 0, N % 128 == 0, K % 32 == 0 -> sw64).
+
+**HIS LAUNCHER IS A NO-OP DIFFERENCE.** `launch_bgemm_sm90_nt<Config>` is a thin wrapper --
+his own comment: *"Thin per-layout wrappers so call sites do not name Sm90Layout directly."*
+It calls `launch_bgemm_sm90<Config, Sm90Layout::NT>`. No logic.
+
+**THREE ARMS, 12-round crossover, 1785 MHz, all BIT-IDENTICAL:**
+```
+his kernel                                    509.7 TF
+our own config (RASTER=v, rs0, regs 40/232)   483.4 TF   94.8%
+our twin at HIS settings (h, rs3, regs 0/0)   402.8 TF   79.0%
+```
+So OUR settings beat HIS settings on our kernel by 20%. Keep ours -- third time this has come
+out that way (see also §H89g, where copying his regs 0/0 cost -8.16%).
+
+**AT IDENTICAL SETTINGS EVERYTHING MEASURABLE IS EQUAL:**
+```
+                       our twin        his
+tensor pipe instrs      270,336      270,336    IDENTICAL
+LSU pipe instrs         140,980      140,980    IDENTICAL
+LOAD_PIPE_DEPTH              12           12    IDENTICAL
+STAGE_BYTES              16,384       16,384    IDENTICAL
+STORE_BUF_BYTES          32,768       32,768    IDENTICAL
+SMEM_BYTES              229,376      229,376    IDENTICAL
+DRAM bytes             14.26 MB     14.04 MB    ~equal
+SASS instruction count    1,408        2,448    OURS IS SMALLER
+```
+We execute a SMALLER kernel with the same work and are 34% slower in cycles (76,706 vs 57,455).
+It is entirely stalling:
+```
+stall (PC samples)     ours    his   excess
+long_scoreboard        1219    842    +377
+mio_throttle            248      3    +245   (83x)
+dispatch_stall          296     86    +210
+short_scoreboard        247    116    +131
+total samples          4563   3316   +1247
+```
+
+**FOUR HYPOTHESES TESTED, ALL ELIMINATED:**
+
+| hypothesis | test | result |
+|---|---|---|
+| epilogue bank conflicts | turned the swizzle on | conflicts 1,048,714 -> 39,652 (26x). **Speed unchanged.** |
+| uniform-pipe / descriptor rebuild | DESC_HOIST + DESC_WALK | uniform 1.33M -> 386,868, **BELOW his 589,700**. Speed unchanged. |
+| pipeline depth | printed both | identical, 12 |
+| producer bursting | his waits on the empty mbar EVERY iteration; ours skips the first DEPTH waits (`if (issued >= LOAD_PIPE_DEPTH)`), firing 24 TMAs unpaced. Forced ours to pace like his. | twin 400.5 -> 430.4 (**+7.5%**) but our own config 485.1 -> **472.9 (-2.5%)**, and mio_throttle did NOT drop (248 -> 254). Helps the no-register-split arm, hurts the split one. |
+
+**STATE: ours 483-489 TF against his 510.9 -- about 95%. The residual 5% is NOT yet explained.**
+It is not conflicts, not uniform traffic, not depth, not the launcher, not the config settings,
+and not producer pacing. Four metrics were each driven to parity or better without moving the
+outcome -- the same lesson as §H88's method note, now four more times.
+
+**PRIORITY NOTE, recorded so it is a decision and not a drift:** this entry only fires when
+K % 64 != 0, and every production K we ship is divisible by 64 (2048, 512, 11264, 5632, 16384,
+50304). It never runs in the trainer. The SAME symptom -- tensor pipe starved at identical
+settings -- also appears on 192x192 (§H89), which DOES run, so the mechanism is probably shared
+and worth solving where it pays.
+
+---
+
+### §H91 — **AN INTEGER DIVIDE BETWEEN THE TWO wgmma, ON 31 OF 33 PINNED CONFIGS. Removed. +8.6% where the stage is small, and the SASS diff is what found it after four benchmark hypotheses had failed.**
+
+Walking entry point #1 of the 44. At IDENTICAL settings our kernel was 21% behind his with
+tensor/LSU instruction counts, pipeline depth, stage bytes, smem and DRAM all EXACTLY equal, and
+our SASS was SMALLER (1,408 vs 2,448). Four hypotheses were tested and all failed to move it
+(§H90): bank conflicts (driven down 26x, no change), uniform pipe (driven BELOW his, no change),
+pipeline depth (identical), producer pacing (helped one arm, hurt the other).
+
+**READING THE SASS FOUND IT IMMEDIATELY.** Between our two HGMMA:
+
+```
+OURS                                        HIS
+231 HGMMA                                   444 HGMMA ..., UP0
+232 R2UR / UMOV / R2UR / VIADD / UMOV       453 VIADD  R91, R91, 0x1
+238 IMAD.HI R3, R2, 0x2aaaaaab   <-- DIVIDE 454 ISETP.NE.AND P0, PT, R91, 0xc, PT
+239 SHF.R.S32.HI                            455 SEL    R99, RZ, 0x1, P0
+240 LEA.HI                                  456 SEL    R91, R91, RZ, P0
+241 HGMMA                                   457 LOP3.LUT R92, R92, R99
+244 IMAD R16, R3, -0xc, R2  <-- % 12        458 HGMMA
+```
+
+`0x2aaaaaab` is the reciprocal magic constant and `-0xc` is -12 = LOAD_PIPE_DEPTH. That is
+`stage % DEPTH` -- a full integer division on the critical path between wgmma issues. His is
+five cheap instructions in the same place.
+
+**WE ALREADY KNEW, AND HAD ALREADY FIXED IT, AND THEN SHIPPED THE SLOW FORM ANYWAY.** §H52
+recorded exactly this: the dynamic source census attributed 7.8M instructions -- 3.6% of a whole
+kernel -- to that ONE line, and added `STAGE_CSEL` to emit his form, noting it is bit-exact by
+construction. It was then instantiated on **2 of our 33 PINNED configs**. The other 31 shipped
+the divide.
+
+**THE FIX IS NOT A KNOB.** `advance_stage`'s own comment already stated the two forms are
+identical for every s in [0, DEPTH), the only range `stage` ever holds. The `%` branch was
+strictly worse with no compensating benefit, so it is deleted rather than defaulted. CSEL stays
+as an inert parameter so every existing alias and call site compiles unchanged.
+
+**SASS VERIFICATION, magic-divide count per config:**
+```
+                                  before   after
+entry #1  128x128x32_sw64            18       0
+128x256 pin (8 production shapes)   >0        0
+256x128 pin                         >0        0
+192x192 pin                          24      24   <- DIFFERENT CAUSE, see below
+```
+
+**192x192's 24 divides are a SECOND, unrelated divide:** `tile_col / WGrid::C_BOX_N` in the
+epilogue, with C_BOX_N = 96 -- not a power of two. The §H89g NCW=3 variant resolves C_BOX_N to
+64 and has **0 magic-divides**, which is part of why it measured +3.09% / +3.63%. So that fix
+was removing two defects at once and only one of them had been identified.
+
+**MEASURED: +8.6% on entry #1's config** (403.6 -> 438.4 TF, bit-identical). Near-zero on the
+128x256 pin (+0.06%) -- the divide is ONCE PER STAGE, so it amortises against stage size: entry
+#1 has BK=32 and 2 wgmma per stage, the 128x256 pin has BK=64 and many more.
+
+**METHOD, and it is the fifth time today.** Four benchmark hypotheses, each of which drove its
+own metric to parity or better, none of which moved the outcome. The SASS diff found the cause
+in one pass. Counters say WHERE time goes; only the instruction stream says WHAT the code is
+doing differently. Read the machine code first when both sides are available.
+
+
+---
+
+### §H92 — **ALL 44 ENTRY POINTS LANDED, AND THE FIRST HONEST 44-WAY MEASUREMENT: mean 88.5% of his, 42 losses, 1 win. Plus a real correctness bug of ours that his tree did not have.**
+
+Strategy change, made at the user's direction: stop walking the 44 one at a time (a whole session
+went into slot #1 while 43 slots sat untouched) and instead land ALL 44, then measure once and let
+the table say where the work is. That is what this section records.
+
+**THE AUDIT WAS WRONG BEFORE TODAY, AND THE METHOD IS THE LESSON.** Every earlier count in
+HYBRID_44_TRACKER.md ("twin exists 33/44", "names we do NOT produce 25/44") came from grepping the
+SOURCES for entry-point names. Our entry points are pasted together by X-macros at preprocessing
+time, so a name like `blublasBgemmSM90_bf16_nt_128x32x64_template` appears NOWHERE in the tree even
+though we emit it -- a grep sees only the hand-written wrappers. The honest audit is to preprocess
+and read the symbols:
+    nvcc -E -x cu -I include -I src/.../SM90 probe.cu \
+      | grep -oE "blublasBgemmSM90_bf16_(nt|nn|tn)_[A-Za-z0-9_]+_template" | sort -u
+That says our header already declares 1,465 entry points and covers 21 of his 44 -- not 4. Never
+audit a macro-generated symbol set with a text search.
+
+**WHAT WAS ACTUALLY MISSING, AND LANDED**
+  * lda/ldb/ldc on ALL entry points. His dispatcher passes 12 arguments and ours took 9, so his
+    dispatcher could not have called a single one of our kernels. 68 definitions + 69 declarations,
+    defaulted to 0 in the header so all 20 existing test files still build untouched.
+  * BLUBLAS_SM90_CFG_FOREACH_KOTA44: the seven configs no layout had (six _regsplit bindings plus
+    the dead cluster_v2), expanded for nt/nn/tn = 21 entry points.
+  * nn and tn 128x8x64 (it sat in the NT-only list) = 2.
+  * Sm90SplitKRebind + a runtime launch_bgemm_sm90_splitk + the four tn _splitk entries = 4.
+    21 already present + 21 + 2 + 4 = 44.
+
+**HIS SUFFIXES ARE KNOB VALUES, NOT KERNELS.** _regsplit = PRODUCER_REGS 24 / CONSUMER_REGS 240
+(192x128 uses 160); _2WG adds NUM_CONSUMER_WARPGROUPS 2; _sw64/_sw32 = SWIZZLE_BYTES; _splitk = a
+runtime K split; cluster_v2 = clusterDim (1,N,1) on 128x256, dead with 0 call sites. We own every
+one of those knobs, so each of his names is a one-line `using` BINDING to whichever of our configs
+wins that slot. Re-pointing a slot is one line and his dispatcher never moves.
+
+**A REAL CORRECTNESS BUG OF OURS: THE NO-SWIZZLE DESCRIPTOR TIER.**
+`sw_pick` has always been able to return 16 -- it does so for any MN extent that is not a multiple
+of 16 -- but our `make_gmma_desc_mn_major` built that case like a swizzled one. In the no-swizzle
+encoding (layout_type 0, INTERLEAVE) the two descriptor fields are TRANSPOSED: the reference's own
+kSwizzleMode==16 special case, which his tree carries and hardware-confirmed 2026-07-27
+(test_bgemm_sm90_narrow_n_tiers). Our raw values already matched his; only the swap was missing.
+That is exactly why our 128x168 returned MaxRelErr ~1e4 on 12/12 nn+tn while all 6 nt PASSED -- in
+NT that operand is k-major and never reaches the tier. We had reacted by adding a static_assert
+that REFUSES the case. Fixed properly, and the MN-extent floor drops from 16 elements to 8, which
+is what makes BN=8 legal in nn/tn (validated: entries 25/43 now PASS) and retires the H27y.30
+"pad 168 to 176 and mask the store" workaround.
+
+**WHERE OUR SPLIT-K IS AHEAD OF HIS** (found while building the runtime bridge)
+  * he REFUSES beta != 0 and silently falls back to the unsplit kernel; we apply alpha and beta
+    once in the reduce, so a split call with beta stays a split call.
+  * he requires the factor to divide k_units and decrements until it does
+    (`while (sk > 1 && (k_units % sk != 0)) --sk;`), so a request of 8 can quietly become 7; we
+    distribute the remainder across the leading slices, so the factor asked for is the factor run.
+
+**THE HARNESS, AND TWO TRAPS IT WALKED INTO** (examples/h92_all44.cu, run_h92_all44.sh, h92_analyze.py)
+Both trees export the same 44 symbol names, so they cannot link into one binary: the harness
+declares the prototypes itself and is linked twice. One entry point per process
+(project_test2_measurement_traps). Two self-inflicted faults, both worth remembering:
+  * `-dc` (relocatable device code) BREAKS these kernels. Parallelising the build with -dc made
+    EVERY kernel on BOTH sides die with "misaligned address" -- it changes how __grid_constant__
+    TMA descriptors and cudaLaunchKernelEx cluster launches are handled. Plain `-c` keeps the
+    parallel build and is correct. nvcc compiles the TUs on one command line SEQUENTIALLY, so the
+    three variant files must be separate -c invocations or the build serialises ~36 minutes.
+  * A PER-ELEMENT relative error is the wrong metric here. These inputs are small and signed, so a
+    K=4096 accumulation lands many outputs near zero and the metric divides by nothing. The tell
+    was both trees returning an IDENTICAL 1.117e+00. Normalise by the largest magnitude in the
+    reference matrix instead. (Fill values are multiples of 0.25 -> products are multiples of
+    0.0625 -> the fp32 accumulation is EXACT, so a correct kernel scores err = 0.000e+00 and any
+    real defect shows instantly. That is why the correctness result below is exact, not "close".)
+  * A transient: 12 nt entries "failed" once with leftover GPU state from the -dc crash run. A
+    clean re-run gave 44/44 and the same entries passed standalone at the identical shape. Do not
+    diagnose from a run that followed a context-killing fault.
+
+**CORRECTNESS -- both sides, 4 full passes, 176 launches, stable**
+    OURS 44 PASS / 0 FAIL      HIS 44 PASS / 0 FAIL      err = 0.000e+00 on every entry
+
+**SPEED -- 44-way paired ABBA crossover, 12 rounds, one config per process, clocks LOCKED 1785 MHz
+(verified holding under sustained load at 127 W, not merely at idle), 1056 measurements**
+
+    wins 1    ties 1    losses 42    mean 88.5% of his    worst 68.7%
+
+      group                                   our % of his
+      sw64 / sw32 in nn and tn ............... 68.7 - 76.9    <-- worst by far
+      sw64 / sw32 in nt ...................... 94.7 - 98.0
+      _regsplit family, all three layouts .... 80   - 90
+      narrow tiles 32 / 16 / 8 ............... 79   - 84
+      wide 128x256 / 128x192 / 256x128 ....... 91   - 94
+      cluster_v2 (dead, never routed) ........ 98.7 - 99.3
+      split-K ................................ 92   - 105.8   <-- the only win
+
+**LEAD 1 -- THE sw64/sw32 COLLAPSE IS LAYOUT-SPECIFIC, NOT TILE-SPECIFIC.** Same config, same shape:
+      128x128x32_sw64   nt 98.0%   nn 76.2%   tn 76.9%
+      128x128x16_sw32   nt 94.7%   nn 71.7%   tn 68.7%
+A ~22-point drop when the identical tile moves to nn/tn -- exactly the layouts where B is MN-major.
+This points at our MN-major staging path at narrow BK and is the largest single win available.
+
+**LEAD 2 -- _regsplit LOSES UNIFORMLY ACROSS ALL THREE LAYOUTS** (192x128 at 80.8 / 80.6 / 82.4).
+Uniform across layouts means it is not a layout effect: it is the register-split knob his configs
+set and our first-pass bindings do not (his 24/240 vs our default 40/232).
+
+**THIS CONTRADICTS A STANDING CONCLUSION AND THE CONCLUSION IS THE ONE THAT SHOULD MOVE.** The
+tracker has said "his config settings are not the ones to copy", resting on entry #1 (our settings
++20%) and §H89g 192x192 (his regs 0/0 cost -8.16%). Those were two tiles. This is 44, and the
+regsplit family says the opposite. Two tiles is not a rule.
+
+**SLOT #1 (`nt_128x128x32_sw64`)**: 94.8% before today -> 98.0% now, the only non-loss besides the
+split-K win, consistent with §H91 removing the divide on exactly this small-stage tile. NOT a clean
+before/after -- the shapes differ (4096x2048x1056 then, 3072x1536x4096 now), so the 3 points are
+not attributed. Re-measure at the old shape against these binaries to settle it.
+
+**THE ONE WIN**: tn_128x64x64_splitk at 105.8% (t=+34.8), the runtime split-K built today. The other
+three split-K slots sit at 92-98%.
+
+**STATE**: all 44 present and exactly correct, ~11.5% behind on average at locked clock. Every slot
+is one `using` line, so the work is choosing the right target, not wiring it. Free-clock repeat of
+the same 44-way A/B is the next run (deferred by the user to the following day) -- locked answers
+"who is faster at equal clock", free answers "what the trainer actually sees", and they can disagree.
+Raw data: h92_out/ab_raw.txt (1056 rows), check2.log, stab.log.
+
+---
+
+### §H104 — **THE sw32 LAG BACKTRACKED FROM SASS TO SOURCE: two deviations from his mechanism, both ours, both with an existing switch. And the "30-register gap" that started the hunt did not exist.**
+
+**Scope.** `tn 128x128x16_sw32` (routed slot 27, 84.2% of his) and `nn` (slot 14, 90.3%). Both are
+inside the 42 his dispatcher actually calls. Everything below is compile-time measured on a
+single-kernel TU per tree; nothing here is a GPU result yet.
+
+#### 1. The premise of the previous session was wrong
+
+The hunt had been chasing a "30 extra registers" gap (ours 168 vs his 138). Compiling the exact
+matching kernel from each tree with `-Xptxas -v`:
+
+```
+ours: Used 168 registers, used 16 barriers, 1024 bytes smem, 0 spill stores, 0 spill loads
+his:  Used 167 registers, used 16 barriers, 1024 bytes smem, 0 spill stores, 0 spill loads
+```
+
+**167 vs 168, and zero spills on both.** The 138 was a misread of a different kernel. Every
+inference built on top of it -- "register pressure forces the rematerialisation" -- is void. This is
+the seventh theory killed on this kernel, and it is the reason the register bisection over all
+template parameters had returned `REG:168` for all six arms: there was nothing to find.
+
+#### 2. The configs are identical on 49 of 50 parameters
+
+Read from source, not from argument position. His:
+
+```
+Sm90Config_128x128x16_sw32 = Sm90WarpspecConfig<128,128,16,
+    LOAD_PIPE_DEPTH=0, SUPER_M=8, MIN_BLOCKS_PER_SM=1,
+    PRODUCER_REGS=0, CONSUMER_REGS=0, SWIZZLE_BYTES=32>
+```
+
+Every derived quantity matches ours exactly -- `LOAD_PIPE_DEPTH=24`, `STAGE_BYTES=8192`,
+`STORE_BUF_BYTES=32768`, `SMEM_BYTES=229376`, `NUM_THREADS=384`, `NCW=2` -- and his `SUPER_M=8`
+is our `RASTER_SWIZZLE=3` (log2). The single deviation is `PRODUCER_REGS/CONSUMER_REGS`:
+**his 0/0, ours 40/232.**
+
+#### 3. That deviation is systemic, not local to sw32
+
+- In **his** tree register split is opt-in: every plain config is `0/0`, and only configs literally
+  named `_regsplit` carry `24/240` (`192x128` `24/160`, `128x128x64_2CTA` `40/96`).
+- In **our** tree `BLUBLAS_DEFAULT_PREG=40 / CREG=232` is the default. Of **535** `using
+  Sm90Config_` definitions, only **6** spell the parameter at all. So we apply `setmaxnreg` on
+  essentially everything.
+- Worse for the A/B: our `_regsplit` configs are *aliases of the plain ones*
+  (`using Sm90Config_128x256x64_regsplit = Sm90Config_128x256x64;`). Our `_regsplit` entry point and
+  our plain entry point therefore compile the **same kernel**, while his differ. That is why §H92's
+  44-way run found "`_regsplit` loses uniformly" -- it was comparing his split arm against our
+  already-split plain kernel.
+
+**Do not fix this by transcribing his values.** The comment above that alias block already records
+two measured losses from doing exactly that (entry #1 by 20%, 192x192 by 8.16%). The bindings are
+deliberate; measurement re-points them.
+
+#### 4. The second deviation: our producer wait is behind a runtime guard
+
+His producer waits on the empty barrier every iteration (his `:1081`). Ours, at
+`Bgemm_sm90_warpspecialized_template.cuh:6256`:
+
+```cpp
+if (issued >= LOAD_PIPE_DEPTH)
+    mbarrier_wait_impl<...>(empty_mbar_addr + stage * 8, phase ^ 1);
+++issued;
+```
+
+`issued` is declared **outside** the tile loop (`:6149`), so it counts for the CTA's whole life.
+The guard therefore skips `LOAD_PIPE_DEPTH` waits **once**, and then costs a branch on **every**
+iteration for the rest of the kernel.
+
+In SASS that `if` becomes a `BSSY`/`@!P0 BRA` scope -- the guard test is literally
+`ISETP.GT.AND P0, PT, R10, 0x17` where `0x17 = 23 = LOAD_PIPE_DEPTH-1`. A uniform register cannot
+stay live across it, so ptxas rebuilds the barrier address *inside every guarded block*:
+
+```
+ours                                   his
+S2UR   UR6, SR_CgaCtaId                LEA  R101, R103, R102, 0x18   ; (rank<<24)+base, VECTOR regs
+UMOV   UR5, 0x400                      IMAD R101, R92, 0x8, R101     ; + stage*8
+UIADD3 UR5, UR5, 0xc0, URZ             SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R101+URZ], R100
+ULEA   UR5, UR6, UR5, 0x18
+LEA    R12, R7, UR5, 0x3
+SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R12+URZ], R11
+```
+
+He keeps the base in **vector** registers (167 available) and adds `stage*8`. We keep it in
+**uniform** registers, where the file is only 64 deep, so it gets rematerialised. The rebuilds land
+in 7 pairs across the unrolled producer prologue.
+
+Note the source that *forms* the address is byte-for-byte the same in both trees
+(`__cvta_generic_to_shared` once, at ours `:6031-6032` / his `:1014-1015`), and our
+`EMPTY_MBAR_ARRIVE_COUNT = NCW*(SHARE_M+SHARE_N-1) = 2` equals his `NUM_CONSUMER_WARPGROUPS = 2` at
+cluster 1x1 -- so an unconditional wait balances identically. The deviation is only the guard.
+
+#### 5. Both are needed; neither alone is the cause
+
+Compile-time, same TU, same kernel variant (`A1B0=true, MN4D=true` vs his `HasBeta=false`):
+
+```
+                  ours   -split   -guard   both    his
+S2UR CgaCtaId       19      15       7       1      1
+UMOV 0x400          19      15       7       1      1
+UMOV (any)          70      26      58      12     11
+ULEA                63      23      58       2     33
+UIADD3              87      52      82      38     44
+uniform total      356     234       -       -    205
+```
+
+`both` reproduces his signature exactly. This also explains the shape-dependence that no earlier
+theory could: the cost is **per wait**, so `BK=16` (24 stages x 1 wgmma) is the worst case and
+`BK=64` (6 stages x 4 wgmma) barely notices -- which is exactly the observed pattern, sw32 worst at
+84.2% while `128x128x64` is fine.
+
+#### 6. Why §H102's fix looked like a null
+
+§H102 correctly identified this exact rebuild pattern and fixed the `cluster_ctarank()` ternary at
+`:6112`. It measured byte-identical, and was written off. It was the right mechanism at the wrong
+site: with `CLUSTER_SIZE==1` that line already folds to a constant, and the `S2UR` come from the
+guarded blocks instead. The `if constexpr` there is still correct; it just was not the cause.
+
+#### 7. What is NOT yet known
+
+Everything above is SASS and source. **No GPU result exists yet.** Removing 18 uniform-datapath
+instructions per wait has to be priced, not assumed -- §H27z and the instruction-excess work both
+recorded cuts that converted at zero. `tools/h104_arms.sh` prices four arms (`base`, `nosplit`,
+`pace`, `both`) against his across all 81 entry points, correctness first, one config per process,
+15 rounds with a rotating arm order; `tools/h104_report.py` pairs by round, flags a checksum
+mismatch against his as WRONG rather than as a win, and was validated against synthetic data with a
+planted 80%/110%/null/checksum-mismatch ground truth before being trusted.
+
+---
+
+### §H104b — **RESULT: the producer pre-fill skip was the sw32 cause. Routed 42 96.2% -> 99.4%, measured, bit-exact.**
+
+Ran on the H200, free clocks, 12 rounds, rotating arm order, ONE entry point per process, 2640
+timed runs over the 44 entry points his dispatcher names.
+
+```
+arm        mean %his   median   wins  ties  loss   >=100%   <90%    worst
+base           96.4%    95.1%      5     4    35       6      1   84.3% (#27)
+pace           99.2%    98.6%     13     6    25      16      0   90.2% (#10)
+nosplit        90.8%    93.4%      3     3    38       5     12   19.3% (#29)
+both           94.5%    94.9%      5     8    31       7      3   19.1% (#29)
+```
+
+`pace` = his mechanism: the producer waits on the empty barrier EVERY iteration. Ours skipped the
+first LOAD_PIPE_DEPTH waits behind a runtime `if (issued >= LOAD_PIPE_DEPTH)`. That `if` is a branch
+scope in the SASS, a uniform register cannot stay live across it, so ptxas rebuilt the mbarrier
+address (`S2UR SR_CgaCtaId` + `UMOV 0x400` + 2x `ULEA`) INSIDE every guarded block -- 19 times to his
+1. `issued` is declared outside the tile loop, so the skip saves DEPTH waits ONCE per CTA and pays a
+branch on every iteration for the rest of the CTA's life.
+
+The win is confined to NARROW tiles, exactly as the SASS predicted BEFORE the run, because the cost
+is PER WAIT (many stages x little work each):
+
+```
+ 27 tn 128x128x16_sw32    84.3% -> 105.0%   (+20.6)
+ 14 nn 128x128x16_sw32    90.1% -> 104.3%   (+14.2)
+ 24 nn 128x16x64          96.5% -> 109.2%   (+12.7)
+ 36 tn 128x64x64_splitk  108.0% -> 118.1%   (+10.1)
+ 13 nn 128x128x32_sw64    93.2% -> 101.8%    (+8.5)
+```
+Fat tiles (128x192/256, 192x128, 192x192) moved +0.0 to +0.4 -- flat, as predicted.
+
+**`nosplit` (his PRODUCER_REGS/CONSUMER_REGS = 0/0) is CATASTROPHIC and was dropped.** `tn 192x192x64`
+collapsed to **19.3%**. Copying his register values would have shipped a 5x regression. This is the
+third time transcribing his knob values lost (entry #1 by 20%, 192x192 by 8.16%, now this) -- the
+binding comment above the `_regsplit` aliases stands: measurement decides, never transcription.
+
+SHIPPED as a real config knob, not a `-D`: `_PRODUCER_PREFILL_SKIP` (param 51), default `false` =
+his mechanism. `Sm90Config_128x32x64` is the ONE routed config that measured worse with his
+mechanism (-2.0 mean over its three layouts) and is the only one setting it `true`.
+Verified: default build emits `S2UR=7` (the measured `pace` arm), `128x32x64` emits `S2UR=19` (the
+measured `base` arm). Re-measured after pinning: **routed 42 = 99.4%, 16 entries at/above his, 0
+below 90%, 81/81 bit-exact, 0 checksum mismatches.**
+
+**Two corrections to earlier claims in this file.** (a) The "his = 138 registers vs our 168" gap that
+started this hunt DOES NOT EXIST -- built apples-to-apples he is **167** and we are **168**, both with
+zero spills; the 138 was a misread of a different kernel. (b) The §H102 fix at the `cluster_ctarank`
+ternary was real but landed on the wrong site; those `S2UR` come from the guarded blocks, which is
+why it measured byte-identical.
+
+---
+
+### §H105 — **[SUPERSEDED BY §H106 -- THE CONCLUSION HERE WAS WRONG]** the GMMA descriptor is
+re-encoded INSIDE the wgmma chain, and `DESC_HOIST` does remove it and match his issue pattern --
+but that is a NULL on the fat tiles. Measured +0.4 mean over 26 entries, and ncu on the same
+kernel shows it removes 4.2M dynamic instructions for ZERO ns. The static-SASS reasoning below
+is preserved because it is a worked example of the wrong instrument, not because it holds.
+It IS a real +7.0 on 128x64x64 only, and is pinned there.**
+
+After §H104b the remaining 26 losses were overwhelmingly the fat tiles, 93-95%, and -- unlike sw32 --
+**layout-independent** (nt/nn/tn within 0.2 pts of each other), which rules out swizzle/descriptor
+layout causes.
+
+`192x128x64` is the clean case: our config **already equals his exactly** -- NCW=3, PREG=24,
+CREG=160, SUPER_M 8 (our RASTER_SWIZZLE 3). Same registers (both 128, zero spills). It still loses at
+93.3% on all three layouts, so it was never configuration. Diffing the SASS:
+
+```
+tile                      arm   wgmma  reencode-in-chain  gaps between wgmma
+128x256x64_regsplit       base      4        13           [22, 7, 9]
+                          +DH       4         0           [9, 9, 1]
+                          his       4         0           [12, 9, 1]
+128x192x64                base      4        17           [23, 13, 6]
+                          +DH       4         1           [11, 11, 1]
+                          his       4         0           [13, 15, 4]
+256x128x64_2WG_regsplit   base      8        22           [34, 10, 4, 2, 0, 0, 0]
+                          +DH       8         1           [27, 6, 5, 2, 0, 0, 0]
+                          his       8         1           [21, 9, 2, 2, 2, 0, 5]
+128x128x64_regsplit       base      4        17           [23, 13, 6]
+                          +DH       4         1           [11, 11, 0]
+                          his       4         0           [12, 9, 0]
+```
+
+Every fat tile carries 13-22 descriptor re-encode ops (`SHF.R`/`LOP3.LUT`) between its wgmma issues
+where he carries 0-1, and our wgmma are spread far wider apart. `-DBLUBLAS_DEFAULT_DESC_HOIST=true`
+takes the re-encodes to 0-1 and pulls the issue gaps onto his shape, on all four tiles independently.
+
+This is the item already recorded in the instruction-excess work list ("cuBLAS keeps the packed GMMA
+descriptor in a UR and adds an immediate; we re-encode from a per-thread base every wgmma"). It was
+dismissed at **+0.45** -- but that was measured on **sw32, which issues ONE wgmma per stage**, so there
+was nothing to hoist. The fat tiles issue FOUR (256x128 issues EIGHT). Same defect, several times the
+cost. A null measured on the wrong shape is not a null.
+
+**It also refutes the instruction-count framing again:** his kernels run MORE instructions than ours
+(1488 vs 896 on 128x256) and are still faster. The gap is dependency stalls between wgmma issues, not
+instruction volume -- consistent with "instruction cuts convert at ZERO".
+
+`DESC_HOIST` passes 81/81 bit-exact. A/B pending.
+
+**NOT adopted (config guesses, kept built but unmeasured):** `_regsplit` family at his 24/240
+(armA), `128x192x64` at his SUPER_M=32 (armB), `192x192x64` at NCW=3 (armC). armC is worth keeping:
+his NCW default is `BM/64` where ours is a hardcoded 2, so for BM=192 he gets 3 and we get 2 -- and
+MATOMS = 192/64 = 3 is NOT divisible by 2, so our shipped 192x192x64 runs the HALF-WIDTH wgmma path.
+NCW=3 there needs 24/160 (40/232 blows the 512-register pool at NCW=3).
+
+---
+
+### §H106 — **THE FAT-TILE GAP IS NOT A CODE DIFFERENCE. Six candidates killed by measurement; what is left is memory-pipeline congestion (`mio_throttle` 2.78x).**
+
+All measurements below are on **entry 30, tn 192x128x64_regsplit** (93.3% of his), chosen because
+every derived parameter of our config is IDENTICAL to his -- verified, not assumed:
+
+```
+                  OURS      HIS            OURS      HIS
+SWIZZLE_BYTES      128      128     NCW        3        3
+LOAD_PIPE_DEPTH      4        4     NUM_THREADS  512    512
+STAGE_BYTES     40,960   40,960     PREG/CREG 24/160  24/160
+A_STAGE_BYTES   24,576   24,576     grid    (132,1,1) (132,1,1)
+STORE_BUF       49,152   49,152     block   (512,1,1) (512,1,1)
+SMEM           212,992  212,992     registers  128      128 (0 spills both)
+```
+Variant pairing verified too: ours A1B0=1/MN4D=1, his HasBeta=0 -- both the live alpha=1,beta=0 path.
+The ONLY remaining difference is tile ORDER (our RASTER=0 vs his SUPER_M=8), and that is measured
+separately below.
+
+**THE TENSOR WORK IS BIT-IDENTICAL.**
+```
+sm__inst_executed_pipe_tensor    884,736 = 884,736     EXACTLY equal
+sm__pipe_tensor_cycles_active    428,963 = 428,963     EXACTLY equal
+sm__cycles_elapsed               171,934 vs 163,343    1.0526x   <- the entire gap
+```
+Same wgmma count, same tensor-busy cycles, 5.3% more elapsed cycles. So the gap is not the math,
+and it is not clock (we burn more CYCLES, not just more nanoseconds).
+
+**SIX CANDIDATES, ALL KILLED BY MEASUREMENT:**
+
+| candidate | test | result |
+|---|---|---|
+| his register split 0/0 | armA `nosplit`, 44-entry A/B | **CATASTROPHIC** -- tn 192x192x64 -> 19.3% |
+| descriptor re-encode in the wgmma chain | armD `DESC_HOIST`, 26-entry A/B + ncu | **NULL on fat tiles** (+0.4 mean) |
+| instruction count | ncu, same kernel | **-4,202,508 instructions -> 0 ns.** 21% of the total removed, taking us BELOW his count, ZERO change in duration and in tensor-pipe % |
+| uniform-datapath ops | armD drops uniform 6.37M -> 4.38M (below his 5.29M) | `mio_throttle` got **WORSE** (9.6M -> 11.1M). Exonerated. |
+| tile order (his SUPER_M axis) | armE `RASTER=1`, verified 0/2080 tiles differ from his | **NEGATIVE**, -0.5 mean; 192x192 -2.7 |
+| stalls in general | ncu absolute warp-cycles | total stall only +3%, and we BEAT him on barrier (-5.4M), short_scoreboard (-1.9M), wait (-1.2M) |
+
+**WHAT IS ACTUALLY LEFT** -- absolute stall warp-cycles, ours vs his:
+```
+mio_throttle       9,595,772   3,453,458   +6,142,314   2.78x   <- 94% of the total stall excess
+long_scoreboard   63,586,528  58,283,074   +5,303,454   1.09x
+dispatch_stall     6,003,380   3,483,755   +2,519,625   1.72x
+barrier          109,146,352 114,581,494   -5,435,142   0.95x   (we are BETTER)
+short_scoreboard   5,301,415   7,236,023   -1,934,608   0.73x   (we are BETTER)
+TOTAL            223,690,450 217,176,280   +6,514,170   1.03x
+```
+`mio_throttle` alone is 94% of the stall excess, at 2.78x, while our shared-memory op counts,
+LSU, ADU and branch counts are IDENTICAL to his. That is memory-PIPELINE congestion doing the
+same memory WORK -- the next investigation is an nsys timeline of the TMA issue pattern, not
+another source diff.
+
+**THE METHODOLOGICAL LESSON, and it cost most of a day.** Static SASS counts were the wrong
+instrument and pointed the wrong way three times: statically HIS kernel is BIGGER (1240 vs our
+792 instructions on this tile, including double-precision divides we never emit), yet DYNAMICALLY
+we execute 22% MORE. Every fix derived from static structure -- matching his wgmma chain, his
+register split, his tile order -- returned null or worse. `mio_throttle` was previously recorded
+as "a candidate, NOT the cause" because it measured ~0.0 on V7/V8, our BEST shapes; on a LOSING
+tile it is the dominant term. A null measured on the wrong shape is not a null.
+
+**SHIPPED FROM THIS WORK:** `_PRODUCER_PREFILL_SKIP` (§H104b, routed 42 96.2% -> 99.4%) and
+`DESC_HOIST` pinned on `Sm90Config_128x64x64` only (+7.0 on #22, +1.6 on #36; a NULL everywhere
+else, which is why it is per-config and not a default).
+
+---
+
+### §H116 — **THE WIDE-TILE CAUSE FOUND: our epilogue C-store is LINEAR, his is XOR-SWIZZLED. 122x the bank conflicts.**
+
+§H106 had eliminated everything else on tn 192x128x64 (config identical to his in every derived
+value): tensor work bit-identical, memory op counts identical, instruction count irrelevant
+(-4.2M -> 0 ns), uniform ops exonerated, tile order negative, and we stall LESS in total. What
+remained was `mio_throttle` at 2.78x, 94% of the whole stall excess.
+
+Measured on three tiles / three layouts, all with the shared-store INSTRUCTION count identical:
+
+```
+                       shared_st inst   bank conflicts     wavefronts     mio_throttle
+e30 tn 192x128x64   110,592 = 110,592   813,795 vs 6,658   6.09x          2.80x
+e6  nt 128x256x64   147,456 = 147,456 1,033,052 vs 14,999  5.85x          285x
+e21 nn 128x128x64    73,728 =  73,728   522,136 vs 5,335   7.77x          117x
+```
+
+CAUSE, from his source (Bgemm_sm90_epilogue_swizzled.cuh):
+```
+offset = ((row << ROW_SHIFT) + ((col & CHUNK_MASK) << 1))
+              ^ (((row >> ROW_XOR_SHIFT) & XOR_MASK) << 4)
+sm90_c_swizzle_bytes(BN): BN*2 %128==0 ->128 ; %64 ->64 ; %32 ->32 ; else 16 (=none)
+```
+He XOR-swizzles the C-store address ALWAYS, tier derived from BN alone. We default
+`_EPI_SWIZZLE_BYTES = 0` == LINEAR, so the stores march `[R8], [R8+0x10], [R8+0x20]` from one
+base at a fixed stride -- the textbook way to pile lanes onto one bank. In SASS his every store
+takes its own address register (an XOR cannot fold into an immediate); ours take one base plus
+immediates. On 128x128x64 ours used exactly ONE base register for all 32 stores.
+
+His tier rule maps EXACTLY onto our win/loss split: every tile we lost had BN>=128 where he
+swizzles 128B; 128x8x64, where his rule gives 16B == no swizzle, was one we already matched.
+
+We already HAD the machinery (EPI_SPAN, EPI_SWZ_SHIFT, the XOR at ~:7443, 122 references) and
+had even recorded the linear path at :1824 as "3.62 conflicts per store". It was simply never
+enabled on any routed config.
+
+---
+
+### §H117 — **RESULT: epilogue swizzle, wide tiles 95.0% -> 97.3%.**
+
+Constraint `C_BOX_N*2 == EPI_SWIZZLE_BYTES` with `C_BOX_N | WGMMA_N`, so the tier is per tile:
+128B/C_BOX_N=64 on the five WGMMA_N-multiple-of-64 tiles; 64B/C_BOX_N=32 on 128x160 (WGMMA_N
+160) and 192x192 (WGMMA_N 96, where 64 does not divide). Wired as `Sm90EpiSwzRebind`, which
+sets BOTH coupled slots so they cannot drift.
+
+Mechanism verified BEFORE timing: conflicts 813,795 -> 3,314 (below his 6,658), mio_throttle
+9.67M -> 2.54M (below his 3.45M). Then 12-round paired A/B:
+```
+ 3 nt 192x128x64  93.2 -> 97.5 (+4.3)    6 nt 128x256x64  93.8 -> 96.8 (+3.0)
+16 nn 192x128x64  93.3 -> 97.6 (+4.3)   19 nn 128x256x64  93.8 -> 96.8 (+3.0)
+30 tn 192x128x64  93.3 -> 97.5 (+4.2)    8 nt 128x128x64  97.2 ->100.2 (+3.0)
+WIDE TILES n=21   95.0% -> 97.3%
+```
+192x128x64 is the proof case: its config already matched his EXACTLY and nothing else could be
+blamed, and it gained +4.3 on all three layouts.
+
+COST, stated honestly: the 4 narrow controls lost ~1.4 pts (sw32 -1.4, 128x64x64_splitk -1.5).
+REPRODUCED at the same values in a second independent run, so it is real, not drift -- shared-TU
+register pressure from adding the swizzle path. Accepted as a net strongly-positive trade.
+
+---
+
+### §H119 — **DESC_HOIST refuted a SECOND time on wide tiles; +9.1 on a narrow one.**
+
+Hypothesis tested: yesterday's DESC_HOIST null (+0.4) was MASKED by the bank conflicts, and
+would convert once they were gone. It did not. With conflicts fixed, wide tiles moved +0.26.
+Instruction count is now refuted on wide tiles under TWO different bottleneck regimes; it will
+not be proposed a third time.
+
+The same run found a real win: nn 128x16x64 108.9% -> 118.0% (+9.1). With 128x64x64 +7.0
+(§H105b) that is two independent confirmations of a RULE: descriptor hoisting pays on NARROW
+tiles (many wgmma issues per unit of work) and is worthless on wide ones. Pinned per-config on
+128x64x64 and 128x16x64 only; never a default.
+
+---
+
+### §H120 — **192x192x64: half-width wgmma, +1.7.**
+
+The swizzle gave this tile exactly +0.0, and the SASS said why: with the swizzle OFF it already
+used 12 distinct STS base registers (vs 128x128's ONE), so it had few conflicts to remove. Its
+defect is different: MATOMS = 192/64 = 3 is not divisible by our NCW default of 2, forcing the
+HALF-WIDTH wgmma path. His NCW default is BM/64 = 3. NCW=3 requires 24/160 (40+3*232=736 blows
+the 512 register pool). Measured 96.7% -> 98.4% (+1.7), and all three controls moved
++0.0/-0.2/-0.1, so the flag did only what it claims. SHIPPED.
+
+---
+
+### §H121 — **FULL SWEEP: routed 42 = 101.3%, ALL 77 = 100.2%. First single-binary measurement.**
+
+One binary each side, one session, entries 0..80, 12 rounds, alternating order, free clocks,
+one entry point per process, 1944 timed runs. Integrity: 972 rows per arm (equal), 0 checksum
+mismatches, 0 entries short of 12 rounds, correctness 81/81 bit-exact, source md5 verified.
+
+```
+ROUTED 42   mean 101.3%   median 98.6%   17 >=100%   2 <95%   0 <90%   beat 16 / par 4 / lose 22
+ALL 77      mean 100.2%   median 98.8%   25 >=100%   9 <95%   1 <90%
+            two days ago 96.2%  ->  yesterday 99.6%  ->  now 101.3% (routed 42)
+```
+
+DO NOT QUOTE the "ALL 81 = 118.5%" figure. Entries 77-80 are his four non-`_template` entry
+points where HIS side runs at 106-165 TFLOPS against his own 648 elsewhere; ours are normal at
+607-611 and the checksums match, so the 369-574% ratios are real but they measure HIS weakness,
+not our strength. Averaging them in flatters us. The clean figures are the 42 and the 77.
+
+**PROFILES CLOSED (§H121 phase 3).**
+* SPLIT-K, with the kernel filter finally REMOVED (every earlier ncu used
+  `-k regex:bgemm_sm90_kernel`, which excluded the reduce entirely):
+  ours GEMM 304,576 ns / reduce 43,584 ns (9.4%) ; his GEMM 311,520 / reduce 34,624 (7.5%).
+  His reduce IS 26% faster -- he templates it on the split factor
+  (`sm90_splitk_reduce_kernel_v4t<2|4|8|16>`, loop unrolled at compile time) where ours takes it
+  as a runtime argument. But at 9.4% of the time that is worth ~1.9% of the entry, and OUR GEMM
+  kernel is actually faster than his. Real, small, logged -- not the split-K gap.
+* nt 128x32x64 (92.1%, the worst routed entry): BANK CONFLICTS 76,245 vs 16,415 = **4.64x**,
+  wavefronts 2.75x. Same disease as §H116; this tile was never wrapped because it is narrow.
+  WGMMA_N=32 means it needs the 64B tier (C_BOX_N=32), exactly like 128x160x64. Existing knob.
+* nt 128x8x64: conflicts only 1.37x and already at 98.8% -- little to win.
+
+**WHAT IS LEFT IN THE ROUTED 42:** 22 entries, total shortfall 64.8 pts. Bringing every one to
+exactly 100% would move the mean only 101.3% -> 102.8%. Worst is 128x32x64 at 92.1% (7.9 pts,
+cause known), then 128x128x64_splitk 94.6%, then 17 wide tiles bunched at 96.7-98.9% whose
+residual cause is NOT yet identified (their conflicts are fixed and their instruction excess
+does not convert).
+
+**OUTSIDE the routed set:** 320x64x64 is the worst thing anywhere at 87.8/92.0/92.3% across the
+three layouts. His NCW for BM=320 is BM/64 = 5; ours is the hardcoded 2 -- the same half-width
+wgmma defect §H120 just fixed on 192x192 for +1.7. Untested.
+
+---
+
+### §H125 — **EPI_LATE_STORE_WAIT: routed 42 = 101.9%, ALL 77 = 100.8%. Found by enumerating ALL his params, not by picking a lead.**
+
+METHOD NOTE FIRST, because it is the transferable part. After §H121 I picked one difference and
+called it "the best candidate" before enumerating. That is exactly how §H105 (DESC_HOIST) and
+§H106 (tile order) went wrong. Instead, every one of his 19 config parameters was dumped for four
+wide tiles and diffed against ours. EXACTLY THREE mismatches existed:
+
+```
+                 128x256x64  192x128x64  128x192x64  128x128x64
+LOAD_PIPE_DEPTH     3 = 3       4 = 4       4 = 4       6 = 6     match
+SWIZZLE / NCW / MIN_BLOCKS / K_STEP / HOIST_DESC / EPI_SHARED     match
+tile order (his SUPER_M 8 == our RSWZ 3)                          match (except 128x192)
+PREG/CREG        24/240 vs 40/232   MATCH   0/0 vs 40/232   24/240 vs 40/232
+EPI_DEFER_WAIT      1 vs 0      1 vs 0      1 vs 0      1 vs 0
+```
+
+Two of the three then measured as NULLS (§H124): his 24/240 registers +0.1, his SUPER_M=32 on
+128x192 +0.4. Only EPI_DEFER_WAIT paid. Enumerating first is what made that separable.
+
+HIS `_EPILOGUE_DEFER_STORE_WAIT` DEFAULTS TO TRUE; our `_EPI_LATE_STORE_WAIT` defaults false, and
+every routed config of ours had it off. It defers the C-store drain ACROSS tiles, so the next
+tile's mainloop starts before the previous tile's TMA store has drained. It costs ZERO
+instructions -- which is required, because instruction count is refuted on these tiles twice over.
+
+It is the ONLY mismatch on 192x128x64, where depth, swizzle, NCW, registers, tile order,
+MIN_BLOCKS, K_STEP, HOIST_DESC and the other epilogue flags ALL already match his -- a
+one-variable experiment his own config handed us. That tile went 97.6% -> 98.9%.
+
+MEASURED (§H124, 1440 rows, 4 arms, rotating order):
+```
+WIDE TILES n=18   fin 97.5%  ->  armW 99.1%   (+1.6) , 16 of 18 significant at t>=2.5
+CONTROLS   n=3    sw32/128x8x64 UNMOVED (102.6 -> 102.8)
+```
+FULL SWEEP (§H125, 1944 rows, one binary each side, 0 checksum mismatches, 81/81 bit-exact):
+```
+ROUTED 42   101.3% -> 101.9%   19 >=100%   2 <95%   0 <90%
+ALL 77      100.2% -> 100.8%   30 >=100%   8 <95%   1 <90%
+```
+SHIPPED: BLUBLAS_EPI_DEFER default 0 -> 1. Legal because all seven wrapped configs have
+EPILOGUE_SHARED_STORE=0 (our own static_assert forbids the combination).
+
+---
+
+### §H126 — **SPLIT-K REDUCE: two claims of mine RETRACTED. The real difference is code size, and our map-reduce was already tested and rejected on data.**
+
+RETRACTION 1. I claimed we run the scalar VEC=1 reduce. FALSE. All four split-K entries launch
+`splitk_reduce_kernel<__nv_bfloat16, 4, 0>` -- the VEC=4 vectorised path -- verified by ncu on the
+actual launches. I had read the instantiation LIST and assumed the first entry was the one that
+ran. An instantiation existing is not an instantiation executing.
+
+RETRACTION 2. I claimed our vectorised path "does not fire on split-K's target shapes". FALSE,
+same measurement. The gate fires.
+
+WHAT IS ACTUALLY TRUE, from the kernel that runs:
+```
+OURS splitk_reduce_kernel<bf16,4,false>   1224 instructions
+     LDG.E.128 x31 (vector loads PRESENT) , LDG.E x124 (scalar TAIL path, compiled in)
+     STG.E.U16 x16 , FADD x248 , ~150 ISETP/IMAD guard+address ops
+HIS  sm90_splitk_reduce_kernel_v4t<16>     160 instructions
+     LDG.E.128 x16 , FADD x64 , STG.E.64 x1 , 4 guards
+```
+7.7x the instruction count -- because ONE of our kernels carries the vector path AND the scalar
+ragged tail AND alpha/beta/C_in AND the alignment guards. His is a specialised loop with none of
+them. Measured time difference is 26% (43,584 vs 34,624 ns), so most of the extra sits on the
+not-taken path.
+
+DETERMINISM, since it was asked: HIS IS DETERMINISTIC TOO. Fixed ascending s = 0..SPLITS-1, one
+thread per output element, plain FADD. SASS confirms ZERO ATOM/RED on BOTH sides. There is no
+precision or reproducibility advantage on our side to defend.
+
+WHAT OUR EXTRA CODE BUYS: his split-K FALLS BACK to the non-split kernel whenever beta != 0
+(`if (beta != 0.0f) { launch_bgemm_sm90(...); return; }`). His reduce needs no beta/C_in because
+his split-K path cannot do beta at all. Ours can. That is capability, not baggage.
+
+AND WE DID NOT NAIVELY PICK A SERIAL SUM. §H27z.9-10 built and raced three deterministic
+strategies; strategy C (BluTrain fused map-reduce, semaphore-counter election, block_y_reduce
+trees -- "the one strategy neither cuBLAS nor CUTLASS uses, and it is ours") was IMPLEMENTED,
+bit-identical to A, and LOST all 8 pairs (C/A 0.658-0.963) because its thread count is fixed at
+num_tiles*256 while the reduce work scales with S. Strategy A was chosen ON DATA.
+
+VALUE OF FIXING THE 7.7x: the reduce is 9.4% of a split-K entry's runtime and his is 26% faster,
+so the ceiling is ~2.4% per entry, 3 entries of 42 => ~0.17 points on the routed mean. LOWEST
+priority of anything remaining, and logged as such.
+
+---
+
+### §H130 — **SPLIT-K REDUCE: the 7.7x instruction excess is real and it is now CUT to 0.55x his. Measurement pending.**
+
+§H126 measured the excess but did not act on it. This section acts, and states the ceiling
+FIRST so the result is judged honestly:
+
+> the reduce is **9.4%** of a split-K entry's runtime, and his reduce is **26%** faster
+> (34,624 ns vs our 43,584 ns). A *perfect* reduce is therefore worth **~2.4%** on those four
+> entries and **~0.17 points** on the routed-42 mean. It cannot close the 5.8-point gap on
+> those entries and nothing here should be read as claiming it will.
+
+**WHERE THE 7.7x ACTUALLY COMES FROM.** Not from a worse algorithm — §H126 already established
+both sides run the same ascending fp32 accumulation with zero atomics. It comes from ONE kernel
+carrying every case at once: the float4 vector path, the scalar ragged tail, alpha/beta/C_in,
+and the runtime alignment guards. The dominant single defect is the store. Ours ends with
+
+    for (int v = 0; v < 4; ++v) C[base + v] = from_f32<T>(o[v]);   // four 16-bit stores
+
+against his packed pair-and-store. Read out of the SASS, not inferred:
+
+    kernel                                   insn   stores
+    splitk_reduce_kernel<bf16,4,*>  (ours)   1224   16 x STG.E.U16     <- what runs today
+    his sm90_splitk_reduce_kernel_v4t         160    1 x STG.E.64
+
+**THE CHANGE.** A separate `splitk_reduce_kernel_fast`, chosen at LAUNCH level, never per
+element (§H addmm: a per-element guard cost 148k cycles — guards belong at the launch site).
+The general kernel is left byte-for-byte alone, so anything the fast path does not claim keeps
+today's exact behaviour. Host-side preconditions, all checked once:
+bf16 output, `beta == 0`, `total_elems % 4 == 0`, C 8-byte aligned, ws 16-byte aligned.
+The last two are NEW requirements this path introduces — the general kernel stores 2 bytes at a
+time and needs neither — and if any fails we fall through to the general kernel unchanged.
+
+Two arms, because they are separable causes and should be attributed separately:
+
+    sk1  packed 64-bit store, runtime split count          352 insn,  2 x STG.E.64
+    sk2  packed store + COMPILE-TIME split count            88 insn,  1 x STG.E.64  (at S=4)
+    sk0  control: general kernel only, today's behaviour   1224 insn, 16 x STG.E.U16
+
+sk2 is his own trick: he templates on the factor (`v4t<SPLITS>`) so the s-loop unrolls with no
+counter and no trip check. We can do the same for free because `launch_bgemm_sm90_splitk`
+already resolves the runtime factor into a compile-time arm, so `Config::SPLIT_K` at the reduce
+call site is a constant — it is only ever 2, 4, 6 or 8. Per-arm SASS: S=2 → 72, S=4 → 88,
+S=6 → 96, S=8 → 112. **At S=4, 88 instructions against his 160.**
+
+**WHAT IS PROVEN AND WHAT IS NOT.** Proven, CPU-side: all three arms compile clean; the store
+really did become `STG.E.64`; the fast kernel really is instantiated (checked in the object, not
+assumed — an instantiation LIST is what produced two retracted claims in §H126). NOT proven:
+that any of it is faster. §H121 is the standing warning that static SASS counts mislead — his
+kernels are statically BIGGER (1240 vs 792) while dynamically executing 22% FEWER instructions.
+So this is a lead, and the paired A/B is the verdict.
+
+**BIT-EXACTNESS IS A GATE, NOT AN ASSUMPTION.** `from_f32<bf16>` is `__float2bfloat16` and the
+new path uses `__floats2bfloat162_rn` — the packed form of the same round-to-nearest-even, over
+the same ascending s = 0..S-1 fp32 accumulation, with alpha applied at the same point. That is
+the argument; the harness comparing checksums across all three arms is the proof, and a single
+mismatch stops the experiment before any timing is reported.
+
+Entries 33/34/35/36 are the split-K ones — read out of `h92_all44_list.h` cases 260-263, not
+guessed from a name (§H feedback: never infer from names). All four carry `split_k=4`, so sk2
+fires its S_CT=4 arm; all four have `beta=0` and cudaMalloc'd pointers, so `fast_ok` holds.
+Entries 0 and 20 ride along as NULL CONTROLS: they never call the reduce, so any arm-to-arm
+difference there is harness drift and voids the run. The harness's `x` mode additionally covers
+`alpha=2.5` (fast path with alpha != 1) and `beta=0.5` (the general fallback), so both sides of
+the new branch are correctness-tested rather than only the one we expect to take.
+
+Driver: `tools/h130_sk.sh` (in the repo, not the scratchpad — §H feedback after h104-h114 were
+lost with a released box). `timeout` on every check and bench, so a hang returns 124 and aborts
+instead of eating 29 minutes as the NCW=5 deadlock did in §H123.
+
+**RESULT — MEASURED, and it PAYS.** 12 rounds, 4 arms, order rotated every round, free clocks,
+one entry per process. Medians:
+
+    entry  shape                sk0(ctl)     sk1      sk2  |  sk2/sk0  |  vs his: before -> after
+      33   128x256x64_splitk       683.0   692.3    693.2  |  1.015x   |    98.5%  ->  100.0%
+      34   128x192x64_splitk       661.3   667.4    669.5  |  1.012x   |    97.6%  ->   98.8%
+      35   128x128x64_splitk       579.5   585.9    587.9  |  1.015x   |    94.7%  ->   96.0%
+      36   128x64x64_splitk        430.7   437.9    439.0  |  1.019x   |   117.8%  ->  120.0%
+           MEAN                                            |  1.015x   |   102.2%  ->  103.7%
+
+**+1.5%, and sk2 won 48 of 48 paired rounds.** Attribution splits cleanly: the packed store is
++1.3% (sk1) and the compile-time split count adds the last +0.2% (sk2). So the store was
+indeed the dominant defect, exactly as the SASS said — but see the next paragraph, because
+that agreement is luck as much as inference.
+
+**THE FALSIFICATION IS WHAT MAKES THIS TRUSTWORTHY.** A 48/48 sweep is the shape a systematic
+ordering artifact also makes, so the run carried entries 0 and 20, which never call the reduce,
+through the identical harness. They went **10/24 — a coin flip**, median −0.16%. And the spread
+separates the two cleanly:
+
+    split-K  median +1.42%  mean +1.47%  stdev 0.59  min +0.29  max +2.90   (n=48)
+    control  median −0.16%  mean +0.22%  stdev 2.57  min −5.67  max +7.43   (n=24)
+
+Every split-K round is positive and they are four times TIGHTER than the controls. Had the
+controls swept too, this section would have been a retraction instead.
+
+**AGAINST THE STATED CEILING.** §H126 predicted ~2.4% per entry if the reduce became free. We
+got +1.5%, i.e. about 63% of a perfect reduce — consistent, and a useful check that the effect
+is the reduce and not something else. On the routed-42 mean this is **+0.15 points**
+(102.7% → ~102.85%), which is what the ceiling always implied. Recording that plainly: this
+was worth doing and it is a real win on those four entries, but it is not a lever on the
+overall mean, and the 7.7x instruction figure was never worth the weight it was given.
+
+**WHAT DID NOT MOVE.** Entry 35 is still 96.0% and entry 34 still 98.8%. Their remaining gap is
+now provably NOT in the reduce — the reduce has been cut from 1224 instructions to 88 and the
+entries barely noticed. That gap is GEMM-side, and it belongs with the other wide-tile residual
+(§H129), not with split-K. Split-K is closed as a line of investigation.
+
+**SHIPPED.** `BLUBLAS_SK_FAST` now defaults to 2. Gate on the shipping arm: 81/81 correctness on
+all three arms, 0 fail, 0 hung; every checksum bit-identical to the control on all six entries;
+`x` mode clean on alpha=2.5 (fast path) and beta=0.5 (general fallback), so both sides of the
+new branch are covered. Artefacts pulled to `prod_runs_2026_09_06_h130/`.
+
+---
+
+### §H131 — **The variant configs never received the §H116/§H125 epilogue fixes. Found by reading both trees side by side.**
+
+The 28 entries in the 98.0–99.5% band carry 30.3 points of shortfall across 14 distinct
+configs. Rather than profile them one at a time, this section compared OUR config definitions
+against HIS for the same tile. That found a structural gap in ONE grep.
+
+**THE GAP.** §H116 wrapped SEVEN plain configs in the epilogue XOR swizzle (which killed 122×
+bank conflicts and moved wide tiles 95.0 → 97.3) and §H125 added the late store wait. Every
+*other* config of the same tile — the `_regsplit`, `coopB`, `2cta` and `cluster` variants — was
+hand-written raw and got neither:
+
+    config                       epiSwz  lateWait   measured
+    128x192x64                     1        1       98.7-99.1%
+    128x192x64_regsplit            0        0       93.1-93.3%      <- SAME TILE
+    coopB_128x256x64               0        0       99.2%
+    coopB_v2_128x256x64            0        0       99.0-99.4%
+    128x128x64_2cta                0        0       94.9 / 99.5%
+    128x256x64_1x2 (cluster_v2)    0        0       98.7-99.2%
+
+**WHY THIS IS OUR DEFECT AND NOT A TUNING CHOICE.** His epilogue swizzle is not a per-config
+knob at all. It is `template<int BN> struct Sm90CEpilogueSwizzle` with
+`SWIZZLE_BYTES = sm90_c_swizzle_bytes(BN)` — **derived from BN, so every config he writes gets
+the right tier automatically and none can ever miss it.** Ours is template parameter
+`_EPI_SWIZZLE_BYTES = 0`, i.e. OFF by default, opt-in per config. We opted in seven times and
+the variants were written later. This is the same *shape* of finding as §H130's split-K store:
+he gets the efficient thing structurally, we get it only where someone remembered.
+
+**MOST `_regsplit` ENTRIES ARE A NON-ISSUE — recorded so nobody chases them again.** They are
+`Sm90RegSplitRebind<plain, BLUBLAS_RS_PREG, BLUBLAS_RS_CREG>`, and those macros resolve to
+`BLUBLAS_DEFAULT_PREG/CREG` = **40/232, the defaults** — so they inherit the full fix stack and
+perform no register split at all. `192x128x64_regsplit` is literally `= Sm90Config_192x128x64`.
+That is exactly why they sit with their plain twins at 98–99.4%. Only
+`Sm90Config_128x192x64_regsplit` is hand-written raw and genuinely applies his 24/240.
+
+**RASTER IS RULED OUT FOR THIS CONFIG, BY READING HIS SOURCE.** His two 128x192 configs differ:
+
+    his Sm90Config_128x192x64          = <128,192,64, 0, SUPER_M=32>            -> our RSWZ 5
+    his Sm90Config_128x192x64_regsplit = <128,192,64, 0, SUPER_M=8, 1, 24, 240> -> our RSWZ 3
+
+Ours uses RSWZ=3 for both. So against his *regsplit* we run the SAME raster and still lose
+6.8 points — raster cannot be that gap's cause. (It also exposes a separate, untested
+mismatch on the *plain* config, which §H132 takes up.)
+
+**THE EXPERIMENT.** Three things differ between our `128x192x64_regsplit` and its plain twin:
+registers 24/240 vs 40/232, epi swizzle 128 vs 0, late wait true vs false. Arm 1 keeps HIS
+24/240 and adds only the epilogue stack, via `Sm90RegSplitRebind<Sm90Config_128x192x64,24,240>`
+— whose `::type` was read to confirm it substitutes ONLY P and C and preserves every other
+parameter. That separates "his register split is wrong" from "this config never got the
+epilogue fix" in ONE measurement instead of guessing between them. Arm 2 adds the epilogue
+stack to `2cta`, `coopB` and `128x256x64_1x2`.
+
+Entries read from `h92_all44_list.h`, never inferred: arm1 = 46/57/68, arm2 = 2/15/28/44/53/
+54/55/64/65/66/75/76. Entries 5/18/32/47/49/58 are plain configs neither arm touches and ride
+as NULL CONTROLS; arm1 is additionally a null control on every arm2 entry. Driver
+`tools/h131_variants.sh`, `timeout` on every check and bench, smoke test before batching.
+
+**A STATIC SASS COMPARISON WAS RUN AND IS DELIBERATELY NOT USED AS EVIDENCE.** His
+128x192_regsplit kernel is 3080 instructions to our 848 — he carries FFMA=192/FMUL=96 (alpha
+and beta applied unconditionally, where our launch-picked A1B0 path folds them away at
+alpha=1/beta=0) and IMAD=747/SHF=294/LEA=214 of address math to our 34/19/4. That says we are
+statically leaner and tells us nothing about which is faster: §H121 already established his
+kernels are statically BIGGER while dynamically executing 22% FEWER instructions. Recorded as
+context only. The paired A/B is the verdict.
+
+**RESULT — CONFIRMED, and the diagnosis was exactly right.** 12 rounds, 4 arms, order rotated
+every round, free clocks, one entry per process. Gate: 81/81 correctness on all three arms,
+0 fail, 0 hung; every checksum bit-identical to the control.
+
+    ARM1 -- 128x192x64_regsplit, HIS 24/240 KEPT, only the epilogue stack added
+      entry  layout   a0      a1     his  |  before -> after
+        46     nn   605.7   639.7  650.2  |   93.1% -> 98.4%   +5.2
+        57     nt   609.9   644.5  655.2  |   93.1% -> 98.4%   +5.3
+        68     tn   607.4   639.9  649.8  |   93.5% -> 98.5%   +5.0
+                                    MEAN  |   93.2% -> 98.4%   +5.2      36/36 rounds
+
+    ARM2 -- the other raw variant configs
+      cluster_v2_128x256x64 x3          99.2% -> 104.8%
+      coopB_128x256x64      x3          99.8% -> 105.6%
+      coopB_v2_128x256x64   x3          99.6% -> 105.0%
+      128x128x64_2cta       x3          98.0% ->  99.9%
+                                 MEAN   99.1% -> 103.8%   +4.8      138/144 rounds
+
+**HIS REGISTER SPLIT WAS NEVER THE PROBLEM.** Arm 1 kept 24/240 untouched and gained 5.2
+points. The entire 5.9-point gap between `128x192x64_regsplit` and its plain twin was the
+missing epilogue swizzle and late store wait. Had this been tested by swapping the registers
+instead — the obvious first guess, and the one his own "NOT YET HARDWARE-TESTED" comment
+invites — it would have measured a null and sent the whole line of inquiry the wrong way.
+
+**THE FALSIFICATION.** A 36/36 and a 138/144 sweep are also the shape an ordering artifact
+makes. Six untouched plain configs rode through the identical harness and moved **+0.0 points,
+34/72 paired rounds** — a coin flip. Two further built-in nulls held as well: arm1 reproduced
+the control on every arm2 entry, and arm2 reproduced arm1 on every arm1 entry, because the two
+arms touch disjoint configs. Without those the result would not be reportable.
+
+**EFFECT ON ALL 77**, combining §H130 and §H131 against the §H128 sweep:
+
+                          mean      median    >=100%   <95%   shortfall
+    before today        101.10%     99.53%      32      8      98.0 pts
+    after H130+H131     102.12%    100.24%      42      3      70.9 pts
+
+The median crosses 100% for the first time. 27 points of gap closed, and the count of entries
+at or above his rises from 32 to 42 of 77.
+
+**WHAT THIS PREDICTS AND WHAT IT DOES NOT.** It confirms the mechanism on six configs, so the
+same fix is worth trying wherever the audit found it missing — 320x64x64 above all (§H132).
+It does NOT license making the swizzle a global default: the audit also found narrow tiles
+that are missing it and WINNING (128x64x64 at 112.6%, 128x16x64 at 115.4%, 128x64x64_regsplit
+at 109.7%). Turning it on globally would change those, and nothing here says in which
+direction. Targeted, measured, per config.
+
+---
+
+### §H132 — **320x64x64's gap is NOT the epilogue. Mostly a null, and the null is the useful part.**
+
+Three arms, disjoint configs so each is the other's control. Gate 81/81 on all three arms,
+0 fail, 0 hung, every checksum bit-identical, 624 timed runs.
+
+    arm                                     before -> after   delta   rounds   verdict
+    320x64x64 x3   epilogue swizzle (64B)    90.9% -> 91.7%    +0.8    29/36   small, real
+    128x192x64_ring  raster group 32         95.9% -> 96.1%    +0.2     7/12   NULL
+    plain 128x192x64 raster group 32         99.2% -> 99.4%    +0.2    25/36   NOT PROVEN
+    6 untouched controls                    100.5% -> 100.6%   +0.1    36/72   clean coin flip
+
+**THE VALUABLE RESULT IS THE NEGATIVE ONE.** The identical epilogue fix was worth **+5.2** on
+the §H131 configs and only **+0.8** here. So the missing epilogue swizzle is NOT what ails
+320x64x64. Its dominant defect is the other one the §H131 audit named: BM=320 gives MATOMS=5,
+our NCW default is 2, `EPI_SPLIT_M = (5 % 2 == 0)` is false, and the kernel falls back to an
+N-split with HALF-WIDTH wgmma. About 25 of its remaining points live in the wgmma, not the
+store. That was a code-reading hypothesis before this run; it is now a measured one, because
+the alternative explanation has been tested and is worth almost nothing.
+
+**A COUPLING WORTH RECORDING.** The 128B tier that `sm90_c_swizzle_bytes(64)` picks — and that
+HIS tree uses — is **illegal in ours** for this config. He has NCW=5 dividing MATOMS=5, so the
+M-split works and each warpgroup owns all BN=64 columns, which C_BOX_N=64 divides. We N-split
+to 32 columns per warpgroup, so C_BOX_N=64 fails `C_BOX_N * C_NCHUNK0 == WG_N_WIDTH0` in
+`Sm90WorkGrid`. The 64B tier (C_BOX_N=32) is the only legal choice while NCW=2 stands. The two
+defects are coupled: fixing the wgmma would also unlock the wider swizzle.
+
+**THE RASTER ARMS ARE HONEST NULLS, AND NOT A VERDICT ON THE AXIS.** Flagged before the run,
+repeated here: his SUPER_M groups the **M** axis, which is our `RASTER=1`, and we ship
+`RASTER=0`. These arms matched the group SIZE (8 -> 32) on OUR axis. So "group size 32 on our
+axis" is refuted; "his SUPER_M=32" is still untested. The `RASTER=1, RSWZ=5` form is the
+follow-up and this section is not a reason to skip it.
+
+**SHIPPED:** the 320x64x64 epilogue swizzle only, unconditionally. Both raster changes reverted
+— 7/12 and a delta of +0.1 over control are not results, and shipping them would have been
+shipping noise. Knobs `BLUBLAS_RING_RSWZ` and `BLUBLAS_192_RSWZ` are kept for the RASTER=1
+retry.
+
+**A TOOL THAT CAME OUT OF THIS SECTION.** The first H132 build died after 20 minutes on
+`static assertion failed with "C_BOX_N must divide WG0's N width exactly"`. A config-only
+instantiation check had passed, because that assert lives in `Sm90WorkGrid<Config,Layout>`, not
+in the config. The check now instantiates `Sm90WorkGrid` for all three layouts, and it was
+PROVEN non-vacuous by re-introducing the 128B tier and confirming it fails with the identical
+assert. Config changes are now validated in ~30 seconds instead of a 20-minute build.
+
+---
+
+### §H133 — **OPEN: the two remaining leads, stated so they are not re-derived.**
+
+Optimisation is parked here to wire the trainer. What is left, in order of measured value:
+
+1. **320x64x64, ~25 pts.** NCW=2 vs MATOMS=5 -> half-width wgmma. Only NCW 1 or 5 divide 5.
+   NCW=5 DEADLOCKED entry 51 for 29 minutes (§H123) with 768 threads / 6 warpgroups, a count
+   no other config uses; the register assert passed (24 + 5*96 = 504 <= 512) so it does not
+   cover this. NCW=1 is untested and also structurally novel. Either path needs the hang
+   understood in the source FIRST, then a single-entry smoke run under `timeout`.
+2. **The long tail, ~30 entries bunched at 98.7-99.4%.** This is the §H129 contradiction: every
+   ncu counter says we win (total stall 0.98x, bank conflicts 0.85x, tensor pipe 94.8 vs 93.6,
+   cycles 0.965x, duration 0.970x) while the paired A/B says 98.8%. One explanation covers the
+   whole tail at once: ncu serialises a single launch so the 700W cap never binds, while the
+   A/B runs 30 iterations back to back and our instruction count is 1.225x his. Matches the
+   documented "+2.69% power at equal clock -> 700W cap -> -30 MHz". UNTESTED, ~5 minutes.
+3. **`RASTER=1, RSWZ=5`** on 128x192x64 — his exact SUPER_M expression, per §H132 above.
+
+**STANDING AT THE PARK POINT, ALL 77:** mean **102.13%**, median **100.24%**, 42 of 77 at or
+above his, 3 entries below 95%, remaining shortfall ~70 pts of which 25 are 320x64x64 alone.
+Started the day at 101.10% / 99.53% / 32 / 8.
+
+---
+
+### §H134 — **Trainer wiring for the 600M three-way parity run. Built, not yet run. Resume point.**
+
+Optimisation was parked here to wire the trainer. This section is written so tomorrow starts
+from facts, not from re-derivation.
+
+**THE DISCOVERY THAT SHAPED THE SETUP.** The BLAS vendored inside
+`blutrain_prod/Tensor-Implementations/BluBridge-BLAS` is **byte-identical to Kota's baseline**
+— md5 `88250c818015`, 2356 lines, against our 10546. So `blutrain_prod` was ALREADY his arm and
+needed no modification whatsoever. It had looked like it was at our HEAD only because that
+vendored directory is not its own git checkout: `git log` run inside it walks up to the parent
+repo. Checked by comparing md5s against `hybrid_baseline_ea666ab`, not by reading the path name.
+
+**THREE ARMS, one identical script (md5 `083236606acb`), his command, his env:**
+
+    blutrain_prod    Kota's production BLAS, untouched     WITH_BLUBLAS=1
+    blutrain_ours    our kernels + HIS dispatcher          WITH_BLUBLAS=1  BLUBLAS_KOTA_DISPATCH=1
+    blutrain_cublas  cuBLAS backend                        WITH_BLUBLAS=0
+
+`BLU_ZERO_V2=1 BLU_SYMMETRIC=1 make run-mpi FILE=bluscript_zero_600M.cpp NP=1`. The cuBLAS arm
+is its OWN TREE, never a rebuild of another arm — feedback_backend_ab_snapshot records building
+=1 then =0 in one tree and getting two cuBLAS runs, because the libtensor.so actually loaded was
+whichever linked last.
+
+**THE DISPATCHER SWAP IS PROVEN, NOT ASSUMED.** The hybrid bet is his selection logic on our
+kernels. His dispatcher is now in our tree VERBATIM as `Bgemm_sm90_dispatcher_kota.cu`, with
+exactly one class of edit: the three `extern "C"` exports suffixed `_kota`. Evidence gathered
+before writing a line of it:
+  * his dispatcher includes only `Bgemm_sm90_bf16.cuh` (declarations) and `blublas.h` — never a
+    kernel template — so it compiles against declarations and LINKS against whatever defines
+    them, which in this tree is our kernels;
+  * all **45** `blublasBgemmSM90_bf16_*` entry points it calls are among the **1526** our TUs
+    define (checked against the built objects; the one apparent miss was a comment line);
+  * signatures match (13 args, lda/ldb/ldc included);
+  * it compiles clean against our tree: **0 errors**.
+Selection is RUNTIME (`BLUBLAS_KOTA_DISPATCH=1`), not a build flag, for the same
+backend-snapshot reason: one .so, one env var, so an nsys capture per arm cannot be a
+stale-binary artifact. addmm is deliberately NOT routed through his — he exports no addmm
+dispatch and ours already measures 103-109% of his.
+
+**SCRIPT DELTA — 8 lines against his original, nothing structural.** Six model fields to the
+600M sheet (`train/production/configs/600M_colleague.yaml`): d_model 1536, n_layers 24,
+q_heads 12, kv_heads 4, ffn_hidden 4096, weight_tying true. Plus checkpointing off, and
+`data_root` repointed because his hardcoded HF-cache snapshot path does not exist on this box
+(the shards live at `/root/gautam_k/blublas/data`) — a path, applied identically to all three
+arms, so it cannot skew the comparison. `head_dim 128`, `B=2`, `T=4096`,
+`global_batch 524288`, `context 4096`, `vocab 50304` were ALREADY his and already match the
+spec. Schedule set to 15 steps: warmup 2 + stable 8, because the script errors when
+`warmup_steps + stable_steps >= max_steps - 1`.
+
+**TWO ENVIRONMENT FAULTS FOUND AND FIXED.**
+1. **MPI was completely absent** from this box — no `mpic++`, `mpicxx` or `mpirun` anywhere.
+   The box was re-provisioned today (its SSH host key changed and the old IP stopped
+   resolving), and MPI went with it. All three arms built their BLAS and tensor libraries
+   correctly and died only at the `dist` stage. Installed OpenMPI 4.1.6; `/usr/bin/mpic++` is
+   exactly the path `blutrain_prod/Makefile:54` hardcodes.
+2. **The build script was reporting false successes.** `echo "[$(date)] ... exit=$?"` — the
+   command substitution runs first and RESETS `$?`, so a failed make printed `exit=0`. The
+   cuBLAS arm was recorded as succeeding when it had failed identically to the others. Fixed to
+   capture the status before any substitution. Worth remembering generally: never read `$?`
+   after a substitution in the same line.
+
+**STATE AT THE STOP POINT (card free, 0 compute processes):**
+
+    blutrain_prod    libblublas.so + libtensor.so + 25 dist objects   BUILD COMPLETE
+    blutrain_cublas  libblublas.so + libtensor.so + 25 dist objects   BUILD COMPLETE
+    blutrain_ours    libblublas.so built; libtensor.so + dist PENDING  ~10-15 min to finish
+
+Our arm is the slow one because it compiles our full SM90 module (~90 CUDA sources including
+the large template TUs) where his tree has 15 files.
+
+**TO RESUME TOMORROW** — nothing needs re-deriving, and no rebuild of what is already built:
+
+    cd /root/gautam_k/blublas
+    bash tools/h134_build_arms.sh ours     # finish our arm only (make resumes)
+    bash tools/h134_run_arms.sh all        # 3 arms x (plain pass, then nsys pass)
+
+`tools/h134_run_arms.sh` serialises the GPU, checks the card before every run, time-boxes each
+run so a hang returns 124 instead of holding the card, and writes everything to `h134_runs/`.
+Two passes per arm on purpose: a profiled run is not a timing run — PASS 1 gives tok/s and loss
+unperturbed, PASS 2 gives the kernel trace for the shape-by-shape cross-verification.
+
+**WHAT THE RUN IS FOR.** With all three arms on the SAME dispatcher, the same shape must select
+the same tile in `blutrain_prod` and `blutrain_ours`. The nsys traces are compared kernel by
+kernel against shape; any divergence means the dispatcher swap is not faithful and must be
+fixed before any performance number from these runs is quoted.
+
+---
+
+### §H135 — **INDEPENDENT CROSS-VERIFICATION on a new box. Yesterday's numbers hold to 0.1 points.**
+
+New instance `dull-sun-thinks-fin-02`, **CUDA 13.0** (yesterday was 13.1), fresh checkout at
+7ebfc65 with all our work re-synced from local. Both arms compiled with the same toolkit, so
+the ours/his RATIO is valid; absolute TFLOPS are NOT comparable across boxes and are not
+quoted across days. 1944 timed runs, 12 rounds, alternating order, free clocks, one entry per
+process, every call `timeout`-guarded (tools/h135_verify81.sh, written because h115's check()
+and ab() had no timeout and predate the §H123 deadlock rule).
+
+**INTEGRITY — all passed before any number was read.** 0 malformed rows; 81 entries present;
+972 rows per arm, EQUAL; every entry at exactly 12 rounds; 0 arms with an unstable checksum
+across rounds; **0 entries where our checksum differs from his**.
+
+**CORRECTNESS.** ours 81 PASS / 0 FAIL / 0 HUNG. his 81 PASS / 0 FAIL / 0 HUNG. And the
+cross-check that matters more than either: **all 81 entries bit-identical between the two
+arms**. Every optimisation shipped in §H130-§H132 is correctness-safe, re-confirmed on
+different silicon and a different compiler.
+
+**PERFORMANCE — extrapolation vs measurement:**
+
+                          predicted (yesterday)   MEASURED (today, new box)
+    ALL 77   mean               102.12%                   102.04%
+    ALL 77   median             100.24%                   100.62%
+    ALL 77   >=100%                  42                        42
+    ALL 77   <95%                     3                         3
+    ALL 77   <90%                     1                         1
+    ALL 77   shortfall           70.9 pts                  69.9 pts
+    ROUTED   mean                102.9%                    102.66%
+    ROUTED   median              100.3%                    100.74%
+    ROUTED   >=100%                  24                        24
+
+Per-entry, over the 22 entries changed yesterday: **mean |delta| 0.28 points, max 1.04,
+22 of 22 within 2 points.** The method of applying measured per-entry gain ratios to the §H128
+baseline is therefore validated, not merely plausible.
+
+**ENTRIES 77-80 REPRODUCE THE DOCUMENTED ANOMALY.** His side 106.2-164.6 TFLOPS against our
+621.6-625.5, checksums matching on both sides -> ratios 377.7 / 584.6 / 378.0 / 589.0%. Folding
+them into a mean gives **120.8%**, which is exactly the class of inflated figure §H121
+retracted (it quoted 118.5% on the older data). They are measured every run as a consistency
+check and never enter a reported number. They still pass correctness, so they are included in
+the 81-entry gate.
+
+**WHERE THE REMAINING 69.9 POINTS LIVE -- and this is the finding that sets priority:**
+
+    ROUTED   0-43   mean 102.66%  median 100.74%  shortfall 28.0 pts  worst 95.6%
+    UNROUTED 44-76  mean 101.21%  median 100.43%  shortfall 41.9 pts  worst 89.5%
+
+**60% of the remaining shortfall sits in configs his dispatcher never calls**, including all
+25.3 points of 320x64x64 (entries 51/62/73, all UNROUTED). The routed set -- everything the
+trainer can actually reach -- has **nothing below 95%** and a median above 100%. Closing every
+routed point would move the routed mean 102.66% -> ~103.3%, i.e. +0.64.
+
+Worst routed entries today: 12 nt 128x8x64 95.6%, 35 tn 128x128x64_splitk 96.6%,
+39 tn 128x128x64_regsplit 98.2%, then a tail at 98.4-98.6%.
+
+**CONSEQUENCE FOR SEQUENCING.** Further bench optimisation now has a low ceiling on anything
+the trainer sees (+0.64 on the routed mean for all 28 points), and the biggest single remaining
+block is unreachable from the trainer. The larger open unknown is on the trainer side: the
+recorded observation that tn runs 6-21 points worse in training than on the bench at the same
+clock, cause UNKNOWN. That gap is bigger than the entire routed shortfall and cannot be
+investigated from the bench. So the 600M three-way run is the higher-value next step, and the
+optimisation tail (§H133's leads) is correctly parked behind it.
+
+---
+
+### §H137 — **600M three-way trainer run. Our arm was silently running SM89 kernels; one build flag was worth 60% -> 95.6% of cuBLAS.**
+
+Box `dull-sun-thinks-fin-02`, CUDA 13.0, OpenMPI 4.1.6 (installed; absent on every fresh
+instance, and the trainer Makefile hardcodes `/usr/bin/mpic++`). Three arms, byte-identical
+script (md5 `083236606acb`), his command verbatim:
+`BLU_ZERO_V2=1 BLU_SYMMETRIC=1 make run-mpi FILE=bluscript_zero.cpp NP=1 WITH_BLUBLAS=1`.
+600M = d_model 1536, 24 layers, GQA 12/4, head_dim 128, ffn 4096, vocab 50304, B=2, T=4096,
+global_batch 524288 (so 64 micro-batches per optimizer step), 15 steps, checkpointing off.
+
+**MEASURED, steps 1-14 steady state:**
+
+    arm                                tok/s     MFU     dt/step    % of cuBLAS
+    cuBLAS                            73,530   43.8%    7,130 ms       100.0%
+    Kota's production BLAS            72,900   43.5%    7,190 ms        99.1%
+    ours + OUR dispatcher             70,300   41.9%    7,480 ms        95.6%
+    ours + HIS dispatcher                CRASH (see below)
+    ours BEFORE the fix (SM89)        44,090   26.3%   11,890 ms        60.0%
+
+**His arm reproduces the colleague's claim exactly: 99.1% of cuBLAS.** That is the acceptance
+test this run existed to apply, and it passed, which is what made our own 60% unambiguous
+rather than arguable.
+
+**THE BUG, AND IT WAS MINE.** The trainer builds the vendored BLAS with its OWN
+`Tensor-Implementations/Makefile`, not the BluBridge-BLAS Makefile. That Makefile never defines
+`BLUBLAS_HAS_SM90`. Our `BF16/Bgemm_dispatcher.cu` wraps its entire SM90 routing block in
+`#ifdef BLUBLAS_HAS_SM90`, so the block was preprocessed OUT and every BF16 GEMM fell through
+to the SM89 legacy path. nsys named it outright: our arm ran
+`bgemm_backward_template_kernel<...>` (which lives in `src/level3/batched_gemm/BF16/SM89/`)
+where his ran `bgemm_sm90_kernel<...>` and cuBLAS ran `nvjet_sm90_tst_*`. Same 139,200 launches,
+36.7 s against his 14.0 s -- 2.6x slower per call, 65% of our total GPU time in the top four
+fallback kernels. Total kernel time 177.3 s vs his 107.1 s and cuBLAS 104.7 s: the 1.66x ratio
+is exactly the throughput deficit. HIS tree is immune because his BF16 dispatcher has no such
+ifdef -- it routes on a pure runtime check, `actual_sm_ver >= 90 && < 100`.
+
+**HOW IT SURVIVED A LINK VERIFICATION, which is the part worth remembering.** I ran a six-point
+link check and passed it: 4628 SM90 kernels in our `.so` against his 162, three `_kota` exports,
+zero unresolved symbols, cuBLAS arm correctly free of any libblublas dependency. Every one of
+those was TRUE and every one was IRRELEVANT, because the variant TUs compile their kernels
+regardless of the define -- only the CALL SITE was removed. The kernels were all present and
+entirely unreachable. **Symbol presence is not reachability.** The check that actually catches
+it is `nm -u` on the CALLER's object: refs to `blublasBgemmSM90_dispatch_*` were **0** when
+broken and **3** after the fix. Two further self-inflicted delays on the same day came from the
+same family: a `dispatch_..._kota` regex that needs 3 characters where the names are `nn`/`nt`/
+`tn` (a correct build read as 0 exports), and `echo "[$(date)] exit=$?"`, whose substitution
+RESETS `$?` so a failed build and a failed run both reported exit=0. Recorded in memory as
+`feedback_verify_reachability_not_presence`.
+
+**THE FIX** is `-DBLUBLAS_HAS_SM90` in the trainer arm's `BLAS_NVCCFLAGS`/`BLAS_CXXFLAGS`. Only
+ONE file tests the macro (`BF16/Bgemm_dispatcher.cu`) and it is a `.cu`, not a header, so the
+rebuild is one TU plus a relink -- about two minutes, not twenty. `-DBLUBLAS_HAS_SM103` is
+deliberately NOT added: no Blackwell on this box, and our own Makefile would not set it either.
+Persisted in `tools/h134_wire_trainer.sh` so a fresh instance cannot lose it. Architecture was
+never the problem and was checked: the trainer special-cases `SM_ARCH=90` to
+`-gencode arch=compute_90a,code=sm_90a`, and our lib really carries 71 `sm_90a` cubins.
+
+**CORRECTNESS.** Step 0 train loss `11.131806` identical on all three arms. At step 14:
+
+    arm      train      val
+    his     9.138498  9.265808
+    ours    9.120879  9.246915     <- slightly BETTER than his
+    cuBLAS  9.073624  9.194600
+
+Divergence of this size across arms is expected from different kernels and accumulation orders;
+nothing here suggests a precision problem.
+
+**OPEN, AND THE NEXT TASK: his dispatcher crashes on our kernels.** With
+`BLUBLAS_KOTA_DISPATCH=1` the run aborts on the SECOND GEMM with
+`[BluBridge SM90] Launch error: invalid argument` -> uncaught `std::runtime_error` out of
+`OwnTensor::matmul` <- `autograd::matmul` <- `nn::Linear::forward`. Our own SM90 trace pins the
+shape exactly: `nn M=8192 N=1536 K=1536` launches fine, then `nn M=8192 N=512 K=1536` fails.
+Our dispatcher picks a legal config for that same shape (the 70,300 tok/s run above), so this is
+his SELECTION landing on one of our entry points whose launch geometry is illegal for N=512 --
+a hybrid wiring incompatibility, not a kernel-quality result. It is on the non-clustered launch
+path (the message is "Launch error", not "Clustered launch error") and the dynamic-smem opt-in
+is present in our launcher, so the suspect list is the launch geometry itself. Until it is
+fixed, the like-for-like same-dispatcher comparison the run was designed for cannot be made,
+and the 95.6% above is ours-on-our-dispatcher.
+
+**STANDING:** 95.6% of cuBLAS / 96.4% of his in the trainer, from 60.0% this morning. The
+remaining 3.5 points against his are a real, separate question and are NOT explained by anything
+in this section.
+
+---
+
+### §H138 — **HIS dispatcher on OUR kernels, working. Same variants, same call counts, and a clean layout split: we win every TN, lose every NN/NT.**
+
+Follows §H137. Three separate defects had to be fixed before this comparison was even possible,
+and all three were mine.
+
+**DEFECT 1 (§H137): `BLUBLAS_HAS_SM90` undefined in the trainer's BLAS build** -> our BF16
+dispatcher's SM90 block preprocessed out -> every GEMM on the SM89 legacy path. 60.0% of cuBLAS.
+
+**DEFECT 2: a 13-vs-16 parameter mismatch on the Kota shim.** His
+`blublasBgemmSM90_dispatch_{nn,nt,tn}` take SIXTEEN parameters, ending `int lda, int ldb,
+int ldc`, and thread them into the TMA descriptors. Our shim declared THIRTEEN and called with
+thirteen. `extern "C"` has no name mangling and no cross-TU type check, so the linker bound a
+13-argument call to a 16-argument callee **silently**. His code then read garbage leading
+dimensions, `ld_tma_encodable` became junk, and `do_nn(..., lda, ldb, ldc)` built a TMA
+descriptor on a junk stride: `cudaLaunchKernelEx: invalid argument`, uncaught
+`std::runtime_error` out of `OwnTensor::matmul`, run dead on the SECOND GEMM
+(`nn M=8192 N=512 K=1536`) -- the first survived only because the garbage differed per call.
+
+**DEFECT 3: our BF16 dispatcher had no leading-dimension logic at all.** His derives it and
+gates on it; ours did neither, so a non-packed layout would have been computed as if packed --
+silently wrong answers, not a crash. Adopted his verbatim rather than hardcoding 0 (which was
+my first, wrong, fix):
+
+    lda_nat = (transA==N) ? K : M ;  ldb_nat = (transB==N) ? N : K ;  ldc_nat = N
+    packed  = (lda==lda_nat && ldb==ldb_nat && ldc==ldc_nat)
+    ld_ok   = packed || (lda>=lda_nat && ldb>=ldb_nat && ldc>=ldc_nat)
+    sm90_ld* = packed ? 0 : ld*      // 0 means packed, in HIS code's own convention
+
+These functions are declared in FOUR places (`BF16/Bgemm_dispatcher.cu`,
+`BF16/SM90/Bgemm_sm90_dispatcher.cu`, `BF16/SM90/Bgemm_sm90_bf16.cuh`, and his
+`_kota` file). All four now agree at 16, verified by a script that parses the parameter lists
+rather than by eye. The compiler caught the header I would otherwise have missed --
+`more than one instance of overloaded function ... has "C" linkage` -- which is exactly the
+check `extern "C"` denies across translation units. Changing that header invalidates the three
+big variant TUs, so the rebuild is ~15 min, not 2.
+
+**RESULT -- 600M, 15 steps, identical script (md5 `083236606acb`), his command verbatim:**
+
+    arm                              tok/s     MFU    % cuBLAS   % his
+    cuBLAS                          73,530   43.8%     100.0%      --
+    Kota's production BLAS          72,900   43.5%      99.1%   100.0%
+    ours + HIS dispatcher           71,483   42.6%      97.2%    98.1%
+    ours + OUR dispatcher           70,300   41.9%      95.6%    96.4%
+    ours, SM89 fallback (broken)    44,090   26.3%      60.0%    60.5%
+
+His dispatcher on our kernels is **+1.7% over our own table**, because our table selects the
+OLD config set with `rswz=0` -- it never picks up the §H100 raster-swizzle win, which his
+`SUPER_M=8` configs all carry. Losses confirm correctness: step 14 ours 9.1260 / val 9.2544
+against his 9.1385 / 9.2658 -- ours marginally BETTER.
+
+**THE CROSS-CHECK THIS SECTION EXISTS FOR: same dispatcher -> SAME VARIANTS, SAME CALL COUNTS,
+all nine, exactly.** Verified from the two nsys traces:
+
+    layout / tile        HIS time   calls  |  OURS time   calls  | ours/his (lower = we win)
+    NT 128x256x64        14017.6ms 139200  |  14569.2ms 139200   |  103.9%   LOSE  (-551 ms)
+    NN 128x256x64         6688.8ms 120000  |   6938.0ms 120000   |  103.7%   LOSE  (-249 ms)
+    NN 192x128x64         6293.4ms  24000  |   6425.8ms  24000   |  102.1%   LOSE
+    TN 128x256x64         5828.7ms  23040  |   5797.2ms  23040   |   99.5%   WIN
+    TN 192x128x64         3136.3ms  46080  |   3044.2ms  46080   |   97.1%   WIN
+    TN 128x192x64         3039.7ms  23040  |   3005.5ms  23040   |   98.9%   WIN
+    NN 256x128x64         1558.0ms   1000  |   1627.6ms   1000   |  104.5%   LOSE
+    TN 256x128x64         1392.2ms    960  |   1402.9ms    960   |  100.8%   lose slightly
+    TN 128x128x64         1265.8ms  46080  |   1168.2ms  46080   |   92.3%   WIN BIG
+    TOTAL SM90 GEMM      43220.6ms 423400  |  43978.5ms 423400   |  101.8%
+    TOTAL all kernels      107.07s         |    108.10s          |  101.0%
+
+**A CLEAN LAYOUT SPLIT, AND IT IS THE FINDING.** We win **every TN** (92.3-99.5%) and lose
+**every NN and NT** (102.1-104.5%). Net 1.8% behind in GEMM = the 98.1% measured throughput.
+`NT 128x256x64` alone is 32% of all GEMM time and 551 of the 758 ms total deficit, so NT/NN
+`128x256x64` is where the remaining gap lives, not spread thinly.
+
+**AND NONE OF TODAY'S OPTIMISATION WORK TOUCHES THESE NINE.** Everything shipped in
+§H130-§H132 (128x192x64_regsplit, coopB, cluster_v2, 2cta, split-K, 320x64x64) is never called
+by the 600M model. The nine it does call are the 98.2-99.2% bench tail we deliberately left
+alone, which is why the trainer saw no benefit from yesterday's +27 points.
+
+**A DIRECTIONAL DISAGREEMENT BETWEEN BENCH AND TRAINER, worth its own investigation.** On
+`tn 128x128x64_regsplit` the bench says we are 98.2% of his (slower); the trainer says we are
+**7.7% FASTER**. Same kernel, opposite sign. The earlier "2.27 points of unexplained
+trainer-only deficit" (§H137) has largely dissolved -- the bench predicted 98.70% time-weighted
+over these nine and we now measure 98.1% -- so most of it was the dispatcher's config mix, not a
+trainer effect. What remains is this per-variant sign disagreement.
+
+**NEXT, in value order:** (1) NT/NN `128x256x64` -- 32% of GEMM time, 3.9% behind, the whole
+remaining gap; (2) the bench/trainer sign disagreement on `tn 128x128x64`; (3) our dispatch
+table still selects `rswz=0` configs and should be re-pinned onto the raster-fixed set.
