@@ -32584,3 +32584,179 @@ instruction is clock we are not getting.
   resource footprints for closed-source cuBLAS kernels without any cuobjdump.
 * **Never reuse a number from a released box.** §H184's cuBLAS locked-power figures were from
   95.133.254.191; §H209 re-measured all four arms on the current box rather than reuse half.
+
+---
+
+## §H210 – §H211  CLEAN-ROOM RE-VERIFICATION: WHAT THE TRAINER ACTUALLY RUNS
+
+Box 86.38.182.106 (`quiet-sun-closes-fin-03`), 2026-09-10 evening IST. Model 4B, B=2, T=4096,
+world=2, ZeRO-1 **v2 + symmetric**, `blutrain_ours`, `WITH_BLUBLAS=1`.
+
+**PURPOSE.** Re-establish from scratch, carrying nothing over from any earlier result, whether
+we really win standalone and lose in the trainer -- and on exactly which variants and shapes.
+Every previous answer to "which kernel does the trainer run on which shape" was an INFERENCE:
+launch-count pairing (§H203/§H206), an offline replay of the selection chain (§H141/§H198), or
+shape derivation from the model config (§H190). All three agreed, but agreement between three
+arguments is not an observation, and our SM90 kernels are persistent -- grid is always
+`132x1x1` -- so the launch geometry can never corroborate them.
+
+### §H211a  THE RUN
+
+    BLU_MAX_STEPS=20 BLU_ZERO_V2=1 BLU_SYMMETRIC=1 \
+    nsys profile -t cuda -o h211_ours make run-mpi FILE=bluscript_zero.cpp NP=2 WITH_BLUBLAS=1
+
+Proof lines checked BEFORE trusting anything (this is where the SM89-fallback defect hid twice):
+
+    [BluBLAS] SM90 dispatcher: KOTA (hybrid) -- our kernels, his selection   (both ranks)
+    legacy-fallback lines: 0
+    [ZeRO-1 v2] ACTIVE: symmetric=ON  overlap=bwd/refresh
+    STEADY-STATE: 35,463.1 tok/s, MFU 52.03%, 17 steps (first 3 excluded)
+
+Profile 398 MB, 46 distinct kernels, 603,307.7 ms total GPU time.
+
+### §H211b  EIGHT VARIANTS -- CONFIRMED INDEPENDENTLY
+
+From this run's own kernel table alone, with no reference to the stored case list:
+
+| layout | tile | cluster | launches | total ms | avg us | %GPU |
+|---|---|---|---|---|---|---|
+| NN | 128x256x64 | 1x1 | 293,760 | 111,422.5 | 379.30 | **18.47** |
+| NT | 128x256x64 | 1x1 | 231,680 | 83,938.5 | 362.30 | **13.91** |
+| TN | 128x256x64 | 1x1 | 92,160 | 78,316.1 | 849.78 | **12.98** |
+| NT | 192x128x64 | 1x1 | 46,080 | 26,341.0 | 571.64 | 4.37 |
+| TN | 192x192x64 | 1x1 | 92,160 | 20,081.4 | 217.90 | 3.33 |
+| TN | 192x128x64 | 1x1 | 92,160 | 6,976.3 | 75.70 | 1.16 |
+| NN | 256x128x64 | 1x1 | 1,360 | 4,649.3 | 3418.57 | 0.77 |
+| TN | 256x128x64 | 1x1 | 1,280 | 4,324.5 | 3378.50 | 0.72 |
+
+**Our GEMM is 55.70% of GPU time. All eight run cluster 1x1** -- §H208's observation reproduces.
+Same eight tiles and layouts as every prior list. The 128x256 family alone is **45.4% of GPU**.
+
+Largest non-GEMM consumers: `gqa_bwd_vj1d` 12.16%, `vec4_convert_to_fp32` 5.86% (850,970
+launches), `vec8_convert_to_bf16` 4.56%, `gqa_v62_sm90` 3.54%. Converts together 10.4%.
+
+### §H211c  FIFTEEN SHAPES -- RE-DERIVED FROM THE RUNNING DISPATCHER, NOT FROM THE MODEL CONFIG
+
+`BLUBLAS_SM90_TRACE=1` was already compiled into the shipped `libblublas.so` (verified with
+`strings` on the binary, not by reading the source). A second 10-step run with it on produced
+428,457 trace lines. Both ranks write to the same stderr and occasionally interleave mid-line,
+so lines were re-split on the `[sm90]` marker before counting -- without that repair the naive
+`sort -u` reported 60 "distinct" signatures, 45 of them concatenation artefacts.
+
+| layout | M | N | K | site | calls (10 steps) |
+|---|---|---|---|---|---|
+| nn | 8192 | 3072 | 3072 | Q/O proj fwd | 59,184 |
+| nn | 8192 | 1024 | 3072 | K/V fwd | 59,184 |
+| tn | 3072 | 3072 | 8192 | Q/O wgrad | 56,247 |
+| nt | 8192 | 3072 | 3072 | Q/O dgrad | 56,247 |
+| tn | 3072 | 1024 | 8192 | K/V wgrad | 56,246 |
+| nt | 8192 | 3072 | 1024 | K/V dgrad | 56,246 |
+| nn | 8192 | 16384 | 3072 | gate_up fwd | 29,592 |
+| nn | 8192 | 3072 | 8192 | down fwd | 29,591 |
+| tn | 8192 | 3072 | 8192 | down wgrad | 28,124 |
+| tn | 3072 | 16384 | 8192 | gate_up wgrad | 28,124 |
+| nt | 8192 | 8192 | 3072 | down dgrad | 28,124 |
+| nt | 8192 | 3072 | 16384 | gate_up dgrad | 28,124 |
+| nn | 8192 | 50304 | 3072 | lm_head fwd | 822 |
+| tn | 3072 | 50304 | 8192 | lm_head wgrad | 782 |
+| nt | 8192 | 3072 | 50304 | lm_head dgrad | 782 |
+
+**Exactly 15, and 15/15 identical to `tools/h147_cases.txt`.** The stored list is vindicated by
+direct observation for the first time.
+
+### §H211d  THE CALL SIGNATURE -- A HYPOTHESIS RAISED AND KILLED IN THE SAME RUN
+
+Before this run I flagged that no standalone test had ever checked the trainer's full call
+CONTRACT, only M,N,K -- and that a bench at `batch=1, beta=0`, packed leading dimensions is a
+different kernel invocation from a batched, accumulating, strided one even at identical M,N,K,
+because the epilogue and the TMA descriptors differ with it. That would have invalidated every
+standalone number ever taken.
+
+**It is not what is happening.** Every one of the 15 signatures, without exception:
+
+    batchCount = 1    alpha = 1    beta = 0    strideA = 0    strideB = 0   (packed)
+    strideC = 0 or exactly M*N                 lda = ldb = ldc = 0          (packed)
+
+So the old h92-style benchmarks were signature-correct after all. **REFUTED, cleanly, and worth
+recording precisely because it was a plausible mechanism that would have explained a lot.**
+
+### §H211e  SHAPE -> VARIANT: FIVE OF EIGHT PINNED, THREE NEED THE NVTX JOIN
+
+A variant's average duration identifies its shape only when it serves ONE shape. Testing each
+variant against every shape of its layout and keeping only physically possible results
+(500-1100 TFLOPS on H200 bf16):
+
+| variant | shape it must be | implied TFLOPS | independent check |
+|---|---|---|---|
+| NT 192x128 | 8192x8192x3072 down dgrad | 721.3 | §H203 measured **720.2** |
+| TN 192x128 | 3072x1024x8192 K/V wgrad | 680.8 | §H203 measured **679.7** |
+| NN 256x128 | 8192x50304x3072 lm_head fwd | 740.6 | §H203 measured **741.7** |
+| TN 256x128 | 3072x50304x8192 lm_head wgrad | 749.4 | unique candidate |
+| TN 192x192 | 3072x3072x8192 Q/O wgrad | 709.6 | unique candidate |
+| NN 128x256 | 4 shapes | 1087 (impossible) | **blended average** |
+| NT 128x256 | 5 shapes | none plausible | **blended average** |
+| TN 128x256 | 2 shapes | 970 (implausible) | **blended average** |
+
+Three of the five pinned variants reproduce §H203's independently-derived in-trainer numbers to
+within 1.1 TFLOPS, from a different run on a different day by a different method. That is
+strong corroboration of the launch-count pairing method for the shapes it can resolve.
+
+**But the three 128x256 variants -- 45.4% of GPU time, and §H206's entire deficit -- each serve
+several shapes, so no per-shape in-trainer number is recoverable for them by any timing
+argument.** This is the concrete reason the NVTX instrumentation below is necessary rather than
+merely tidy.
+
+### §H211f  WHAT WAS BUILT (pushed, not yet exercised)
+
+Commits `08884e7`, `3a9fa9e` on `GOUTHAM1926/blublas.git`:
+
+* **NVTX ranges in the dispatcher**, env-gated on `BLUBLAS_SM90_NVTX=1`, carrying the FULL
+  signature (`BGEMM|lay|M|N|K|batch|lda|ldb|ldc|alpha|beta|sA|sB|sC`). nsys projects GPU
+  kernels onto the enclosing range, so the profile reports (signature -> kernel) per launch,
+  per rank. RAII so the range closes on every return path; one snprintf when on, a predictable
+  branch on a function-local static when off.
+* **`BLUBLAS_SM90_TRACE=2`** -- each distinct signature once. `=1` emits ~160k lines a rank and
+  perturbs the run it measures; `=2` answers "which signatures exist" in a few dozen lines.
+  The trace also now carries lda/ldb/ldc, the one part of the contract it never reported.
+* **`examples/h211_replay.cu`** -- replays a captured signature through the SAME PUBLIC ENTRY
+  POINT the trainer calls (`blublasBgemmSM90_dispatch_{nn,nt,tn}`), so the dispatcher makes the
+  same choice it made in the trainer. Selecting a variant by index out of a 570-entry table is
+  gone, and with it the mis-mapping that has to be separately checked for every time.
+  Correctness gates timing; a DECLINED shape is reported, never timed.
+* `tools/h211_harvest.py` (NVTX<->kernel sqlite join), `h211_standalone.sh`, `h211_compare.py`.
+* `tools/h210_retention.sh` -- the untaken control: §H205 locked STANDALONE to the trainer's
+  clock for OUR arm only, so cuBLAS's locked-standalone number has never been measured, and
+  without it "our kernel loses more per MHz" and "the trainer environment hurts us
+  specifically" are indistinguishable.
+
+Verified before use: the SM90 source in `blutrain_ours/Tensor-Implementations/BluBridge-BLAS`
+is **byte-identical** to the repo master (29/29 files), so a standalone harness and the trainer
+run the same dispatcher code; and only one `libblublas.so` exists on the box.
+
+### §H211g  TWO STALE GATES IN `verify_blutrain_wiring.sh`, BOTH FIXED
+
+Found while preparing the campaign, both already failing for reasons unrelated to any build
+fault:
+
+1. it still asserted `tree_nn(M, N, K)` appears once -- **§H197 deleted the tier-1 table and
+   tier-2 tree**. Now asserts 0, plus 3 unconditional Kota delegations and 0 `KOTA_DISPATCH`
+   references.
+2. `grep -c sm90_decline_reason` expected 6 and the file has had **7** for some time, two of
+   them prose in comments. Now counts CALL SITES (4) and the definition (1) separately.
+
+A gate that cries wolf gets ignored, which is exactly how the SM89-fallback defect survived a
+9/9 static check. **An assertion a comment edit can break is not an assertion.**
+
+### §H211h  STATE AT INSTANCE SHUTDOWN
+
+**DONE:** 8 variants confirmed; 15 shapes re-derived; call signature characterised and the
+"different contract" hypothesis refuted; 5/8 shape->variant pinned with 3 corroborating §H203.
+
+**NOT DONE -- the instance was released before it could run:** the standalone re-measurement
+itself (`h211_replay` was never built or run), so the "we win standalone / lose in-trainer"
+comparison is NOT re-verified end-to-end by this campaign. What §H211 establishes is that the
+INPUTS to that comparison -- variants, shapes, call contract -- are exactly what we believed.
+Also never run: the NVTX profile, and §H210's cuBLAS locked-standalone control.
+
+Artefacts pulled to `h211_2026_09_10/`: kernel summary, both run logs, the gzipped 428k-line
+trace, deduped signatures, the step CSV, and the h204/h205/h207/h209 output trees.
