@@ -30684,3 +30684,1903 @@ trainer effect. What remains is this per-variant sign disagreement.
 **NEXT, in value order:** (1) NT/NN `128x256x64` -- 32% of GEMM time, 3.9% behind, the whole
 remaining gap; (2) the bench/trainer sign disagreement on `tn 128x128x64`; (3) our dispatch
 table still selects `rswz=0` configs and should be re-pinned onto the raster-fixed set.
+
+---
+
+### §H139 — **PDL wired onto the non-clustered launch path. Implementation record.**
+
+Programmatic Dependent Launch was already present on the clustered path but the non-clustered path
+launched with plain `<<<>>>`, so the device-side `griddepcontrol` instructions were no-ops there.
+
+What was changed in `Bgemm_sm90_warpspecialized_template.cuh`:
+
+1. `BLUBLAS_DEFAULT_PDL` macro added (default **0**).
+2. `BLUBLAS_PDL_EARLY_DEPS` macro added (default **0** = the conservative `launch_dependents`
+   placement; 1 = signal dependents earlier).
+3. The non-clustered launch grew a `} else if constexpr (Config::USE_PDL) {` arm that calls
+   `cudaLaunchKernelEx` with `cudaLaunchAttributeProgrammaticStreamSerialization`, falling back to
+   `s_no_pdl_np` when the attribute is unavailable.
+4. `griddep_wait()` was moved out of the first statement of the kernel body to **after**
+   `mbarrier_init` + `__syncthreads()` — his placement. The 3-descriptor prefetch stays at the top,
+   because prefetch does not need the dependency to have cleared.
+
+Two things measured along the way, both worth keeping:
+
+* `cudaLaunchKernelEx` itself costs **~0.66%** on this workload versus `<<<>>>`. Any PDL gain has to
+  clear that toll before it is a win.
+* A retraction: I had claimed his split-K `launch_dependents` placement was racy. It is not. His
+  split-K reduce is launched with plain `<<<>>>` and carries **no** `griddepcontrol` at all, so
+  there is no dependency for the placement to get wrong. I also retracted the claim that our older
+  "PDL gain 20.6 ms / 0.06%" note had measured a no-op — it measured the same ~0.1% and was right.
+
+Backups left in the tree: `.pre_pdlfix`, `.h131bak`, `.h132bak`.
+
+### §H140 — **PDL measured on the 600M trainer, then REVERTED. And a bookkeeping failure worth recording.**
+
+Artefacts: `prod_runs_2026_09_07_h136/h139_plain.log`, `h140_pdloff.log`, `h140_pdlon.log`
+(all 15 steps, unprofiled, our box, our kernels + his dispatcher).
+
+| log | steady tok/s (steps 3-14) | steps 3-9 mean | per-step spread |
+|---|---|---|---|
+| `600M15_ourskota_plain.log` | 71,492.4 | 71,598.1 | 71,442 – 71,723 |
+| `h140_pdloff.log` | 71,814.8 | 71,874.0 | 71,700 – 71,978 |
+| `h139_plain.log` | 72,271.4 | 72,336.0 | 72,183 – 72,417 |
+| `h140_pdlon.log` | 72,342.6 | 72,420.2 | 72,239 – 72,503 |
+
+(The steps 3-9 column exists so these are directly comparable with §H142, which must use that
+window to match his 10-step runs. Reference points in the same window: cuBLAS 73,583.9, his
+production BLAS 72,918.0.)
+
+Decision: **PDL reverted**, `BLUBLAS_DEFAULT_PDL` stays 0. The gain is small, it rides on top of the
+0.66% `cudaLaunchKernelEx` toll, and the early-deps variant carries a race risk I could not prove
+absent. Not worth it for this.
+
+**The bookkeeping failure:** each log's internal spread is tight (±~150 tok/s) but the gaps
+*between* logs are 3x that, so these are genuinely different builds and not noise. And none of these
+logs records which build produced it — no flag dump, no source hash in the header. So `h139` at
+72,271 versus `h140_pdloff` at 71,815 cannot now be told apart from the artefacts alone. Any future
+trainer arm must print its own build flags into the log before the Configuration block, or the run
+is not attributable. Until that is re-measured, our current arm should be quoted as a **range,
+71,815 – 72,271 tok/s**, not a point.
+
+### §H141 — **The 45 real shapes, using only the variants his dispatcher actually issues.**
+
+The 81-entry bench uses M=3072-6144, N=1536-3072, K=4096. The trainer uses **none** of those sizes.
+So that bench's percentages never described the production workload. `examples/h141_real_shapes.cu`
+replaces it with the real thing: 15 shapes each for 600M, 1.7B and 4B, and for each shape the
+variant is the one **his dispatcher selects** — proven twice over, by nsys per-shape profiling and
+by re-implementing his selection chain in Python, **45/45 agreement**.
+
+Shape formula (verified against all 15 observed 600M shapes): M=B·T, E=n_embd, KV=kv_heads·head_dim,
+F=ffn_hidden, gate_up out=2F, V=vocab. `global_batch` does **not** change these shapes — it only
+sets grad_accum. `mini_batch` **does**, because M=B·T.
+
+Artefacts: `prod_runs_2026_09_07_h141/raw45.txt` (3 repeats per arm per shape, 270 rows),
+`map45.txt`. All figures below are the **median of 3**.
+
+| | ours as % of his |
+|---|---|
+| all 45, mean | **99.77%** |
+| all 45, median | **100.05%** |
+| all 45, wins (>=100%) | **25 / 45** |
+| all 45, time-weighted | 99.42% |
+| 600M 15, time-weighted | **99.88%** |
+| 1.7B 15, time-weighted | **98.66%** |
+| 4B 15, time-weighted | **99.69%** |
+
+Ours on our **own** dispatcher over the same 45: 90.82%. **His dispatcher is worth +10.4% to our
+kernels.** That is the single largest lever found in the hybrid work and it is why we ship his
+selection chain, not ours.
+
+The optimisation targets, worst first:
+
+| ours % his | layout | M x N x K | ours TF | his TF | call site |
+|---|---|---|---|---|---|
+| **81.17** | tn | 2048 x 11264 x 8192 | 719.86 | 886.83 | gate_up wgrad [1.7B] |
+| 96.29 | tn | 3072 x 50304 x 8192 | 900.86 | 935.57 | lm_head wgrad [4B] |
+| 98.29 | nt | 8192 x 1536 x 512 | 610.47 | 621.06 | K/V dgrad [600M] |
+| 98.40 | nn | 8192 x 512 x 1536 | 670.90 | 681.79 | K/V fwd [600M] |
+| 98.94 | tn | 1536 x 50304 x 8192 | 918.88 | 928.68 | lm_head wgrad [600M] |
+| 99.31 | tn | 3072 x 1024 x 8192 | 860.26 | 866.27 | K/V wgrad [4B] |
+| 99.32 | tn | 2048 x 2048 x 8192 | 870.51 | 876.46 | Q/O wgrad [1.7B] |
+| 99.38 | tn | 2048 x 50304 x 8192 | 930.92 | 936.75 | lm_head wgrad [1.7B] |
+
+Best 5: tn 2048x512x8192 **105.40%**, tn 1536x512x8192 **105.36%**, nt 8192x3072x50304 102.22%,
+nn 8192x8192x1536 101.24%, nn 8192x16384x3072 101.18%.
+
+The `TN_128x128x64` collapse is **N-dependent, not shape-generic**: the same variant is 105.4% at
+N=512 and 81.2% at N=11264. It only falls apart at large N. That is the first thing to fix.
+`TN_256x128x64` loses on all three lm_head wgrad shapes (96.29 / 98.94 / 99.38) — a second,
+separate target.
+
+### §H142 — **He is NOT matching cuBLAS. Same GPU, same script; his own log has him 773.6 tok/s below his own cuBLAS.**
+
+The question was why his run of the same script with the same command reportedly matched cuBLAS while
+ours sat ~1K below. Answer: **it did not match cuBLAS.** In his own log pair his BLAS is 98.940% of
+his own cuBLAS -- 773.6 tok/s below it, and further below it than the same library sits on our runs.
+The premise was wrong; there is no missing setting of his to copy.
+
+His two logs: `outpput.md` (WITH_BLUBLAS=1) and `outpput(1).md` (WITH_BLUBLAS=0), both from
+`/root/dhana/BluTrain`, both 10 steps, **both under nsys**.
+
+**First, whose kernels are in his log.** They are **his**, not ours: `outpput.md` contains zero
+`blublas_ws::` symbols, its GEMMs are `bgemm_sm90_kernel<Sm90WarpspecConfig<...>>` (19 template
+params, no namespace) and its reduce is `sm90_splitk_reduce_kernel_v4t<(int)2>`. Ours are
+`blublas_ws::bgemm_sm90_kernel<blublas_ws::Sm90WarpspecConfig<...>>` (51 params) with
+`blublas::splitk::splitk_reduce_kernel_fast`. Confirmed against our own
+`prod_stats_cuda_gpu_kern_sum.csv`, which is his library on our box and matches his naming and his
+variant list exactly.
+
+**Same GPU.** He ran on the same physical card we did (confirmed by the user; both trees also
+reference the same `nsight-compute/2025.3.1` image, and his variant list and tile multiset match our
+`prod_stats` build exactly -- 3x128x256, 2x192x128, 2x256x128, 1x128x192, 1x128x128). So this is not
+a hardware comparison.
+
+**The one real methodological difference: his two runs were BOTH under nsys, ours were BOTH plain.**
+Measured on our own matched plain/nsys pair (one build, `600M15_ourskota_plain.log` vs
+`600M15_ourskota_nsys.log`, steps 3-9): **nsys costs 0.325%**.
+
+All figures below are the **steps 3-9 mean**, because his summary block averages 7 steps (first 3
+excluded of 10) and ours averages 12 (first 3 of 15). Comparing the two summary lines directly is a
+window mismatch; §H142's first draft made that error.
+
+| arm | steps 3-9 | vs its own cuBLAS | delta |
+|---|---|---|---|
+| our cuBLAS (plain, our box) | **73,583.8** | 100.000% | -- |
+| his production BLAS (plain, our box) | **72,918.0** | **99.095%** | **-665.8** |
+| ours + his dispatcher (plain, our box, h139) | **72,336.0** | **98.304%** | **-1,247.8** |
+| his cuBLAS (nsys, his run) | 72,951.7 | 100.000% | -- |
+| his production BLAS (nsys, his run) | 72,178.1 | **98.940%** | **-773.6** |
+
+nsys cancels inside each pair, so each pair is internally valid. Read that way: **he is 773.6 tok/s
+below his own cuBLAS** -- not matching it, and further below it than his own library is on our box.
+Our hybrid is 1,247.8 below cuBLAS, which is the "~1K below" that prompted the question. **Our hybrid
+trails his production BLAS by 582 tok/s = 0.80 points of ratio.** That is the number to close.
+
+**The residual after de-profiling is a run-condition effect, not hardware.** De-profiling his arms by
+0.325% gives his cuBLAS 73,189.3 and his prod 72,413.2, still **0.54% / 0.70%** below our plain runs.
+On the same card that is the clock/power state at the time of the run, and it is visible GPU-side as
+well: per-call average, **19 of 19 kernels ran slower in his trace** (his prod BLAS 10 kernels
++0.236%..+0.663%, mean +0.479%; cuBLAS 9 kernels +0.187%..+0.420%, mean +0.316%) -- and that
+comparison is his *nsys* trace against our *nsys* trace, so instrumentation is controlled on both
+sides. Same direction, same magnitude as the §H68 / solved-clock power-cap mechanism. It is not a
+config difference and not a different card.
+
+**Config diff: 4 lines, none of them performance.** Full preamble diff, his blublas arm vs our prod
+arm (the run *settings* question, now that hardware is ruled out):
+
+| difference | effect |
+|---|---|
+| `/usr/bin/make` vs `make` | cosmetic, his PATH |
+| `[bench] BLU_MAX_STEPS=10 (warmup=1 stable=5)` | he capped steps by env, we used the script's 15 |
+| `warmup/steps 1/10` vs `2/15`, `WSD stable 5` vs `8` | consequence of the above, LR values only |
+| `found 100 shards for split train` vs `found 3 shards` | he has the full dataset, we have 3 |
+
+His two arms have **byte-identical** Configuration blocks; so do ours. Model, ZeRO-1 (`reduce_dtype`
+bf16 for the 603M group / fp32 for the 77M group, `symmetric=off`, `overlap=-/-`), `world_size=1`,
+B x T = 2 x 4096, grad_accum 64, `-DUSE_FUSED_RMS_ROPE=1` — all identical. Note `BLU_SYMMETRIC=1` is
+on the command line but reports `symmetric=off` in **both** his and ours, so that env var is a no-op
+for both of us equally. The 3-vs-100 shards is the only difference worth flagging: our smaller
+dataset stays in page cache and may flatter our absolute tok/s slightly. It is identical across our
+own arms, so our ratio is unaffected.
+
+**Where the 1% goes, and it decomposes the same way on both cards.** Non-GEMM launch counts match to
+a single kernel across all arms (2,125,073 vs 2,125,074 — one extra `multi_tensor_scale_kernel` from
+grad clipping, 0.4 ms), so this is clean apples-to-apples.
+
+| his BLAS vs cuBLAS | his run (10 steps, nsys) | our run (15 steps, nsys) |
+|---|---|---|
+| GEMM excess | +1.127 s (**64.9%**) | +1.595 s (**66.6%**) |
+| non-GEMM excess, *identical code* | +0.610 s (**35.1%**) | +0.802 s (**33.4%**) |
+| total kernel excess | +1.737 s | +2.397 s |
+
+About a third of his BLAS's deficit is not in his GEMMs at all — it is the rest of the trainer
+running slower. And that collateral is **one kernel**:
+
+| kernel | his run Δ | our run Δ (his BLAS) | our run Δ (our BLAS) |
+|---|---|---|---|
+| `gqa_bwd_vj1d<64,64,128>` | **+441.1 ms (+4.01%)** | **+582.4 ms (+3.54%)** | **+848.7 ms (+5.16%)** |
+| `gqa62::gqa_v62_sm90` | +44.4 ms (+1.45%) | +43.5 ms (+0.97%) | +69.8 ms (+1.55%) |
+| `reduce_dgamma_kernel` | +26.1 ms (+8.71%) | +38.1 ms (+8.52%) | +33.5 ms (+7.48%) |
+| `rms_bwd_fused_block_sm90` | +21.2 ms (+1.18%) | +28.7 ms (+1.07%) | +39.7 ms (+1.48%) |
+| `vec4_convert_to_fp32` (8.4 s of work) | +19.0 ms (+0.34%) | +27.8 ms (+0.33%) | **-10.2 ms (-0.12%)** |
+| `swiglu_bwd_v22` (2.4 s of work) | +0.7 ms (+0.03%) | ~0 | ~0 |
+
+`gqa_bwd_vj1d` alone is **72.3%** of the collateral in his run and **72.6%** in ours. The large
+memory-bound kernels (`vec4_convert` 8.4 s, `vec8_convert` 5.0 s, `add_inplace` 2.3 s) sit at ~0%.
+So the TMA + tensor-core kernels pay and the bandwidth-bound ones do not — the power to clock-cap
+mechanism of §H68 / the solved-clock work, now reproducing in an independent run, and reproducing
+*harder* under our kernels (+848.7 ms) than under his (+582.4 ms).
+
+**Correction to §H138.** §H138 reported our GEMM at 42,887 ms vs his 43,221 ms, "we are 0.8%
+faster". That is wrong to quote as current. The nsys CSV it rests on,
+`600M15_ourskota_s_cuda_gpu_kern_sum.csv`, comes from the **71,316 tok/s** run and its template
+parameters show **RSWZ=0 on 7 of the 9 variants** — it predates the raster-swizzle fix. Read now it
+gives our GEMM at 94.67% of cuBLAS against his 96.32%, which describes the old build. We have **no
+post-fix nsys trace of our arm**, so our current GEMM share is unmeasured. What is measured is
+tok/s:
+
+| our box, steps 3-9 | tok/s | % of cuBLAS |
+|---|---|---|
+| cuBLAS | 73,583.8 | 100.00% |
+| his production BLAS | 72,918.0 | **99.095%** |
+| ours + his dispatcher (h139) | 72,336.0 | **98.304%** |
+| ours + his dispatcher (h140 pdl-off build) | 71,874.0 | **97.677%** |
+
+So our real remaining gap to him in the trainer is **0.80 - 1.44 points**, and the honest reading is
+that our own arm's build-to-build spread is comparable to the gap we are chasing. Two things are
+needed before any further optimisation claim: a build-flag dump in every trainer log (§H140), and
+one post-fix nsys trace of our arm so the GEMM-versus-collateral split can be attributed for our
+kernels the way it now is for his.
+
+---
+
+### §H143 — **The real shape set is 135, not 45. His dispatcher re-implemented and validated three independent ways. Target #1 scoped to ONE (M,N).**
+
+`global_batch` does not change a single shape. [bluscript_zero.cpp:492] uses it once:
+`GRAD_ACCUM = global_batch / (B*T*world_size)` — 524288/(2*4096*1) = 64. It sets how many times
+each shape runs, nothing else. `mini_batch` B **does** change them, in two different slots:
+
+| layout | what `B*T` is | B=1 | B=2 | B=4 |
+|---|---|---|---|---|
+| nn, nt (fwd + dgrad) | **M** | 4096 | 8192 | 16384 |
+| tn (wgrad) | **K** | 4096 | 8192 | 16384 |
+
+N is always a model dim (E, KV, 2F, F, V); B never touches it. Proof: all 15 4B shapes
+reconstructed from (B*T, model dims) match the measured rows **15/15 exact**.
+
+**THE DISPATCHER SIMULATOR.** `Bgemm_sm90_dispatcher_kota.cu` re-implemented function for function
+in Python (`disp.py`): `sm90_pick_bn`, `sm90_wave_utilization`, `sm90_try_narrow_k`,
+`sm90_bm192_ok`, `sm90_bm256_narrow_ok`, `sm90_tn_dw_bn192_ok`, `sm90_tn_dw_narrow_bm192_ok`,
+`sm90_tn_splitk_plan`, `sm90_tn_splitk_factor`, `do_nn`/`do_nt`/`do_tn`. Validated **three
+independent ways**, not one:
+
+1. against `map45.txt` ground truth — **45/45 shapes match**
+2. against the trainer's nsys kernel names — **9/9 variant set identical**
+3. against the trainer's nsys instance counts — **9/9 counts exact, 423,400 = 423,400**
+
+Check 3 also corrected the model: the script has **six** Linears per layer (wQ, wK, wV, wO,
+gate_up, down) plus lm_head once, not four. wQ/wO share a shape and wK/wV share a shape, so 15
+unique shapes per config is right, but the call multiplicity is 2 for the Q/O and K/V sites.
+Per micro-step: nn 145, nt 145, tn 145; fwd runs in val too (1000 micro-steps over 15 steps)
+while bwd is train-only (960).
+
+**SCOPE.**
+
+| set | shapes | variants | entry points | measured | unmeasured |
+|---|---|---|---|---|---|
+| B=2 (the old scope) | 45 | 11 | 12 | 45 | 0 |
+| B=2,4 (what is actually run) | 90 | 11 | 12 | 45 | 45 |
+| **B=1,2,4 (full)** | **135** | **15** | **16** | **45** | **90** |
+
+135 distinct (layout,M,N,K) — **zero duplicates**. **12 of 45 call sites change variant with B**,
+almost all at B=1 where M collapses to 4096. Four variants exist **only** at B=1 and are therefore
+lowest priority: NT_128x192x64 (4 shapes), NN_128x192x64 (2), NN_128x128x64 (2), NT_128x128x64 (1).
+
+| variant | shapes | measured | unmeasured | reached at B |
+|---|---|---|---|---|
+| NT_128x256x64 | 38 | 14 | 24 | 1,2,4 |
+| NN_128x256x64 | 29 | 10 | 19 | 1,2,4 |
+| TN_128x256x64 | 15 | 5 | 10 | 1,2,4 |
+| NN_256x128x64 | 9 | 3 | 6 | 1,2,4 |
+| TN_128x128x64 | 9 | 3 | 6 | 1,2,4 |
+| TN_256x128x64 | 9 | 3 | 6 | 1,2,4 |
+| TN_192x128x64 | 6 | 2 | 4 | 1,2,4 |
+| NT_128x192x64 | 4 | 0 | 4 | 1 only |
+| TN_128x192x64 | 3 | 1 | 2 | 1,2,4 |
+| NN_192x128x64 | 3 | 2 | 1 | 2,4 |
+| TN_192x192x64 | 3 | 1 | 2 | 1,2,4 |
+| NN_128x192x64 | 2 | 0 | 2 | 1 only |
+| NN_128x128x64 | 2 | 0 | 2 | 1 only |
+| NT_192x128x64 | 2 | 1 | 1 | 2,4 |
+| NT_128x128x64 | 1 | 0 | 1 | 1 only |
+
+**THE BENCH SHAPES ARE THE WRONG SHAPES, PROVEN.** The 81/77/44 entries all run
+M in {2048,3072,4608,6144,7680}, N in {96..3072}, K in {4096,16384}. The trainer runs
+M in {1536,2048,3072,4096,5632,8192}, N and K in {512..50304}. **Overlap: 0 of 15.** Every
+percentage in §H92/§H115/§H135 therefore describes shapes the trainer never calls. For the
+record on the bench shapes: ALL 77 = 42 at/above him and 35 behind; the routed 44 = 24 and 20.
+On the 45 real shapes it is **25 at/above, 20 behind**.
+
+**TARGET #1 IS ONE (M,N), NOT A VARIANT.** TN_128x128x64's 9 shapes split across **two different
+entry points**, and the split is decided by `sm90_tn_splitk_plan`'s first gate:
+`tiles128 = ceil(M/128)*ceil(N/128); if (tiles128 >= 132) return {0,0};`
+
+| shapes | tiles128 | entry point | measured |
+|---|---|---|---|
+| 600M K/V wgrad 1536x512xK (B=1,2,4) | 48 | `TN_128x128x64_splitk(sk=2)` | **105.36%** at B=2 |
+| 1.7B K/V wgrad 2048x512xK (B=1,2,4) | 64 | `TN_128x128x64_splitk(sk=2)` | **105.40%** at B=2 |
+| 1.7B gate_up wgrad **2048x11264**xK (B=1,2,4) | **1408** | `TN_128x128x64_regsplit` | **81.17%** at B=2 |
+
+So the loss is not "the variant collapses at large N" — that framing was wrong. The two are
+**different kernel paths**. We win the split-K path by 5.4% and lose the dense path by 18.8%, and
+the dense path is reached by exactly one (M,N) across all three mini-batches: **tn M=2048,
+N=11264**, the 1.7B gate_up wgrad, at K = 4096 / 8192 / 16384.
+
+Hand-traced through `do_tn` for M=2048 N=11264 K=8192, every gate:
+`pick_bn`: N%192=128 and N%160=64 so both skipped; N%256==0 but wave(704)*1.05 = 0.9333 <
+wave(1408) = 0.9697 so **not 256**; N%128==0 and wave(1408)*1.10 = 1.0667 >= wave(2816) = 0.9697
+so **BN=128**. Then: narrow_k no (K%64==0); cluster_v2 no (M=2048 < 8192); tn_dw_bn192_ok no
+(M%192=128); tn_dw_narrow_bm192_ok no; bm192_ok no (wave(968)=0.9167 < wave(704)*1.15=1.0222);
+bm256_narrow_ok no (N%256==0 returns false); splitk plan (0,0) because tiles128=1408 >= 132;
+bn!=64. Falls to the plain dense `case 128:` -> `tn_128x128x64_regsplit`.
+
+**LABEL WARNING — map45.txt's "prod" column is a MISREAD.** Its fields decode against OUR template
+signature (`cm`=CLUSTER_M, `cn`=CLUSTER_N, `cbox`=C_BOX_N, `r`=PREG-CREG, `rswz`=RASTER_SWIZZLE,
+template params 4,5,12,13,14 of `Sm90WarpspecConfig`). HIS struct has a different parameter order,
+so the tool printed his slots 4,5 as `cm0cn8` and his slots 13,14 as `r0-0`/`r0-1` — meaningless.
+His real regs sit at his slots 7,8 = **24/240**, which matches the documented
+`his Sm90Config_128x128x64_regsplit : SUPER_M=8, regs 24/240, NCW=2`. **Only the "ours" column of
+map45.txt is trustworthy.** The `r0-1` vs `r0-0` difference I could not decode was this artefact,
+not a real config difference; the real difference is the split-K plan above, proven from his code.
+
+**KNOB DELTA ON THE LOSING KERNEL** (ours `Sm90Config_128x128x64_regsplit` vs his):
+
+| knob | ours | his |
+|---|---|---|
+| RASTER | **0** | **1** |
+| RASTER_SWIZZLE | 3 | 3 (his SUPER_M=8) |
+| PRODUCER_REGS / CONSUMER_REGS | 40 / 232 | 24 / 240 |
+| EPI_SWIZZLE_BYTES | 128 | 0 |
+| NUM_CONSUMER_WARPGROUPS | 2 | 2 |
+
+**DO NOT RE-PROPOSE THE GLOBAL AXIS FLIP.** §H106 armE already measured `RASTER=1` (verified
+0/2080 tiles differ from his) and it was **NEGATIVE: -0.5 mean, 192x192 -2.7**. §H132's raster arms
+were *not* a test of the axis — they moved group size on OUR axis and the section says so
+explicitly. So: "RASTER=1 as a global default" is refuted; "RASTER=1 on a specific config at a
+specific grid aspect" is untested, and the one grid where it could plausibly matter most is exactly
+this one — mgm=16 x mgn=88, a 5.5:1 aspect the bench never produces. That is a shape-scoped
+question to be settled by measurement on the real shape, not by re-running the global arm.
+
+**NEXT:** measure tn 2048x11264x8192 directly — ours vs his on the dense `128x128x64_regsplit`
+path — with an arm per candidate knob, plus ncu to see where the 18.8% goes, before changing
+anything. No knob moves on a theory.
+
+---
+
+### §H145 — **TARGET #1 SOLVED: the tile-order AXIS. 79-89% -> 98-99.7% of his on the one (M,N) that was losing, and the generalisation was tested and REFUTED.**
+
+Artefacts: `prod_runs_2026_09_07_h145/` (h145_ab.txt, h145_arms_ab.txt, h145_p3_ab.txt, h145_p4_ab.txt
+plus the build and run logs). Box `dull-sun-thinks-fin-02`, FREE clocks, one config per process,
+12-round ABBA with the order crossed over every round.
+
+**PHASE 1 -- WHICH VARIABLE IT IS.** Entry 39 (`tn 128x128x64_regsplit`) run at the REAL losing
+shape via the `H92_M/N/K` override, against a discriminator shape chosen so the answer could come
+out either way: `2048x1024x8192`, the only OTHER (M,N) at M=2048 whose `pick_bn` also lands on
+BN=128. If the deficit followed the entry point it had to appear there too.
+
+| shape | grid | entry 39 | entry 67 (plain) | entry 66 (2cta) |
+|---|---|---|---|---|
+| 2048x1024x8192 | 16x8 | **97.34%** | 100.01% | 101.73% |
+| 2048x11264x8192 | 16x88 | **86.27%** | 88.94% | 102.96% |
+| 2048x11264x4096 | 16x88 | **88.19%** | 90.24% | 106.49% |
+| 2048x11264x16384 | 16x88 | **79.45%** | 83.25% | 103.24% |
+
+24/24 correctness vs cuBLAS, 0 checksum differences. The deficit tracks the GRID, not the kernel:
+the same binary is 97.3% at 16x8 and 79-88% at 16x88. Entry 66 wins on ratio everywhere but runs
+at 460-479 TF against 766-888 -- winning a ratio at 55% of the throughput is not a win; excluded.
+
+**PHASE 2 -- WHICH KNOB.** Four arms on the tn TU only (base / RASTER=1 / regs 24-240 / both),
+reusing the baseline nt+nn+main objects. Distinctness proven before trusting a single number:
+4 different binary md5s AND 4 different SASS md5s, because a `-D` the source ignores would
+otherwise produce four identical builds read as "the knob is a null".
+
+| shape | base | **RASTER=1** | regs 24/240 | both |
+|---|---|---|---|---|
+| 2048x11264x8192 | 86.42% | **98.20%** | 85.37% | 97.65% |
+| 2048x11264x4096 | 89.19% | **99.70%** | 88.70% | 99.41% |
+| 2048x11264x16384 | 79.30% | **97.91%** | 80.12% | 96.65% |
+| 2048x1024x8192 | 97.69% | 97.59% | 97.61% | 97.63% |
+
+Paired, 12 rounds: on all three losing shapes the base arm's BEST round is worse than the
+RASTER=1 arm's WORST round (e.g. K=8192 base 80.15-90.96 vs r1 97.12-103.07). **Zero overlap.**
+At 16x8 the arms overlap -- a clean null, which is the safety signal.
+
+Two things this kills. The register split is NOT the lever: alone it is -1.2 / -0.6 / +1.0 / -0.1,
+and on top of RASTER=1 it makes things WORSE (98.20->97.65, 99.70->99.41, 97.91->96.65). And my
+own phase-1 read that the reg knob was worth ~3 points was wrong -- that was the plain-vs-regsplit
+ENTRY POINT difference, not the knob in isolation.
+
+**PHASE 3 -- THE GENERALISATION, TESTED AND REFUTED.** Bucketing all 135 production shapes by grid
+aspect put 21 at >=4x N-heavy, the most extreme being the lm_head shapes at aspect 12-65 -- which
+are also shapes §H141 recorded us losing. Obvious hypothesis: the axis matters whenever the grid is
+wide. It was measured on ten cases spanning aspect 0.5 to 65.5, including a mandatory falsification
+anchor in the M-heavy regime where §H106 says the flip must lose.
+
+| aspect | shape | base | r1all | distributions |
+|---|---|---|---|---|
+| 65.5 | tn 1536x50304x8192 | 100.57% | 99.68% | overlap |
+| 49.1 | tn 2048x50304x8192 | 99.04% | 99.82% | overlap |
+| 32.8 | tn 3072x50304x8192 | 95.98% | 98.76% | overlap |
+| 12.3 | nn 8192x50304x1536 | 100.68% | 100.12% | overlap |
+| 12.3 | nn 8192x50304x3072 | 98.43% | 99.15% | overlap |
+| **5.5** | **tn 2048x11264x8192** | **81.03%** | **96.97%** | **SEPARATED** |
+| 2.7 | tn 1536x8192x8192 | 99.16% | 99.43% | overlap |
+| 2.7 | tn 3072x16384x8192 | 99.94% | 99.86% | overlap |
+| 0.75 | nn 8192x1536x1536 | 98.12% | 98.42% | overlap |
+| 0.5 | tn 6144x1536x4096 ANCHOR | 99.20% | 98.86% | overlap |
+
+**Exactly one of ten separates.** The anchor went slightly negative, consistent with §H106, so the
+global flip stays refuted and there is no contradiction to resolve.
+
+**A CORRECTION I MADE IN-FLIGHT AND AM RECORDING SO IT IS NOT REPEATED.** I first reported
+"aspect >=4x mean +3.03 pts" as a trend. That mean is ENTIRELY the one outlier; drop it and the
+other five average +0.30, i.e. noise. The lm_head shapes carry round-to-round sd of 3.5-7.4 and
+cannot support a one-point claim at all. Quoting a mean over a bucket containing one huge outlier
+is the same curve-fitting error this file has been burned by before. **The aspect rule is refuted.
+Do not re-derive it.**
+
+**PHASE 4 -- BLAST RADIUS, MEASURED BEFORE CHANGING ANYTHING.** `X(128x128x64_regsplit,...)` sits
+in the SHARED CFG_FOREACH list, so one config emits nn, nt AND tn. Within the 135 production
+shapes the other two layouts reach this tile only at B=1 -- three shapes, all measured:
+
+| shape | what | base | r1all | delta |
+|---|---|---|---|---|
+| nn 4096x512x1536 | K/V fwd 600M B=1 | 91.87% | 92.61% | +0.75 |
+| nn 4096x512x2048 | K/V fwd 1.7B B=1 | 93.32% | 94.17% | +0.85 |
+| nt 4096x5632x2048 | down dgrad 1.7B B=1 | 98.66% | 99.52% | +0.86 |
+| tn 2048x11264x8192 | control | 81.54% | 96.73% | **+15.19** |
+
+All three collateral shapes move POSITIVE (overlapping = null-to-slightly-better). Nothing
+regresses, so the shared config can be flipped without splitting it.
+
+**SHIPPED.** A new `Sm90RasterRebind` (there was one for the group SIZE, `Sm90RswzRebind`, but none
+for the AXIS), applied to `Sm90Config_128x128x64_regsplit` ALONE behind an overridable
+`BLUBLAS_128x128_RASTER`, default 1. **Global `BLUBLAS_DEFAULT_RASTER` stays 0.**
+
+### §H146 — **4B on 2x H200: we are LEVEL with his production BLAS, and we are AHEAD on GEMM.**
+
+Artefacts: `prod_runs_2026_09_07_h146_2x/`. Box `wide-cable-purrs-fin-03`, 2x H200 NV18, NP=2,
+15 steps, `BLU_MAX_STEPS=15`, B=2, global_batch 524288, checkpointing off. Script md5 `a2c509dc65fe`
+identical on all three arms; 4B config d_model 3072, n_layers 36, q/kv 24/8, head_dim 128,
+ffn_hidden 8192, vocab 50304, weight_tying false. 101 data shards, 0 dangling.
+
+NP=2 halves grad_accum to 32 and makes ZeRO-1 actually shard, but **does not change a single GEMM
+shape** -- M = B*T = 8192 per rank regardless of world_size, so §H143's shape analysis holds.
+
+| arm | tok/s | vs cuBLAS | GEMM | non-GEMM | GEMM launches |
+|---|---|---|---|---|---|
+| cuBLAS | 36,139.3 | 100.00% | 124.473 s | 96.779 s | 321,160 |
+| prod (his) | 35,364.2 | 97.85% | 128.206 s | 98.034 s | 321,160 |
+| **ours** | **35,367.6** | **97.86%** | **127.271 s** | 98.389 s | 321,160 |
+
+Launch counts identical across all three. The split matters more than the total:
+
+* **GEMM: ours 100.73% of his (-934.9 ms).** Against cuBLAS ours is 97.80% vs his 97.09%.
+  **Our kernels are genuinely faster than his on the 4B.**
+* **non-GEMM: ours +355.0 ms over his** on identical code -- the §H142 collateral again.
+* Net -579.9 ms, which is the 100.01% tok/s parity.
+
+So the 4B parity is not luck, and the remaining lever is NOT the GEMMs -- it is the collateral,
+which §H142 localised to `gqa_bwd_vj1d` (72% of it). That is a bigger prize than the GEMM gap left.
+
+**LINK VERIFICATION BEFORE THE RUN, and two defects it exposed in the verifier itself.**
+`tools/h136_verify_link.sh` check 3 was `grep -c 'blublasBgemmSM90_dispatch_..._kota'` -- `...`
+demands THREE characters but the layouts are nn/nt/tn, which are TWO. It matched nothing and
+reported **0 on a build that exports all three**: it would have passed a broken build and failed a
+correct one. This exact bug is already on record once as "fixed with grep -F"; the fix had never
+landed in this file. Check 4 claimed "his tree exports no `dispatch_addmm`" -- `nm` shows his
+exports it too, so the check returned 1 for every arm and discriminated nothing. Both replaced;
+check 4 now counts `blublas_ws::` in the cubin, which is the real ours-vs-his discriminator
+(4592 vs 0). Final state: prod 75 entry points / 0 kota / 0 ws; ours 1526 / **3** / **4592**;
+cublas libtensor does NOT depend on libblublas.
+
+**A WIRING BUG FOUND STANDING THIS UP ON A SECOND BOX.** `h134_wire_trainer.sh` had two seds both
+anchored on the PRISTINE flag line. The RSWZ sed runs first and rewrites that line, so the
+`BLUBLAS_HAS_SM90` sed no longer matched and the flag was silently NOT added -- reported as
+"0 (must be >=1)". That is the §H137 failure (60% vs 95.6% of cuBLAS) on a fresh tree. It had only
+ever worked on box A because the two seds were applied in separate sessions in the lucky order.
+Both now insert at a token neither consumes: order-independent and idempotent. Verified the flags
+appear in the ACTUAL nvcc command line, not just the Makefile.
+
+**Two process errors of mine, recorded.** I first ran 600M on the 2x box when the whole point of a
+2x box is the model that does not fit on 1x, and I set 10 steps instead of 15. Both corrected; the
+600M-on-2x numbers (prod 142,166 / ours 141,747 / cuBLAS 144,331, ours 99.71% of his, 1.95x scaling)
+are real but were not what was asked for and are not treated as a result.
+
+### §H147 — **The harness could not measure 6 of the 135 shapes. That was a HARNESS hole, not a kernel defect. Fixed permanently.**
+
+The four `_splitk` entry points take the split factor as a RUNTIME argument -- his design, and his
+dispatcher chooses it per shape from `sm90_tn_splitk_plan` (2 at every production shape in range).
+`examples/h92_all44_list.h` passed `H92[i].split_k` from its own fixed table (4) and had an env
+override for the SHAPE (`H92_M/N/K`) but none for the FACTOR. So overriding the shape ran the right
+kernel at the wrong split factor, and 6 production shapes had to be skipped from any sweep.
+
+Nothing is wrong with those shapes or that kernel: they run correctly in production and §H141
+measured them through the real dispatcher at **105.36% / 105.40%** of his, our best result anywhere.
+Skipping them was the wrong call -- it would have left a permanent blind spot in every future sweep.
+
+Fixed with an `H92_SK` override built the same way as the shape overrides:
+```cpp
+static inline int h92_sk(int i) {
+    static const char* e = std::getenv("H92_SK");
+    static const int   v = (e && std::atoi(e) > 0) ? std::atoi(e) : -1;
+    return (v > 0) ? v : H92[i].split_k;
+}
+```
+All four split-K cases now read it, and `tools/h147_prod_sweep.sh` passes the factor the dispatcher
+would actually choose, taken from the validated `sm90_tn_splitk_plan` re-implementation.
+**The production sweep is now 135/135 -- nothing skipped.**
+
+---
+
+### §H148 — **The §H145 raster pin, validated in its SHIPPED form. Two of my own checks were wrong first; both are recorded.**
+
+§H145 measured the win with an **arm** binary (`-DBLUBLAS_DEFAULT_RASTER=1` applied to the whole
+tn TU). What SHIPS reaches RASTER=1 by a different route: `Sm90RasterRebind` on
+`Sm90Config_128x128x64_regsplit` alone. Those are not the same construction, and the difference
+between "the thing we measured" and "the thing we ship" is exactly where this project has been
+bitten before. Nothing was proven until both were shown to be the same kernel, reachable, on one box.
+
+**PROOF 1 — SAME KERNEL (static).** Three builds of the tn TU differing only in how RASTER reaches
+that config: `ship` (rebinder), `arm` (global flag), `base` (`BLUBLAS_128x128_RASTER=0`).
+
+| build | RASTER=1 kernel | RASTER=0 kernel |
+|---|---|---|
+| ship | present | present |
+| arm | present | absent |
+| base | absent | present |
+
+That pattern is itself the evidence. In `ship` the plain `Sm90Config_128x128x64` stays RASTER=0
+while the `_regsplit` binding is RASTER=1, so **both** exist (37 configs vs base's 36 -- exactly one
+more). In `arm` the global flag collapses them to one; in `base` they collapse the other way.
+SASS of the RASTER=1 kernel: **ship md5 `b68a0992b210f6f4` / 1544 instr == arm md5
+`b68a0992b210f6f4` / 1544 instr.** Byte-identical. The shipped form IS what was measured.
+
+**MY FIRST SASS CHECK WAS VACUOUS AND SAID THE OPPOSITE.** It selected the kernel with
+`grep '<128, 128, 64,' | head -1`. There are **37** tn 128x128x64 kernels in that TU (split-K,
+cluster and register variants). `head -1` picked the same UNRELATED kernel in all three builds, all
+three md5s matched, and it reported **"PIN IS A NO-OP"** on a pin that works perfectly. It would
+have printed that regardless of whether the pin worked -- the definition of a vacuous check, and it
+failed vacuously rather than passing, which is luck rather than rigour. The selector now pins every
+template parameter of the production binding and RASTER explicitly. Recorded in the tool's own
+comments so the trap is not re-set.
+
+**PROOF 2 — REACHABILITY.** SASS equality proves the kernel is identical; it does NOT prove the
+entry point calls it, and in the shipped object BOTH the RASTER=0 and RASTER=1 kernels exist.
+Static resolution of the call target failed, so reachability is proven by the run, below.
+
+**PROOF 3 — SAME-BOX BEFORE/AFTER.** `prefix` (a binary linked from `cur_main.o` + `cur_nt.o` +
+`cur_nn.o` + the RASTER=0 tn object) vs `ship` (identical except the tn TU) vs `his`, all three
+interleaved round by round, 12 rounds, one config per process, FREE clocks, on `shy-sun-blows-fin-02`:
+
+| shape | prefix (RASTER=0) | ship (RASTER=1) | gain | overlap |
+|---|---|---|---|---|
+| tn 2048x11264x4096 | 88.09% | **98.99%** | **+10.90** | none -- prefix max 89.54 < ship min 97.61 |
+| tn 2048x11264x8192 | 86.81% | **97.15%** | **+10.34** | none -- prefix max 88.03 < ship min 95.76 |
+| tn 2048x11264x16384 | 78.26% | **95.12%** | **+16.86** | none -- prefix max 81.35 < ship min 92.35 |
+| tn 2048x1024x8192 (control) | 97.40% | 97.79% | +0.38 | overlaps, as it must |
+
+12/12 correctness vs cuBLAS, identical checksums. The two binaries share main/nt/nn objects byte for
+byte, so nothing but the tn TU can account for the movement. **Reachability proven: the entry point
+calls the RASTER=1 kernel.**
+
+**MY SECOND ERROR: I COMPARED ACROSS BOXES.** Before building `prefix` I reported the shipped
+numbers against §H145's baseline -- which was measured on `dull-sun-thinks-fin-02`, a different
+H200. This file's own rule is that a box change voids prior timings, and the absolutes show why:
+on the new box **his side alone reads 0.4-1.7% faster** (872.99->883.08, 881.08->895.60,
+830.94->835.20) while ours is roughly flat. A ratio computed across the two boxes measures the
+hardware as much as the change. The table above is the only valid version.
+
+**SCOPE — WHAT THIS ACTUALLY BUYS, STATED HONESTLY.** `Sm90Config_128x128x64_regsplit` feeds the
+nn/nt/tn `_128x128x64_regsplit` entry points, reached by **6 of the 135** production shapes:
+
+| model | B | call site | layout | shape | calls/micro-step |
+|---|---|---|---|---|---|
+| 1.7B | **2** | gate_up wgrad | tn | 2048x11264x8192 | 24 |
+| 1.7B | **4** | gate_up wgrad | tn | 2048x11264x16384 | 24 |
+| 1.7B | 1 | gate_up wgrad | tn | 2048x11264x4096 | 24 |
+| 1.7B | 1 | K/V fwd | nn | 4096x512x2048 | 48 |
+| 1.7B | 1 | down dgrad | nt | 4096x5632x2048 | 24 |
+| 600M | 1 | K/V fwd | nn | 4096x512x1536 | 48 |
+
+**At B=2 and B=4 -- the mini-batches actually run -- it is ONE shape in ONE model.**
+600M: 0 shapes, no effect. 4B: 0 shapes, no effect. 1.7B: 1 shape, 24 of 435 GEMM calls.
+
+| | |
+|---|---|
+| that kernel | 777.3 -> **866.9 TF** (+11.53%) |
+| its time per micro-step | 11.670 -> 10.464 ms (saves 1.206 ms) |
+| its share of 1.7B GEMM time | 15.59% |
+| **1.7B GEMM speed-up** | **+1.77%** |
+| **1.7B end-to-end** (GEMM ~56% of GPU time) | **~+1.0%** |
+
+So a +10 to +17 point kernel win is worth ~1% of 1.7B throughput and **nothing** to the 600M or 4B.
+Worth having -- it was our only shape more than 3 points off his, and it exposed a mechanism (the
+tile-order axis) we had wrong. But it re-orders the priorities: everything else sits at 96-100%, so
+from here leverage comes from **shapes that run often**, not shapes that are far behind. The two
+K/V shapes at 98.3-98.4% run **48 times** per micro-step against this one's 24, and
+`NT_128x256x64` (38 shapes) plus `NN_128x256x64` (29 shapes) cover half of all 135 between them.
+A one-point gain there outweighs a ten-point gain here.
+
+---
+
+### §H149-§H153 — **TARGET #1 SOLVED: the tn 128x160 + 2x2 cluster, shape-conditional. 85.1% -> 98.7-100.0% of cuBLAS, three sibling shapes protected.**
+
+**§H149 FIRST: WE HAD NEVER MEASURED AGAINST cuBLAS PER SHAPE.** Every number this project had was
+ours-vs-HIS. A cuBLAS bench arm was added to `h92_all44.cu` (`bcublas`, reusing the same
+`cublas_ref` the correctness check already used, same warmup/loop/checksum). On the very first
+shape checked, ours reads **96.9% of his but 99.5% of cuBLAS** -- he is 2.7% ABOVE cuBLAS there.
+Optimising that shape toward him would have been chasing his margin, not closing a deficit.
+
+A bug worth recording: the first version selected the arm with `mode[0]=='b'`, which also matches
+`bench` -- so BOTH arms timed cuBLAS and every "ours" number would silently have been a cuBLAS
+number. Caught by a two-line smoke test printing 677/676 TF for both. Prefix-matching on mode
+strings is how that gets in; it is an exact `strcmp` now.
+
+Across all 135 production shapes, 3 arms: **ours 101.42% of cuBLAS mean, 100/129 at or above**;
+his 102.24%, 113/129. Only ONE variant sits below 99%:
+
+| variant | n | mean vs cuBLAS | worst |
+|---|---|---|---|
+| **TN_192x128x64_regsplit** | 6 | **93.34%** | **85.07%** |
+| every other variant | | 99.86% - 108.73% | |
+
+**§H151 THE CAUSE, ISOLATED BY A CONTROL.** All 16 tn tiles we own were run at tn 1536x1536x8192,
+correctness-gated (16/16 pass). None reaches cuBLAS. And the reading that looked obvious was WRONG:
+
+| tile | tiles on grid | SM occupancy | TF |
+|---|---|---|---|
+| 192x128 (current) | 8x12 = 96 | 72.7% | 639.0 |
+| **128x160** | **12x10 = 120** | **90.9%** | **596.3** |
+
+**The HIGHEST-occupancy tile we own is SLOWER than the lowest.** Wave quantisation is not the
+lever; that hypothesis was formed, tested and killed. cuBLAS runs `128x160_64x5_4x2_h` -- the same
+128x160 tile, with a **cluster**. Four arms were built to separate cluster from raster axis:
+
+| arm | K=8192 | K=16384 |
+|---|---|---|
+| 128x160 unclustered | 589.5 | 601.0 |
+| **128x160 + RASTER=1, NO cluster (control)** | **642.9** | **676.3** |
+| 128x160 + cluster 4x2 (cuBLAS's own choice) | 733.5 | 776.3 |
+| **128x160 + cluster 2x2** | **741.7** | **786.5** |
+| 128x160 + cluster 2x4 | 327.7 | 326.0 |
+| cuBLAS | 749.6 | 783.6 |
+
+The control is what makes this attributable: raster axis is worth **+9.1%**, the **cluster +15.4%**.
+Cluster ORIENTATION dominates -- 2x2 beats 4x2, and 2x4 collapses by 2.3x. Our 2x2 beats cuBLAS's
+own 4x2 configuration.
+
+**§H151b THE TRAP: A STRAIGHT REBIND WOULD HAVE BEEN A DISASTER.** That entry point serves SIX
+production shapes. Blast radius, measured before changing anything:
+
+| shape | current | 2x2 cluster | verdict |
+|---|---|---|---|
+| 1536x1536x{4096,8192,16384} | 85.1-85.9% | **98.5-99.9%** | fixed |
+| 3072x1024x{4096,8192,16384} | 100.7-102.5% | **39.8-46.8%** | **destroyed** |
+
+Three fixed, three wrecked. Nothing in the source or the reasoning predicted this; only the
+measurement did. At 1536x1536 the current tile leaves 96 tiles on 132 SMs so a cluster has room;
+at 3072x1024 it already reaches 128 tiles (97%) and switching costs two waves plus cluster overhead.
+
+**§H152 THE RULE -- 30 MEASURED POINTS, NOT A FIT.** The (M,N) plane was swept at K=8192, 4 rounds,
+correctness-gated per point. Among shapes where `ceil(N/160)` is even:
+
+* cluster **WINS** at wave utilisation 0.545 / 0.606 / 0.727 -- max **0.727**
+* cluster **LOSES** at 0.833 / 0.909 / 0.970 / 1.000 -- min **0.833**
+
+An EMPTY GAP. The threshold 0.78 is the midpoint of a region containing no data, so it is bounded
+by measurement rather than tuned. The second condition is mechanism, not correlation: a 2x2 cluster
+pairs tiles along N, so an ODD `ceil(N/160)` leaves a half-empty cluster column and wastes a whole
+CTA pair -- which is exactly why N=768/1024/2048 collapse while N=1280/1536/3072 gain.
+
+    use 128x160 + cluster 2x2  IFF  wave(192x128 grid) < 0.78  AND  ceil(N/160) is even
+
+**Correct on 30/30 measured points**, zero false positives, zero false negatives.
+
+**SHIPPED as a config hook, not a dispatcher change.** `Sm90RuntimeSel<Cfg,Layout>` sits in the
+entry-point emitter; the default specialisation launches the bound config exactly as before, and
+ONE explicit specialisation (`Sm90Config_192x128x64_regsplit`, TN) applies the rule. His dispatcher
+is untouched -- it selects the entry point, we select the config underneath.
+**Proven a no-op for the ~200 entries that do not specialise:** `tn_128x256x64_regsplit` SASS md5
+`9cdd9b7d768e3e08` byte-identical before and after the emitter change.
+
+**§H152 VALIDATION -- through the SHIPPED path, gates fixed before the run.** The +16% was found on
+a separate arm (entry 101) called directly; what ships is entry 30 with the selector inside. Those
+are different routes and this file has been burned by assuming they agree, so validation calls
+**entry 30 only** -- the symbol his dispatcher invokes:
+
+| shape | rule | ship | cuBLAS | ship/cuB | was | verdict |
+|---|---|---|---|---|---|---|
+| 1536x1536x4096 | SWITCH | 690.5 | 699.3 | **98.74%** | 85.93% | PASS |
+| 1536x1536x8192 | SWITCH | 741.9 | 751.9 | **98.67%** | 85.14% | PASS |
+| 1536x1536x16384 | SWITCH | 783.9 | 783.8 | **100.02%** | 85.31% | PASS |
+| 3072x1024x4096 | KEEP | 788.3 | 769.7 | 102.43% | 102.50% | PASS |
+| 3072x1024x8192 | KEEP | 845.0 | 834.6 | 101.25% | 100.71% | PASS |
+| 3072x1024x16384 | KEEP | 889.5 | 877.3 | 101.39% | 100.88% | PASS |
+
+**ALL SIX PASS.** +12.8 to +14.7 points where the rule switches, no regression where it keeps.
+The variant moves from **93.34% mean vs cuBLAS to ~100.4%**, and it was the only one below 99%.
+
+**FOUR BUILD/TOOLING ERRORS MADE ALONG THE WAY, all caught before they corrupted a result:**
+1. `192x128x64_2x2_h` already existed -- my addition was a duplicate definition.
+2. A multi-line `/* */` comment inside a backslash-continued macro broke `CFG_FOREACH`; the
+   existing comments in that list are single-line WITH a continuation.
+3. A Python exception left the harness half-edited -- table still `H92[99]` while `NENT` was
+   already 103, which would have read past the array end. Caught before any run.
+4. The TU rebuild was written as a serial `for` loop on a **44-core** box while the existing
+   build script backgrounds its TUs. Wasted ~25 minutes; rebuilt in parallel.
+
+**STILL OPEN:** the 6 split-K shapes disagree by 7.6 points between the direct-entry-point and
+dispatcher measurement paths (105.4% vs 97.0%) with the split factor verifiably correct -- a shared
+fp32 partials workspace is involved and the cause is not established. And the change is
+**uncommitted**, living only in the local working tree.
+
+---
+
+### §H150 – §H154  (recap of the session that precedes this block)
+
+Measured on box `shy-sun-blows-fin-02` (31.56.109.82), 1x H200, CUDA 13.0, 44 CPUs, free clocks.
+
+* **§H150** standalone-vs-trainer retention. The same kernel keeps only **83.6%** of its standalone
+  speed inside the trainer; cuBLAS keeps **95.9%**. Decomposed: L2 pollution **2.04 pts**, power cap
+  / −8 MHz **0.43 pts**, **~1.20 pts unexplained**. Refuted shape-switching and L2-warmth-within-GEMM
+  as causes (the 651-call GEMM stream still had us at 101.84%).
+* **§H151/§H152** target #1 solved: `TN_192x128x64_regsplit` 93.34% → **100.44%**, cause isolated to
+  the **cluster** (+15.4%) not the raster (+9.1%). Shipped behind `Sm90RuntimeSel`, SASS-proven no-op
+  for every non-specialising config (hash `9cdd9b7d768e3e08` identical).
+* **§H153** confirmation sweep, 135 production shapes, 3 arms, 3,240 rows.
+* **§H154** the split-K dispatcher-path question **CLOSED**: with `BLUBLAS_KOTA_DISPATCH=1` the
+  dispatcher path and the direct path agree (control shape +0.06%; the six split-K shapes within
+  1.5 pts). The earlier "97.3% direct vs 105.4% via dispatcher" gap was a broken run of mine, not a
+  real path difference. **The §H153 harness numbers for those six were right all along.**
+
+#### Two reporting errors corrected here, because they changed what the numbers meant
+
+1. **"101.63% of cuBLAS" was over 129 cases, not 135.** All 135 were measured; the 6 split-K were
+   held out and the label did not say so. **All 135 together = 100.89%.**
+2. **"No variant below 100%" was a per-VARIANT mean** — 135 cases grouped into 16 variants, averaged
+   inside each group, 15 of 16 groups ≥100%. **Per CASE, 39 of 135 are below 100%**, and
+   `NT_128x256x64_regsplit` averages 101.89% while **10 of its 38 shapes lose**. An unweighted mean
+   also treats a shape called once like one called 48 times. Time-weighted on the real call counts:
+   **600M B2 101.69% / 4B B2 101.47%** — which means the shape mix explains **zero** of the trainer
+   gap (4B trainer GEMM time is **97.80%**). The whole 3.67-pt deficit is retention, per §H150.
+
+**Of the 39 losing cases, only 12 are run by the training scripts** (they run B=2; git commit
+`7ebfc65` "colleague-matched 1.7B and 600M -- B=2"). Two of those 12 are the split-K shapes below;
+the other 10 sit between **97.37% and 99.81%**. The remaining 27 losers are B=1/B=4 configs nothing
+runs. Fixing **all 39** is worth **+0.70% / +0.37% / +0.08%** of GEMM on 600M / 1.7B / 4B at B=2.
+
+---
+
+## §H155 – §H160  TIER-1: the six split-K K/V-wgrad shapes
+
+    600M  tn 1536x512x{4096,8192,16384}     B=1,2,4     48 calls/micro-step
+    1.7B  tn 2048x512x{4096,8192,16384}     B=1,2,4     48 calls/micro-step
+
+Dispatched by Kota's tree to `TN_128x128x64_splitk(sk=2)`; the five worst cases in the entire
+135-shape set. **4B's K/V wgrad does NOT take split-K** — it gets `TN_192x128x64_regsplit` and reads
+100.7–102.4%. That contrast drove the (wrong) opening hypothesis.
+
+### §H155  34-arm variant sweep — dispatch hypothesis REFUTED
+
+34 arms × 6 shapes, all 204 correctness-gated, 0 dropped. The incumbent is already best or
+near-best on **5 of 6**; the best alternative gained **+8.44%** once and ≤+2.94% elsewhere, and even
+then reached only 83.56% of cuBLAS. **Swapping the tile does not fix these shapes.**
+
+> **This sweep was NOT comprehensive and I reported it as if it were.** Its four `_splitk` harness
+> entries are all **clusterless**, and **zero** of the 34 tuned *clustered* split-K configs already
+> built for tn were in the h92 table. §H156–§H158 were then built on that incomplete baseline and
+> twice concluded "we are at our ceiling". Gautam refused that conclusion three times, correctly.
+
+### §H156  nsys — the deficit is the REDUCE kernel, not our GEMM
+
+30 launches per arm, ours vs cuBLAS (ns):
+
+| case | K | cuB main | cuB reduce | our main | **our reduce** | total % | **main-only %** |
+|---|---|---|---|---|---|---|---|
+| 600M B1 | 4096 | 11999 | – | 13412 | **2280** | 76.5% | **89.5%** |
+| 600M B2 | 8192 | 22269 | – | 23040 | **2357** | 87.7% | **96.7%** |
+| 600M B4 | 16384 | 33870 | 3903 | 41639 | 2317 | 85.9% | 81.3% |
+| 1.7B B1 | 4096 | 13376 | – | 14026 | **2546** | 80.7% | **95.4%** |
+| 1.7B B2 | 8192 | 25020 | – | 23890 | **2696** | 94.1% | **104.7%** |
+| 1.7B B4 | 16384 | 42442 | 4346 | 42612 | 2679 | 103.3% | 99.6% |
+
+**Our main kernel is 89.5–104.7% of cuBLAS's.** The entire deficit is
+`splitk_reduce_kernel_fast<false,2>` at a near-fixed **2.3–2.7 µs** — 15% of runtime at K=4096,
+5% at K=16384, which is exactly why 1.7B converged with K and 600M did not.
+
+**The reduce cannot be optimised as a kernel — it is already at the memory wall:**
+6.29 MB read + 1.57 MB write in 2280 ns = **3.45 TB/s** (600M), **4.12 TB/s** (1.7B), against an
+H200's ~4.8 TB/s peak. There is no kernel work left there. It can only be *avoided*.
+
+**What cuBLAS runs** (never previously looked at):
+
+| shape | cuBLAS kernel | splits K? |
+|---|---|---|
+| 600M B1/B2 | `nvjet_sm90_tst_64x128_64x8_4x2_h_bz_NTN` | **no** |
+| 1.7B B1/B2 | `nvjet_sm90_tst_64x128_64x8_2x1_v_bz_NTN` | **no** |
+| 600M B4 | `128x192_64x5_2x1_v_bz_coopB_splitK_NTN` | yes |
+| 1.7B B4 | `128x128_64x6_1x2_h_bz_splitK_NTT` | yes |
+
+cuBLAS avoids the reduce at low K with a **64×128 unsplit** kernel, and when it *does* split it uses
+a **clustered** kernel — a combination we had never tested (see §H159).
+
+Also closed here: narrow-BN is not the answer (`128x32` 34–47%, `128x16` 27–36%, `128x8` 11–17%).
+The missing dimension was **BM**, not BN.
+
+### §H157  BM=64 at the default NCW — a wrong verdict from a crippled config
+
+`Sm90Config_64x128x64` is **ours** (commit `d040671`, 2026-07-31, `namespace blublas_ws`), not
+ported from Kota, but it is a **raw** instantiation with neither `Sm90EpiSwzRebind` nor
+`Sm90LateWaitRebind` — the two wrappers every shipped config carries. All 28 cluster variants
+measured correct (gate 174/174) and **all lost**, −9.45% to −34.16%, landing at 54–70% of cuBLAS.
+
+**Reported as "BM=64 refuted". That verdict was wrong** — see §H158.
+
+### §H158  the probe: §H157 never tested cuBLAS's kernel
+
+`examples/h158_probe.cu` prints what each config actually resolves to:
+
+| config | NCW | MATOMS | SPLIT_M | **WGMMA_N** | NCHUNKS |
+|---|---|---|---|---|---|
+| `64x128x64` default — **what §H157 measured** | 2 | 1 | false | **64 (half width)** | 2 |
+| `64x64x64` default | 2 | 1 | false | **32 (quarter)** | 2 |
+| `128x128x64` *(at parity with cuBLAS)* | 2 | 2 | true | **128** | 1 |
+| `128x256x64` *(at parity)* | 2 | 2 | true | **256** | 1 |
+| `64x128x64` **NCW=1** | 1 | 1 | **true** | **128 (full)** | 1 |
+
+`MATOMS = BM/64 = 1`, and `1 % 2 ≠ 0`, so the M-split is illegal at the default NCW=2 and the
+warpgroups are forced to split along N — **every wgmma runs at half width**. Every tile that reaches
+parity has `SPLIT_M=true` and full-width wgmma. `Sm90Config_64x8x64` already carries NCW=1 with a
+comment saying exactly this, and the same failure mode cost 8% on 192x192.
+
+13 NCW=1 configs added via `Sm90NcwRebind` (11 plain + 2 `_tuned` stacking the wrappers on top, so
+the width fix and the tuning score separately). 18 arms × 6 shapes, gate 108/108. **Result:**
+
+| variable isolated (matched pairs, same run, same binary) | effect |
+|---|---|
+| **NCW 2→1** (half-width → full-width wgmma) | **−9.98% mean**, all 6 shapes |
+| **tuning wrappers** (`EpiSwz` + `LateWait`) | **+1.44% mean** |
+
+**Full width made it slower.** `BM=64` holds exactly one m64 atom, forcing a choice between
+NCW=2 (2 warpgroups, half-width) and NCW=1 (full width, 1 warpgroup = 128 consumer threads). Two
+warpgroups issuing half-width beat one issuing full-width; **BM=128 gets both**, which is why
+`128x128` sits at parity. Best BM=64 arm of any kind: **−6.0% to −31.2%** vs the incumbent.
+
+> The tuning question is therefore **answered, not assumed**: the wrappers are worth **+1.44%**
+> against a 27–42 point gap. Tuning was never going to rescue BM=64.
+
+**This also explains coopA/coopB** (§H17). The real concept behind the name is CUTLASS's
+**Cooperative *schedule*** — 2 consumer warpgroups split ONE tile's M (`AtomLayoutMNK Shape<2,1,1>`),
+**requires TileShape_M ≥ 128, falls back to Pingpong at M=64**. It is **not** the CUDA Cooperative
+Groups API (checked 2026-09-08: that page is thread-sync only — `thread_block`, `tiled_partition`,
+`sync`, `reduce` — with zero GEMM/tile/operand/TMA/wgmma content). **We have no Pingpong**, so at
+BM=64 we must pick between half-width and half the warpgroups. **Pingpong is the named, documented
+feature to build if BM=64 is ever wanted.**
+
+### §H159  the tuned CLUSTERED split-K family — 6 of 6, and the actual answer
+
+The answer was already written down in this file: **`:13734`** records `128x128x64_2x1_v_sk2` as
+cuBLAS's V1 kernel *in our coordinates*, **`:17453`** as the **shipped, bit-exact V1 pin** for
+`tn 2048x512x16384` — literally one of these six shapes — and **`:19736`** records the tuned heads
+being tuned on that same shape. **None of the 34 was in the harness table.**
+
+35 arms × 6 shapes, gate **204/204** correct:
+
+| case | incumbent | **best tuned** | gain | winner |
+|---|---|---|---|---|
+| 600M B1 | 75.68% | **83.59%** | **+10.46%** | `1x2_v_sk2_dh_rot2_pdl_d6_shfl` |
+| 600M B2 | 87.03% | **91.78%** | **+5.46%** | `1x2_v_sk2_dh_rot2_pdl_d6_shfl` |
+| 600M B4 | 83.68% | **87.96%** | **+5.12%** | `2x1_v_sk2_dh_rot2_pdl_d6_shfl_nomc` |
+| 1.7B B1 | 78.23% | **85.18%** | **+8.88%** | `1x2_v_sk2_dh_rot2_pdl_d6_shfl` |
+| 1.7B B2 | 89.77% | **97.77%** | **+8.91%** | `2x1_v_sk2_dh_rot2_pdl_d6_shfl_nomc` |
+| 1.7B B4 | 99.38% | **104.07%** | **+4.72%** | `2x1_v_sk2_dh_rot2_pdl_d6_shfl_nomc` |
+
+**Mean 85.63% → 91.73%. 1.7B B4 BEATS cuBLAS at 104.07%.**
+
+**One config serves all six** — `128x128x64_1x2_v_sk2_dh_rot2_pdl_d6_shfl`, mean **91.58%**, worst
+83.59%, only 0.15 pts behind per-shape pinning. Simple rule, one config.
+
+#### WHO DISPATCHES WHAT (read from the code, not inferred)
+
+Our dispatcher is tier-1 exact table then tier-2 fitted tree. Only 2 of the 6 are in the table
+(`Bgemm_sm90_dispatch_table.h:629,630`); the other 4 hit `tree_tn`, which branches **only on M×N** —
+1536×512 and 2048×512 land in the same leaf.
+
+| shape | **our BluBLAS picks** | **Kota picks (runs today)** |
+|---|---|---|
+| 600M B1/B2/B4 | `TN_64x128x64` (tier-2 tree) | `TN_128x128x64_splitk(sk=2)` |
+| 1.7B B1 | `TN_64x128x64` (exact table) | `TN_128x128x64_splitk(sk=2)` |
+| 1.7B B2 | `TN_64x128x64` (tier-2 tree) | `TN_128x128x64_splitk(sk=2)` |
+| 1.7B B4 | **`TN_128x128x64_2x1_v_sk2_dh_rot2_pdl_d6_shfl`** ← the winner | `TN_128x128x64_splitk(sk=2)` |
+
+**Kota's dispatcher is BETTER than ours on 5 of these 6** (his 75.7–99.4% vs our BM=64 tile at
+54–70%). **But both are worse than the best kernel we already own.** Following Kota is not the fix;
+fixing dispatch to select our own best config is.
+
+### §H160  every remaining tn config — no filtering
+
+Because the filter was the error in §H155, this run had none: **all 392 tn configs that `nm` proves
+are callable** (of 407 never-measured; excluded the 14 `128x168x64` cluster variants and `64x8x64`,
+which are not emitted for tn). Shapes: **B=2 and B=4 only** (B=1 dropped on instruction — nothing
+runs it). Table grown to 570 entries; template unchanged so relink only.
+
+#### Method change: correctness merged into the timing run — and three bugs it exposed
+
+Gautam's proposal: drop the separate correctness gate, capture the checksum from the timing run, and
+`check` only the finalists. Sound — it removes ~49 min of the ~146 min. **But the checksum as
+written did not work, and a smoke test found three separate defects:**
+
+1. **Signed sum cancelled to zero.** All 373 rows of the first attempt printed `0.000000`. Inputs
+   are small and signed, so at K=8192 the output lands near zero and 1024 signed values cancel. A
+   checksum that is the same constant for every kernel cannot separate correct from broken.
+   → replaced with **Σ|x|** plus an **index-weighted Σ(j+1)·x** (catches right values in wrong
+   places), printed `%.6e`.
+2. **cuBLAS arm returned `nan`.** The patch changed the sum loop to 4096 elements but left `hR2`
+   allocated at 1024 — the loop walked off the end of the vector.
+3. **4096 elements at N=512 is only the first 8 ROWS**, so 600M_B2 and 1.7B_B2 fingerprinted
+   identically and a kernel wrong below row 8 would have passed. → fingerprint the **whole matrix**
+   (0.8–1.0 M elements = 1.5–2 MB, well under a millisecond against a 1.24 s process; timing
+   unchanged, 464/464/473 TF).
+4. **`have()` in the resume script returned `"0\n0"`.** `grep -c` prints `0` on no match *and* exits
+   1, so the `|| echo 0` fallback fired too. `$((got+1))` threw a syntax error, `seq` emitted
+   nothing, the inner loop never ran — and the script printed **"H160 PHASE1 DONE" after measuring
+   zero rows**. Caught only by checking the row count instead of trusting the DONE message.
+
+Resume logic then verified end-to-end: 0 rows → runs 2, 1 row → runs 1 more, 2 rows → skips.
+
+#### Result: 254 of 392 arms measured, **0 wins**
+
+| shape | cuBLAS | incumbent | best new arm | wins |
+|---|---|---|---|---|
+| 600M B2 | 548.4 TF | **84.13%** | 60.24% (`128x64x64_1x2_v`) | **0** |
+| 600M B4 | 662.4 TF | **83.49%** | 53.17% (`128x64x64_2x1_v`) | **0** |
+| 1.7B B2 | 643.0 TF | **90.31%** | 68.20% (`128x64x64_1x2_v`) | **0** |
+| 1.7B B4 | 719.2 TF | **99.31%** | 64.93% (`128x64x64_1x2_v`) | **0** |
+
+**2 arms produced wrong answers** — `192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_frozen` and
+`192x192x64_1x2_v_rs1_dh_ubd_dw_skew_lsw_pdl_wlsm_frozen`, both `DESC_FROZEN`, both off by the same
+**0.23%** on all four shapes while ~250 other arms matched cuBLAS **exactly**. Under the original
+all-zero checksum these would have been invisible and could have been pinned as winners.
+**They need the full `check` before any conclusion — 0.23% could be accumulation order, not a bug.**
+
+**Why the remaining 138 are unlikely to change this** (stated as expectation, not proof — §H151
+already refuted exactly this kind of occupancy reasoning on exactly this kind of shape):
+
+| tile | arms left | CTAs @M=1536,N=512 | CTAs @M=2048 |
+|---|---|---|---|
+| 256x128 | 48 | 24 (**18%**) | 32 (**24%**) |
+| 192x192 | 46 | 24 (**18%**) | 33 (**25%**) |
+| 320x128 | 14 | 20 (**15%**) | 28 (**21%**) |
+| 64x320 / 64x448 | 28 | 48 (36%) | 64 (49%) |
+| **incumbent 128x128 sk=2** | — | **96 (73%)** | **128 (97%)** |
+
+None approaches the winners' occupancy, and **zero remaining arms have split-K** — the only
+mechanism that multiplies CTAs without shrinking the tile. Run stopped at Gautam's instruction.
+
+---
+
+## TIER-1 VERDICT AND WHAT IS LEFT
+
+**Total measured on these six shapes: 34 (§H155) + 28 (§H157) + 18 (§H158) + 35 (§H159) + 254
+(§H160) ≈ 369 arm-configurations, every one correctness-checked.**
+
+| available today | mean %cuBLAS | worst |
+|---|---|---|
+| what Kota's dispatcher runs (clusterless `splitk sk=2`) | **85.63%** | 75.68% |
+| **best config we already own** (`128x128x64_1x2_v_sk2_dh_rot2_pdl_d6_shfl`) | **91.58%** | 83.59% |
+
+**+5.95 points are available right now from a dispatch change alone, no kernel work.** In the two
+configs the training scripts actually run: 600M B2 **87.03% → 91.78%**, 1.7B B2 **89.77% → 97.23%**.
+
+**We are still short of 100%** (600M B2 by 8.22 pts, 1.7B B2 by 2.77 pts), and the search space of
+existing configs is now effectively exhausted. Reaching or beating cuBLAS needs something we do not
+have:
+
+1. **Pingpong schedule** — the documented CUTLASS mechanism for BM<128 (§H158). Would make the 64×128
+   tile cuBLAS uses at low K actually work for us.
+2. **Stream-K** — so fp32 partials never round-trip through HBM, attacking the §H156 root cause
+   directly. (`_SPLITK_ATOMIC` is NOT the route: already measured, workspace form **+13.76% on
+   16/16 pairs**, and atomics are non-reproducible run-to-run.)
+3. **Optimise the existing kernel against cuBLAS SASS** — the one path that reuses what we have.
+
+### IMMEDIATE, BEFORE ANY OF THAT
+* **Pin the §H159 winner** via `Sm90RuntimeSel` — keyed on shape properties, never a hardcoded shape
+  list. **Gate it on a 12-round crossover first** (§H47: a 6-round ABBA gave t=4.63 on a known NULL).
+* **Run the full `check`** on the two `_frozen` arms.
+* **Audit the other 10 training-script losers the same way** — §H159 proves the sweep measured *the
+  dispatched config*, not the best config we own. That is a table-wiring job, not kernel work.
+* Everything remains **uncommitted**, in the local working tree only.
+
+---
+
+### §H161  L2 pollution — what is PROVEN, what is not, and why it is PARKED
+
+**Correction to the §H150 claim.** I reported "L2 pollution costs 2.04 points" of the trainer gap.
+That number came from a **synthetic polluter of a size I chose myself** (256 MB) in a standalone
+replay, not from any trainer measurement. Stated as a measured decomposition, it was not one.
+
+**What the polluter experiment does show** (h150_stream.txt, 651-call GEMM replay, 3 rounds each):
+
+| injected polluter | ours | his | cuBLAS | ours/cuBLAS | our lead in ms |
+|---|---|---|---|---|---|
+| 0 MB | 799.8 TF | 794.2 | 782.9 | **102.15%** | +4.83 ms |
+| 64 MB | 752.0 | 743.3 | 738.1 | 101.88% | +4.64 ms |
+| 256 MB | 613.7 | 616.6 | 613.5 | **100.04%** | **−0.39 ms** |
+
+Our advantage does not merely compress, it **disappears in absolute time**. So: *our kernels depend
+on a warm L2 more than cuBLAS's do.* That part is real and reproducible.
+
+**What the real trainer actually does** (measured 2026-09-09 from the 358 MB 1.7B nsys capture,
+`prod_runs_2026_09_02/1p7b_blublas/`, 3,997,616 kernel launches — offline, no GPU needed):
+
+* GEMM is **54.0%** of GPU time (833,714 launches); everything else **46.1%** (3,163,902).
+* The pollutants are named: **`vec4_convert_to_fp32` and `vec8_convert_to_bf16`** — **1,255,024
+  launches, 1.5x more than all GEMMs combined, 7.2% of GPU time.**
+* One convert really does evict the whole L2, confirmed two independent ways:
+  * from shapes (E=2048, F=5632, B=2, T=4096), a bf16→fp32 convert touches `n*6` bytes:
+    hidden **100.7 MB** (1.68x L2), ffn-mid **276.8 MB** (4.61x), ffn-gate **553.6 MB** (9.23x);
+  * from timings at ~3.5 TB/s: median convert **~60 MB**, mean **~100 MB**.
+* Timeline of a steady-state window (8,836 launches, 1,839 GEMMs, 1,838 inter-GEMM gaps):
+  **39.7% of GEMM→GEMM transitions have NOTHING between them** (L2 stays warm); the other **60%**
+  contain at least one convert — 10.7% a single convert, 10.4% `convert→add→rms_norm→convert`,
+  5.7% each for the swiglu_bwd, rms_bwd and 22-kernel `gqa_bwd_vj1d` chains.
+
+**WHY IT IS PARKED (Gautam, 2026-09-09):** the converts run identically in both arms, so the
+pollution itself is **symmetric between cuBLAS and us** — it is an environment we do not control,
+not an inefficiency of ours. The asymmetry is only in how much each side *loses* to a cold L2.
+
+**STILL UNPROVEN, and the one measurement that would settle it:** how many end-to-end points this
+is worth. That needs **ncu on a GEMM running INSIDE the trainer vs the same GEMM standalone**,
+comparing L2 hit rate and `dram__bytes`. **The same capture would also settle §H156's open
+assumption** — whether the split-K reduce's 10.5 MB of traffic truly reaches HBM, or is being
+served from the 60 MB L2 (if the latter, the "it is at the memory wall, cannot be optimised"
+conclusion has headroom I dismissed).
+
+**FUTURE TASK — do this if the trainer gap is ever attacked directly, not before.**
+
+---
+
+## §H164 – §H174  4B ON TWO H200s: THE STANDALONE-vs-TRAINER GAP, RUN TO GROUND
+
+Box `deep-hand-shines-fin-03` (95.133.254.191), 2x H200 141 GB, 88 cores, CUDA 13.0, OpenMPI 4.1.6.
+4B: d_model 3072, 36 layers, ffn 8192, kv 8x128, V 50304, T 4096, **B=2**, global_batch 524288,
+NP=2, 15 steps. Three arms in three SEPARATE trees, each vendoring its own BLAS.
+
+### §H164  the three-arm run, and how it was made trustworthy
+
+Setup faults found and fixed before any measurement: **MPI absent entirely** (installed 4.1.6);
+`checkpointing/Checkpointing.h` missing from all three arms (copied, md5 `1e7bc6feda52`);
+`checkpointing = true` (a 4B save at max_steps-1 would distort the last step); and the data path
+pointed at a HuggingFace cache **that does not exist on this box**. All three scripts then md5
+**identical** — only the backend differs.
+
+**Linking verified three ways, because "two cuBLAS runs" has happened here before:**
+`libblublas.so` in NEEDED = prod 1 / ours 1 / **cublas 0**; libtensor undefined refs to
+`blublasBgemm*` = 3 / 3 / **0**; and the kernels that ACTUALLY RAN — ours 8x `blublas_ws::`,
+prod 8x bare `bgemm_sm90_kernel`, cublas 8x `nvjet_`, **zero cross-contamination**.
+All three did identical work: **GEMM 321,160 launches, non-GEMM 1,257,227**, step-0 loss identical
+to 6 decimals.
+
+    arm       tok/s      GEMM (s)   non-GEMM (s)   GEMM vs cuB   non-GEMM vs cuB
+    cuBLAS   36,226.8     124.390        96.514        100.00%           100.00%
+    ours     35,571.5     126.945        97.589         97.99%            98.90%
+    prod     35,575.8     127.947        97.743         97.22%            98.74%
+
+**WE BEAT KOTA ON BOTH HALVES** (GEMM by 1.003 s = 0.79%, non-GEMM by 0.154 s), consistently —
+7 of 8 kernels favour us. cuBLAS is the only thing ahead. Reproduces §H146 on a different box
+(then 127.271 / 128.206 / 124.473).
+
+**Tile routing differs enormously** and is a separate open lead: we send **73% of calls to
+128x256**; cuBLAS sends **56% to 256x128** and uses **320x128** and **128x192**, which Kota's
+dispatcher never selects. Same 321,160 calls, different routing.
+
+Neither of the last two days' dispatcher changes touches 4B, proven empirically (zero `128x160`
+kernels, zero split-K kernels): §H152 needs `util < 0.78` and 4B sits at **0.970**; §H163 needs
+`sk=2` and 4B's K/V wgrad grid (24,16) maps to `sk=1`. Both are 600M/1.7B features.
+
+### §H165  standalone on THIS box, same binary, same day — the premise re-tested
+
+The "standalone 101.47% vs trainer 97.99%" contradiction rested on a standalone number from a
+**different box, the previous day**. Re-measured here: 15 shapes, dispatcher-selected entry points,
+6 rounds, arms alternating order, **15/15 correctness PASS**.
+
+    standalone TODAY, this box, this binary : 101.39%   (yesterday, other box: 101.47% -- 0.08 pts)
+    trainer GEMM TODAY, this box, this binary:  97.99%
+    gap                                      :  +3.40 points
+
+**We win 10 of 15 shapes.** Worst is `lm_head wgrad` 98.18% — on a 1-call shape with **14.3%**
+run-to-run spread, i.e. not a real loss. **Bringing every loser to exact parity buys 0.36 ms of
+206.7 ms = 0.18%.** There is nothing to win from per-shape kernel work on 4B.
+
+### §H166  cuBLAS picks the SAME kernels standalone as in the trainer
+
+The last thing that could have made the comparison invalid. nsys on the standalone cuBLAS arm,
+all 15 shapes: tile sets **identical** to the trainer (256x128 x7 shapes / 192x192 x4 / 128x256 x2
+/ 128x192 x1 / 320x128 x1, matching 180,480 / 54,280 / 34,560 / 34,560 / 17,280 launches).
+Both sides ran the same kernels in both settings; the gap is not a measurement artifact.
+
+### §H167 – §H170  the gap is a DEGRADATION OVER TIME, and only we suffer it
+
+From the trainer timeline itself (1,578,387 launches), not extrapolation:
+
+* **86% of the wall gap is kernels running longer.** span +4.235 s, busy +3.630 s, **idle +0.396 s**.
+  Not launch overhead, not gaps, not sync. (Both arms are ~40.5% GPU-idle — a property of the
+  trainer, identical across backends.)
+* **GEMM throughput decays monotonically through the run:**
+
+        slice      5      6      7      8      9     10     11     12     13     14
+        ours/cuB 101.27  99.74  98.83  97.94  97.87  97.69  97.57  97.50  97.48  97.00
+
+  First-5 mean 99.13%, last-5 97.45%, **drift -1.68 pts**.
+* **Isolated to one exact kernel, shape-mixing removed — ours degrades, cuBLAS does not:**
+
+        ours   top GEMM kernel, 112,320 instances : 371.4 us -> 384.0 us   **+3.42%**
+        cuBLAS top GEMM kernel,  86,880 instances : 356.7 us -> 354.0 us   **-0.76%**
+
+  Same GPU, same load, same 15 steps. A 4.18-point swing — **larger than the 3.40-point gap.**
+* **Per non-GEMM kernel (byte-identical code, identical launch counts), the slowdown is
+  SELECTIVE, not uniform:** compute-bound `gqa62` **+5.45%**, `reduce_dgamma` **+4.69%**,
+  `gqa_bwd_vj1d` **+2.83%**; memory-bound `vec4_convert` **+0.28%**, `vec8_convert` **+0.05%**,
+  `swiglu_bwd` **0.00%**, `add_inplace` **-0.16%**. Median ratio 100.26%, p10-p90 spread 3.05 pts.
+  HBM-limited kernels do not care about SM clock; tensor/ALU-limited ones do.
+
+**THE CONTRADICTION DISSOLVES:** standalone **101.39%** vs the trainer's FIRST decile **101.27%**
+agree to **0.12 points**. We were comparing our cold speed against our hot speed.
+
+### §H171 – §H172  cold-L2 sensitivity, measured on real instances
+
+Converts run identically in both arms, so predecessor is a controlled variable. Grouping GEMM
+instances by what ran immediately before them (163,000 real instances):
+
+    band              ours after-CONV vs after-GEMM   cuBLAS same
+    small (<120us)              +1.71%                   -1.60%
+    mid  (120-600us)            +8.07%                   +5.41%
+    large (>600us)              +0.04%                   -0.55%
+
+**We lose more to a cold L2 than cuBLAS does — in two of three bands cuBLAS is not hurt at all.**
+Costed at **+0.803 s = 31.4% of the 2.555 s GEMM gap.** This is the §H150 polluter result
+confirmed inside the real trainer instead of with a synthetic 256 MB flush.
+
+### §H173  ncu — the 1.85x L2-REQUEST claim is REFUTED on 4B; SECTORS are the real signal
+
+    shape            L2 requests  L2 sectors  DRAM bytes  duration   sectors/request ours : cuB
+    gate_up dgrad       1.02x       1.09x       0.85x      0.99x
+    gate_up fwd         0.92x       1.20x       1.01x      0.94x        3.81 : 2.92
+    gate_up wgrad       1.20x       1.31x       1.01x      0.99x        3.79 : 3.48
+
+**Requests are 0.92-1.20x, NOT 1.85x.** That figure came from V1 (a 1.7B shape) and does not carry
+to 4B — quoting it here would have been wrong. What IS consistent is **L2 SECTORS at ~1.20x mean,
+same direction on every shape, at matched DRAM bytes and matched duration**, driven by a higher
+**sectors-per-request** ratio. (`l1tex__t_requests = 0` for us is expected — TMA bypasses L1TEX.)
+
+### §H174  POWER AT LOCKED CLOCK — measured, with the protocol that finally works
+
+Three earlier attempts at this failed. The protocol, all of it required: `power.draw.instant`
+(plain `power.draw` is a 2.4 s trailing average); **2 Hz** sampling (100 Hz aliases the instant
+field); persistence mode ON; 40 s windows with the first 8 s discarded; and **lock low enough that
+neither arm reaches the cap** — at free clocks BOTH clamp at 700 W so power CANNOT differ, which is
+why every free-clock reading in this project came out 1.00x.
+
+**Lock enforcement verified BEFORE the run** (it was silently not enforced on an earlier box,
+voiding §H33/H34): 1200 MHz held exactly under 100% load, `sw_power_cap Not Active`.
+
+    lock      shape          ours W   cuBLAS W   delta    ratio
+    1000   gate_up fwd        321.3     315.6    +5.7    101.80%
+    1000   gate_up wgrad      331.2     319.3   +11.9    103.72%
+    1200   gate_up fwd        398.9     388.6   +10.3    102.65%
+    1200   gate_up wgrad      412.9     396.6   +16.4    104.13%
+                                              MEAN      **+3.07%**
+
+All 8 groups valid: 80 samples each, lock held exactly (1005/1005, 1200/1200), cap never active.
+Same direction on all four pairs, and it **grows with clock** (1.80->2.65%, 3.72->4.13%).
+Independently reproduces the 1.7B trainer figure of **+2.69%**.
+
+---
+
+## WHAT IS PROVEN AND WHAT IS STILL INFERENCE
+
+**MEASURED, on this box, this week:**
+1. we draw **+3.07% power at equal clock** with the cap inactive (§H174, 8 valid groups)
+2. we move **~1.20x L2 sectors** at matched DRAM bytes (§H173, 3 shapes)
+3. our GEMM **degrades +3.42% across a run; cuBLAS's does not (-0.76%)** (§H172)
+4. the slowdown is **selective** — compute-bound kernels pay, memory-bound do not (§H169)
+5. standalone **101.39%** == trainer first decile **101.27%** (§H165/§H170)
+6. **86% of the wall gap is kernels executing longer**, not idle (§H168)
+
+**NOT MEASURED — still inference, and must not be quoted as fact:**
+* **that the +3.07% power CAUSES the clock loss in the 4B trainer.** No clock or power telemetry
+  was captured DURING the 4B run. The 1785-vs-1815 MHz figure is from the **1.7B** trainer (§H28c).
+* **that the 1.20x L2 sectors CAUSES the +3.07% power.** Correlation on 3 shapes. No ablation has
+  changed L2 sectors and shown power move.
+* **WHY we move more sectors per request.** No mechanism identified. Not one instruction, cache
+  policy or access pattern has been pinned to it.
+
+**THE NEXT THREE TESTS, in order, each closing one inferred arrow:**
+1. **clock+power telemetry DURING a 4B trainer run**, both arms, 2 Hz — turns arrow 1 into a
+   measurement. Cheap.
+2. **full instruction census, ours vs cuBLAS, same shape** (`sm__inst_executed` by opcode class,
+   `smsp__inst_executed_pipe_*`) — settles whether we execute more work or the same work more
+   expensively. §H27b4 refuted the INSTRUCTION-COUNT track once (cutting vector ops 76% moved
+   power 2.1%), but that was one knob on one shape, not a census.
+3. **an ABLATION that moves L2 sectors and re-measures power.** Correlation is not cause; this is
+   the only test that makes arrow 2 real.
+
+
+---
+
+## §H180 – §H185  THE "KOTA'S RUN IS SLOWER" INVESTIGATION, 2026-09-09
+
+Box: 95.133.254.191 (`deep-hand-shines-fin-03`), 2x H200, 88 cores, CUDA 13.0.
+Model: 4B (d_model 3072, 36 layers), B=2, T=..., global_batch 524288, world_size 2, ZeRO-1.
+All artefacts pulled to `kota_backtrack_2026_09_09/`. Box scripts in `/root/gautam_k/blublas/`.
+
+### The question
+
+Kota's 4B run reported **~35,470 tok/s** on cuBLAS. Ours reported **~36,250 tok/s** on cuBLAS.
+Same box, same model, same day. His BluBLAS run (35,363) and his cuBLAS run (35,468) were only
+0.3% apart, while ours were 1.6% apart — so the anomaly looked specific to cuBLAS.
+
+### §H180  BACKTRACK OF HIS ENTIRE SETUP — everything ruled out
+
+| what | verdict | evidence |
+|---|---|---|
+| heat soak / thermal decay | **REFUTED** | his 40-step curve is FLAT: step 1 = 35,562.9, step 39 = 35,474.2, dt ~14,779 ms throughout. No decay to explain. |
+| his tree / build | identical | `diff Makefile` clean; CXXFLAGS `-std=c++2a -fPIC -O3 -g -DWITH_CUDA -fopenmp` from the same file |
+| `libtensor.so` | identical | same size **to the byte** (62,424,856) in both trees, 0 blublas symbols in both |
+| `libprofiler.so` | identical | **md5-identical** |
+| `libdist.so` | 216 bytes apart | build-path strings |
+| CUDA / cuBLAS | identical | both `ldd` to `/usr/local/cuda/.../libcublas.so.13` + `libcublasLt.so.13` |
+| his script | 3 lines | include path, one comment, `data_root`. `checkpointing=false` in both |
+| his data path | ruled out | same `/dev/vda4`; and our copy of his tree WITH his HF-cache path gave 36,362 |
+| launch command | identical | `run-mpi` target hardcodes `mpirun -np 2 -x LD_LIBRARY_PATH ./_runner_` — no flags addable via make |
+| rank count / shapes | identical | mem_alloc 101.787 GB / reserved 103.184 GB on ALL five runs |
+| CPU affinity | identical | his ranks on core 0 / core 1; ours on core 0 / core 1 (OpenMPI default bind-to-core at np=2) |
+| BLAS actually used | cuBLAS both | `/proc/PID/maps`: libblublas 0x, libcublas 12x, nccl 5x |
+| a person capping the GPU | **NO** | `power.limit == power.default_limit == enforced == 700 W`, `clocks.max.sm 1980`, apps clock not locked, persistence on. Factory default. |
+
+**§H180 decisive run.** We ran HIS OWN TREE (copy at `blutrain_his`, his binary, his data path,
+his cuBLAS), 20 steps, cold box:
+
+| arm | tok/s (steps 8-19) | GPU0/GPU1 clock | power |
+|---|---|---|---|
+| his tree, run by US | **36,362** | 1666 / 1659 MHz | 690 / 694 W |
+| our tree, run by US | **36,354** | 1667 / 1659 MHz | 694 / 693 W |
+| his tree, run by HIM | **35,478 / 35,508** | 1620 / 1605 MHz | ~691 W |
+
+His code performs exactly like ours (0.02% apart). **The tree is not the cause.**
+
+### §H181  LIVE CAPTURE OF HIS RUN (read-only, `h181_watch.sh`)
+
+Caught his second run in flight and dumped `/proc/PID/environ`, cmdline, affinity, maps, plus
+2 Hz telemetry INCLUDING the throttle-reason bitmask.
+
+Steady state (util>90), 347 samples:
+```
+GPU0  1635 MHz   691.5 W   66.1 C   swPowerCap = Active  347/347
+GPU1  1606 MHz   691.4 W   60.5 C   swPowerCap = Active  347/347
+      hwThermal / hwBrake / swThermal = Not Active, always
+```
+vs our run of his tree, 588 samples: 1666/1659 MHz, 690/694 W, 67.3/61.0 C, swPowerCap Active.
+
+**Same power, same temperature, 31-53 MHz lower clock.** Both power-capped 100% of the time.
+
+**The one real difference found — his shell exports two vars we never set:**
+```
+BLU_SYMMETRIC=1
+BLU_ZERO_V2=1
+```
+Confirmed present on all his rank processes. From his source:
+```
+531:  BLU_ZERO_V2=1 selects the reduce-scatter/all-gather optimizer
+      (owt::zero::SymmetricShardedOptimizer) instead of v1's reduce/broadcast.
+533:  BLU_SYMMETRIC=1 additionally backs its wire buffers with NCCL symmetric
+      memory so the collectives can dispatch to the NVLS (NVLink SHARP) kernels.
+```
+Git lineage (oldest to newest): `e306476 ZeRO1 impl` (v1) -> `287ba7c overlap fixed zero1` ->
+`d8ba967 changes with zero1 v2` -> `4e033e1 Merge sym_muon: ... symmetric memory`.
+So **v1 = old = what WE have always run** (both flags default 0); **v2 + NVLS = newest = his**.
+
+Correction recorded: the code contradicts its own comment. BOTH v1 and v2 call
+`reduce_scatter` + `all_gather` (v1 at ShardedOptimizer.cpp:942/1005, v2 at
+SymmetricShardedOptimizer.cpp:779/978). The real difference is the shard layout
+(`CONTIGUOUS` for v1 vs `PER_BUCKET` for v2, ZeroConfig.h:41/48) and the `MemoryMode`
+(`Standard` vs `Symmetric`) fixed at process-group creation.
+
+### §H182  ABLATION ON HIS FLAGS — **REFUTED**
+
+`h182_ablate.sh`, our tree, cuBLAS, 20 steps, only the flags changed:
+```
+SELECTED: [ZeRO-1] variant: v2 reduce-scatter/all-gather | symmetric memory: requested
+          (BLU_ZERO_V2=1 BLU_SYMMETRIC=1)
+TOKS mean=36317.1    GPU0 1667 MHz 695.6 W    GPU1 1660 MHz 694.8 W
+NVLINK Tx delta = 319.4 GB over 36 links
+```
+
+| arm | BLU_ZERO_V2 | BLU_SYMMETRIC | tok/s | clock |
+|---|---|---|---|---|
+| A | 0 | 0 | 36,354 | 1667/1659 |
+| B | 1 | 1 | 36,317 | 1667/1660 |
+
+**0.1% apart. His flags are NOT the cause.** The binary's own log line proves they took effect.
+Arms C (1/0) and D (0/1) were dropped — the variable is dead.
+
+### §H183  THE ACTUAL CAUSE: OUR OWN `BLU_MAX_STEPS`
+
+`BLU_MAX_STEPS=N` sets `warmup_steps = N/10`, `stable_steps = N/2` (bluscript_zero.cpp:469-476).
+We benchmarked with N=15/20 -> warmup 2 -> lr 3e-4. He never sets it -> the script default
+max_steps=2000 -> warmup 200 -> lr ~2e-5 over the first 20 steps.
+
+| | step 1 lr | step 1 grad_norm | step 1 loss |
+|---|---|---|---|
+| his (warmup 200) | 0.000003 | 20.4 | 11.36 |
+| ours (warmup 2) | 0.000300 | **1320.8** | 14.84 |
+
+**Crossover, order B, A, A, B** (order-reversed so drift cannot fake it), our tree, cuBLAS,
+same binary, `timeout -s INT` wall cap so the CSV is read live:
+
+| order | condition | tok/s (steps>=8) | clock | power |
+|---|---|---|---|---|
+| 1st 13:36 | B — MAX_STEPS=20 | 36,354 | 1667/1659 | 694/693 W |
+| 2nd 14:20 | A — default 2000 | 35,486.7 | 1630/1625 | 689/691 W |
+| 3rd 14:29 | A — default 2000 | 35,488.6 | 1628/1623 | 690/689 W |
+| 4th 14:38 | B — MAX_STEPS=20 | 36,366.5 | 1670/1658 | 693/692 W |
+
+Within-condition spread: A 0.005%, B 0.03%. Between: **2.46%**.
+Our tree at the 2000 default = **35,487**, matching his **35,478** to **0.02%**.
+
+**Complete 2x2: swap the tree -> nothing. Swap his ZeRO flags -> nothing. Swap BLU_MAX_STEPS ->
+the entire 2.46% and the whole clock difference appear.**
+
+### §H184  LOCKED-CLOCK PROOF: THE COMPUTE IS IDENTICAL, THE POWER IS NOT
+
+`h184_lockclock.sh`, locked to 1400 MHz (achieved 1410, **lock held 100% of samples**, verified
+per `feedback_lock_clocks_before_timing`), power 594-619 W so **under the 700 W cap** in both arms:
+
+| | A (max_steps 2000) | B (max_steps 20) | delta |
+|---|---|---|---|
+| clock | 1410 MHz (0.0% below lock) | 1410 MHz (0.0% below lock) | — |
+| **dt per step** | **15,263.3 ms** | **15,247.8 ms** | **0.10%** |
+| tok/s | 34,349.6 | 34,384.5 | 0.10% |
+| **power** | **615.1 / 619.3 W** | **594.1 / 599.8 W** | **+3.4%** |
+
+At free clocks the gap is 2.46%. **At equal clock it is 0.10% — gone.**
+The arithmetic is not slower. Same instructions, same cycles, same time.
+The difference is that regime A draws **+3.4% more power for the identical work**, and at the
+pinned 700 W cap that converts to -42 MHz of clock and -2.46% of throughput.
+
+Consistency check: +3.4% power -> clock ratio 1670/1628 = 1.026 -> throughput ratio
+36,366.5/35,488.6 = 1.0247. The three line up.
+
+This is the SAME mechanism already established in `project_power_clock_solved` for
+BluBLAS-vs-cuBLAS (+2.69% power at equal clock -> cap -> -30 MHz -> the trainer gap).
+**On this box, at the 700 W cap, every throughput comparison is really a power comparison.**
+
+### §H185  WHAT IS PROVEN, WHAT IS NOT, AND TOMORROW'S QUESTIONS
+
+Gautam's challenge, verbatim: *"those are anyways some numbers of same datatype only right"* —
+correct, and the locked-clock test confirms it: the compute time IS the same.
+
+**A claim of mine was written up as if proven when it was not.** The 5-step explanation I gave
+(screenshot, 2026-09-09) breaks down as:
+
+| step | claim | status |
+|---|---|---|
+| 1 | `BLU_MAX_STEPS=20` -> warmup 2 -> lr 3e-4; no flag -> 2000 -> warmup 200 -> lr 2e-5 | **PROVEN** (source + CSV lr column) |
+| 2 | different LR -> different weights -> different data through the multipliers | **PROVEN** trivially (different lr, different loss/gnorm trajectories) |
+| 3 | different data -> **different bit-toggling** -> +3.4% power | **NOT PROVEN.** +3.4% power at equal clock IS measured. "bit-toggling" is an ASSERTED mechanism with zero evidence behind it. |
+| 4 | at free clocks both pin 700 W; A gets 1628, B gets 1670 MHz | **PROVEN** (2 Hz telemetry, swPowerCap Active 100%) |
+| 5 | -2.4% clock -> -2.4% throughput | **PROVEN** (crossover + locked-clock control) |
+
+So: **WHAT happens is proven. WHY the power differs is not.**
+
+**THE OPEN QUESTION FOR TOMORROW: what is the extra power actually being spent on?**
+
+Candidate mechanisms, all testable, none tested:
+1. **Data-dependent switching power** — same instructions, different operand bit patterns, different
+   toggle rate in the multiplier arrays. Real physics, but I have measured nothing.
+2. **Extra work that I have not counted** — e.g. a gradient-clipping branch taken in one regime and
+   not the other. The clip threshold and its branch have NOT been read. Note the locked-clock dt
+   differed by 15.5 ms (0.10%) — small, but not exactly zero.
+3. **Denormals / subnormals** — regime A's smaller updates may produce subnormal values on the
+   non-tensor-core elementwise paths.
+4. **Different memory traffic** — DRAM/L2 power is data-dependent (compression, toggle rate).
+   NOT measured; `h182` did capture NVLink Tx (319.4 GB over 36 links) for one arm only.
+
+**Tests to run tomorrow, in order:**
+1. **Does OUR BluBLAS fluctuate the same way?** Run BluBLAS at max_steps 20 AND 2000. If it moves
+   by the same ~2.5%, the effect is a property of the trainer/box, not of a BLAS. If it moves by a
+   DIFFERENT amount, then our BluBLAS-vs-cuBLAS delta is itself regime-dependent and every
+   comparison we have made needs re-doing. **This is the one that matters most.**
+2. **ncu instruction census on both regimes.** Same instruction counts or not? This directly
+   answers "is there extra work". If identical -> mechanism 1 or 3. If different -> mechanism 2.
+3. **ncu SOL / DRAM+L2 counters on both regimes** -> is the extra power in the SM or in memory?
+4. Read the gradient-clipping code and its threshold; check whether the branch differs between the
+   two gnorm regimes (ours ~3, his 12-134).
+
+**Consequence that must not be forgotten:** every BluBLAS-vs-cuBLAS number measured on 2026-09-09
+used `BLU_MAX_STEPS=15/20` and is therefore in the WRONG numerical regime. Production training
+uses the 2000-step schedule. **Re-baseline before quoting any of them.** This most likely also
+explains the still-unresolved anomaly where our BluBLAS arm gave 35,596 at 15 steps and 34,283 at
+20 steps on a byte-identical binary with unchanged libs.
+
+**Method errors made today, recorded so they are not repeated:**
+- Proposed heat soak as the explanation without looking at his step-by-step curve first; his own
+  log refuted it in one line.
+- Quoted "1764 MHz / 500 W" from a whole-run average that included ~2 min of idle startup.
+  Steady-state (util>90) was 1666 MHz / 693 W. Always window the telemetry.
+- Concluded "he is not power limited" from ONE instantaneous `nvidia-smi` sample (677 W). The
+  347-sample average was 691.5 W with swPowerCap Active in every sample.
+- Wrote "different collectives" from a source COMMENT; the code shows both v1 and v2 call
+  reduce_scatter + all_gather. Read the implementation, not the comment.
+- Asserted "bit-toggling" as the mechanism with no measurement behind it (see the table above).
+
+All five have the same shape: a conclusion drawn from too little data, stated with too much
+confidence. `feedback_samples_not_static_counts` and `feedback_verify_claims_and_benchmark` both
+already cover this.
+
+**Scripts written today** (local copies in `kota_backtrack_2026_09_09/`, all also on the box):
+`h180_arm.sh` (per-arm 20-step run + telemetry), `h181_watch.sh` (read-only watcher for someone
+else's run: environ/cmdline/affinity/maps + throttle-reason telemetry), `h182_ablate.sh`
+(ZeRO-flag ablation + NVLink counters), `h183_maxsteps.sh` (max_steps ablation, wall-time capped,
+captures rank affinity), `h184_lockclock.sh` (equal-clock control, auto-restores free clocks on
+any exit, verifies the lock held).
+
+**GPU accounting 2026-09-09:** 9 training runs on the 4B config, ~75 min of GPU time, plus one
+read-only watch of Kota's run. Clocks left FREE (verified 1980 MHz apps clock, reset by the
+script's EXIT trap).
+
+
+---
+
+## §H186 – §H189  THE max_steps REGIME EFFECT IS A PROPERTY OF THE BLAS, NOT THE BOX
+
+Box: 86.38.182.106 (`quiet-sun-closes-fin-03`), 2x H200 143 GB, 88 cores, CUDA 13.0.88, driver
+580.126.09, 700 W factory cap, no clock lock. Date 2026-09-10. All times IST (box runs UTC).
+Model: 4B (d_model 3072, 36 layers, q/kv 24/8, head_dim 128, ffn 8192, T=4096), B=2,
+global_batch 524288, world_size 2, ZeRO-1 **v2 + NCCL symmetric memory (NVLS)** on both arms.
+Artefacts: `h186_regime_2026_09_10/` (16 files).
+
+### The question
+
+§H183/§H184 proved that `BLU_MAX_STEPS=20` (warmup 2, lr 3e-4) vs the 2000 default (warmup 200,
+lr ~2e-5) costs **2.46% throughput on cuBLAS**, entirely via +3.4% switching power -> the 700 W
+cap -> -42 MHz. That was measured on cuBLAS ONLY. Open question: does OUR BluBLAS move the same?
+If yes the effect is the box; if no, every BluBLAS-vs-cuBLAS ratio is regime-dependent.
+
+### §H189 RESULT — 8 runs, ABBA on BOTH arm order and regime order
+
+Window: steps 8-17 (val-free; `val_freq=50` so val fires only at step 0 in this window).
+
+| condition | run 1 | run 2 | mean | spread |
+|---|---|---|---|---|
+| cuBLAS ms20   | 36,296.7 | 36,312.6 | **36,304.7** | 0.044% |
+| cuBLAS ms2000 | 35,473.4 | 35,479.5 | **35,476.4** | 0.017% |
+| ours ms20     | 34,253.5 | 34,273.7 | **34,263.6** | 0.059% |
+| ours ms2000   | 34,085.9 | 34,080.3 | **34,083.1** | 0.016% |
+
+```
+  cuBLAS  regime effect ms20 -> ms2000 :  -2.28%
+  ours    regime effect ms20 -> ms2000 :  -0.53%      <-- 4.3x LESS sensitive
+```
+
+**ANSWER: NO. The regime effect is NOT a box property. cuBLAS loses 2.28%, our BluBLAS loses
+0.53%.**
+
+Run order was cuBLAS/ours interleaved and regime-reversed across the two halves, so neither box
+drift nor arm order can produce this. Within-condition spread is 0.02-0.06%, the between-arm
+difference in sensitivity is 1.75 points -- ~30x the noise.
+
+### The mechanism, from the telemetry
+
+| arm | clock @ms20 | clock @ms2000 | delta | power (both regimes) |
+|---|---|---|---|---|
+| cuBLAS | 1668 / 1671 MHz | 1629 / 1637 MHz | **-34 MHz** | ~691-695 W, swPowerCap Active 100% |
+| ours   | 1636 / 1634 MHz | 1633 / 1630 MHz | **-3 MHz (flat)** | ~692-694 W, swPowerCap Active 100% |
+
+Both arms are pinned at the cap in every run. cuBLAS's achievable clock is **data-dependent** --
+change the operand distribution and it loses 34 MHz. **Ours does not move.** Our kernels already
+sit at the power ceiling regardless of the data, so there is no headroom left for the data to
+take away. That is consistent with the standing finding that our kernels burn more power per
+cycle ([[project_power_clock_solved]], `project_instruction_track_refuted`): we are already
+power-saturated, so we are *insensitive* to a change that costs cuBLAS 2.3%.
+
+### CONSEQUENCE — every BluBLAS-vs-cuBLAS number taken at ms20 understates us
+
+| regime | ours / cuBLAS | behind by |
+|---|---|---|
+| ms20 (the benchmark shortcut used all of 2026-09-09) | **94.38%** | 5.62% |
+| **ms2000 (what production training actually runs)** | **96.07%** | **3.93%** |
+
+The short-benchmark regime made us look **1.69 points worse than we are**. Re-baseline anything
+quoted from a `BLU_MAX_STEPS`-shortened run.
+
+**And at ms2000 both arms run at the SAME ~1633 MHz at the same ~692 W.** Same clock, same power
+-> the remaining 3.93% at the production regime is **genuine compute**, not a clock artefact.
+That is the real gap to close and it is smaller than the 2026-09-09 numbers implied.
+
+### §H186-§H188 SETUP FAULTS — three, all environment, all cost time
+
+Recorded because each is a repeatable trap on a fresh box, not a one-off.
+
+1. **`cuda_runtime.h: No such file`.** The Makefile does `NVCC := $(shell which nvcc)` and derives
+   `CUDA_INC` from it. A non-interactive ssh has no `/usr/local/cuda/bin` in PATH, so `CUDA_INC`
+   came out empty. An interactive VS Code shell has it -- which is why a colleague's build works
+   and a scripted one does not. Fix: `export PATH=/usr/local/cuda/bin:$PATH` in every build script.
+
+2. **`SM_ARCH=90a` is WRONG -- pass `90`.** `Tensor-Implementations/Makefile` has
+   `ifeq ($(SM_ARCH),90) -> -gencode arch=compute_90a,code=sm_90a`. Passing `90a` skips that
+   branch and falls through to the legacy `compute_90` gencode, so every wgmma / setmaxnreg /
+   TMA-multicast instruction is rejected by ptxas. Auto-detect (`nvidia-smi compute_cap` -> `90`)
+   is correct; do not "help" it.
+
+3. **THE EXPENSIVE ONE: new source dropped into an old build system.**
+   Our `Bgemm_dispatcher.cu` guards the entire SM90 block behind `#ifdef BLUBLAS_HAS_SM90`
+   (the §H141 guard). The clone's older dispatcher has **no guard** and calls SM90 unconditionally.
+   `blutrain_ours` was built by copying `blutrain_prod` -- a vendored snapshot frozen at commit
+   7ebfc65 (2026-09-03) -- and then dropping our newer `src/` into it. Its
+   `Tensor-Implementations/Makefile` never defines `BLUBLAS_HAS_SM90`, so the SM90 block was
+   preprocessed away and **every BF16 GEMM took the SM89 legacy path: 21,449 tok/s instead of
+   34,264 (-37%)**.
+   - It is the **tensor** Makefile that compiles the BLAS sources (`BLAS_CPPFLAGS`/
+     `BLAS_NVCCFLAGS`, objects into `lib/objects/blublas`). It never invokes the BluBridge-BLAS
+     Makefile, so that Makefile's `ARCH_DEFINES` is irrelevant in this build path. Patching the
+     BLAS Makefile did nothing; the fix belongs in `Tensor-Implementations/Makefile`.
+   - Fix applied (backup `Makefile.pre_sm90fix`):
+     ```make
+     ifeq ($(SM_ARCH),90)
+       BLAS_CPPFLAGS  += -DBLUBLAS_HAS_SM90
+       BLAS_NVCCFLAGS += -DBLUBLAS_HAS_SM90
+     endif
+     ```
+   - `make` does not treat a Makefile edit as a dependency, so the stale `Bgemm_dispatcher.o`
+     must be deleted by hand or it is silently reused.
+   - **Root cause of the root cause: the 2026-09-09 rescue saved `BluBridge-BLAS/` but not the
+     `Tensor-Implementations/Makefile` above it.** Source was restored; its build wiring was not.
+
+### THE GATE THAT NOW CATCHES THIS — `h188_smoke.sh`
+
+Presence of kernels in a binary is **not** reachability. §H187's 9-check verification passed
+9/9 on the broken build: 4,756 SM90 kernels present, sm_90a image present, H163 pin in machine
+code, libblublas resolving, libtensor calling it -- all true, all useless, because the dispatcher
+could not reach any of it. Only a RUN proves the path.
+
+`h188_smoke.sh` runs 4 steps per arm (~90 s) and hard-fails the campaign on:
+1. any `WARNING|SM89 legacy|not supported|fallback` in the log  <- catches this exact class
+2. the binary's own `[ZeRO-1] variant:` line not showing v2 + symmetric
+3. throughput below 28,000 (a fallback path shows ~21.4k, healthy is ~34-36k)
+4. `mem_alloc` not matching the known-good 4B footprint
+
+Smoke on the broken build: ours FAILED gates 1+3 at 21,491 tok/s in 4 minutes. On the fixed
+build: both arms CLEAN. **Run the smoke gate before every campaign.**
+
+Two verification methods that gave FALSE PASSES and must not be reused:
+- `ldd | grep -c libblublas` counts the line `libblublas.so => not found` as a hit. Grep for
+  `libblublas.so => /` (resolved to a path) and check `=> not found` is zero, under the real
+  `RUN_LD_PATH`.
+- `nm -D` on `libblublas.so` finds 0 device kernels -- they live in the cubin. Use
+  `cuobjdump --dump-elf-symbols`.
+The decisive binary-level check for this guard is: `strings libblublas.so | grep -c "built
+WITHOUT -DBLUBLAS_HAS_SM90"` must be **0**. That string only exists in the `#ifndef` branch, so
+its absence proves the macro was defined. Plus `nm -u Bgemm_dispatcher.o | grep -c SM90` > 0.
+
+### GPU accounting 2026-09-10
+
+8 campaign runs + 2 smoke passes (4 arms) + 1 discarded SM89-fallback run, ~95 min GPU time,
+4B config. Clocks left FREE. Box shared with a colleague throughout; their processes were never
+touched after the incident recorded in [[feedback_ask_permission_for_every_box_action]].
+
+---
+
+## §H190 – §H192  4B STANDALONE, RE-DERIVED AND RE-MEASURED ON A FRESH BOX
+
+Box 86.38.182.106 (`quiet-sun-closes-fin-03`), 2x H200, GPU 1 only (GPU 0 left free), free clocks,
+2026-09-10 14:19-14:28 IST. Artefacts `h192_4b_standalone_2026_09_10/` (360 raw rows).
+
+### §H190 SHAPES RE-DERIVED INDEPENDENTLY, NOT TRUSTED FROM THE STORED LIST
+
+Gautam asked for the shapes to be re-derived from scratch and cross-checked rather than reused.
+Derived from the model config alone (d_model 3072, q/kv 24/8, head_dim 128, ffn_hidden 8192,
+vocab 50304, M = B*T = 2*4096 = 8192) with the standard rules:
+
+```
+  fwd   nn :  X[M,Cin] @ W[Cin,Cout]      ->  M   x Cout x Cin
+  dgrad nt :  dY[M,Cout] @ W^T[Cout,Cin]  ->  M   x Cin  x Cout
+  wgrad tn :  X^T[Cin,M] @ dY[M,Cout]     ->  Cin x Cout x M
+```
+
+5 Linear sites x 3 ops = **15 shapes. EXACT match with `tools/h147_cases.txt`** -- nothing derived
+that is not stored, nothing stored that is not derived. Two facts the derivation *establishes*
+rather than assumes: **gate_up is a single fused GEMM** (Cout = 2*ffn_hidden = 16384), and **Q/O
+share a shape and K/V share a shape**, which is why it is 5 sites and not 7.
+
+### §H191 THE INDEX-MAPPING TRAP (caught before it could corrupt the run)
+
+`tools/h147_cases.txt` addresses variants by INDEX into `examples/h92_all44_list.h`. That table
+grew 103 -> 131 -> 144 -> 570 entries across this project. A shifted index would benchmark a
+DIFFERENT variant than the case file names, and every number would look perfectly reasonable.
+Verified all 15: parsed the 570-entry table, mapped index -> `toupper(lay)_name`, compared to the
+case file. **15/15 match, 0 mismatches.** Several 4B shapes deliberately share an entry (6, 19, 37)
+-- same variant, different shape injected via `H92_M/N/K` -- which is by design, not a bug.
+
+Also verified before spending GPU time (`h193_verify_standalone.sh`, 12 checks + the 15 index
+checks, all PASS): 4/4 TUs exit=0; the binary's SOURCE_SNAPSHOT md5 equals the live repo source
+**and equals the source vendored into the trainer** (`4b0655fd`), so standalone and trainer test
+the same BLAS; sm_90a image present; `blublas_ws::bgemm_sm90_kernel` present; H163 pin string
+present; cuBLAS linked for the `cub` arm; and a functional smoke on GPU 1 producing
+`err=0.000e+00 bad=0` plus a real timed pair from both arms.
+
+### §H192 RESULT — 15 shapes, 12 rounds, alternating arm order, correctness before timing
+
+| shape (MxNxK) | site | lay | ours | cuBLAS | %cuB | 2026-09-09 |
+|---|---|---|---|---|---|---|
+| 8192x8192x3072  | downdgrad     | nt | 910.7 | 857.8 | **106.2%** | 106.2% |
+| 8192x16384x3072 | gate_up fwd   | nn | 903.5 | 866.8 | **104.2%** | 104.4% |
+| 8192x3072x1024  | K/V dgrad     | nt | 759.4 | 735.1 | **103.3%** | 103.2% |
+| 8192x50304x3072 | lm_head fwd   | nn | 835.0 | 818.0 | **102.1%** | 103.1% |
+| 8192x3072x3072  | Q/O proj fwd  | nn | 877.8 | 866.0 | **101.4%** | 101.1% |
+| 8192x3072x3072  | Q/O dgrad     | nt | 870.5 | 859.6 | **101.3%** | 101.4% |
+| 3072x1024x8192  | K/V wgrad     | tn | 843.3 | 837.5 | **100.7%** | 101.2% |
+| 8192x3072x8192  | down fwd      | nn | 918.6 | 916.1 | **100.3%** | 100.4% |
+| 8192x3072x8192  | down wgrad    | tn | 917.3 | 914.7 | **100.3%** | 100.3% |
+| 8192x3072x16384 | gate_up dgrad | nt | 924.4 | 923.6 | **100.1%** |  99.9% |
+| 3072x16384x8192 | gate_up wgrad | tn | 918.3 | 920.9 |  99.7% |  99.2% |
+| 3072x3072x8192  | Q/O wgrad     | tn | 894.4 | 896.7 |  99.7% |  99.9% |
+| 8192x1024x3072  | K/V fwd       | nn | 818.2 | 822.4 |  99.5% |  99.4% |
+| 8192x3072x50304 | lm_head dgrad | nt | 856.8 | 868.4 |  98.7% | **101.5%** |
+| 3072x50304x8192 | lm_head wgrad | tn | 837.6 | 853.4 |  98.2% |  98.2% |
+
+```
+  at or above cuBLAS : 10/15      (2026-09-09: 10/15)
+  mean   %cuBLAS     : 101.03%    (2026-09-09: 101.30%)
+  median %cuBLAS     : 100.29%
+  FLOP-weighted      : 100.30%    (total GEMM time, one of each shape)
+  correctness        : 15/15 PASS, err = 0.000e+00 on every shape
+```
+
+**We beat cuBLAS on the 4B GEMMs, and it reproduces on a different box with a fresh build** --
+12 of 15 shapes agree with yesterday within 0.5 points.
+
+**The one real change: `lm_head dgrad` (8192x3072x50304) fell 101.5% -> 98.7%, -2.8 points.**
+It is the only shape that moved meaningfully and the only one with K = vocab = 50304. OPEN.
+
+### THE NUMBER THAT MATTERS — standalone vs trainer, same box, same binary, same day
+
+| measurement | ours vs cuBLAS |
+|---|---|
+| standalone, per-GEMM (§H192, 14:19-14:28) | **101.03%** -- we WIN |
+| trainer end-to-end at the production regime (§H189, 12:45-13:19) | **96.07%** -- we LOSE |
+
+A **5-point swing**. Previous versions of this contradiction were contaminated by a cross-box
+comparison (§H165 exists precisely because of that). **This one is not**: same box, same binary,
+same source md5 `4b0655fd`, hours apart. The GEMMs are genuinely faster than cuBLAS; the loss is
+between them. That is now the single most valuable open question on 4B, and §H189 established the
+other half of the ground: at the production regime both arms run the SAME ~1633 MHz at the SAME
+~692 W, so this is not a clock or power artefact either.
+
+---
+
+### §H193 – §H196  THE TOOLING BETWEEN THE TWO CAMPAIGNS (no standalone findings)
+
+Recorded so the numbering is continuous and the scripts are traceable:
+
+* **§H193** `h193_verify_standalone.sh` -- post-build verification that the standalone binary
+  actually contains the 15 re-derived cases and that every entry index resolves to the tile the
+  case list names. Ran clean; its purpose was to prevent a repeat of the §H191 index-mapping trap.
+* **§H194** `h194_dispatch_audit.py` -- re-implements Kota's dispatcher decision chain in Python
+  and replays the 4B shapes through it offline. This is what proved the standalone variants are
+  the dispatched ones; the RESULT is written up as §H198.
+* **§H195** `h195_nsys_trainer.sh` -- the profiled-trainer harness (nsys, 15 steps, both arms,
+  distinct `-o` per arm after the overwrite incident).
+* **§H196** `h196_analyze_trace.py` -- trace reducer: kernel classification, launch-count pairing,
+  per-shape roll-up. Feeds §H198, §H203 and §H206.
+
+## §H197 – §H209  THE HYBRID DISPATCHER, AND WHY 4B IS A POWER PROBLEM NOT A SPEED PROBLEM
+
+Box 86.38.182.106 (`quiet-sun-closes-fin-03`), 2x H200, CUDA 13.0.88, 700 W factory cap,
+2026-09-10. All times IST (box runs UTC). Model 4B, B=2, T=4096, global_batch 524288,
+world_size 2, ZeRO-1 **v2 + NCCL symmetric memory** on every arm. Commits `2d271cb`,
+`b249b89` on `GOUTHAM1926/blublas.git`.
+
+### §H197  THE HYBRID WAS NEVER ACTUALLY RUNNING
+
+§H138 built the hybrid -- our kernels driven by HIS selection logic -- but kept it behind
+`BLUBLAS_KOTA_DISPATCH=1`. **Every "hybrid" measurement on 2026-09-09 and 2026-09-10 silently
+ran the RETIRED tier-1 table + tier-2 tree instead**, because no run script set the flag, and
+nothing in any log revealed which dispatcher was active. §H138 had already measured both on
+600M: his selection 97.2% of cuBLAS, our table 95.6%, on identical kernels.
+
+Also re-hit §H137's `BLUBLAS_HAS_SM90` defect from scratch (21,449 tok/s, -37%) and spent
+~2 hours rediscovering a bug the document already recorded. Root cause of that: it is the
+**Tensor-Implementations** Makefile that compiles the BLAS sources (`BLAS_CPPFLAGS` /
+`BLAS_NVCCFLAGS`, objects into `lib/objects/blublas`); it never invokes the BluBridge-BLAS
+Makefile, so that file's `ARCH_DEFINES` is irrelevant in this build path.
+
+**FIXED, and the flag is gone.** `Bgemm_sm90_dispatcher.cu` 428 -> 361 lines:
+`do_nn/do_nt/do_tn` deleted, the dispatch-table header no longer included (so `kTable_*` and
+`tree_*` do not compile), all three entry points unconditionally delegate to the `_kota`
+exports, and a one-time stderr banner names the active dispatcher so a run log can never again
+be silent about it:
+
+    [BluBLAS] SM90 dispatcher: KOTA (hybrid) -- our kernels, his selection
+
+`addmm` untouched -- it uses `sm90_addmm_pick_bn` and never read the table.
+
+**Hybrid, measured (ms15, nsys, 4B):** 34,264 (old dispatcher) -> **35,447** (hybrid), +3.5%.
+That also explains the unexplained 35,605 from 2026-09-09 morning: it was the hybrid, run with
+the flag set by hand before the scripts that dropped it.
+
+### §H198  THE VARIANTS THE TRAINER RUNS ARE THE ONES STANDALONE BENCHMARKS -- 8/8
+
+Full `Sm90WarpspecConfig` template args + layout from the nsys trace, against
+`tools/h147_cases.txt`. **8/8 match, tile AND layout, nothing missing either direction.**
+
+| layout | tile | cluster | % GPU |
+|---|---|---|---|
+| NN | 128x256x64 | 1x1 | 18.73 |
+| NT | 128x256x64 | 1x1 | 13.85 |
+| TN | 128x256x64 | 1x1 | 12.92 |
+| NT | 192x128x64 | 1x1 | 4.35 |
+| TN | 192x192x64 | 1x1 | 3.32 |
+| TN | 192x128x64 | 1x1 | 1.15 |
+| NN | 256x128x64 | 1x1 | 0.78 |
+| TN | 256x128x64 | 1x1 | 0.71 |
+
+Template args confirm the tuning is live: `PROD_REGS=40 CONS_REGS=232 depth=3` on the 128x256
+family -- the `_regsplit` setmaxnreg pair. §H141 already recorded that the case list was built
+from **his** dispatcher's choices (45/45, proven by nsys and by re-implementing his chain in
+Python), which is why they agree. **The "dispatcher picks worse variants" theory is dead.**
+
+### §H203  THE SAME KERNEL IS ~20% SLOWER INSIDE THE TRAINER -- FOR BOTH LIBRARIES
+
+Kernels paired by **identical launch count**; the trainer issues each call site
+`36 layers x 32 grad_accum x 15 steps x 2 ranks = 34,560` (and 69,120 where K and V share a
+shape), so an exact count match identifies the same call site with no inference.
+
+| site | ours trainer/standalone | cuBLAS trainer/standalone |
+|---|---|---|
+| downdgrad | 720.2 / 910.7 = **79.1%** | 705.1 / 857.8 = **82.2%** |
+| K/Vwgrad | 679.7 / 843.3 = **80.6%** | 691.5 / 837.5 = **82.6%** |
+| lm_headfwd | 741.7 / 835.0 = **88.8%** | 769.6 / 818.0 = **94.1%** |
+
+**~20% is lost by both libraries.** It is nearly symmetric, so it cancels out of the ratio
+(ours vs cuBLAS: 104.6% standalone -> 100.7% in-trainer) -- which is why it stayed invisible.
+`lm_headfwd`, by far the longest kernel (3.4 ms/call vs 0.07-0.6 ms), loses least: the
+signature of a FIXED PER-CALL cost. **PARKED**: it hits cuBLAS equally, so it does not move our
+competitive position.
+
+### §H204  CACHE STATE IS NOT THE CAUSE -- clean negative
+
+Added `H92_FLUSH` to the standalone harness: unset = byte-identical legacy path; `0` =
+per-iteration timing, no flush; `1` = per-iteration timing + a 256 MB write (H200 L2 = 60 MB)
+before each timed GEMM, launched outside the timed window. Warm and cold therefore use the
+SAME timing method and differ only in cache state.
+
+**Mean cold/warm = 100.7% over 15 shapes**, everything within +-4%. If cache explained the
+~20% we would have seen ~80%. **Ruled out.**
+
+### §H205  CLOCK EXPLAINS ONE THIRD OF IT, NOT ALL
+
+Standalone free-clock telemetry: **1915 MHz, 135 W** (short bursts with host syncs, nowhere
+near the cap). Trainer: **1635 MHz, 690 W**. Locking standalone to the trainer's 1635 MHz:
+
+    downdgrad  free 910.6 -> locked 833.6 (91.5%)  -> in-trainer 720.2 (86.4% of locked)
+
+So of the 21% total: **~8.5% is clock, ~13.6% is not.** Consistent across all three shapes
+(113.6-115.7% locked/in-trainer). At the SAME 1635 MHz standalone draws 121 W and the trainer
+690 W -- the remainder is other work resident alongside the GEMM. Not pursued further (see
+§H203 PARKED).
+
+### §H206  THE FULL GEMM ACCOUNTING -- 128x256 IS 93% OF THE DEFICIT
+
+Both nsys traces, same box, same hour, only `WITH_BLUBLAS` differing. Paired by launch count,
+including the two sites where cuBLAS SPLITS one of our kernels into two
+(187,200 + 37,440 = our 224,640; 69,120 + 960 = its 70,080):
+
+| launches | our tile | ours ms | cuBLAS tile(s) | cuBLAS ms | loss |
+|---|---|---|---|---|---|
+| 224,640 | NN 128x256 | 85,261 | 256x128 NNT + 192x192 NNN | 83,368 | **+1,893** |
+| 69,120 | TN 128x256 | 58,844 | 128x256 NTN | 57,234 | **+1,610** |
+| 173,760 | NT 128x256 | 63,043 | 256x128 TNT | 61,542 | **+1,501** |
+| 70,080 | TN 192x192 + 256x128 | 18,334 | 192x192 NTN | 17,746 | +588 |
+| 69,120 | TN 192x128 | 5,241 | 128x192 NTN | 5,152 | +89 |
+| 1,040 | NN 256x128 | 3,550 | 192x192 NNN | 3,422 | +129 |
+| 34,560 | NT 192x128 | 19,785 | 320x128 TNT | 20,209 | **-424 WIN** |
+| | | **254,058** | | **248,672** | **+5,386** |
+
+The losses sum to **exactly** +5,386 ms; nothing unexplained. **Our 128x256x64 accounts for
++5,004 of it = 93%**, across all three layouts. On 192x128 we BEAT cuBLAS.
+
+### §H207  TILE CHOICE IS NOT THE PROBLEM -- clean negative
+
+10 of the 15 shapes route to 128x256. Benchmarked each against `256x128_2WG`, `192x192` and
+`192x128` (all already in the binary, no rebuild). **Mean available gain from switching:
++0.67%.** `192x128` edges ours on 8/10 but by 0.1-2.1%. Notably **`192x192` -- which cuBLAS
+picks for several of these sites -- is far WORSE for us** (695-835 vs our 763-931), so his tile
+choices are not transferable. **128x256 is the right tile.**
+
+### §H208  RESOURCES ARE IDENTICAL -- BUT EVERY cuBLAS KERNEL USES A CLUSTER AND NONE OF OURS DOES
+
+Registers and shared memory per launch, read from both nsys traces (works for cuBLAS too,
+whose source we do not have):
+
+    OURS   128x256x64 c1x1    REG 168  dynSMEM 218.1K  block 384  96.1% of SM
+    cuBLAS 128x256    2x1_v   REG 168  dynSMEM 218.1K  block 384  95.7% of SM
+
+Identical footprint -- co-residency is ruled out; neither can share an SM.
+
+**The real difference is the cluster.** Every cuBLAS kernel: `2x1_v`, `1x2_h`, `1x2_h`,
+`1x2_h`, `2x1_v`. **All 8 of ours: cluster 1x1.** Clusters give multicast TMA -- one DRAM
+fetch feeds two CTAs instead of two fetches -- i.e. **less memory traffic, which is less
+power**. Clustered 128x256 variants already exist in the binary and have never been tested on
+these shapes: NN 15/52/53, NT 2/63/64, TN 28/74. **OPEN, and now the top lead** (see §H209).
+
+### §H209  THE HEADLINE: AT EQUAL CLOCK WE BEAT cuBLAS. THE ENTIRE DEFICIT IS POWER.
+
+Four runs, one box, one hour, locked to 1410 MHz so **neither arm is power-limited**
+(lock held, below-lock 0.0% in all four):
+
+| arm / regime | power @1410 MHz | tok/s |
+|---|---|---|
+| cuBLAS ms20 | 596.5 W | 34,409.8 |
+| cuBLAS ms2000 | 615.3 W | 34,393.7 |
+| **ours ms20** | **622.9 W** | **34,739.5** |
+| **ours ms2000** | **630.6 W** | **34,751.7** |
+
+```
+  at equal clock:  ms20 100.96%   ms2000 101.04%   of cuBLAS   -- WE WIN
+  our power cost:  +4.42% at ms20
+  free clocks   :  ours 98.3% of cuBLAS            -- WE LOSE
+```
+
+**Our kernels are ~1% faster per cycle than cuBLAS's, in the real trainer, and we pay +4.42%
+power for it.** At the 700 W cap that buys 28 MHz less clock (1635 vs 1663 = -1.7%), which is
+almost exactly the swing from +1.0% to -1.7%.
+
+**4B is not a speed problem. It is a power problem. Making the kernels faster cannot help --
+they are already faster. Cutting power per cycle is the entire lever.**
+
+### THE max_steps REGIME QUESTION, CLOSED
+
+Free clocks, all four pinned at the cap 100% of the time:
+
+| | clock | power |
+|---|---|---|
+| cuBLAS ms20 | 1663 MHz | 694.0 W |
+| cuBLAS ms2000 | 1633 MHz | 689.5 W |
+| ours ms20 | **1635 MHz** | 693.7 W |
+| ours ms2000 | 1631.5 MHz | 693.8 W |
+
+**We are already at 1635 MHz at ms20 -- the clock cuBLAS only falls to at ms2000.**
+
+The data genuinely differs between regimes and identically for both arms: `grad_norm` median
+**5.4** at ms20 (warmup 2, lr 3e-4) vs **21.1** at ms2000 (warmup 200, lr 2e-5), reproducible
+to 3 decimals across runs. At the locked clock that heavier data costs **cuBLAS +3.16%** power
+and **ours +1.24%** -- ours less, because our power is already dominated by our own per-cycle
+overhead so the data-dependent share is a smaller fraction of a bigger total. Then at the cap:
+cuBLAS has 28 MHz of headroom to surrender (-2.28% throughput); we are already on the floor
+(-0.53%).
+
+**Our apparent "insensitivity" to the regime is not a virtue -- it is the signature of being
+harder power-limited.** This CORRECTS §H189's framing, which reported "ours is 4.3x less
+sensitive" as a property of our BLAS.
+
+### THE WORK LIST THAT FOLLOWS
+
+Goal restated: **at a fixed power cap, throughput = work-per-cycle x cycles-per-second, and
+cycles-per-second is set by power-per-cycle.** We already win work-per-cycle. Every redundant
+instruction is clock we are not getting.
+
+1. **Close the +4.42% power gap.** Standing lead: our kernels issue far more integer/vector
+   instructions than cuBLAS's (7.5x integer, +1.25 B/launch, IPC 1.78x -- `project_instruction_
+   track_refuted`, `feedback_vector_not_total_instructions`). Now it has a measured payoff:
+   -4.42% power at equal clock would put us at ~101% end-to-end instead of 98.3%.
+2. **Test the clustered 128x256 variants (§H208).** Multicast TMA halves the DRAM fetches for
+   a tile pair -- directly on the power lever, and the variants already exist.
+3. Not a target: the ~20% in-trainer loss (§H203) -- symmetric across libraries.
+
+### METHOD NOTES WORTH KEEPING
+
+* **A trace is destroyed by reusing `-o`.** The first hybrid nsys trace was overwritten by the
+  cuBLAS run because both used `-o h197_hybrid`. Every run gets its own name.
+* **Our SM90 kernels are PERSISTENT** -- grid is `132x1x1` (= SM count) for every shape, so the
+  launch grid does NOT encode M,N. Shape attribution must come from launch counts or
+  `BLUBLAS_TRACE`, never from grid dims.
+* **Pairing by identical launch count** is the reliable way to match call sites across two
+  arms; it needs no shape inference and it caught the two sites where cuBLAS splits one of our
+  kernels into two.
+* `nsys stats --report cuda_gpu_trace` carries `Reg/Trd`, `StcSMem`, `DymSMem` per launch --
+  resource footprints for closed-source cuBLAS kernels without any cuobjdump.
+* **Never reuse a number from a released box.** §H184's cuBLAS locked-power figures were from
+  95.133.254.191; §H209 re-measured all four arms on the current box rather than reuse half.
