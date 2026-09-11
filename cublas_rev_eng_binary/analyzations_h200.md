@@ -33528,3 +33528,60 @@ cluster (1x2_h or 2x1_v); all eight of ours run cluster 1x1.** A cluster enables
 TMA -- one DRAM fetch feeding two CTAs instead of two fetches. That is a different data
 movement structure, not a quantity of work, which is exactly the category every null above
 points to.
+
+### §H224  THE CLUSTER HYPOTHESIS, TESTED EXHAUSTIVELY AND REFUTED
+
+**THE ENABLER.** Every A/B so far cost a 13-minute rebuild because the config is a compile-time
+template parameter reached only through the dispatcher. That made a cluster sweep look like
+hours of builds. It was never necessary: the library **already exports 1,577 `extern "C"` entry
+points -- 1,409 of them clustered, 393 on 192x192 alone** -- one per registered config, all
+sharing the same 13-argument signature. Unreachable through the dispatcher, which selects
+exactly one; perfectly reachable by `dlsym`. `examples/h224_sweep.cu` opens the library and
+calls any variant by name, so the whole configuration space is now testable in minutes with no
+rebuild at all.
+
+**THE SHAPE.** `tn 3072x3072x8192` (Q/O wgrad) is the ONLY production shape where cuBLAS uses
+our exact tile: `nvjet_sm90_tst_192x192_64x3_1x2_h_bz_coopB_NTN` -- 192x192, cluster 1x2, where
+ours is 1x1, and we measure +6.00% power there. Same tile, same shape, one structural
+difference. It is also clean geometrically: 3072/192 = 16 tiles on BOTH axes, so every cluster
+size divides evenly and none pays the round-up penalty that makes cluster comparisons dishonest
+elsewhere.
+
+**ALL 16 VARIANTS BIT-EXACT.** Locked 1200 MHz, 0.0% below-lock on every row, independent
+operands, 3 rounds each, ~2.5 s of sustained work per measurement.
+
+| variant | power | TFLOPS | TFLOPS/W |
+|---|---|---|---|
+| **1x1 `template`** | **517.8 W** | **597.8** | **1.154** |
+| 1x1 `ncw3` (production) | 519.6 W | 583.9 | 1.124 |
+| 1x2_h (cuBLAS's orientation) | 520.0 W | 579.1 | 1.114 |
+| 1x2_v | 515.3 W | 576.9 | 1.119 |
+| 2x1_h | 507.4 W | 574.2 | 1.132 |
+| 2x1_v | 510.9 W | 573.9 | 1.123 |
+| 2x2_h / 2x2_v | 368.8 / 374.6 W | 390.1 / 391.5 | ~1.05 |
+| 1x4_h / 1x4_v | 372.8 / 378.0 W | 388.2 / 388.7 | ~1.04 |
+| 4x1_h / 4x1_v | 376.6 / 375.2 W | 389.4 / 392.1 | ~1.04 |
+| 2x4, 4x2 (both orientations) | 359-365 W | 389-392 | ~1.08 |
+| **cuBLAS** | **484.2 W** | **594.5** | **1.228** |
+
+**REFUTED, AND NOT NARROWLY.** Every cluster orientation is SLOWER than our own 1x1 and none is
+meaningfully cheaper. Clusters of 4 or more CTAs lose **35% of throughput**. The best cluster
+(2x1_h) saves 2.0% power and gives up 4.0% throughput -- a bad trade under a power cap, where
+the point of saving power is to buy clock back.
+
+**AND THE DECISIVE POINT:** cuBLAS runs `1x2_h` on this exact tile and gets 594.5 TFLOPS at
+484.2 W. **Our** `1x2_h` gets 579.1 at 520.0 W. Copying their cluster does not reproduce their
+efficiency, so **the cluster is not where their advantage comes from.** The standing
+observation that "every cuBLAS kernel uses a cluster and none of ours does" was a true
+observation and a false lead.
+
+**cuBLAS's real position on this shape:** 1.228 TFLOPS/W against our best 1.154 -- **6.4% more
+efficient at the same speed**, with the same tile. That is the gap, and it is not clusters, not
+instructions, not the k-loop, not the epilogue, and not any work quantity we can measure.
+
+**SIDE-FINDING WORTH FOLLOWING UP:** the plain `192x192x64_template` is **2.4% faster than the
+production `ncw3` variant** (597.8 vs 583.9 TFLOPS) at the same power. NCW=3 was adopted on a
++3.1/+3.6% measurement in a different context; on this production shape it costs 2.4%. Not a
+clean single-variable A/B (the two entry points may differ in more than NCW), so it needs a
+proper matched comparison before anything is changed -- but the dlsym harness makes that cheap
+now.
