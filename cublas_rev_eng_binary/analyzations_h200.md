@@ -33346,3 +33346,45 @@ exactly where the deficit now sits, and odd-tile waste has bitten before.
    configs. The epilogue is now the indicated term.
 2. Re-measure DESC_HOIST's power on fill=3 to get its true magnitude.
 3. Only then revisit anything in the k-loop.
+
+### §H220  EPI_USE_STSM: REJECTED -- IT IS NOT SLOW, IT IS WRONG
+
+The corrected K-sweep put the cost per-TILE, and we had a directly observed epilogue
+difference (our SASS emits plain `STS`, cuBLAS emits `STSM`), so stmatrix was the indicated
+first test. Its three `static_assert` preconditions are all satisfied by the production
+configs: `EPI_SWIZZLE_BYTES` 128 (non-zero), `C_BOX_N` 64 (`== EPI_SPAN*8`), `EPI_TILE_N` 0
+(a multiple of 32).
+
+**Result: the flag applied correctly and the kernel computes garbage.**
+
+    template args: arm A arg[20]=0, arm B arg[20]=1, and NOTHING else differs
+    correctness, all 15 production shapes, independent operands:
+        err 9.0 - 10.9 (scale-normalised), ~24.9 M of 25.2 M elements wrong on the 8192x3072
+        shapes, 407 M of 412 M on lm_head. Every shape, every layout.
+
+**So `EPI_USE_STSM` has a precondition that its own asserts do not capture.** It compiles
+clean, passes all three guards, and is silently incorrect on every config the production
+dispatcher selects. The §H127-era "1.93x on the store" measurement was presumably taken on a
+config where the path is valid; it is not valid here.
+
+**TWO PROCESS POINTS, both of which earned their keep today:**
+
+1. **The correctness gate is what caught this.** Had the A/B gone straight to timing it would
+   have reported a power number for a kernel producing wrong results. "A faster wrong kernel
+   is not a result" is not a slogan -- this is the case it exists for.
+2. **The template-argument check is what made the FIRST attempt interpretable.** The initial
+   build put the default on the template signature, where it is evaluated on the BASE config
+   (C_BOX_N and EPI_SWIZZLE_BYTES both still 0), so it read false and was carried through
+   `Sm90EpiSwzRebind` unchanged. The build succeeded, the flag was still off, and a timing run
+   would have shown a clean null -- indistinguishable from "stmatrix does not help". The fix
+   was to set it inside the rebind, which is the only place the preconditions hold.
+
+**STATUS: `EPI_USE_STSM` is off and stays off.** Reopening it means debugging the stmatrix
+epilogue's addressing, not flipping a flag. Logged against
+[[project_stmatrix_reopen]], which had it as an open lead on the strength of cuBLAS using 414
+STSM in its epilogue -- that lead is now known to be blocked on a correctness bug, not on
+measurement.
+
+**The epilogue remains the indicated term** (per-tile cost, +7.04% at 16 k-iterations falling
+to +0.25% at 256). Remaining untested epilogue knobs on the production configs, all currently
+off: `EPI_TILE_N`, `EPI_STAGES`, `EPI_ROWS`, `EPI_A1B0`, `EPI_DIRECT_STG`, `EPI_WARP_LOCAL`.
