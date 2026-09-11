@@ -33303,3 +33303,46 @@ Periodic or correlated operands change dynamic power by tens of percent and do s
 asymmetrically between kernels with different tile strides. Use independent, full-period
 random operands with DIFFERENT seeds per matrix, and re-measure any power result taken any
 other way.
+
+### §H219c  THE K-SWEEP REVERSES: THE COST IS PER-TILE, NOT PER-K-ITERATION
+
+§H213 concluded "the cost is the k-loop body" from parity at K=1024 and +42.6% at K>=4096.
+Re-run with independent operands at a locked, uncapped 1200 MHz (0.0% below-lock on every
+row), same M=8192, N=3072, same kernel:
+
+| K | k_iters | ours | cuBLAS | gap |
+|---|---|---|---|---|
+| 1024 | 16 | 486.7 W | 454.7 W | **+7.04%** |
+| 2048 | 32 | 506.9 W | 477.1 W | +6.25% |
+| 3072 | 48 | 514.3 W | 501.8 W | +2.49% |
+| 4096 | 64 | 517.4 W | 506.9 W | +2.07% |
+| 8192 | 128 | 519.6 W | 516.6 W | +0.58% |
+| 16384 | 256 | 520.2 W | 518.9 W | **+0.25%** |
+
+**THE GAP SHRINKS MONOTONICALLY WITH K -- the exact opposite of §H213.** At 16 k-iterations we
+are +7.04%; at 256 we are +0.25%. A cost that dilutes as the k-loop grows is a **per-tile
+fixed cost -- prologue, epilogue, tile scheduling -- not per-iteration work.**
+
+**§H213, §H214 and §H215 are therefore WITHDRAWN as causal claims.** The instruments were
+sound and the arithmetic was right; the INPUT was not, and it inverted the sign of the
+K-dependence. What survives from them:
+
+* the per-instruction census method (differencing two K values, aligning by address offset,
+  normalising embedded branch addresses) -- still the right technique;
+* the measured instruction-to-power coefficient (0.026% power per 1% instructions) and its
+  conclusion that instruction count is not the power term -- a within-arm ratio, unaffected;
+* DESC_HOIST as a keep on its own merits: -21.9% instructions, tensor bit-identical, 15/15
+  bit-exact, 16/16 shapes lower power. Its magnitude needs re-measuring on fill=3.
+
+**WHERE THE POWER ACTUALLY IS, on corrected data:** the per-tile fixed cost, concentrated in
+**192x128 (+11.20%)**, **192x192 (+6.00%)** and the two **256x128** lm_head shapes
+(+4.5 to +4.7%). Note 192x128 on M=8192 needs ceil(8192/192) = 43 tile-rows covering 8256
+rows, so ~0.8% of the M extent is quantisation waste -- small, but this tile family is
+exactly where the deficit now sits, and odd-tile waste has bitten before.
+
+**NEXT MEASUREMENTS, in order:**
+1. An epilogue-focused A/B on 192x128 and 192x192 -- `EPI_USE_STSM`, `EPI_TILE_N`,
+   `EPI_SWIZZLE_BYTES`, `EPI_A1B0` all exist as knobs and all are off on the production
+   configs. The epilogue is now the indicated term.
+2. Re-measure DESC_HOIST's power on fill=3 to get its true magnitude.
+3. Only then revisit anything in the k-loop.
