@@ -33643,3 +33643,50 @@ efficiency advantage comes from.
 394 s without completing and had to be killed -- the `slp` arm is `MBAR_SLEEP_TICKS`, whose
 implementation §H39 already records as engaging but losing. A sweep over the registry needs a
 per-variant timeout; one hung config should not stall 95 remaining measurements.
+
+### §H225  IS THE DISPATCHER PICKING THE BEST CONFIG WE ALREADY HAVE? -- 131 variants swept
+
+Kota's dispatcher selects ONE config per shape. `project_dispatched_not_best` records that this
+has been wrong before ("a tuned variant already in the tree beat it 6/6 by up to +10.5%; only
+~96 of 510 tn configs have ever been measured"). The dlsym harness makes the question cheap, so
+all 131 callable `tn 192x192x64` variants were run on the production shape
+`tn 3072x3072x8192`, correctness-gated, locked 1200 MHz, and ranked by TFLOPS/W.
+
+**THE SCREEN AND THE CONFIRM DISAGREED, which is the whole reason for two passes.** The screen's
+best non-cuBLAS entry (`2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_ea96s1`, 1.1651 TF/W) fell to 1.1485
+on three rounds -- from first to fifth. A single-round ranking of 131 variants will always
+promote whichever ones caught a favourable sample.
+
+| variant | power | TFLOPS | TF/W | spread |
+|---|---|---|---|---|
+| **cuBLAS** | 488.2 W | 594.6 | **1.2180** | 2.3 W |
+| **2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_wl** | 517.3 W | 599.9 | **1.1596** | 5.0 W |
+| 2x1_h_ea32s2stsm_rs8_dh_ubd_skew | 517.0 W | 596.2 | 1.1531 | 3.1 W |
+| 2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_ea96s1 | 522.6 W | 600.2 | 1.1485 | 0.2 W |
+| 2x1_h_ea32s3stsm_rs8_dh_ubd_skew | 522.7 W | 596.1 | 1.1404 | 5.0 W |
+| 2x1_h_ea32s4stsm_rs8_dh_ubd_skew | 523.0 W | 596.2 | 1.1399 | 3.5 W |
+| **production `_template` (dispatched)** | 523.6 W | 596.5 | **1.1393** | 2.1 W |
+
+**CANDIDATE: +0.57% throughput and -1.2% power over the dispatched config = +1.8% efficiency.**
+
+**NOT YET A RESULT.** The same production config measured **517.8 W** in the §H224 sweep an hour
+earlier and **523.6 W** here -- 1.1% run-to-run drift -- and the candidate's own spread is 5.0 W.
+A +1.8% claim resting on ~1% noise at 3 rounds requires a 12-round paired crossover before any
+pin changes. Logged as a candidate, not a win.
+
+**AND IT VINDICATES THE COMBINATION ARGUMENT.** The winner is a **2x1_h CLUSTER** stacked with
+`rs8_dh_ubd_dw_skew_lsw_pdl_wl`. §H224 measured the cluster ALONE as a loss (579.1 TFLOPS
+against 597.8 for 1x1). In combination it is the best variant on the tile. **A knob measured
+alone and rejected is not a knob rejected in combination** -- the same lesson the 256x128
+dead-work stack taught (+1.95 as a full stack, nulls individually).
+
+**TWO REGISTRY DEFECTS FOUND BY THE SWEEP:**
+
+* **2 configs compute WRONG ANSWERS**: `1x2_v_rs1_dh_ubd_dw_skew_lsw_pdl_wlsm_frozen` and
+  `2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_frozen` -- both carry `DESC_FROZEN`. That knob is broken on
+  this tile, exactly as `EPI_USE_STSM` was, and for the same structural reason: validated on one
+  config, never re-checked on another family.
+* **5 configs HANG** (60 s timeout, killed): `2x1_h_rs8_dh_ubd_skew_lsw_tk50k`, `2x1_h_rs8_slp`,
+  `2x1_h_slp100k`, `2x1_h_slp20k`, `2x1_v_slp`. All are `MBAR_SLEEP_TICKS` arms. §H39 recorded
+  that mechanism as "engages but loses"; it also does not terminate on this shape. They should
+  be unregistered or fixed -- a config that hangs is worse than one that is slow.
