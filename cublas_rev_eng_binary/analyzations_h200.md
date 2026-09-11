@@ -33690,3 +33690,99 @@ dead-work stack taught (+1.95 as a full stack, nulls individually).
   `2x1_h_slp100k`, `2x1_h_slp20k`, `2x1_v_slp`. All are `MBAR_SLEEP_TICKS` arms. §H39 recorded
   that mechanism as "engages but loses"; it also does not terminate on this shape. They should
   be unregistered or fixed -- a config that hangs is worse than one that is slow.
+
+---
+
+### §H226  THE CANDIDATE IS CONFIRMED -- 12-round paired crossover WITH a null control
+
+§H225 ended with a candidate and an explicit refusal to call it a result: the production
+config drifted 1.1% run-to-run (517.8 W in the sweep, 523.6 W an hour later) and the
+candidate's own spread was 5.0 W, so a +1.8% claim at 3 rounds was resting on noise.
+`feedback_paired_null_instrument` says the same thing in general form: **a 6-round ABBA once
+gave t=4.63 on a NULL.** So the gate is 12 rounds, crossover (run the pair both ways), and a
+null control in the same session.
+
+**THE INSTRUMENT** -- `tools/h226_paired.sh`, blublas commit `bd10680`.
+
+* shape `tn 3072x3072x8192` (the 192x192 production site)
+* **A** = `blublasBgemmSM90_bf16_tn_192x192x64_template` (what the dispatcher picks today)
+* **B** = `blublasBgemmSM90_bf16_tn_192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_wl_template`
+* clocks LOCKED 1200 MHz, `H211_FILL=3` (independent splitmix64 per matrix -- the §H212b
+  operand-artifact fix), power window from `LOOPWIN` with `utilization.gpu >= 95`
+* 12 rounds, alternating **ABBA / BAAB** so order cannot be confounded with arm
+* one config per process (`project_test2_measurement_traps`)
+* then the **null control**: the identical harness, A against A, 12 more rounds
+
+**RESULT -- REAL PAIR (A vs B):**
+
+```
+--- real : template  vs  2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_wl_template
+    clock 1200 MHz, max below-lock 0.0%
+    power        mean  -0.339%   sd 0.244   se 0.071   t =  -4.80   n=12
+    throughput   mean  +0.538%   sd 0.058   se 0.017   t = +32.24   n=12
+    per-round power deltas: -0.49 -0.08 -0.40 -0.37 -0.35 -0.13 -0.61 -0.80 -0.01 -0.04 -0.29 -0.51
+    VERDICT: significant (|t|>3)
+```
+
+**RESULT -- NULL CONTROL (A vs A):**
+
+```
+--- null : template  vs  template
+    clock 1200 MHz, max below-lock 0.0%
+    power        mean  -0.086%   sd 0.591   se 0.171   t =  -0.50   n=12
+    throughput   mean  -0.011%   sd 0.132   se 0.038   t =  -0.30   n=12
+    per-round power deltas: +0.11 -0.36 -0.01 -0.11 +0.13 -0.67 -1.44 -0.33 +0.73 +0.72 +0.28 -0.09
+    VERDICT: NOT significant (|t|<=3)
+```
+
+**READ IT IN THIS ORDER.**
+
+1. **The null came out null.** t = -0.50 on power, t = -0.30 on throughput. The instrument is
+   not manufacturing significance out of drift. This is the check §H47's V2c never had, and
+   without it the real pair's t = -4.80 would be worth nothing.
+2. **The null tells you the noise floor honestly.** Its power sd is **0.591%** -- more than
+   twice the real pair's 0.244% -- and it contains a -1.44% round. That single round is larger
+   than the entire real effect. **Any 3-round comparison on this shape can produce a 1.4%
+   phantom.** §H225's +1.8% was exactly that size. The candidate survived anyway, but it
+   survived because 12 rounds averaged the phantom out, not because 3 rounds were good enough.
+3. **Throughput is the strong signal, not power.** t = +32.24 with sd 0.058% -- the candidate is
+   faster on every round by an almost identical margin. Power is the weaker of the two
+   (t = -4.80, sd 0.244) but is **negative in 12 of 12 rounds**, and a 12/12 sign run is
+   p = 1/4096 on its own, independent of the t-statistic.
+4. **Both metrics move the right way together.** +0.538% throughput at -0.339% power is
+   **+0.88% efficiency (TF/W)**. §H225's 3-round guess was +1.8%; the honest number is half
+   that. Quote **+0.88%**, and never §H225's figure again.
+
+**WHAT THIS DOES AND DOES NOT MEAN FOR THE 2.73% GAP.**
+
+It is +0.88% efficiency on **one shape at one tile**. The FLOP-weighted gap to cuBLAS is
++2.73%, and 192x192 is +6.00% of it. This closes a slice, not the gap. It is also measured
+standalone; `project_4b_standalone_wins_trainer_loses` is on record that a standalone win can
+fail to reach the trainer, so **this is not pinned yet** -- pinning waits on a trainer A/B, the
+same rule that held V2c back in `project_v2c_pin_regated`.
+
+**THE FINDING THAT GENERALISES.** The winner is a **2x1_h cluster in combination** with
+`rs8_dh_ubd_dw_skew_lsw_pdl_wl`. §H224 measured every cluster orientation ALONE and refuted all
+seven -- 2x1_h ran 579.1 TFLOPS against 597.8 for 1x1, and §H224b confirmed the multicast really
+was active (DRAM -5.1%) and really did cost more cycles than it saved. That refutation stands
+**in isolation** and is now known to be the wrong test to have run alone. The same pattern has
+now appeared three times:
+
+* 256x128 dead-work: every knob a null individually, +1.95% as a full stack
+* 128x256: `dh` alone +0.37% (7/7, p=0.016) where the stack did nothing
+* 192x192: the cluster a clear loss alone, the best config on the tile in combination
+
+**So the one-knob-at-a-time sweep is structurally unable to find these.** Six work-removals were
+measured one at a time and all came back null (§H216--§H222); that does not mean the mechanisms
+are dead, it means single-knob A/B is the wrong instrument for a coupled pipeline. The
+131-variant combination sweep found in one pass what six careful single-knob experiments missed.
+**Future variant work runs combinations first and isolates only to explain a winner.**
+
+**STATE AFTER THIS SECTION.**
+
+* Confirmed, not yet pinned: `2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_wl` on `tn 3072x3072x8192`
+* Validated keeper, not yet pinned: `DESC_HOIST` (-0.43% power, 14/15 shapes, bit-exact, §H222)
+* Landed: the §H221 stmatrix column-chunk correctness fix
+* Open defects: 2 `DESC_FROZEN` configs compute wrong answers, 5 `MBAR_SLEEP_TICKS` configs hang
+* Not yet run: the same 131-variant combination sweep on 128x256, 192x128 and 256x128 --
+  128x256 alone serves 10 of the 15 production shapes, so it is the highest-value target left
