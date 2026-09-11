@@ -33062,3 +33062,101 @@ long K** -- zero code change required.
 3. The cluster test (ours c1x1 vs cuBLAS 1x2) -- still never run.
 
 Validate every one on POWER at a locked clock with a 12-round crossover, never on time.
+
+### §H216 – §H217  DESC_HOIST: THE CAUSE WAS RIGHT, THE PAYOFF IS SMALL, AND THE INSTRUCTION TRACK IS NOW CLOSED BY MEASUREMENT
+
+**WHAT WAS FOUND IN OUR OWN SOURCE.** All 15 production shapes were measured running with
+`DESC_HOIST=0, DESC_WALK=0, UNIFORM_A_DESC=0, UNIFORM_B_DESC=0` -- three tile families, all
+four knobs off. Our own comments say what that means:
+
+* §H89d: *"his HOIST_DESC=false does NOT mean 'rebuild the descriptor' -- his code builds it
+  once per chunk and ADVANCES it by an add on every k-step. He has no re-encode-per-step mode
+  at all. OUR 'neither' is a full make_gmma_desc every (ks,nc). Mapping his false onto our
+  false compared his best baseline against our worst."*
+* §H99: *"we recompute desc_encode_sm90 -- mask 0x3fc00, shift right 4, OR the layout bits --
+  for EVERY wgmma, and those LOP3/SHF sit directly in the dependency chain."*
+
+That matches §H215 exactly: LOP3.LUT + SHF.R.U32.HI + R2UR + IMAD.MOV + VIADD.
+
+**THE A/B.** Two libraries differing in exactly one template parameter (`-DBLUBLAS_DEFAULT_
+DESC_HOIST=true`), same entry point, same dispatcher choice. Kota's configs spell the flag out
+explicitly and were untouched.
+
+| pipe | A (dh=0) | B (dh=1) | change |
+|---|---|---|---|
+| total | 78,876,456 | 61,574,124 | **-21.9%** |
+| alu | 22,054,815 | 17,336,016 | -21.4% |
+| fma | 8,337,744 | 5,978,448 | -28.3% |
+| uniform | 27,333,060 | 20,255,172 | -25.9% |
+| **tensor (CONTROL)** | **3,145,728** | **3,145,728** | **0.00% -- exactly identical** |
+
+**17.3 M instructions removed per launch with the tensor pipe bit-identical**, and **15/15
+production shapes bit-exact**.
+
+**THE POWER RESULT: -0.57%.** 16 shapes, locked 1400 MHz, 4-round ABBA crossover.
+**16/16 shapes lower** (sign test p ~ 1.5e-5, so the direction is certain), throughput +0.12%.
+
+**VERDICT: KEEP** -- bit-exact, never a regression, 16/16, free. But it is a ~0.3% end-to-end
+effect, not the fix.
+
+**AND IT CLOSES THE INSTRUCTION TRACK, QUANTITATIVELY.** -21.9% instructions bought -0.57%
+power, i.e. **0.026% power per 1% of instructions**. Our TOTAL instruction excess over cuBLAS
+is 63.4% (155.6 M vs 95.2 M), so removing **every** excess instruction would yield **~1.6%**
+power against a **+42.6%** gap on this shape. **Instructions can account for at most ~4% of
+the power gap.** That is now the fourth failure of the instruction hypothesis and the first
+one with a measured coefficient rather than a null -- stop proposing instruction cuts as a
+power fix.
+
+**§H217** made `DESC_WALK`, `UNIFORM_A_DESC` and `UNIFORM_B_DESC` overridable from the build
+line the same way, defaults unchanged (behaviour-preserving), so the remaining descriptor
+knobs can be A/B'd without editing and re-registering configs.
+
+### §H218  WHERE THE POWER IS **NOT** -- and the measurement gap I have to admit
+
+The +42% is real and triple-confirmed: three separate runs, two different power counters
+(`power.draw` and `power.draw.instant`), 224 samples each, both arms pinned at 1410 MHz:
+
+    ours   635.4 W / 635.3 W   at 728.6 TFLOPS
+    cuBLAS 449.2 W / 449.2 W   at 727.0 TFLOPS      +41.5% power, same throughput, same clock
+
+Measured on `nn 8192x3072x16384`, locked clock, both arms:
+
+| metric | ours | cuBLAS | ratio | |
+|---|---|---|---|---|
+| DRAM read | 914 MB | 1,082 MB | 0.845x | we read LESS |
+| DRAM write | 45.8 MB | 45.9 MB | 0.997x | |
+| smem bank conflicts | 10,533 | 215,126 | **0.049x** | we are 20x BETTER |
+| smem LSU wavefronts | 126 M | 154 M | 0.822x | we do LESS |
+| L2 misses | 48.7 M | 61.3 M | 0.794x | BETTER |
+| L2 sectors | 240.0 M | 190.6 M | 1.259x | worse |
+| L2 lookup hits | 174.0 M | 127.9 M | 1.360x | worse |
+| local (spill) ld/st | **0** | **0** | -- | no spilling in EITHER |
+| registers/thread | 168 | 168 | 1.000x | |
+| grid / block / waves | 132 / 384 / 1 | 132 / 384 / 1 | 1.000x | |
+| cycles elapsed | 1,633,045 | 1,619,103 | 1.009x | |
+| **tensor pipe active** | **99%** | **99%** | **1.003x** | BOTH saturated |
+| instructions | 155.6 M | 95.2 M | 1.634x | worse |
+
+**RULED OUT as the cause of the 190 W:** instructions (bounded at ~4% above), DRAM traffic
+(we move less), shared-memory LSU traffic and bank conflicts (we are far better), L2 misses
+(better), register spilling (zero in both), clock, occupancy, grid shape, registers per thread.
+
+**A MEASUREMENT GAP I HAVE TO STATE.** `l1tex__data_pipe_lsu_wavefronts_mem_shared` counts
+LSU-issued shared-memory traffic. **wgmma reads its A and B operands from shared memory
+directly, bypassing the LSU**, so that counter does NOT see the dominant shared-memory traffic
+in this kernel. Every "we use less shared memory" statement above is therefore about the minor
+path only. This needs a counter that sees the tensor operand path before shared memory can be
+ruled in or out.
+
+**THE REMAINING STRUCTURAL DIFFERENCE.** The tensor pipe is 99% active in BOTH arms and both
+deliver the same TFLOPS, so that is where the energy is. The one structural difference there:
+
+    ours    HGMMA.64x256x16   6,291,456 instructions   (WGMMA_N = 0 -> BN = 256)
+    cuBLAS  HGMMA.64x128x16  12,582,912 instructions   exactly 2x as many, half as wide
+
+Same MACs, different instruction width. No 128x256 variant with `WGMMA_N != 0` is currently
+compiled (checked: all 124 have WGMMA_N=0), so testing it needs a build.
+
+**DO NOT repeat the earlier error of reading the L2 numbers as "the memory side is fine".**
+§H50 concluded that from DRAM and MISS counts; the hit count and the sector count both go the
+other way, and the tensor-operand path is unmeasured.
