@@ -33388,3 +33388,46 @@ measurement.
 **The epilogue remains the indicated term** (per-tile cost, +7.04% at 16 k-iterations falling
 to +0.25% at 256). Remaining untested epilogue knobs on the production configs, all currently
 off: `EPI_TILE_N`, `EPI_STAGES`, `EPI_ROWS`, `EPI_A1B0`, `EPI_DIRECT_STG`, `EPI_WARP_LOCAL`.
+
+### §H221  THE STMATRIX EPILOGUE WAS BROKEN, AND THE BUG IS FOUND AND FIXED
+
+§H220 rejected `EPI_USE_STSM` because it computed garbage. That was the right call on the
+evidence but the wrong conclusion about the cause: **the idea was fine, our implementation was
+not.** cuBLAS uses stmatrix in its epilogue and our own §H27z.76 measured it at **1.93x on the
+store** once the layout is swizzled, so a wrong answer had to mean a defect on our side.
+
+**THE DEFECT.** The two store paths choose their shared-memory region differently:
+
+    scalar STS path:   cbuf_ch = USE_CHUNKED_EPILOGUE ? epi_slot_wg : ch      <- by COLUMN CHUNK
+    stmatrix path:     c_buf + epi_slot_wg * (...)                            <- hardcoded
+
+`USE_CHUNKED_EPILOGUE == (EPI_TILE_N > 0)`. The single config stmatrix had ever been validated
+on -- `256x128x64_1x2_h_rs2_swz128r64stsm`, EPI_TILE_N=64 -- HAS a chunked epilogue, so there
+`cbuf_ch == epi_slot_wg` and the hardcode was accidentally correct. **Every production config
+has EPI_TILE_N=0**, so the epilogue is NOT chunked, BN=256 over C_BOX_N=64 gives FOUR column
+chunks, and all four were written into the same region. Hence ~24.9 M of 25.2 M elements wrong,
+on every shape and every layout.
+
+The correct value was already in scope: `grp_ch = grp_tc / C_BOX_N`, computed two lines above
+for the chunk skip-test, and warp-uniform (the existing comment says so, which `.sync.aligned`
+requires). The fix is one line:
+
+    const int stsm_cbuf_ch = Config::USE_CHUNKED_EPILOGUE ? epi_slot_wg : grp_ch;
+
+**RESULT: all 15 production shapes now bit-exact with stmatrix enabled** (`err = 0.000e+00,
+bad = 0`), against ~24.9 M wrong before.
+
+**WHY THE GUARDS DID NOT CATCH IT.** The block has three `static_assert`s and all three pass.
+The relevant one tests `C_BOX_N == EPI_SPAN*8` while its message claims the identity is
+`EPI_TILE_N*2 == EPI_SWIZZLE_BYTES`. Those coincide **only when the epilogue is chunked**,
+because only then is `C_BOX_N` derived from `EPI_TILE_N`. On our configs `C_BOX_N` is 64
+because the REBIND sets it to `V/2`, and `EPI_TILE_N` is 0 -- so the guard passes for a reason
+unrelated to what it is documenting. **An assertion that tests a proxy is only as good as the
+proxy, and this one silently changed meaning between config families.**
+
+**THE GENERAL LESSON, third time in two days.** A knob validated on ONE config is not
+validated. `dh/dw/uad/ubd/cs` did not generalise across tiles; `DESC_HOIST` was dismissed on a
+comment that turned out to describe a different config family; and now stmatrix was correct on
+exactly the one config anyone had run it on. **Before enabling any knob on a new config
+family, diff the code paths it switches against the path currently in use** -- here, five
+minutes reading the two store addresses side by side would have found it without a build.
