@@ -33431,3 +33431,44 @@ comment that turned out to describe a different config family; and now stmatrix 
 exactly the one config anyone had run it on. **Before enabling any knob on a new config
 family, diff the code paths it switches against the path currently in use** -- here, five
 minutes reading the two store addresses side by side would have found it without a build.
+
+### §H221b  RESULT: STMATRIX, ONCE CORRECT, IS A POWER NULL
+
+With the §H221 chunk-index fix, all 15 production shapes are bit-exact and the A/B is valid.
+180 measurements, locked 1200 MHz, 0.0% below-lock on every row, independent operands,
+3-round ABBA, libraries verified to differ in arg[20] and nothing else:
+
+| site | shape | STS | STSM | delta |
+|---|---|---|---|---|
+| gate_up fwd | nn 8192x16384x3072 | 526.7 W | 533.1 W | +1.23% |
+| down fwd | nn 8192x3072x8192 | 519.2 W | 525.6 W | +1.23% |
+| lm_head fwd | nn 8192x50304x3072 | 550.7 W | 556.0 W | +0.95% |
+| down wgrad | tn 8192x3072x8192 | 518.2 W | 522.3 W | +0.78% |
+| K/V dgrad | nt 8192x3072x1024 | 477.1 W | 478.9 W | +0.38% |
+| down dgrad | nt 8192x8192x3072 | 565.9 W | 567.7 W | +0.32% |
+| Q/O fwd | nn 8192x3072x3072 | 510.4 W | 511.6 W | +0.25% |
+| gate_up dgrad | nt 8192x3072x16384 | 522.9 W | 524.2 W | +0.24% |
+| lm_head dgrad | nt 8192x3072x50304 | 521.4 W | 522.0 W | +0.12% |
+| Q/O dgrad | nt 8192x3072x3072 | 507.2 W | 507.1 W | -0.00% |
+| Q/O wgrad | tn 3072x3072x8192 | 520.9 W | 520.9 W | -0.01% |
+| K/V fwd | nn 8192x1024x3072 | 470.4 W | 470.1 W | -0.06% |
+| lm_head wgrad | tn 3072x50304x8192 | 553.4 W | 552.4 W | -0.17% |
+| K/V wgrad | tn 3072x1024x8192 | 504.3 W | 503.2 W | -0.22% |
+| gate_up wgrad | tn 3072x16384x8192 | 541.2 W | 538.4 W | -0.51% |
+
+    FLOP-weighted power change: +0.34%       shapes lower: 6/15
+
+**VERDICT: NULL, marginally negative. Not adopted.** The §H27z.76 "1.93x" was a STORE
+THROUGHPUT figure; the store is a small share of the kernel's energy, so a 2x cheaper store
+does not move total power. Same lesson as the instruction track: a real, measured local
+improvement need not convert to the metric that matters.
+
+**A NOTE ON READING PARTIAL RESULTS.** At 13 of 15 shapes `gate_up wgrad` showed **-2.85%**
+and looked like a genuine per-shape win; by the full 3 rounds it settled to **-0.51%**. Do not
+read a partial ABBA -- the early rounds of a crossover are exactly where the drift lives.
+
+**WHAT IS KEPT:** the §H221 correctness fix. `EPI_USE_STSM` now produces bit-exact results on
+every production config instead of garbage, so the knob is usable and any future work on the
+stmatrix epilogue starts from a correct baseline rather than re-deriving the same bug. That
+closes [[project_stmatrix_reopen]] as a correctness item, and reclassifies it as a measured
+null rather than an untested lead.
