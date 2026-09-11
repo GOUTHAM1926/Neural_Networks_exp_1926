@@ -33585,3 +33585,61 @@ production `ncw3` variant** (597.8 vs 583.9 TFLOPS) at the same power. NCW=3 was
 clean single-variable A/B (the two entry points may differ in more than NCW), so it needs a
 proper matched comparison before anything is changed -- but the dlsym harness makes that cheap
 now.
+
+### §H224b  RE-VERIFICATION OF THE CLUSTER RESULT -- two things I had not checked
+
+The §H224 sweep was challenged on whether it had actually been verified. Auditing it found two
+genuine gaps, one of which changed a conclusion.
+
+**GAP 1 -- I NEVER CHECKED THE CLUSTER WAS ACTIVE.** The variants were identified by SYMBOL
+NAME. If the template had silently resolved to 1x1 (occupancy fallback, grid sizing), the whole
+sweep would have been vacuous and would have looked exactly like "clusters do not help". That
+is the `feedback_verify_reachability_not_presence` error. **Now verified three independent
+ways:**
+
+* the launch path sets `cudaLaunchAttributeClusterDimension` with `clusterDim.x = CLUSTER_SIZE`
+  (source, template :9031);
+* the launched grid is cluster-consistent (132 for the 2-CTA clusters);
+* **DRAM traffic actually falls**, which is the functional signature of multicast TMA.
+
+| variant | DRAM read | L2 sectors | cycles | grid |
+|---|---|---|---|---|
+| 1x1 `template` | 163.6 MB | 39,441,070 | 316,056 | 132 |
+| **2x1_h** | **155.2 MB (-5.1%)** | 42,803,492 (+8.5%) | 333,805 (+5.6%) | 132 |
+| **1x2_h** | **157.3 MB (-3.8%)** | 45,798,527 (+16%) | 331,131 (+4.8%) | 132 |
+| 2x2_h | 187.0 MB (+14%) | 34,456,299 | 502,842 (+59%) | **120** |
+
+**The cluster does exactly what it is supposed to: one DRAM fetch feeds two CTAs and DRAM reads
+drop 3.8-5.1%. It then costs more than it saves** -- cycles rise 4.8-5.6% and L2 sectors rise
+8.5-16%, so the cluster barrier and the extra L2 traffic outweigh the DRAM saving. The
+conclusion stands, and now has a mechanism rather than only a number.
+
+**GAP 2 -- "BIG CLUSTERS ARE CATASTROPHIC" WAS THE WRONG CHARACTERISATION.** The 2x2/1x4/4x1/
+2x4/4x2 variants launch **120 CTAs, not 132 -- exactly 12 stranded**, which is verbatim the
+figure in `project_persistent_cluster_grid_sizing` ("H200: size-4 strands 12 CTAs = -36 pts").
+But the grid comes from `cudaOccupancyMaxActiveClusters`, which is the CORRECT API: with one
+CTA per SM at 228 KB shared memory, the hardware genuinely fits only 30 size-4 clusters. So it
+is a real occupancy constraint on this kernel, **not a coding defect** -- and 12 stranded SMs
+is -9%, while the measured loss is -35%, so most of that loss is cluster overhead rather than
+the stranding. Either way, clusters of 4+ are unusable here for a reason that is now understood.
+
+**WHAT SURVIVES UNCHANGED:** on the one shape where cuBLAS uses our exact tile, cuBLAS runs
+`1x2_h` at 594.5 TFLOPS / 484.2 W while OUR `1x2_h` runs 579.1 / 520.0 and our own 1x1 runs
+597.8 / 517.8. **Copying their cluster does not reproduce their efficiency**, and our best
+configuration on this tile is the un-clustered one. The cluster is not where their 6.4%
+efficiency advantage comes from.
+
+**TWO MEASUREMENT HYGIENE FAILURES FOUND IN THE SAME AUDIT, both mine:**
+
+1. **A leaked `nvidia-smi -lms 100` sampler had been running for 7,545 seconds** -- over two
+   hours -- from an A/B whose trap did not fire. A 10 Hz poller present during several
+   measurements. Every sampler must be killed on every exit path, and a sweep should assert
+   that no foreign sampler exists before it starts.
+2. **My own status polling was querying `nvidia-smi` while a measurement was running**, which
+   is the same contention that produced the stuck 84.8 W readings earlier. Do not poll the GPU
+   during a measurement; poll the output file instead.
+
+**AND A HUNG VARIANT:** `tn_192x192x64_2x1_h_ea32s2stsm_rs8_dh_ubd_skew_slp_template` ran for
+394 s without completing and had to be killed -- the `slp` arm is `MBAR_SLEEP_TICKS`, whose
+implementation §H39 already records as engaging but losing. A sweep over the registry needs a
+per-variant timeout; one hung config should not stall 95 remaining measurements.
