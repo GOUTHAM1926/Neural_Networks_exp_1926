@@ -33472,3 +33472,59 @@ every production config instead of garbage, so the knob is usable and any future
 stmatrix epilogue starts from a correct baseline rather than re-deriving the same bug. That
 closes [[project_stmatrix_reopen]] as a correctness item, and reclassifies it as a measured
 null rather than an untested lead.
+
+### §H222  THREE KNOBS MEASURED ON CORRECT OPERANDS -- ONE KEEPER, TWO NULLS
+
+All three A/B'd with the same protocol: independent operands (fill=3), locked 1200 MHz
+with 0.0% below-lock asserted on every row, 3-round ABBA, libraries verified to differ in
+exactly the intended template argument, correctness bit-exact on all 15 shapes first.
+Throughput is recorded alongside power -- the STSM result shows why that matters.
+
+| knob | power | throughput | power lower | verdict |
+|---|---|---|---|---|
+| **DESC_HOIST** (arg 21) | **-0.43%** | -0.01% | **14/15** | **KEEP** |
+| EPI_USE_STSM (arg 20) | +0.08% | **-0.23%** | 6/15 | REJECT |
+| EPI_A1B0 (arg 36) | -0.03% | -0.01% | 9/15 | NULL |
+
+**DESC_HOIST SURVIVES THE OPERAND CORRECTION.** It measured -0.57% / 16-of-16 on the
+flawed periodic fill and -0.43% / 14-of-15 on independent operands: same direction, similar
+magnitude, sign test p ~ 0.001. It is bit-exact and costs nothing. **Adopt.**
+
+**EPI_USE_STSM IS NOW DEFINITIVELY REJECTED.** The power-only run said +0.34% and could not
+see that it is ALSO 0.23% SLOWER. A knob that is both slower and no cheaper has no case.
+The §H221 correctness fix is kept regardless.
+
+**EPI_A1B0 IS A PERFECT NULL** -- and that is the most informative of the three. It deletes
+288 FMUL per tile, the entire C read-back path, and **18% of the compiled binary**
+(156 MB against 190 MB). Power moves -0.03%, throughput -0.01%, 9/15 and 7/15 -- coin flips.
+
+### THE PATTERN, NOW IMPOSSIBLE TO IGNORE: SIX WORK-REMOVALS, ALL NULL
+
+| removal | size of the cut | power effect |
+|---|---|---|
+| STAGE_CSEL (H53) | 7.8-10.8 M instructions | null |
+| k-loop vector ops (H27b4) | 76% of them | ~null |
+| DESC_HOIST | -21.9% of ALL instructions | **-0.43%** |
+| EPI_A1B0 | 288 FMUL/tile + C path, 18% of the binary | -0.03% |
+| EPI_USE_STSM | 4 STS -> 1 STSM | +0.08%, and slower |
+| instruction excess overall | measured coefficient 0.026% power per 1% instructions | bounded at ~1.6% total |
+
+**We are not losing to cuBLAS because we do more work.** Every measurable work quantity
+already favours us -- DRAM 0.845x, gmma shared-memory bytes 0.833x, LSU shared 0.822x, bank
+conflicts 0.049x, L2 misses 0.794x, zero register spilling, identical MACs, identical
+occupancy and registers per thread -- and every removal we make converts at approximately
+zero. The remaining +2.73% is structural, not wasteful.
+
+**A NEGATIVE WORTH RECORDING:** tile-edge quantisation was checked as a candidate and
+REFUTED. r = +0.703 against the per-shape power gap looks strong until you notice that
+**exactly 1 of 15 shapes has any edge waste at all** (down dgrad, 192x128 on M=8192, 0.78%),
+and dropping that single point takes r to +0.000. A correlation carried by one point is not
+a finding, and 0.78% of wasted tile area cannot produce an 11.20% power gap anyway.
+
+### WHAT IS ACTUALLY LEFT
+
+The one large STRUCTURAL difference never tested: **every cuBLAS kernel runs a thread-block
+cluster (1x2_h or 2x1_v); all eight of ours run cluster 1x1.** A cluster enables multicast
+TMA -- one DRAM fetch feeding two CTAs instead of two fetches. That is a different data
+movement structure, not a quantity of work, which is exactly the category every null above
+points to.
