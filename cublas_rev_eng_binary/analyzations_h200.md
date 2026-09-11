@@ -32986,3 +32986,79 @@ NEXT: SASS of the 128x256 k-loop body -- count the alu/IMAD opcodes and attribut
 source, then cut and re-validate on POWER at locked clock (12-round crossover for the gate).
 NOT DONE: PC-sample census; the cluster (c1x1 vs cuBLAS's 1x2) test; §H210's cuBLAS
 locked-standalone control.
+
+### §H215  THE K-LOOP, INSTRUCTION BY INSTRUCTION -- REAL EXECUTED COUNTS
+
+`ncu --section SourceCounters --page source` gives per-SASS-instruction **Instructions
+Executed** and **# Samples**. Collected at K=1024 and K=16384 on the production nn kernel
+(`Sm90WarpspecConfig<128,256,64,1,1,0,1,1,...,64,40,232,3,...>, Layout 0, 1, 1, BiasMode 0, 1,
+0`) and differenced per instruction, /240 iterations.
+
+Alignment traps, both handled: the two runs' absolute addresses differ (ASLR), so 87 of 976
+source lines "mismatched" purely on embedded branch targets -- align by address OFFSET and
+normalise `0x...` before comparing. And the kernel was verified IDENTICAL at both K (config and
+all six outer template args), so the difference is not a variant switch.
+
+**CROSS-VALIDATION: this census totals 605,772 executed per k-iteration against the independent
+per-pipe metric total of 599,045 -- 1% agreement from two different measurement paths.**
+
+| opcode | pipe | sites | exec/iter | % exec | % samples |
+|---|---|---|---|---|---|
+| UMOV | uniform | 29 | 59,136 | 9.8 | 0.9 |
+| UIADD3 | uniform | 29 | 56,064 | 9.3 | 2.1 |
+| **LOP3.LUT** | **alu** | 16 | **55,296** | 9.1 | 1.3 |
+| ULOP3.LUT | uniform | 9 | 55,296 | 9.1 | 1.3 |
+| **R2UR** | **alu** | 8 | **49,152** | 8.1 | 0.7 |
+| ULEA | uniform | 24 | 36,672 | 6.1 | 3.5 |
+| **IMAD.MOV.U32** | **fma** | 8 | **25,344** | 4.2 | 0.4 |
+| **SHF.R.U32.HI** | **alu** | 4 | **24,576** | 4.1 | 0.6 |
+| USHF.R.U32.HI | uniform | 4 | 24,576 | 4.1 | 0.5 |
+| HGMMA.**64x256x16**.F32.BF16 | tensor | 4 | 24,576 | 4.1 | 2.0 |
+| BRA | ctl | 21 | 23,685 | 3.9 | **32.1** |
+| **VIADD** | **alu** | 5 | **19,968** | 3.3 | 0.4 |
+| UISETP.NE.AND | uniform | 6 | 15,360 | 2.5 | 0.5 |
+| USEL | uniform | 6 | 15,360 | 2.5 | 0.4 |
+| **IMAD.U32** | **fma** | 2 | **12,288** | 2.0 | 0.1 |
+| SYNCS.PHASECHK.TRANS64.TRYWAIT | ctl | 10 | 11,462 | 1.9 | 0.6 |
+| SHF.L.U32 | alu | 5 | 9,216 | 1.5 | 0.4 |
+| UIMAD | uniform | 5 | 6,912 | 1.1 | 0.1 |
+| S2UR | uniform | 1 | 6,144 | 1.0 | 0.5 |
+
+    by pipe:  uniform 277,248 (45.8%)   alu 182,016 (30.0%)   ctl 76,620 (12.6%)
+              fma      43,776 ( 7.2%)   tensor 24,576 (4.1%)  mem 1,536 (0.3%)
+
+**THE EXCESS IS ACCOUNTED FOR ALMOST EXACTLY.** The alu+fma rows above sum to ~195,840/iter
+against the measured alu+fma excess over cuBLAS of **192,001/iter**. So essentially ALL of our
+alu+fma k-loop work is work cuBLAS does not do, and its composition -- LOP3 (mask/OR), SHF
+(shift), IMAD.MOV (register shuffling through the FMA pipe), R2UR (vector->uniform transfer),
+VIADD -- is the signature of **re-encoding the descriptor every iteration from a per-thread
+base**, which is exactly what the standing worklist describes cuBLAS avoiding by keeping the
+packed descriptor in a UR and adding an immediate.
+
+**THE WGMMA WIDTH QUESTION IS SETTLED.** Ours is `HGMMA.64x256x16`. cuBLAS's exactly-2x tensor
+count therefore means `64x128x16` -- twice as many, half as wide. Same math; the tensor pipe
+simply cannot be used as an instruction-level control between these two kernels.
+
+**BRA IS 3.9% OF EXECUTIONS BUT 32.1% OF SAMPLES.** Where the warps actually sit is the branch
+back-edge, not the arithmetic -- consistent with the known consumer-drain/spin diagnosis. Note
+this is a TIME/stall observation and the arithmetic above is a POWER observation; they are
+different questions and the kernels are already at cycle parity.
+
+**R2UR AT 49,152/ITER (8.1%) IS AN UNCLAIMED LEAD.** The worklist records the `dh_dw_uad_ubd_cs`
+stack cutting R2UR by **94%** (4,194,304 -> 262,144 against cuBLAS's 5,120) -- but the dead-work
+sweep adopted **`dh` ONLY** on 128x256, because the deeper rungs LOST on time there
+(2/7 positive, mean -0.32%). Those rungs were never judged on POWER, and 128x256 carries 10 of
+the 15 production shapes. **Re-gate the existing, already-compiled knob variants on POWER at
+long K** -- zero code change required.
+
+### THE WORK LIST THAT FOLLOWS, IN ORDER
+
+1. **Re-gate `dh/dw/uad/ubd/cs` on 128x256 at K>=8192, measuring POWER** at a locked clock.
+   The variants already exist in the binary; the only reason they were rejected is a time
+   measurement, and time is now known to be the wrong metric for this class of change.
+2. Hoist the per-iteration descriptor re-encode (LOP3/SHF/IMAD.MOV/R2UR/VIADD, ~192k/iter).
+   Note the 64-bit `desc_add_lo` attempt was tried and REVERTED (+7.3% worse); the sized but
+   unattempted lever is in-place accumulation in the issue loop, which is structural.
+3. The cluster test (ours c1x1 vs cuBLAS 1x2) -- still never run.
+
+Validate every one on POWER at a locked clock with a 12-round crossover, never on time.
