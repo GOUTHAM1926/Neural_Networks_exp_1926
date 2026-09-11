@@ -33786,3 +33786,87 @@ are dead, it means single-knob A/B is the wrong instrument for a coupled pipelin
 * Open defects: 2 `DESC_FROZEN` configs compute wrong answers, 5 `MBAR_SLEEP_TICKS` configs hang
 * Not yet run: the same 131-variant combination sweep on 128x256, 192x128 and 256x128 --
   128x256 alone serves 10 of the 15 production shapes, so it is the highest-value target left
+
+---
+
+### §H227  THE POWER WINDOW WAS TOO SHORT -- a calibration, and what it invalidates
+
+**HOW THIS SURFACED.** The §H227 sweep is 128x256 -- the tile that serves **10 of the 15**
+production shapes (nn x4, nt x4, tn x2), so it is the highest-value target left. Before
+committing ~90 minutes to it I ran a smoke gate on 6 variants. The gate passed mechanically
+(6/6 correct, clocks locked, 0.0% below-lock) and returned this:
+
+```
+  cuBLAS reference     324.9 W   610.063 TF
+  our variants         406.8 - 422.4 W   596.5 - 598.7 TF
+```
+
+**A 1.28x power ratio is impossible.** §H212b measured the real FLOP-weighted gap at **+2.73%**,
+and §H225 read 523.6 W at 596.5 TF on this same rig. So the number was an artefact, and the
+right move was to measure the instrument rather than explain the result.
+
+**THE CALIBRATION** (`tools/h227_rampcal.sh`): same shape, same lock, window sizes 1/2/4/8/16/24 s,
+both arms. The tell is the **full-window median against the last-half median** -- if power is
+still climbing, the two disagree.
+
+| window | ours | ours last-half | cuBLAS | cuBLAS last-half | verdict |
+|---|---|---|---|---|---|
+| 1 s | 370.3 W | **486.6 W** | 351.8 W | **433.8 W** | ramping hard (116 W / 82 W apart) |
+| 2 s | 536.2 W | 549.6 W | 522.5 W | 532.9 W | still ramping (13.4 W / 10.4 W) |
+| **4 s** | 544.6 W | 545.5 W | 526.5 W | 526.5 W | **plateaued** |
+| 8 s | 546.4 W | 547.1 W | 528.8 W | 529.2 W | flat |
+| 16 s | 546.1 W | 546.0 W | 532.0 W | 532.3 W | flat |
+| 24 s | 549.7 W | 550.3 W | 534.4 W | 534.7 W | flat, thermal drift |
+
+**POWER TAKES ~4 SECONDS TO PLATEAU ON AN H200.** This is a hardware ramp -- sensor averaging
+plus the silicon actually reaching its steady draw -- so no amount of software warm-up inside a
+shorter window fixes it. The window must simply be long enough.
+
+**AND LONG IS NOT FREE EITHER.** From 8 s to 24 s ours drifts +3.3 W and cuBLAS +5.6 W. That is
+thermal, it is **asymmetric between arms**, and it would quietly manufacture a ~0.4% power
+difference in cuBLAS's disfavour on a very long window. The honest window is **4-8 s**; §H227
+uses 6 s.
+
+**AT A CORRECT WINDOW THE SHAPE READS SANELY.** `tn 3072x16384x8192` at 8 s:
+
+| | power | throughput | TF/W |
+|---|---|---|---|
+| ours (`128x256x64_template`) | 546.4 W | 612.17 TF | 1.1203 |
+| cuBLAS | 528.8 W | 609.87 TF | **1.1533** |
+
+**We are +0.38% FASTER and draw +3.33% MORE power; cuBLAS is 2.95% more efficient.** That is the
++2.73% story reproducing on a shape it was never fitted to -- not a 1.28x absurdity.
+
+**WHAT THIS INVALIDATES.**
+
+* **§H225's power column is wrong low.** That sweep used `IT=7800` on `tn 3072x3072x8192`
+  = 154.6 GFLOP/call = **2.01 s**, squarely on the ramp. It read 523.6 W where the plateau is
+  ~546 W -- about 4% low. **Its throughput column stands** (the harness times the loop itself and
+  never consults the power sampler), and throughput is what the screen ranked on, so the
+  §H225 *ranking* survives. Every absolute watt figure in §H225 does not.
+* **§H226's power number needs a re-test, its throughput number does not.** The crossover used the
+  same `IT=7800` = 2.01 s window. Throughput (+0.538%, t=+32.24) is harness-timed and unaffected.
+  Power (-0.339%, t=-4.80) was measured mid-ramp. Because §H226 is a **paired ABBA** design the
+  ramp is common-mode and largely cancels -- which is why the null control came out null -- so the
+  sign is very likely right. But the magnitude is not established until it is re-run at 6 s.
+  **QUEUED: re-run the §H226 crossover at a plateaued window before anything is pinned.**
+
+**THE GENERAL RULE, now measured rather than assumed:** *never quote an absolute watt figure from
+a window shorter than 4 s, and never quote one from a window longer than ~8 s without saying so.*
+A paired design tolerates a short window; an absolute number does not.
+
+**TWO CODE DEFECTS THE SMOKE GATE CAUGHT**, both of which would have corrupted the campaign:
+
+* `while IFS='|' read -r sig label` **splits the signature itself**, which is pipe-delimited --
+  every shape ran as `sig="tn"`. It failed **loudly** (`CHECKFAIL:bad` on every variant, no silent
+  numbers), which is the only reason it was cheap. Fixed by splitting on the last `|` only, plus a
+  13-field assertion on the signature.
+* `kill ${TELE:-0}` **is `kill 0` when TELE is unset, and `kill 0` signals the entire process
+  group** -- it killed the ssh session that launched the run (exit 255) and left the sampler
+  alive, i.e. it caused exactly the leaked-sampler failure §H224b already recorded. The same
+  line is present in `tools/h225_sweep_all.sh`. Replaced with a guarded `kill_tele`.
+
+This is the fourth time a measurement instrument, not a kernel, produced the surprising number
+(periodic operands §H212b, the `-lgc` that did not take, the leaked sampler §H224b, and now the
+power ramp). **When a result is physically impossible, calibrate the instrument before explaining
+the result.**
