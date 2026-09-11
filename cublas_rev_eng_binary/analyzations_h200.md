@@ -33870,3 +33870,67 @@ This is the fourth time a measurement instrument, not a kernel, produced the sur
 (periodic operands §H212b, the `-lgc` that did not take, the leaked sampler §H224b, and now the
 power ramp). **When a result is physically impossible, calibrate the instrument before explaining
 the result.**
+
+---
+
+### §H227b  128x256 SWEEP -- tn layout complete, stopped at the user's call; what it says
+
+**SCOPE REACHED.** 128x256 serves **10 of the 15** production shapes (nn x4, nt x4, tn x2), so the
+sweep was 51 variants x 10 shapes. It was stopped at 20:32 IST after the **tn layout**
+(102 variant-shapes). nn and nt were not started. Everything below is tn only.
+
+**DATA COMPLETENESS -- state it before the numbers.**
+
+* `tn gate_up_wgrad 3072x16384x8192` -- **COMPLETE**: 50 variants passed, 1 wrong answer, plus the
+  cuBLAS reference. All comparisons below are safe on this shape.
+* `tn down_wgrad 8192x3072x8192` -- **PARTIAL**: 49 usable variants, but the run was killed during
+  the dispatched `_template` measurement (its row is `|||`) and the cuBLAS reference row reads
+  `683.4|0`. **So this shape has no baseline and no reference.** Variants can be ranked against
+  each other; nothing on this shape may be quoted against cuBLAS or against the dispatched config.
+
+**RESULT -- `tn gate_up_wgrad`, the complete shape.**
+
+| | TF | W | TF/W |
+|---|---|---|---|
+| cuBLAS | 609.55 | 527.8 | **1.1549** |
+| **dispatched `_template`** | 611.81 | 545.5 | 1.1216 |
+| `regsplit_template` | 612.06 | 545.6 | 1.1218 |
+| `2x1_v_swz64_template` | 609.37 | 534.6 | **1.1399** |
+| `2x1_h_swz64_rs8_template` | 609.09 | 534.7 | 1.1391 |
+
+* **The dispatcher is right here -- rank 2 of 51 on throughput.** Only `regsplit` beats it, by
+  0.04%, which is inside noise. Unlike 192x192 (§H225/§H226) there is **no dispatch mistake on
+  this shape**, and that is a real negative result worth having.
+* **We are +0.37% FASTER than cuBLAS and draw +3.35% more power**, so cuBLAS is **2.89% more
+  efficient**. The +2.73% story reproduces on a shape it was never fitted to.
+* **A same-speed efficiency trade exists.** `2x1_v_swz64` gives **+1.63% efficiency for -0.40%
+  throughput**, halving the efficiency gap to cuBLAS (2.89% -> 1.32%). Under the 700 W cap
+  efficiency buys clock, so this may be net-positive in the trainer -- but that is a trainer
+  question, not a standalone one, and it is a **1-round screen**. Not pinned.
+
+**RANKING BY TF/W ALONE IS A TRAP, AND IT FIRED IMMEDIATELY.** The top TF/W config on this shape is
+`4x2_h_template` at **1.1794 TF/W -- and 526.38 TF, which is 14% SLOWER**. An efficiency ranking
+happily returns kernels that are efficient because they are idle. Every efficiency claim in this
+section is therefore filtered to configs within 1% of the dispatched config's throughput.
+
+**A LEAD I RAISED AND AM NOW WITHDRAWING.** On `gate_up_wgrad` the variants split into a ~527-546 W
+group and a ~610-614 W group at nearly identical throughput -- a 41.6% total power spread
+(433.8 W .. 614.2 W). That looked like a large power mechanism inside our own knob space. **It does
+not reproduce.** On `down_wgrad` the same variants span 413.4 W .. 575.3 W with **not one above
+590 W**, and the count of variants over 590 W on BOTH shapes is **zero of 49**. The high-power
+group is a property of that one shape, not of any knob. Recorded so it is not re-proposed.
+
+**THIRD BROKEN REGISTRY FAMILY.** `blublasBgemmSM90_bf16_tn_128x256x64_splitk_template` **computes
+wrong answers** on both tn shapes. Running total of registry defects: 2 `DESC_FROZEN` (wrong
+answers), 5 `MBAR_SLEEP_TICKS` (hang), 1 `splitk` on 128x256 tn (wrong answers).
+
+**WHAT REMAINS ON THIS EXPERIMENT** (tomorrow):
+
+1. nn x4 and nt x4 -- the other 8 of the 10 shapes; never started
+2. re-run `tn down_wgrad` to recover its baseline and cuBLAS reference
+3. re-run the §H226 crossover at a 6 s plateaued window (§H227) before any pin
+4. 12-round crossover on `2x1_v_swz64` vs the dispatched config on `tn gate_up_wgrad`
+5. un-register or fix the 8 known-bad configs
+
+All raw data is committed: `h227_out_tn/`, `h227_out/rampcal.log`, `h227_out/sweep_128x256.log`,
+and locally in `h227_2026_09_11/`.

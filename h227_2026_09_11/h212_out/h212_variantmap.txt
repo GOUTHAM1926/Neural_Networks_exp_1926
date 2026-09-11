@@ -1,0 +1,15 @@
+nn|8192|3072|3072|1|0|0|0|1|0|0|0|25165824|Q/Oprojfwd|(no route line -- dispatcher declined or trace not compiled in)
+nn|8192|1024|3072|1|0|0|0|1|0|0|0|8388608|K/Vfwd|(no route line -- dispatcher declined or trace not compiled in)
+nn|8192|16384|3072|1|0|0|0|1|0|0|0|134217728|gate_upfwd|(no route line -- dispatcher declined or trace not compiled in)
+nn|8192|3072|8192|1|0|0|0|1|0|0|0|25165824|downfwd|(no route line -- dispatcher declined or trace not compiled in)
+nn|8192|50304|3072|1|0|0|0|1|0|0|0|412090368|lm_headfwd|(no route line -- dispatcher declined or trace not compiled in)
+nt|8192|3072|3072|1|0|0|0|1|0|0|0|0|Q/Odgrad|(no route line -- dispatcher declined or trace not compiled in)
+nt|8192|3072|1024|1|0|0|0|1|0|0|0|0|K/Vdgrad|(no route line -- dispatcher declined or trace not compiled in)
+nt|8192|8192|3072|1|0|0|0|1|0|0|0|0|downdgrad|(no route line -- dispatcher declined or trace not compiled in)
+nt|8192|3072|16384|1|0|0|0|1|0|0|0|0|gate_updgrad|(no route line -- dispatcher declined or trace not compiled in)
+nt|8192|3072|50304|1|0|0|0|1|0|0|0|0|lm_headdgrad|(no route line -- dispatcher declined or trace not compiled in)
+tn|3072|3072|8192|1|0|0|0|1|0|0|0|0|Q/Owgrad|192x192
+tn|3072|1024|8192|1|0|0|0|1|0|0|0|0|K/Vwgrad|192x128_rs
+tn|3072|16384|8192|1|0|0|0|1|0|0|0|0|gate_upwgrad|bn256_rs
+tn|8192|3072|8192|1|0|0|0|1|0|0|0|0|downwgrad|bn256_rs
+tn|3072|50304|8192|1|0|0|0|1|0|0|0|0|lm_headwgrad|256x128_2WG_rs

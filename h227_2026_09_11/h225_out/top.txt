@@ -1,0 +1,7 @@
+1.21537|cublas|489.6|595.045
+1.16511|blublasBgemmSM90_bf16_tn_192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_ea96s1_template|515.2|600.267
+1.16128|blublasBgemmSM90_bf16_tn_192x192x64_2x1_h_ea32s2stsm_rs8_dh_ubd_skew_template|514.3|597.247
+1.15711|blublasBgemmSM90_bf16_tn_192x192x64_2x1_h_ea32s4stsm_rs8_dh_ubd_skew_template|515.4|596.377
+1.15702|blublasBgemmSM90_bf16_tn_192x192x64_2x1_h_rs8_dh_ubd_dw_skew_lsw_pdl_wl_template|519.7|601.301
+1.15496|blublasBgemmSM90_bf16_tn_192x192x64_2x1_h_ea32s3stsm_rs8_dh_ubd_skew_template|516.9|597.001
+1.15438|blublasBgemmSM90_bf16_tn_192x192x64_2x1_h_ep32s1stsm_rs8_dh_ubd_skew_template|516.7|596.467
