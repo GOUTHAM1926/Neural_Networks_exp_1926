@@ -33160,3 +33160,64 @@ compiled (checked: all 124 have WGMMA_N=0), so testing it needs a build.
 **DO NOT repeat the earlier error of reading the L2 numbers as "the memory side is fine".**
 §H50 concluded that from DRAM and MISS counts; the hit count and the sector count both go the
 other way, and the tensor-operand path is unmeasured.
+
+### §H219  THE CAUSE: OPERAND-DEPENDENT SWITCHING POWER, NOT WORK
+
+Every countable work quantity favours us or ties, yet we burn +41.5% at an equal clock. The
+one mechanism no performance counter can see is how much the OPERAND BITS TOGGLE between
+successive values fed to the datapath. Tested directly by changing ONLY the input data.
+
+`nn 8192x3072x16384`, locked 1400 MHz, clock VERIFIED at 1410 with 0.0% below-lock in every
+single condition, throughput identical throughout:
+
+| operand pattern | ours | cuBLAS | gap | ours TFLOPS | cuBLAS TFLOPS |
+|---|---|---|---|---|---|
+| **varied (real data)** | **633.4 W** | **447.3 W** | **+41.6%** | 728.8 | 727.0 |
+| **all 1.0** | **335.4 W** | **333.7 W** | **+0.5%** | 729.2 | 727.2 |
+| **all 0.0** | **311.1 W** | **310.3 W** | **+0.3%** | 729.1 | 727.3 |
+| varied (repeat) | 640.9 W | -- | reproduces to 1.2% | 728.4 | -- |
+
+**WITH CONSTANT OPERANDS THE ENTIRE 186 W GAP DISAPPEARS.** Same kernels, same instruction
+counts, same clock, same TFLOPS -- change only the VALUES and +41.6% becomes +0.5%.
+
+`all 1.0` is genuine arithmetic, not a gated zero path, and it lands within 0.5% of cuBLAS --
+so this is not hardware short-circuiting on zeros. The two kernels compute the same products
+from the same buffers; what differs is the ORDER in which values reach the multiplier array,
+which is set by the tile shape and the wgmma width:
+
+    ours    HGMMA.64x256x16   B fragment 16x256
+    cuBLAS  HGMMA.64x128x16   B fragment 16x128, twice as many
+
+**THIS ALSO RETIRES AN OLD SELF-CRITICISM PROPERLY.** "Bit-toggling" was once asserted as a
+mechanism with no evidence and was rightly rejected. It is now a controlled result: one
+variable (operand values), clock and throughput held identical and verified, repeated, with
+the gap collapsing to +0.5%.
+
+**AND IT EXPLAINS EVERY EARLIER NULL.** Instruction cuts convert at ~zero (four times now,
+most recently DESC_HOIST at 0.026% power per 1% of instructions) because instruction COUNT was
+never the power term. L2, DRAM, shared memory and occupancy all favour us, and none of them is
+the term either. The term is switching activity in the datapath, driven by operand adjacency.
+
+**A MEASUREMENT TRAP CAUGHT HERE, worth recording.** The first run of this experiment reported
+ours 445.9 W / 328.9 TFLOPS at fill=varied and 843.8 TFLOPS at fill=0 -- above the 1410 MHz
+ceiling of ~735 TFLOPS, which is impossible. The `-lgc` lock had not taken, so the three
+conditions ran at different clocks and the apparent "32% power drop from data" was a clock
+artefact. **Always print the achieved clock per measurement and assert a below-lock
+percentage; never trust that a lock command took.** The corrected run above shows 1410 MHz and
+0.0% below-lock on every row.
+
+### WHAT THIS MEANS FOR THE FIX
+
+The lever is no longer "do less work" -- we already do less of everything measurable. It is
+**present the operands to the tensor core in an order that toggles fewer bits**. Levers, in
+order of directness:
+
+1. **WGMMA_N** -- match cuBLAS's 64x128x16 shape instead of our 64x256x16. No 128x256 variant
+   with `WGMMA_N != 0` is currently compiled (all 124 checked), so this needs a build.
+2. **SWIZZLE_BYTES / the shared-memory layout** -- changes which values land adjacent in the
+   fragment the tensor core consumes.
+3. **RASTER / RASTER_SWIZZLE** -- changes which tiles, and therefore which data, are adjacent
+   in time.
+
+Each is a build-line or config change and each must be gated on POWER at a locked clock with
+the achieved clock asserted.
