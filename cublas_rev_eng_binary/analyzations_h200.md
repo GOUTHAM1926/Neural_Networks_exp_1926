@@ -32760,3 +32760,229 @@ Also never run: the NVTX profile, and §H210's cuBLAS locked-standalone control.
 
 Artefacts pulled to `h211_2026_09_10/`: kernel summary, both run logs, the gzipped 428k-line
 trace, deduped signatures, the step CSV, and the h204/h205/h207/h209 output trees.
+
+---
+
+## §H212 – §H214  THE POWER IS IN THE K-LOOP: alu + fma, 86.5% of the excess
+
+Box 86.38.238.116 (`warm-leaf-flows-fin-02`), 2026-09-11. **1x H200**, 44 cores, 167 GB,
+CUDA 13.0.88 (same toolkit as the previous box), 700 W cap, 1980 MHz max.
+**No MPI and one GPU, so no trainer runs at all** -- the 4B config is `world_size=2`. Everything
+below is standalone, which turned out to be sufficient because the question is per-kernel.
+
+### §H212a  WHAT THE BOX COULD AND COULD NOT DO
+
+`ncu` IS present (`/usr/local/cuda-13.0/bin/ncu`, also `/opt/nvidia/nsight-compute/2025.3.1`);
+an early "ncu absent" call was wrong -- it came from `which ncu`, and it is simply not on PATH.
+`cuobjdump`, `nvdisasm`, `nsys` all present.
+
+BUILD GATE, verified in the FATBIN rather than from the build's exit code:
+
+    bgemm_sm90_kernel entries in build/libmyblas.so : 4,774   (0 => the -37% SM89 defect)
+    embedded arch                                   : sm_90a
+    dispatch entry points                           : nn/nt/tn + all three _kota
+    H197 hybrid banner, [blublas-route] trace       : present
+
+The BLAS repo's own Makefile auto-detects the GPU capability into `ARCH_DEFINES`, so
+`-DBLUBLAS_HAS_SM90` appears on the compile line without the manual patch the TRAINER Makefile
+needed. Two name traps worth recording: the library is `libmyblas.so` (LIBNAME=myblas), not
+`libblublas.so`; and `nm -D` shows ZERO `bgemm_sm90_kernel` symbols because device kernels live
+in the fatbin, not the dynamic symbol table -- `cuobjdump -symbols` is the right check.
+
+### §H212b  651 CALL SITES AND 15 SHAPES -- RE-DERIVED FROM THE ARCHITECTURE, NOT THE TRACE
+
+Asked to re-verify without trusting §H211, the shape list was regenerated from the model config
+alone (d_model 3072, 36 layers, q 24x128, kv 8x128, ffn 8192 SwiGLU, vocab 50304, B*T 8192):
+
+    per micro-batch per rank:  36 layers x 18 GEMMs + 3 lm_head  =  651 GEMM CALL SITES
+    distinct (layout, M, N, K)                                    =  15
+
+**Identical to the 15 §H211 captured from the running dispatcher.** Two fully independent
+methods. §H211's own launch counts then corroborate the site structure a third way:
+
+| observed | count | required meaning |
+|---|---|---|
+| nn 8192x3072x3072 | 59,184 | Q + O = 2 sites/layer |
+| nn 8192x1024x3072 | 59,184 | K + V = 2 sites/layer -- equal, as required |
+| nn 8192x16384x3072 | 29,592 | gate_up = 1 site/layer -- exactly half |
+| forward vs backward | 59,184 vs 56,247 | backward skips val steps -- 5% lower, as required |
+
+### §H212c  SHAPE -> VARIANT, ALL 15, AND THE THREE-WAY CONFIRMATION
+
+The dispatcher is a pure function of its arguments and these ARE the trainer's arguments, so
+replaying them standalone reproduces the trainer's choice -- no 2-GPU box needed. One shape per
+process, so exactly one GEMM kernel appears and attribution needs no inference.
+
+| layout | shape | site | variant |
+|---|---|---|---|
+| nn | 8192x3072x3072 | Q/O proj fwd | **128x256x64 c1x1** |
+| nn | 8192x1024x3072 | K/V fwd | **128x256x64 c1x1** |
+| nn | 8192x16384x3072 | gate_up fwd | **128x256x64 c1x1** |
+| nn | 8192x3072x8192 | down fwd | **128x256x64 c1x1** |
+| nn | 8192x50304x3072 | lm_head fwd | 256x128x64 c1x1 |
+| nt | 8192x3072x3072 | Q/O dgrad | **128x256x64 c1x1** |
+| nt | 8192x3072x1024 | K/V dgrad | **128x256x64 c1x1** |
+| nt | 8192x8192x3072 | down dgrad | 192x128x64 c1x1 |
+| nt | 8192x3072x16384 | gate_up dgrad | **128x256x64 c1x1** |
+| nt | 8192x3072x50304 | lm_head dgrad | **128x256x64 c1x1** |
+| tn | 3072x3072x8192 | Q/O wgrad | 192x192x64 c1x1 |
+| tn | 3072x1024x8192 | K/V wgrad | 192x128x64 c1x1 |
+| tn | 3072x16384x8192 | gate_up wgrad | **128x256x64 c1x1** |
+| tn | 8192x3072x8192 | down wgrad | **128x256x64 c1x1** |
+| tn | 3072x50304x8192 | lm_head wgrad | 256x128x64 c1x1 |
+
+Confirmed three ways: **8 distinct (layout, tile) pairs, exactly the 8 §H211 saw in the
+trainer**; all 5 TN shapes agree with Kota's own `[blublas-route]` print (`bn256_rs` -> BN=256
+-> 128x256, `256x128_2WG_rs` -> 256x128); and all 5 of §H211e's uniquely-pinned mappings
+reproduce. **10 of 15 shapes route to 128x256** -- and unlike §H211, we now know WHICH, which
+is what no in-trainer timing argument could resolve.
+
+Full template args read off ncu: `Sm90WarpspecConfig<128, 256, 64, 1, 1, 0, 1, 1, 0, 0, 0, 64,
+40, 232, 3, ...>` -- PROD_REGS 40, CONS_REGS 232, depth 3. The tuning is live.
+
+### §H212d  CORRECTNESS: 15/15 BIT-EXACT
+
+`err = 0.000e+00, bad = 0` against cuBLAS on every production signature, with non-zero
+shape-dependent fingerprints (a silent no-write would give `fp=0` and fail the gate).
+
+### §H212e  THE INSTRUMENT, AND TWO FAULTS IT TOOK TO MAKE IT TRUSTWORTHY
+
+FAULT 1 -- **never pipe a profiler into an early-exiting filter.** `nsys profile ... | grep -m1`
+closes the pipe on the first match; nsys takes SIGPIPE before finalising and writes a **0-byte
+report**, silently, while still handing back a valid-looking route string. It failed on exactly
+the 5 TN shapes -- the only ones that emit a route line -- and presented as "TN launches no
+kernel at all". Verified side by side: piped **0 bytes**, written-to-file **195,342 bytes**.
+
+FAULT 2 -- **a power window derived from the process's wall time is dragged toward idle.** The
+process allocates up to 1.5 GB, fills and uploads it, and tears the context down afterwards,
+and the GPU sits near **90 W** throughout against a busy 435-670 W. The first pass reported
+545.9 W vs 397.6 W on the top shape; the verified values are **620.1 vs 435.6**. It ranked the
+arms correctly but every absolute number was wrong. Fixed two ways that fail differently: the
+binary now prints `LOOPWIN` around its timed loop, AND telemetry carries utilization so idle is
+dropped on its own merits.
+
+Also worth recording: **the old h92 harness host-synced every iteration, so standalone ran at
+1915 MHz / 135 W** (§H205) -- nowhere near the cap, unlike the trainer. This harness runs
+iterations back-to-back and reaches **1650 MHz / 718 W**, i.e. production conditions. §H205's
+"standalone boosts to 1915 MHz" was an artefact of its timing loop, not a property of
+standalone work.
+
+Two parsing traps, both silent: nsys kernel names contain `", "` inside their template
+arguments, so any `sed`/`cut` on commas destroys the Name field (use a CSV reader); and ncu's
+`--csv` output is preceded by the profiled program's own stdout, so `DictReader` takes that as
+the header unless the `"ID"` line is located first.
+
+### §H212f  THE RESULT -- AND IT RECONCILES WITH THE TRAINER
+
+15 shapes, ours vs cuBLAS, locked 1400 MHz (below the cap, so neither arm is power-limited):
+
+```
+  FLOP-weighted power excess : +4.15%     H209, in the real trainer: +4.42%
+  FLOP-weighted speed        : +1.43%     H209: +0.96% / +1.04%
+```
+
+**Two independent measurements -- standalone on 1 GPU today, in-trainer on a 2-GPU box
+yesterday -- agreeing to 0.27 points.** That validates both, and it means the power excess is a
+property of the KERNELS, reproducible without a trainer.
+
+| shape | site | variant | power | speed |
+|---|---|---|---|---|
+| nn 8192x3072x8192 | down fwd | 128x256 | **+42.13%** | +0.65% |
+| nt 8192x8192x3072 | down dgrad | 192x128 | +11.76% | +5.79% |
+| nt 8192x3072x1024 | K/V dgrad | 128x256 | +8.73% | +5.75% |
+| tn 3072x3072x8192 | Q/O wgrad | 192x192 | +6.40% | +0.23% |
+| nn 8192x50304x3072 | lm_head fwd | 256x128 | +4.33% | +2.86% |
+| nn 8192x3072x3072 | Q/O fwd | 128x256 | -5.92% | +1.88% |
+| nn 8192x1024x3072 | K/V fwd | 128x256 | -8.38% | +0.80% |
+
+### §H213  THE K-SWEEP -- THE COST IS THE K-LOOP BODY, AND SHORT-K IS AT PARITY
+
+`nn 8192x3072x8192` (+42.13%) and `nn 8192x3072x3072` (-5.92%) run the SAME 128x256 variant on
+the IDENTICAL 768-tile grid. Only K differs. Reading the raw watts inverted the story: ours
+604.6 -> 628.8 W (+4%), cuBLAS 642.6 -> 442.4 W (**-31%**). It is not that we get worse at long
+K -- cuBLAS gets much cheaper and we stay flat. Confirmed both arms keep the same kernel at both
+K (ours 128x256; cuBLAS `nvjet_sm90_tst_256x128_64x4_1x2_h_bz_coopA_NNT`), so not a dispatch
+artefact.
+
+M and N held fixed, K swept, locked 1400 MHz:
+
+| K | k_iters | ours W | cuBLAS W | power delta | speed delta |
+|---|---|---|---|---|---|
+| 1024 | 16 | 563.9 | 563.0 | **+0.14%** | +5.66% |
+| 2048 | 32 | 601.1 | 403.0 | +49.15% | +2.72% |
+| 3072 | 48 | 609.7 | 648.7 | -6.01% | +1.86% |
+| 4096 | 64 | 621.3 | 433.3 | +43.40% | +1.25% |
+| 6144 | 96 | 628.0 | 437.6 | +43.52% | +0.91% |
+| 8192 | 128 | 628.0 | 440.3 | +42.63% | +0.65% |
+| 12288 | 192 | 640.3 | 444.2 | +44.16% | +0.37% |
+| 16384 | 256 | 636.1 | 446.2 | +42.56% | +0.19% |
+
+**Our curve is smooth and monotone** (563.9 -> 636.1 W, rising to an asymptote). cuBLAS's has
+two genuine anomalies, re-measured directly with a util>=95 probe and tight to +-0.3%:
+
+    K=2048  cuBLAS 398.4 W (p10-p90 397.3-399.7, n=91)
+    K=3072  cuBLAS 645.7 W (642.6-647.7, n=87)   <- a real ~60% spike, SAME kernel
+    K=4096  cuBLAS 430.9 W (429.9-431.9, n=85)
+
+**CONCLUSION: at K=1024 the two arms are at power PARITY (+0.14%); from K=4096 to 16384 we are
++42.6% to +44.2%, five consecutive values.** Prologue and epilogue are fine. **The cost is in
+the k-loop body.**
+
+**AND IT CORRECTS §H212f:** our "-5.92% win" on Q/O fwd is not a win -- that production shape
+sits exactly on cuBLAS's K=3072 anomaly. Do not count it, and do not generalise from it.
+
+### §H214  WHAT IS IN THE LOOP: alu 4.63x AND fma AGAINST ZERO
+
+Differencing the census at K=16384 and K=1024 removes everything that does not scale with
+k_iters -- same tile, same 768-tile grid, same prologue, epilogue and output traffic -- and
+divides by the 240-iteration difference. This is what a static opcode count cannot do: it
+cannot tell a loop-invariant hoisted OUT of the loop from one executed every iteration, and
+that is the entire question.
+
+| pipe | ours/iter | cuBLAS/iter | ratio | share of excess |
+|---|---|---|---|---|
+| **alu** | 163,585 | 35,328 | **4.63x** | **57.8%** |
+| **fma** | 63,744 | **0** | **inf** | **28.7%** |
+| uniform | 211,968 | 182,784 | 1.16x | 13.2% |
+| cbu | 6,913 | 6,187 | 1.12x | 0.3% |
+| TOTAL | 599,045 | 364,437 | 1.64x | |
+| DRAM read | 3.66 MB | 4.37 MB | **0.84x** | we read LESS |
+| L2 requests | 240,147 | 211,294 | 1.14x | |
+| tensor (control) | 24,576 | 49,152 | **0.50x** | **CONTROL FAILED** |
+
+**alu + fma = 86.5% of the per-iteration excess, and cuBLAS issues ZERO fma-pipe instructions
+in its k-loop.** On Hopper the FMA pipe also executes IMAD, so those are almost certainly
+integer address computations -- which matches the standing dead-work note exactly: *"the
+descriptor base is still REBUILT every k-iteration rather than carried -- S2UR SR_CgaCtaId
+(loop-invariant), UIMAD stage*copy_size (a multiply), ~18 instructions of mask/shift/OR/
+sign-extend. cuBLAS keeps the base in a register and rewinds at the bottom of the group."*
+
+**THE CONTROL FAILED AND THAT IS A FINDING, NOT AN ERROR.** cuBLAS issues exactly 2x the tensor
+instructions per unit of K. Both arms have the same 768-tile grid and the same total math, so
+this is not a workload difference -- cuBLAS uses a **narrower wgmma shape**, twice as many and
+half as wide. That is consistent with the standing observation that it issues ~1.79x more
+tensor instructions. The alu/fma/uniform rows stay valid because they are normalised per unit
+of K, which is identical by construction; but "identical instruction-level work" is NOT true
+here, and the tensor pipe cannot be used as a control on this pair. §H50's control held only
+because both arms happened to match on the 192x192 pins.
+
+**This also revises §H50's ranking for THIS variant.** There, uniform was the largest
+contributor (37-44%) on 192x192. Here, on 128x256 at long K, uniform is only 13.2% and **alu
+dominates at 57.8%**. No knob generalises across tiles -- that has now bitten twice.
+
+### WHY THIS MATTERS, IN ONE LINE
+
+At the 700 W cap, throughput = work-per-cycle x cycles-per-second, and cycles-per-second is set
+by power-per-cycle. We already win work-per-cycle (+1.43%). A cut in the k-loop body pays **240x
+more on a K=16384 shape than on a K=1024 one**, which is precisely why the gap is 0.14% at short
+K and 42.6% at long K -- and 10 of the 15 production shapes run the 128x256 variant.
+
+### STATE
+
+DONE: variant map (15/15, three-way confirmed), correctness (15/15 bit-exact), power instrument
+validated against the trainer (+4.15% vs +4.42%), k-loop localised, per-pipe per-iteration
+excess quantified.
+NEXT: SASS of the 128x256 k-loop body -- count the alu/IMAD opcodes and attribute them to
+source, then cut and re-validate on POWER at locked clock (12-round crossover for the gate).
+NOT DONE: PC-sample census; the cluster (c1x1 vs cuBLAS's 1x2) test; §H210's cuBLAS
+locked-standalone control.
