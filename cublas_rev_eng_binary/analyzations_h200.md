@@ -33221,3 +33221,85 @@ order of directness:
 
 Each is a build-line or config change and each must be gated on POWER at a locked clock with
 the achieved clock asserted.
+
+### §H219b  CORRECTION — THE +42% WAS MY OWN BENCHMARK INPUT, NOT THE KERNEL
+
+The operand-fill experiment that proved power is data-dependent also exposed a flaw in the
+harness that had been distorting every per-shape power number taken today.
+
+**THE FLAW.** `h211_replay` filled ONE host buffer and copied it to BOTH A and B, with a
+generator stepping a linear congruence mod 2048. So the operands were (a) correlated between
+A and B and (b) **periodic with period 2048** -- at K=16384 every row of A is eight exact
+repeats. A tile whose stride lands in phase with that period sees artificially low operand
+toggling and therefore artificially low power, for reasons that have nothing to do with the
+kernel.
+
+**THE TELL, which was visible before I understood it.** Our data-sensitivity (power on varied
+operands / power on constant operands) was a flat **+82 to +86% on all four tiles** -- ordinary
+physics. cuBLAS was **+89 to +91% on three of four shapes** but **+32.5% on exactly one**:
+`nn 8192x3072x8192`. An isolated insensitivity on a single shape is what a periodicity artefact
+looks like, not a kernel property.
+
+**CONFIRMED DIRECTLY**, locked 1400 MHz, clock verified:
+
+| shape | operands | ours | cuBLAS | gap |
+|---|---|---|---|---|
+| nn 8192x3072x8192 | periodic (old fill) | 620.5 W | 439.0 W | **+41.3%** |
+| nn 8192x3072x8192 | **independent random** | 682.8 W | 688.1 W | **-0.8%** |
+| nn 8192x3072x16384 | periodic (old fill) | 641.4 W | 450.9 W | **+42.2%** |
+| nn 8192x3072x16384 | **independent random** | 693.5 W | 684.6 W | **+1.3%** |
+
+**On the shape the whole k-loop investigation was built around, we are at PARITY once the
+operands are realistic.** Fill 3 (splitmix64, different seeds for A and B, full period) is now
+the correct mode; correctness stays bit-exact on it.
+
+**THE CORRECTED CENSUS.** All 15 production shapes, independent operands, locked **1200 MHz**
+so nothing is power-capped (verified: 0.0% below-lock on every row -- at 1400 MHz with
+realistic data both arms sit at ~690-700 W, i.e. AT the cap, which clips and compresses the
+measured gap):
+
+| site | our tile | ours | cuBLAS | gap |
+|---|---|---|---|---|
+| **downdgrad** nt 8192x8192x3072 | **192x128** | 568.8 W | 511.5 W | **+11.20%** |
+| **Q/Owgrad** tn 3072x3072x8192 | **192x192** | 521.2 W | 491.7 W | **+6.00%** |
+| **lm_headfwd** nn 8192x50304x3072 | 256x128 | 552.1 W | 527.2 W | **+4.72%** |
+| **lm_headwgrad** tn 3072x50304x8192 | 256x128 | 554.3 W | 530.4 W | **+4.51%** |
+| K/Vdgrad | 128x256 | 476.5 W | 457.4 W | +4.18% |
+| gate_upwgrad | 128x256 | 543.7 W | 523.0 W | +3.96% |
+| gate_upfwd | 128x256 | 527.3 W | 510.1 W | +3.37% |
+| Q/Oprojfwd | 128x256 | 510.5 W | 500.9 W | +1.92% |
+| Q/Odgrad | 128x256 | 506.8 W | 497.6 W | +1.85% |
+| downwgrad | 128x256 | 512.9 W | 511.2 W | +0.33% |
+| gate_updgrad | 128x256 | 523.0 W | 523.4 W | -0.08% |
+| downfwd | 128x256 | 521.0 W | 523.0 W | -0.38% |
+| K/Vfwd | 128x256 | 474.7 W | 479.6 W | -1.02% |
+| K/Vwgrad | 192x128 | 506.3 W | 511.9 W | -1.09% |
+| lm_headdgrad | 128x256 | 521.1 W | 527.5 W | -1.21% |
+
+    FLOP-weighted power gap, independent operands, uncapped : +2.73%     10/15 shapes worse
+    (the artefact-contaminated fill=0 census said +4.15%; the trainer, real data, +4.42%)
+
+**THE TARGET LIST CHANGES COMPLETELY.** The worst offenders are **192x128 (+11.20%)** and
+**192x192 (+6.00%)** and the two **256x128** lm_head shapes (+4.5 to +4.7%). The 128x256
+family -- which the artefact pointed at, and which 10 of 15 shapes use -- is between -1.2% and
++4.2% and is **NOT** where the power goes.
+
+**WHAT THIS INVALIDATES, stated plainly:**
+
+* §H213's K-sweep (parity at K=1024, +42.6% at K>=4096) was measured on periodic operands and
+  **must be re-run on fill=3 before the "cost is in the k-loop body" conclusion is trusted**.
+* §H214/§H215's per-iteration attribution rests on that same shape and the same fill.
+* §H216's DESC_HOIST power result (-0.57%, 16/16) was also fill=0. It is a within-arm
+  comparison so its DIRECTION is likely intact, but its magnitude is unverified.
+* §H212's +4.15% was fill=0; its agreement with the trainer's +4.42% was partly luck. The
+  honest standalone figure is **+2.73%**.
+
+The instruction-count bound from §H216 survives independently: it came from a ratio measured
+within one arm on one shape, and the conclusion (instruction count is not the power term) is
+reinforced, not weakened, by the corrected data.
+
+**THE METHOD RULE.** A GEMM benchmark's INPUT DATA is part of the experiment, not scenery.
+Periodic or correlated operands change dynamic power by tens of percent and do so
+asymmetrically between kernels with different tile strides. Use independent, full-period
+random operands with DIFFERENT seeds per matrix, and re-measure any power result taken any
+other way.
