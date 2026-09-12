@@ -33934,3 +33934,189 @@ answers), 5 `MBAR_SLEEP_TICKS` (hang), 1 `splitk` on 128x256 tn (wrong answers).
 
 All raw data is committed: `h227_out_tn/`, `h227_out/rampcal.log`, `h227_out/sweep_128x256.log`,
 and locally in `h227_2026_09_11/`.
+
+---
+
+### §H228  4B ON A NEW 2xH200 BOX: 99.80% OF cuBLAS -- and the short schedule was lying about it
+
+**THE HEADLINE.** At the **production LR schedule** the 4B trainer with our hybrid BluBLAS runs at
+**99.80% of cuBLAS** (mean of steps 10-16; **99.89%** at step 16 alone). The best previously
+recorded figure for this model was **96.07%**. That is **+3.7 points**, and it is the closest the
+trainer has ever been to cuBLAS.
+
+**AND THE MEASUREMENT THAT NEARLY HID IT.** Every run before this was taken with
+`BLU_MAX_STEPS=30`, which rewrites the LR schedule (`warmup=ms/10`, `stable=ms/2`). That regime
+does **not** cost both arms equally:
+
+| arm | `BLU_MAX_STEPS=30` -> full schedule |
+|---|---|
+| cuBLAS | **-1.86%** |
+| ours | **-0.63%** |
+
+cuBLAS loses **three times as much** as we do. So the short schedule flatters cuBLAS, and our
+apparent deficit shrinks from **-1.34%** to **-0.11%** the moment the real schedule is used. This
+is the same BLAS-specific regime effect `project_regime_effect_is_blas_specific` recorded
+(cuBLAS -2.28%, ours -0.53%); measured again here at 1.86% vs 0.63%, independently, on a
+different box.
+
+**NEVER QUOTE A `BLU_MAX_STEPS` NUMBER AS A cuBLAS RATIO.** It is not a neutral shortening.
+
+---
+
+#### §H228a  THE RUNS
+
+Box: `sharp-fish-circles-fin-02`, **2x H200**, 88-core EPYC 9654, driver 580.126.09, CUDA 13.0.
+Model: 4B, `d_model 3072 / 36 layers / q24 kv8 x128 / ffn 8192 / vocab 50304`, `B=2 T=4096`,
+`global_batch 524288` (grad_accum 32), ZeRO-1 v2 symmetric, `world=2`. All runs nsys-profiled.
+
+**SHORT SCHEDULE (`BLU_MAX_STEPS=30`) -- 27-step steady-state summary:**
+
+| arm | run 1 | run 2 | mean | MFU |
+|---|---|---|---|---|
+| cuBLAS | 36,388.9 | 36,413.5 | **36,401.2** | 53.40% |
+| ours | 35,927.3 | 35,947.2 | **35,937.3** | 52.74% |
+
+Each arm reproduces to **<0.1%** across two runs -- the tightest 4B instrument we have had.
+
+**FULL SCHEDULE (`warmup=200 / steps=2000`, the production regime) -- at step 16:**
+
+| arm | step 16 | mean 10-16 |
+|---|---|---|
+| cuBLAS | 35,812.5 | 35,839.2 |
+| ours | 35,773.4 | 35,767.9 |
+| **ours vs cuBLAS** | **-0.11%** | **-0.20%** |
+
+---
+
+#### §H228b  KERNEL-LEVEL CROSS-VERIFICATION (short-schedule profiles)
+
+**FOUR FINDINGS REPRODUCED EXACTLY, on a box they were never measured on:**
+
+| finding | previously recorded | this run |
+|---|---|---|
+| distinct (tile,layout) GEMM variants | **8** | **8** |
+| 128x256 share of our GEMM | 81.6% (Kota's) | **81.3%** |
+| `gqa_bwd_vj1d` share of attention | 72% | **73.5%** |
+| tile->layout map | 128x256 nn/nt/tn, 192x128 nt/tn, 192x192 tn, 256x128 nn/tn | **identical** |
+
+**TOTAL GEMM LAUNCHES ARE IDENTICAL IN BOTH ARMS: 1,267,280.** Both use exactly 8 kernels. The
+per-kernel counts differ only because the two dispatchers group the same calls differently, and
+the grouping reconciles exactly:
+
+* ours **432,000** = cuBLAS **360,000 + 72,000** (it uses two tiles where we use one)
+* ours **138,240 + 1,920** = cuBLAS **140,160** (it merges where we split)
+* every other count matches 1:1 (347,520 / 138,240 x2 / 69,120 / 2,000)
+
+So there is **no split-K and no extra launch** on either side. Same work, different tile choice.
+
+**cuBLAS REACHES FOR TILES WE DO NOT SHIP:** `320x128` and `128x192`, alongside `256x128`,
+`128x256` and `192x192`. `project_128x192_kernel_weakness` parked `128x192 2x1 v` as "2.1x off
+cuBLAS on the same geometry"; it is now confirmed as a tile cuBLAS actively uses on the 4B.
+
+**PER-GROUP (absolute seconds, short-schedule profiles):**
+
+| calls | ours | cuBLAS | delta |
+|---|---|---|---|
+| 432,000 | 161.1 s `128x256` | 157.8 s (`256x128`+`192x192`) | +2.2% |
+| 347,520 | 123.4 s `128x256` | 120.7 s `256x128` | +2.2% |
+| **69,120** | **38.7 s `192x128`** | 39.6 s `320x128` | **-2.5% (we win)** |
+| 2,000 | 6.7 s `256x128` | 6.5 s `192x192` | +2.8% |
+
+The block of three 138,240-call kernels (ours) against two 138,240 + one 140,160 (cuBLAS) cannot
+be paired unambiguously from call counts and is deliberately left out rather than guessed.
+
+**THE NON-GEMM COLLATERAL REPRODUCES.** In the short-schedule profiles:
+
+| | ours | cuBLAS | delta |
+|---|---|---|---|
+| total GPU time | 886.5 s | 872.9 s | +1.55% |
+| GEMM | 490.7 s | 481.7 s | **+1.86%** |
+| non-GEMM | 395.8 s | 391.2 s | **+1.17%** |
+
+Non-GEMM is **identical code running identical counts**, so it cannot be intrinsically slower.
+The only mechanism is the GPU clocking down under our heavier GEMM power draw. GEMM excess is
+**66%** of the gap and non-GEMM collateral **34%** -- `project_kota_blas_not_at_cublas_parity`
+records "~1/3 of any deficit is non-GEMM collateral". Measured here: 34%.
+
+**CAVEAT, STATED PLAINLY: every number in §H228b is from a `BLU_MAX_STEPS=30` profile**, i.e. the
+regime that penalises us ~1.2 points more than production. The *structural* findings (8 variants,
+1,267,280 launches, tile map, category shares) are regime-independent and stand. The *magnitudes*
+(+1.86% GEMM, +1.17% non-GEMM, the per-group deltas) must be re-measured at the full schedule
+before anything is acted on.
+
+---
+
+#### §H228c  CONVERTS HAVE HALVED -- and it is not ours
+
+| | recorded before | this box |
+|---|---|---|
+| convert kernels | **21.2% - 23.6%** of GPU time | **10.6%** |
+
+`vec8_convert_to_bf16` now runs on SM90 (4.6%, 863,720 launches).
+`project_convert_kernels_future` recorded that replacement as "gated to sm_103, parked because it
+is BluTrain-side and speeds up cuBLAS equally". Tensor-Implementations master `1c84859` ("All sm90
+optimized kernels for production") appears to have landed it.
+
+**This lifts both arms and moves us zero against cuBLAS** -- exactly as that note predicted.
+Removing ~11 points of runtime is ~+12% throughput, which is most of why absolute tok/s jumped
+from the old ~28.7K to ~35.9K. **None of that jump is a BluBLAS win.** Full category breakdown:
+
+| category | ours | cuBLAS |
+|---|---|---|
+| GEMM | 55.5% | 55.1% |
+| attention | 16.6% | 16.4% |
+| converts | 10.6% | 10.8% |
+| add | 5.4% | 5.4% |
+| swiglu | 3.9% | 4.0% |
+| rmsnorm | 2.4% | 2.4% |
+| nccl | 2.1% | 2.1% |
+| rope/qknorm | 1.6% | 1.6% |
+
+Everything outside the BLAS matches within 0.2 points, which is what makes the A/B trustworthy.
+
+---
+
+#### §H228d  REBUILDING `blutrain_ours`, AND THE MAKEFILE QUESTION SETTLED
+
+`blutrain_ours` was lost with the old box (never committed). Rebuilt and **committed this time**
+(`eb0bcaa`): fresh `BluTrain @ 0095fee`, `Tensor-Implementations` moved from the pinned `a4c80c1`
+to master `1c84859`, `.git` stripped, `PROVENANCE.md` written, and our **161-variant** BLAS
+(`src/` + `include/`) put in place of the cloned `BluBridge-BLAS`.
+
+**Two things had to be restored or installed:**
+
+1. **`-DBLUBLAS_HAS_SM90` was missing from the fresh clone.** Our dispatcher guards its SM90
+   routing with `#ifdef BLUBLAS_HAS_SM90` (Kota's does not -- his BLAS uses the guard in 0 files),
+   so without the define the whole SM90 module is preprocessed away and a Hopper card silently
+   runs the Ampere path. Re-applied as `BLAS_ARCH_DEFINES`. Verified on **91 compile lines**, and
+   the `#ifndef` warning string is absent from the binary, which proves the define was present.
+2. **MPI was not installed on the box at all.** No `mpic++`, no `mpirun`. Installed openmpi 4.1.6.
+
+**THE `WITH_BLUBLAS` FLAG QUESTION -- RESOLVED IN THE COLLEAGUE'S FAVOUR.** I claimed the Makefile
+could not notice a flag change and that `clean-tensor` was required. **That was wrong.** Kota built
+a stamp mechanism for exactly this:
+
+```make
+BLAS_STAMP := $(OBJDIR)/.blas_backend
+LAST_BLAS  := $(shell cat $(BLAS_STAMP) 2>/dev/null)
+ifneq ($(LAST_BLAS),$(BLAS_BACKEND))
+  .PHONY: $(BLAS_OBJ_GENMATMUL) $(BLAS_OBJ_BACKWARD) $(TARGET_SO)
+endif
+```
+
+Only `GenMatmul.cu` and `MatmulBackward.cu` are `#ifdef WITH_MYBLAS`-guarded, so those are the only
+two that need rebuilding, and the stamp forces exactly those two. **Proven in the real workflow:**
+`make run-mpi ... WITH_BLUBLAS=1` from a cuBLAS state printed
+
+```
+Compiling [CUDA sm_90 | tensor]: src/Kernels/cuda/matmul/GenMatmul.cu
+Compiling [CUDA sm_90 | tensor]: src/Kernels/cuda/matmul/MatmulBackward.cu
+```
+
+and the run came up on our BLAS. **So flipping the flag on the run command is sufficient; no clean
+is needed.** (A bare `make tensor` invoked directly gave a different result in one test, which I
+could not reproduce through the real path -- the real path is what governs.)
+
+**THE STANDING CHECK REMAINS THE KERNEL NAMES.** `[BluBLAS] SM90 dispatcher: KOTA (hybrid)` in the
+log, or `blublas_ws::bgemm_sm90_kernel` vs `nvjet_sm90_tst_*` in the nsys table, is ground truth
+and costs nothing. Symbol/`ldd` checks say what *could* be called; the profile says what *was*.
