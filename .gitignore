@@ -211,18 +211,11 @@ cublas_rev_eng_binary/*
 Blublas_gautam_10_07_2026.zip
 
 # =========================
-# Kota-session BluBLAS/BluTrain snapshot dirs (embedded git repos — local only)
-# These contain their own .git and caused "embedded git repository" warnings.
-# =========================
-BluBridge-BLAS_05_aug_kota/
-BluBridge-BLAS_21_07_2026_kota_H200_setup/
-BluBridge-BLAS_29_aug_kota/
-BluTrain_aug_05_kota_training_script_run/
-BluTrain_bf16_run/
-
-# =========================
 # Local experiment snapshot dirs (h27z_* / prod_runs_* / box_* etc.)
 # Scratch/experiment runs — local only, not source-of-truth.
+# NOTE: BluBridge-BLAS_*/BluTrain_* kota dirs are intentionally NOT ignored here
+# so that `git add .` still warns about their embedded .git repos — that warning
+# is a useful signal, not noise.
 # =========================
 h27y*/
 h27z*/
