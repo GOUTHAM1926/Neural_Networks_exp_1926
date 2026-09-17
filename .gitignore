@@ -209,3 +209,52 @@ BLUBLAS_kota/
 cublas_rev_eng_binary/*
 !cublas_rev_eng_binary/*.md
 Blublas_gautam_10_07_2026.zip
+
+# =========================
+# Kota-session BluBLAS/BluTrain snapshot dirs (embedded git repos — local only)
+# These contain their own .git and caused "embedded git repository" warnings.
+# =========================
+BluBridge-BLAS_05_aug_kota/
+BluBridge-BLAS_21_07_2026_kota_H200_setup/
+BluBridge-BLAS_29_aug_kota/
+BluTrain_aug_05_kota_training_script_run/
+BluTrain_bf16_run/
+
+# =========================
+# Local experiment snapshot dirs (h27z_* / prod_runs_* / box_* etc.)
+# Scratch/experiment runs — local only, not source-of-truth.
+# =========================
+h27y*/
+h27z*/
+h186*/
+h192*/
+h211*/
+h227*/
+h229*/
+prod_runs_*/
+kota_backtrack_*/
+box_rescue_*/
+box_src/
+blutrain_prod_local/
+flux_bin_data/
+splitk_observe/
+sweep_results_cublas/
+profiling_reports/
+mini_blutrain/
+numpy_tests/
+pytorch_tests/
+libtorch_tests/
+test_prep/
+scripts/
+
+# =========================
+# Large scratch / chat / one-off files
+# =========================
+claude_code_wmma_chat_export.md
+blublas_44_variants.png
+bluscript_zero*.cpp
+bypass_attr.json
+outpput*.md
+output(2).md
+h27zdt_dz_doc.md
+h27zdy_kloop_unroll.patch
