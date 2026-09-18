@@ -149,7 +149,8 @@ gpt2_*.txt
 # =========================
 Resolving*.md
 HANDOFF.md
-output.md
+output*.md
+outpput*.md
 
 # =========================
 # BluTrain_BestPrecisionEnv_may27_406k — track SOURCE only.
@@ -196,18 +197,10 @@ ptx_docs/
 # =========================
 BluBridge-BLAS_01_07_2026_/
 /backups/
-cublas_rev_eng_binary/all_symbols.txt
-cublas_rev_eng_binary/catalog_bf16.txt
-cublas_rev_eng_binary/sm_100_symbols.txt
-cublas_rev_eng_binary/sm_100_bf16_demangled.txt
-cublas_rev_eng_binary/sm_103_symbols.txt
-cublas_rev_eng_binary/catalog_blackwell*.txt
-cublas_rev_eng_binary/**/*_trace.csv
-cublas_rev_eng_binary/**/*_trace_demangled.csv
+# cublas_rev_eng_binary/ moved to profiling_reports/cublas_rev_eng_binary/ (2026-09-18);
+# its 4 tracked *.md benchmark reports stay tracked at the new path.
 BluBridge-BLAS_kota_latest_10_07_2026/BluBridge-BLAS/
 BLUBLAS_kota/
-cublas_rev_eng_binary/*
-!cublas_rev_eng_binary/*.md
 Blublas_gautam_10_07_2026.zip
 
 # =========================
@@ -220,9 +213,16 @@ BluTrain_aug_05_kota_training_script_run/
 BluTrain_bf16_run/
 
 # =========================
-# Local experiment snapshot dirs (h27z_* / prod_runs_* / box_* etc.)
-# Scratch/experiment runs — local only, not source-of-truth.
+# Run artefacts — ALL consolidated into profiling_reports/ on 2026-09-18.
+# Nothing named h27*/ prod_runs_*/ box_*/ etc. lives at the repo root any more;
+# those patterns are kept only so a fresh box-pull lands ignored by default.
+#
+# NOTE profiling_reports/ is ignored, but 66 files inside it ARE tracked
+# (h229_2026_09_12, h227_2026_09_11, cublas_rev_eng_binary/*.md). .gitignore
+# never untracks an already-tracked file, so they keep syncing. Do not "fix"
+# this by unignoring the folder — that would add ~1150 files / 229 MB.
 # =========================
+profiling_reports/
 h27y*/
 h27z*/
 h186*/
@@ -236,9 +236,6 @@ box_rescue_*/
 box_src/
 blutrain_prod_local/
 flux_bin_data/
-splitk_observe/
-sweep_results_cublas/
-profiling_reports/
 mini_blutrain/
 numpy_tests/
 pytorch_tests/
@@ -253,7 +250,12 @@ claude_code_wmma_chat_export.md
 blublas_44_variants.png
 bluscript_zero*.cpp
 bypass_attr.json
-outpput*.md
-output(2).md
-h27zdt_dz_doc.md
-h27zdy_kloop_unroll.patch
+
+# =========================
+# Documentation mirror — MUST stay tracked.
+# work_docs/ holds byte-identical copies of blublas/docs/*.md (master) plus
+# sft_work_documentation.md. The blanket *.log / *.bak rules above do not
+# touch .md, but pin it explicitly so nobody adds a broad *.md rule later.
+# =========================
+!work_docs*/**/*.md
+!work_docs*/*.md
