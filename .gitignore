@@ -259,3 +259,12 @@ bypass_attr.json
 # =========================
 !work_docs*/**/*.md
 !work_docs*/*.md
+
+# =========================
+# SFT reference clones (Megatron-LM, Liger-Kernel, TRL, torchtitan ~181 MB).
+# Read-only third-party checkouts — never pushed.
+# NOTE: SFT *documentation* lives in work_docs/sft_work_documentation.md, NOT here,
+# so a blanket ignore on this folder is safe. Do not add a `!*.md` exception —
+# it would pull in thousands of .md files from the cloned repos.
+# =========================
+sft_research/
