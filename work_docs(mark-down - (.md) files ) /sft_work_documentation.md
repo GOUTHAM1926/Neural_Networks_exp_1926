@@ -36,6 +36,8 @@ post-training**. This document is the record of everything established on day 1.
 21. [Framework landscape — verified, and which one we pick](#21)
 22. [How three reference implementations do masked CE](#22)
 23. [The global denominator — a bug caught before writing code](#23)
+24. [Session log — 2026-09-18](#24)
+25. [Session log — 2026-09-21: the loss-kernel implementation](#25)
 
 ---
 
@@ -1536,3 +1538,333 @@ Everything else (packing, generation, LoRA, HF import) is optional for a first w
 
 **That is genuinely a few days of work, not weeks** — because the hard part (the framework)
 is already built.
+
+---
+
+<a name="24"></a>
+## 24. Session log — 2026-09-18
+
+### 24.1 Framework landscape settled (details in §20-§22)
+
+- **Both PyTorch post-training libraries are dead.** torchtune "no longer actively maintained,
+  wound down in 2025"; torchforge "Development paused... consolidated in **torchtitan**".
+  Verified from the repo READMEs, not blogs. My earlier advice "clone torchforge, skip
+  torchtune" was wrong and is corrected in §21.
+- **Chosen references:** MAIN = `NVIDIA/Megatron-LM` (same architecture as us: own CUDA
+  kernels, tensor+data parallel, and `pretrain_gpt.py` whose docstring is literally
+  `"""Pretrain and SFT GPT."""`). Cross-refs = PyTorch ATen `Loss.cu` (already local in
+  `pytorch_source/`) + `Liger-Kernel`. Data/interop = `TRL`. Secondary = `torchtitan`.
+- **Liger-Kernel audited:** it has **no SFT module** — no trainer, no data handling. Its
+  `chunked_loss/` is all preference losses (DPO/CPO/ORPO/SimPO/KTO/GRPO). What it does give us
+  is the CE kernel with `ignore_index`, plus a `megatron/` integration showing how a custom CE
+  gets swapped into a Megatron-style trainer. Its `NOTICE` credits 7 upstream sources
+  (Unsloth, Triton, mgmalek/efficient_cross_entropy, FlashAttention, AutoAWQ, llm.c);
+  **nothing is taken from PyTorch** — these are Triton kernels written to replace it.
+
+### 24.2 SFT-before-RL: my day-1 claim was too strong (full evidence in §5)
+
+Re-checked against the papers. DeepSeek-R1 Table 3 shows cold-start SFT **cost** reasoning
+(AIME 77.9 -> 59.0, CNMO 88.1 -> 58.0) and **bought** usability (IF-Eval +25.1,
+AlpacaEval +25.4). R1-Zero's raw reasoning was already near-final (77.9 vs 79.8). SimpleRL-Zoo
+shows SFT-first *lowers* the RL ceiling, monotonically worse with more SFT steps. Chu et al.
+give the reconciling condition: *"SFT is necessary for RL training **when the backbone model
+does not follow instructions**."* Also retracted in writing: the "80% of business applications"
+figure was invented and has no source.
+
+### 24.3 The denominator bug — caught before writing any code (full detail in §23)
+
+Megatron never divides inside its loss function: it returns `sum(losses * loss_mask)` and
+`num_tokens` **separately**, so the framework can all-reduce both and divide once, globally.
+PyTorch ATen does the same thing — `total_weight` is a returned output, and `size_average` is
+a switch.
+
+Our config is **2 ranks x grad_accum 32 = 64 micro-batches**, each with a different unmasked
+token count. Dividing per micro-batch and averaging weights a 50-valid-token batch's tokens
+**10x more** than a 500-token one. Loss stays finite, the curve descends, maxRelErr is 0 — the
+model just learns the wrong objective. Invisible in pretraining because there every token is
+valid and the counts are uniform. Touch points went from 5 to 7.
+
+### 24.4 Production BluTrain cloned
+
+    ~/Downloads/sft_research/BluTrain              153 MB, branch master, 0095fee
+    └── Tensor-Implementations                     pinned a4c80c1  (372 tracked files)
+        └── BluBridge-BLAS                         pinned 35e51a0
+
+All four SFT files confirmed present: `LossKernels.cu` 1660 lines, `LossOps.cpp` 385,
+`LossBackward.cpp` 361, `LossKernels.h` 228.
+
+**Cloning gotchas hit, in order:**
+1. `--recurse-submodules` with a token in the parent URL does NOT pass the token to submodule
+   clones — they use the plain `.gitmodules` URL and fail with "Repository not found".
+   Fix: `git submodule set-url <name> https://<TOKEN>@github.com/<org>/<repo>.git` per level.
+2. There are **three** levels, not two. BluTrain -> Tensor-Implementations ->
+   `kathir-23s/BluBridge-BLAS` (a colleague's personal repo, not the org's).
+3. One clone landed in `~/.local/share/Trash/...` because the shell's CWD was inside a
+   directory that had been deleted to Trash. Always `cd` with an absolute path first.
+4. Tokens end up in `.git/config` and in submodule URLs. `.gitmodules` is the one that gets
+   COMMITTED — it was verified clean (0 tokens) before finishing.
+
+### 24.5 Branch plan — why TWO branches
+
+Proven on a throwaway repo and re-confirmed against the real one. BluTrain stores
+`160000 commit a4c80c17...` for Tensor-Implementations — a **pointer**, not files. It tracks
+**0** files inside the submodule; Tensor-Implementations tracks 372, including all four of
+ours. So a branch in the parent alone cannot hold our kernel changes: committing from the
+parent reports "no changes added to commit", and committing inside a detached submodule
+orphans the commit, which the next `git submodule update` silently discards.
+
+    cd ~/Downloads/sft_research/BluTrain            && git checkout -b sft_gautam
+    cd Tensor-Implementations                       && git checkout -b sft_gautam
+    # BluBridge-BLAS: leave alone, SFT does not touch it
+
+Push order at the end is **submodule first, then parent** — otherwise nobody can resolve the
+commit the parent points at. Merging is likewise two PRs: Tensor-Implementations, then the
+pointer bump in BluTrain.
+
+Where each change lands:
+
+    Tensor-Implementations : LossKernels.cu, LossKernels.h, LossOps.cpp, LossBackward.cpp
+    BluTrain               : dataloader (masked targets), trainer (ckpt/LR/epochs), Makefile
+
+### 24.6 Working conventions set today
+
+- **Guide-only mode.** The user runs every mutating command; I print commands and do read-only
+  inspection. `git config` counts as a mutation, including `--global`.
+- **Identity:** global stays personal (`goutham64840@gmail.com`). No commits at all until the
+  work is finished; at that point set `user.email=goutham.kumar@blubridge.com` **in BluTrain
+  and in Tensor-Implementations separately** (a submodule does not inherit it), then stage,
+  commit, push. Because the first commit happens after the switch, no history rewriting is
+  needed. Merge permission comes from the **PAT used to push**, not the commit email.
+- **Layout:** `~/Downloads/sft_research/` sits outside any repo — deliberately, so a
+  `git clean -fdx` in `Neural_Networks_exp_1926` cannot delete it.
+
+### 24.7 Open — first thing tomorrow
+
+1. Create the two `sft_gautam` branches (commands in §24.5).
+2. **Decide `ignore_index` vs `loss_mask`.** Recommendation: take Megatron's semantics (mask +
+   global denominator) AND PyTorch's in-kernel early-out, so masked rows skip the whole
+   50,304-wide softmax — masking becomes a ~2x speedup rather than pure overhead.
+3. Apply the 7 touch points from §23.4, including the `N == 0` guard.
+4. Clone the 4 reference repos into `~/Downloads/sft_research/`.
+5. Still unresolved: a PAT from the BluBridge account is required for the final merge.
+
+**BluBLAS/matmul work remains ON HOLD.**
+
+---
+
+<a name="25"></a>
+## 25. Session log — 2026-09-21: the loss-kernel implementation
+
+First day of actual code. Branch `sft_gautam` created in **Tensor-Implementations only**
+(the submodule); BluTrain the parent stays on `master` until we touch the dataloader/trainer.
+~38 individual edits, every one verified by reading the code back. **Nothing compiled yet.**
+
+### 25.1 Design decision #1 — the `sft` bool was removed
+
+First implementation added `bool sft = false` alongside `int64_t ignore_index = -1`. The user
+challenged whether that was the robust design. Checked the references:
+
+- **PyTorch ATen** `nll_loss_forward_no_reduce_cuda_kernel` takes `int64_t ignore_index` and
+  compares unconditionally. No flag.
+- **Liger** `liger_cross_entropy_kernel(..., ignore_index, ...)`, public API
+  `ignore_index: int = -100`. No flag.
+
+Two independent production implementations, neither has a boolean. The bool was removed from
+all 5 kernels.
+
+**Why it was wrong, not merely redundant:** `ignore_index = -1` already means "off", so a
+separate flag creates two sources of truth and makes ILLEGAL STATES REPRESENTABLE —
+`sft=true, idx=-1` (on but masking nothing) and `sft=false, idx=65535` (set but ignored).
+It also had a silent-swap hazard: `kernel(..., 65535, true)` compiles clean (65535 -> bool
+true, true -> int64 1) and masks token id 1 out of every batch.
+
+### 25.2 The sentinel: why 65535 and not -100
+
+Targets are `UInt16` (`UInt16ShardView` in the dataloader), vocab is 50304.
+
+    uint16 range     0 .. 65535
+    real token ids   0 .. 50303
+    unused           50304 .. 65535   -> sentinel 65535
+
+`-100` is PyTorch's convention because ITS targets are `int64`, a signed type that can hold it.
+Writing -100 into a uint16 stores **65436**, so `65436 == -100` is false forever and masking
+silently does nothing.
+
+The parameter default `-1` is a "match nothing" guard: `static_cast<int64_t>(targets[row])` is
+always >= 0 for uint16, so -1 never matches. If someone enables SFT and forgets to set the
+index, the result is pretraining behaviour, not wrongly-masked data.
+
+### 25.3 The 5 kernels (all in `LossKernels.cu`)
+
+| # | kernel | role | what the guard does |
+|---|---|---|---|
+| 1 | `sparse_ce_forward_kernel_vec` | fwd, no stats (benchmarking) | `losses[row]=0`, return |
+| 2 | `sparse_ce_forward_kernel_vec_save_stats` | fwd, training | `losses=0`, `saved_max=0`, **`saved_sum=1.0f`** |
+| 3 | `sparseCEReduce_kernel_optimized` | bwd no-stats, speed only | `d_partial_max=0`, **`d_partial_sum=1.0f`** |
+| 4 | `sparseCENormalize_kernel_optimized` | bwd no-stats, **correctness** | zero the grad row |
+| 5 | `sparseCENormalize_from_stats` | bwd with-stats, **correctness** | zero the grad row |
+
+**The 1.0f sentinel is mandatory.** Both consumers compute `1.0f/sum`; a 0.0f sentinel gives
+`inf`, then `inf*0` = NaN which spreads through the entire gradient tensor. Traced the merge in
+kernel #4 by hand: two partials of (max=0, sum=1) merge to sum=2, `inv_sum=0.5`, finite.
+
+**Other properties checked on every guard:** placed after the row-bound check and before any
+work; `return` outside any `tid==0` scope so all threads exit; the condition is block-uniform
+(depends only on `blockIdx.x`) so no `__syncthreads()` deadlock is possible; zeroing uses a
+plain `T` loop, NOT the `float4` path, because kernels #4/#5 are also instantiated for
+float16/bfloat16 where a float4 write would run past the end of the row. Coverage simulated:
+50,304 / 50,304 elements, no gaps, no OOB.
+
+**The forward early-out is CORRECTNESS, not optimisation.** Kernels #1/#2 later do
+`row_logits[target_idx]`. With target 65535 and vocab 50304 that reads 15,231 elements out of
+bounds. Verified the guard precedes it: kernel #1 guard at line 92 vs read at 187; kernel #2
+guard at 218 vs read at 297.
+
+### 25.4 Wrappers, headers, macros
+
+4 host wrappers threaded (`impl_vec`, `impl_vec_save_stats`, `backward_cuda_vec`,
+`backward_cuda_vec_with_stats`), 5 kernel launch sites, 3 instantiation macros = 10 explicit
+instantiations (3 + 4 + 3).
+
+Two C++ rules that govern this and will break the build if missed:
+
+1. **A default argument may be written exactly once.** Header declaration gets `= -1`; the
+   `.cu` definition must NOT repeat it.
+2. **Defaults must be trailing.** Every wrapper ends with `cudaStream_t stream`, so
+   `ignore_index` goes AFTER it. Before it, every existing call site fails.
+
+Instantiation macros must list the new type or the code compiles and fails at LINK with an
+undefined symbol for that dtype only. `INSTANTIATE_TWO_KERNEL_VEC` has **4** instantiations
+(int8/int16/int32/int64), the other two have 3.
+
+### 25.5 Denominator — researched against three references, decision recorded
+
+The question: what do we divide the summed loss by?
+
+    Option A  constant batch_size (today)      uniform weighting, scaled by mask density
+    Option B  GLOBAL valid-token count          exact
+    Option C  LOCAL n per micro-batch           NON-UNIFORM -> wrong
+
+Option C distorts token weighting by **13.5x** between micro-batches in simulation (our config
+is 2 ranks x grad_accum 32 = 64 micro-batches, each with a different valid count).
+
+**What each reference does — read from source, not assumed:**
+
+- **Megatron default** (`calculate_per_token_loss=False`): `output_tensor /= clamp(num_tokens,
+  min=1); output_tensor /= num_microbatches` — this is **Option C**. Their default is the
+  distorting one.
+- **Megatron `calculate_per_token_loss=True`**: accumulates `total_num_tokens`, then in
+  `finalize_model_grads.py:697-711` does `broadcast` + `all_reduce(num_tokens, dp_cp_group)`
+  and scales the GRADIENTS by `1/clamp(num_tokens,1)` AFTER the reduce-scatter.
+- **torchtitan**: loss is `reduction="sum"` (the type is `Literal["sum","none"]` — mean is not
+  even expressible). The trainer PREFETCHES all micro-batches for the step, sums
+  `microbatch.num_valid_tokens` from the **collator**, all-reduces once
+  (`dist_sum_tensor`), and passes one `global_valid_tokens` device tensor into every
+  micro-batch. `BaseLoss.__call__`: `if global_valid_tokens is not None: loss = loss /
+  global_valid_tokens`.
+- **Liger / PyTorch F.cross_entropy**: local count only — they see one call, they cannot do
+  better. Liger uses `.item()`, a device->host sync per call.
+
+**Chosen: torchtitan's.** It is the most robust of the three because the count is known BEFORE
+the forward runs (no post-hoc gradient rescaling, no interaction with ZeRO reduce-scatter
+ordering), it comes from the data loader which already built the mask, it never syncs to CPU,
+and it composes with auxiliary losses for free.
+
+Implemented as an optional trailing parameter so pretraining is untouched:
+
+    Tensor sparse_cross_entropy_loss(const Tensor& logits, const Tensor& targets,
+                                     int64_t ignore_index = -1,
+                                     const Tensor* denom = nullptr);
+    // denom == nullptr -> divide by batch_size  (pretraining, byte-identical)
+    // denom != nullptr -> divide by *denom      (SFT, global count, device tensor)
+
+`Tensor*` not `int64_t` deliberately — keeps the count on device. torchtitan's own comment:
+*"Keep the global token count on device so loss normalization does not introduce a CPU
+synchronization in the training path."*
+
+### 25.6 fp32 accumulator — APPLIED BUT ON HOLD
+
+Separate pre-existing issue found while doing the above: the loss chain was typed `T`, so a
+bf16 caller squashed to bf16 three times (per-row write, block partial write, final store).
+
+Changed: `d_losses`/`d_partial` to `float*`, kernels #1/#2 and the sm103 kernel take
+`float* losses`, and `sum_reduction_kernel` was split to
+`template <typename TIn, typename TOut = TIn>` so the partial pass is `<float,float>` and the
+final pass `<float,T>` — one cast, matching ATen `Loss.cu:266`
+`*output = static_cast<scalar_t>(sh_inputs[0] / acc_weight[0])`. The `TOut = TIn` default keeps
+all 22 existing call sites compiling unchanged.
+
+**Then measured it, and the benefit is narrower than first claimed.** Isolating each squash
+over 8192 rows:
+
+    squash 1 (per-row -> bf16)      0.28%
+    squash 2 (partials -> bf16)     0.35%
+    squash 3 (final store -> bf16)  0.58%   <- dominates
+    all three combined              0.58%
+
+The final store dominates because bf16 error is RELATIVE, so casting 20443 or 2.4955 costs the
+same. Per-row and partial errors are random and cancel (~0.4%/sqrt(8192) = 0.004%). Removing
+the final store is impossible: the returned loss dtype must stay `T` because
+`LossBackward.cpp:336-341` REINTERPRETS `grad_output` as the logits dtype (unchecked — returning
+fp32 while logits are bf16 would give garbled numbers, not a type error).
+
+**And the loss value never reaches the gradient.** `f_scale = static_cast<float>(*grad_output)
+* host_scale` — `grad_output` is the incoming gradient (1.0 / grad_scale), not the loss. So the
+bf16 loss affects LOGGING only. An earlier claim in this session that it cost "0.31% on every
+gradient" was wrong and is retracted.
+
+What the change does still buy: the accumulation is correct by construction rather than by
+luck, and it makes the SFT `denom` division safe (fp32 sum ÷ a 241,341 token count has no
+rounding). **Parked pending the user's decision.**
+
+Also corrected: an earlier claim that "4 other loss functions in this file already accumulate
+in fp32, so we are aligning with convention" is FALSE. Those four
+(`categorical_cross_entropy`, `mse_loss`, `mae_loss`, `bce_loss`) are not templated at all —
+they are hard-coded `float`-only and never faced the choice. **Sparse-CE is the only templated
+loss in the file**, hence the only one where the accumulator question arises.
+
+### 25.7 Two branches, and why — proven, not assumed
+
+BluTrain stores `160000 commit a4c80c17...` for Tensor-Implementations — a POINTER, not files.
+It tracks **0** files inside the submodule; Tensor-Implementations tracks 372, including all
+four loss files. Demonstrated on a throwaway repo: editing a submodule file and committing from
+the parent reports *"no changes added to commit"*, and committing inside a detached submodule
+orphans the commit, which the next `git submodule update` silently discards.
+
+Push order is submodule first, then parent, or nobody can resolve the commit the parent points
+at. Merging is likewise two PRs.
+
+### 25.8 Cloning gotchas (for the record)
+
+1. `--recurse-submodules` with a token in the parent URL does NOT pass the token to submodule
+   clones; they use the plain `.gitmodules` URL and fail "Repository not found". Fix:
+   `git submodule set-url <name> https://<TOKEN>@github.com/<org>/<repo>.git` per level.
+2. There are **three** levels: BluTrain -> Tensor-Implementations -> `kathir-23s/BluBridge-BLAS`
+   (a colleague's personal repo, not the org's).
+3. One clone landed in `~/.local/share/Trash/...` because the shell's CWD was inside a
+   directory that had been trashed. Always `cd` with an absolute path first.
+4. `.gitmodules` is the file that gets COMMITTED — verified token-free before finishing.
+
+### 25.9 Status at end of day
+
+    5 kernels             DONE   ignore_index + masked-row early-out
+    4 wrappers            DONE   header default / .cu none / trailing
+    3 macros              DONE   10 instantiations
+    LossOps .h/.cpp       DONE   API, CPU mask, 2 launches, 2 divides
+    fp32 accumulator      APPLIED, ON HOLD
+    LossBackward          NOT STARTED   (ignore_index + host_scale)
+    global n_valid        DESIGNED, NOT BUILT
+    dataloader + trainer  NOT STARTED   (BluTrain repo)
+    sm103 masking         SKIPPED       TODO in code; masking is a no-op on B300
+    COMPILED              NO
+
+Branch `sft_gautam`, Tensor-Implementations only.
+
+### 25.10 Tomorrow
+
+1. **Build it.** Everything so far is static analysis. Likely failure points: the 10
+   instantiations and the `float*`/`T*` boundaries.
+2. Decide on the fp32 accumulator change.
+3. `LossBackward`: thread `ignore_index`, decide `host_scale`.
+4. BluTrain: dataloader emits `num_valid_tokens`; trainer prefetches the step, sums, all-reduces,
+   passes one `global_valid_tokens`.
