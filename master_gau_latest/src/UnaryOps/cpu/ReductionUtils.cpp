@@ -1,3 +1,85 @@
+// ============================================================================
+// RESEARCH TO BE DONE — we order reduced axes by AXIS INDEX, not by STRIDE
+// audit 2026-09-21 · research-followup: Gautam_Reddy_1926
+//
+// STATUS: found by reading the code. NOT MEASURED, and NOT a correctness bug —
+// results are identical either way. Only speed moves. The bracketed fix below
+// is an ASSUMPTION, and step 1 of it may well conclude "change nothing".
+//
+// ---------------------------------------------------------------------------
+// THE PROBLEM
+//
+// A reduction's speed is decided by which axis the innermost loop walks. If the
+// innermost axis has stride 1, consecutive iterations touch consecutive
+// addresses: one cache line fetched serves many elements, and the hardware
+// prefetcher works. If the innermost axis has a large stride, every iteration
+// lands on a different cache line, the line is fetched for one useful value and
+// evicted before it is used again. Same arithmetic, order-of-magnitude
+// difference in time.
+//
+// compute_reduction_layout() below returns Generic for any non-contiguous input
+// and for any non-consecutive axis set. The Generic odometer in
+// ReductionImpl.h then walks the reduced axes in AXIS-INDEX order — the fastest
+// counter is the LAST axis in the list.
+//
+// For a C-contiguous tensor that is the right answer by construction:
+// normalize_axes() below sorts axes ascending (std::set), and in row-major a
+// higher axis index means a smaller stride, so "last axis" and "smallest
+// stride" are the same axis. The innermost loop is stride-1. Correct.
+//
+// But that is a coincidence of C-contiguity, not something the code checks.
+// PyTorch does not rely on it — TensorIterator::reorder_dimensions sorts by the
+// ACTUAL STRIDE ("Sort the dimensions based on strides in ascending order").
+// The two agree on every C-contiguous tensor and come apart on a PERMUTED VIEW:
+//
+//     x contiguous [A,B,C]      ->  strides [B*C, C, 1]
+//     y = x.permute(2,1,0)      ->  shape [C,B,A], strides [1, A, A*B]
+//     reduce y over axes {0,2}:
+//         reduced strides in AXIS order = [1, A*B]
+//         odometer's fastest counter is the LAST entry -> stride A*B
+//
+// The largest stride ends up innermost — which is exactly Eigen's
+// GenericDimReducer failure mode, the one we filed against TensorFlow. Here the
+// tensor's own permutation causes it rather than the library's traversal
+// choice, but the memory behaviour is the same.
+//
+// Note the interaction: this can only be hit through the Generic path, which is
+// also where the three performance items documented in ReductionImpl.h live. A
+// permuted reduction would pay both at once.
+//
+//   [ASSUMED FIX — three steps, IN THIS ORDER:
+//
+//    1. REACHABILITY FIRST. Find out whether any BluTrain or SFT call site can
+//       actually reduce a permuted, non-contiguous view over non-consecutive
+//       axes. Grep the reduce_* / reduce_to_shape / autograd reduction call
+//       sites and record the contiguity and axis set each one passes. If none
+//       can reach it, STOP — this stays a documented note and no code changes.
+//       Adding a stride sort to guard an unreachable path is dead code, which
+//       is worse than the note.
+//
+//    2. If reachable: sort the reduced axes by |stride| ASCENDING and build
+//       red_input_strides and reduced_dims in that order, so the smallest
+//       stride is always the odometer's fastest counter regardless of how the
+//       tensor was permuted. The output side (base_lin_idxs, built from the
+//       non-reduced axes) needs the same treatment or the two halves disagree.
+//
+//    3. Benchmark before/after on a deliberately permuted shape. Nothing above
+//       is measured — the claim that the permuted case is slow is inference
+//       from the stride pattern, not a timing.
+//
+//    TO VERIFY if step 2 is done: that reordering the axes does not change
+//    which element each output slot reduces. The reduction is order-independent
+//    for sum/max but the argmin/argmax paths return an INDEX derived from the
+//    iteration counter — reordering the axes changes that counter's meaning and
+//    can silently change which index is reported on ties. Check the index paths
+//    separately from the value paths.]
+//
+// ---------------------------------------------------------------------------
+// See the RESEARCH TO BE DONE header in include/ops/helpers/ReductionImpl.h for
+// the three Generic-path performance items (start-offset spin-up, per-slice
+// fork/join, missing ILP).
+// ============================================================================
+
 #include <algorithm> //For std::find
 #include <numeric>   // For std::accumulate, std::multiplies
 #include <set>       // For unique axes

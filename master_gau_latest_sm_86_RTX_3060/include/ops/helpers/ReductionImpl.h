@@ -1,5 +1,175 @@
 #pragma once
 
+// ============================================================================
+// RESEARCH TO BE DONE — Generic-path inefficiencies in this file
+// audit 2026-09-21 · research-followup: Gautam_Reddy_1926
+//
+// STATUS: found by reading the code. NOTHING HERE HAS BEEN MEASURED. Every
+// bracketed fix below is an ASSUMPTION about cause and remedy, not a verified
+// result. Each one has to be reproduced on a real shape and micro-benchmarked
+// before/after on the same box before it is treated as true.
+//
+// ---------------------------------------------------------------------------
+// WHEN DOES ANY OF THIS RUN? (establish this first — it decides priority)
+//
+// All three problems live in the same corner. Two conditions must hold at once:
+//
+//   Generic path  — chosen when the reduced axes are NON-CONSECUTIVE (e.g.
+//                   {0,2}) or the input is non-contiguous. Anything else is
+//                   classified as InnerContiguous or OuterContiguous and never
+//                   reaches this code. See compute_reduction_layout() in
+//                   src/UnaryOps/cpu/ReductionUtils.cpp.
+//
+//   Strategy 2    — chosen when num_slices < num_threads, i.e. there are fewer
+//                   OUTPUT elements than threads, so the reduction dimension
+//                   itself is split across threads instead of the outputs.
+//
+// Together: a 3-D tensor [X,Y,Z] reduced over {0,2} keeping Y, where Y is
+// smaller than the thread count. This is the same shape class as the
+// TensorFlow/Eigen GenericDimReducer issue, reached for entirely different
+// reasons.
+//
+// Current belief is that production never goes here: the bias-gradient reduce
+// is {0,1} of [B,T,C], which is consecutive-and-outermost, so it classifies as
+// OuterContiguous and runs Strategy 1. That belief has NOT been re-verified
+// against the current call sites.
+//
+//   [TO DO: enumerate every reduce_* / reduce_to_shape call site in BluTrain
+//    and SFT, record (axes, contiguity, num_slices) for each, and decide from
+//    that whether these three items are dead code or live cost. If nothing can
+//    reach them, they stay documented and UNFIXED — a speculative rewrite of an
+//    unreachable path is worse than leaving it alone.]
+//
+// ---------------------------------------------------------------------------
+// PROBLEM 1 — a thread cannot compute where its own work starts, so it walks
+//             there one element at a time.
+//
+// In Strategy 2 the reduction range [0, R) is cut into per-thread chunks, and
+// thread `tid` is responsible for [begin, end) where begin = tid * chunk.
+//
+// On the InnerContiguous and OuterContiguous paths that is free: the address of
+// element i is base + i*stride, so a thread jumps straight to its own start
+// with one multiply.
+//
+// The Generic path has no such formula. An element's address is reconstructed
+// by an odometer — a per-axis coordinate counter that is incremented once per
+// element, carrying into the next axis when it overflows. The odometer only
+// knows how to move FORWARD BY ONE. So to begin at element `begin`, the code
+// runs the odometer `begin` times from zero, reading no data and accumulating
+// nothing, purely to arrive at the right coordinates.
+//
+// The waste is not constant — it grows with the thread index. Thread 0 skips
+// nothing; the last thread walks essentially the whole range before touching
+// its first element. Summed over T threads the discarded work is R*(T-1)/2
+// odometer steps against R useful element loads. At 28 threads that is roughly
+// 13.5x more spin-up than reduction.
+//
+// The consequence to check for is counter-intuitive: adding threads should make
+// Strategy 2 faster, but because each new thread brings a longer spin-up, this
+// path may get SLOWER as the thread count rises, possibly past ~2 threads.
+//
+//   [ASSUMED CAUSE: the odometer is an increment-only structure and no one
+//    wrote the random-access form of it.
+//    ASSUMED FIX: compute the start position directly instead of walking to it.
+//    Decompose `begin` by successive div/mod over reduced_dims (from the last
+//    axis backwards) to recover the start coordinates and the start linear
+//    index in O(k) — k is 2-4 in practice, versus O(begin) today. The identical
+//    arithmetic already exists in this file for the OUTPUT side, in the
+//    base_lin_idxs precompute; this is the same trick applied to the reduced
+//    side.
+//    TO VERIFY: that the rewritten start offset matches the walked one exactly
+//    for every (begin, k, dims) combination — an off-by-one here is a silent
+//    wrong answer, not a crash. Then confirm the thread-count curve actually
+//    turns from falling to rising.]
+//
+// Three sites carry this pattern: the sum/mean Generic branch, the argmin/argmax
+// helper reduce_one_index_slice(), and the index-reduction driver. All three are
+// marked inline with "FUTURE FIX 1".
+//
+// ---------------------------------------------------------------------------
+// PROBLEM 2 — per-thread scratch and the thread team itself are created once
+//             per OUTPUT ELEMENT.
+//
+// Strategy 2 loops over output slices, and INSIDE that loop it both allocates
+// the std::vector that holds each thread's partial result and opens an OpenMP
+// parallel region. So for every single output value the program performs a heap
+// allocation, a thread-team fork, the actual work, a join, and a free.
+//
+// Fork/join is on the order of microseconds. The work per slice on this path is
+// often much less than that, which would mean the parallel machinery costs more
+// than the arithmetic it is there to speed up. Strategy 2 only runs when
+// num_slices < num_threads, so the count is bounded (under ~28 repetitions),
+// which caps the absolute damage — but it is pure overhead on exactly the
+// small-output shapes where Strategy 2 is supposed to help.
+//
+//   [ASSUMED FIX: hoist the scratch vector above the slice loop and open ONE
+//    parallel region around the whole loop, doing the begin/end split inside it.
+//    Scratch then has to be indexed per (slice, thread) or reset between
+//    slices — mind that when rewriting.
+//    TO VERIFY: measure the fork/join cost on this box first (a null harness
+//    that opens an empty parallel region N times) so the saving can be
+//    predicted before the rewrite, and compared against it after. If the
+//    measured fork/join is small relative to the slice work, this is not worth
+//    doing.]
+//
+// ---------------------------------------------------------------------------
+// PROBLEM 3 — one branch accumulates with a single scalar, so the FP pipeline
+//             sits idle.
+//
+// A floating-point add has multi-cycle latency. If every add depends on the
+// previous one, throughput is capped at one add per latency, and the several
+// add units in the core do nothing. The standard answer is several independent
+// accumulators summed at the end.
+//
+// This file does that almost everywhere. InnerContiguous in Strategy 2 is fully
+// hand-vectorised AVX2. The Generic branch in Strategy 1 keeps 4 independent
+// accumulators. But the Generic branch in Strategy 2 has one scalar accumulator
+// and one dependent add per element — neither vectorisation nor instruction-level
+// parallelism.
+//
+// Given its neighbours, this reads as an oversight rather than a decision, but
+// that should be confirmed before changing it — there may be an accumulation-order
+// or precision reason the other paths do not have.
+//
+//   [ASSUMED FIX, cheap part: port the 4-accumulator ILP from the Strategy 1
+//    Generic branch. Few lines, no new memory access pattern.
+//    ASSUMED FIX, expensive part: true SIMD needs a gather, because Generic
+//    addresses are not consecutive. Likely not worth the gather latency —
+//    do NOT attempt it before the ILP version is measured.
+//    TO VERIFY: that splitting the accumulator does not change results beyond
+//    the tolerance already accepted elsewhere in this file (summation order
+//    changes with ILP), and that the gain is real rather than absorbed by the
+//    odometer, which may well be the true bottleneck on this branch rather than
+//    the add chain.]
+//
+// ---------------------------------------------------------------------------
+// VERIFIED CORRECT — do not "fix" this
+//
+// The Generic odometer carries from d = k-1 down to 0, so the LAST reduced axis
+// is the fastest-moving counter. normalize_axes() returns axes sorted ascending
+// (it collects into a std::set), and on a C-contiguous tensor a higher axis
+// index means a smaller stride. The fastest counter therefore always carries the
+// smallest stride, and the innermost loop walks memory sequentially.
+//
+// This is the PyTorch order. It is the OPPOSITE of Eigen's GenericDimReducer,
+// which makes the FIRST reduced axis innermost and so strides by Y*Z on every
+// single element — the subject of the TensorFlow issue. We do not have that bug.
+//
+// One caveat, documented in src/UnaryOps/cpu/ReductionUtils.cpp: we order by
+// AXIS INDEX, while PyTorch orders by ACTUAL STRIDE. Those coincide on every
+// C-contiguous tensor and come apart on a permuted view.
+//
+// ---------------------------------------------------------------------------
+// This note is mirrored into all five checkouts that carry this code:
+//   sft_research/BluTrain
+//   Neural_Networks_exp_1926/master_gau_latest
+//   Neural_Networks_exp_1926/master_gau_latest_ada_6000_sm89
+//   Neural_Networks_exp_1926/master_gau_latest_sm_86_RTX_3060
+//   Neural_Networks_exp_1926/BluTrain_BestPrecisionEnv_may27_406k
+// Mirror any FIX into all of them too, or they will silently diverge.
+// ============================================================================
+
+
 #ifndef OWNTENSOR_REDUCTIONS_IMPL_H
 #define OWNTENSOR_REDUCTIONS_IMPL_H
 
@@ -823,6 +993,8 @@ Tensor cascade_sum_kernel(const Tensor &input,
   // ═══════════════════════════════════════════════════════════
   else {
     for (int64_t o = 0; o < num_slices; ++o) {
+      // FUTURE FIX 2 (see header): this alloc and the omp region below are
+      // per-output-slice — hoist both outside the o-loop.
       std::vector<acc_t> thread_accs(num_threads, acc_t{});
       const int64_t rc = reduced_count;
 
@@ -1062,6 +1234,8 @@ Tensor cascade_sum_kernel(const Tensor &input,
         } else {
           int64_t red_coords[MAX_DIMS] = {};
           int64_t lin = base_lin_idxs[o];
+          // FUTURE FIX 1 (see header): O(begin) spin-up — replace with O(k) div/mod
+          // decompose of `begin` over reduced_dims. ~13.5x R wasted at 28 threads.
           for (int64_t i = 0; i < begin; ++i) {
             for (int64_t d = k - 1; d >= 0; --d) {
               ++red_coords[d];
@@ -1181,10 +1355,14 @@ inline ValueIndex<T> reduce_one_index_slice(
       acc = op.reduce(acc, curr);
     }
   } else {
+    // FUTURE FIX 3 (see header): no SIMD and no ILP here — port Strategy 1's
+    // 4-accumulator ILP across before considering a gather.
     // Generic: carry-add coordinate reconstruction
     int64_t red_coords[MAX_DIMS] = {};
     int64_t input_lin_idx = base_lin_idxs[output_index];
     // Advance to begin position
+    // FUTURE FIX 1 (see header): O(begin) spin-up — replace with O(k) div/mod
+    // decompose of `begin` over reduced_dims. ~13.5x R wasted at 28 threads.
     for (int64_t i = 0; i < begin; ++i) {
       for (int64_t d = k - 1; d >= 0; --d) {
         ++red_coords[d];
@@ -2629,6 +2807,8 @@ reduce_kernel(const Tensor &input, const std::vector<int64_t> &normalized_axes,
       } else {
         int64_t red_coords[MAX_DIMS] = {};
         int64_t lin = base_lin_idxs[o];
+        // FUTURE FIX 1 (see header): O(begin) spin-up — replace with O(k) div/mod
+        // decompose of `begin` over reduced_dims. ~13.5x R wasted at 28 threads.
         for (int64_t i = 0; i < begin; ++i) {
           for (int64_t d = k - 1; d >= 0; --d) {
             ++red_coords[d];
