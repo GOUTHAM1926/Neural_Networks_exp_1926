@@ -4,6 +4,7 @@
 **Baseline compared against:** `8808f89` (submodule pinned by `BluTrain/dist_side_merge`)
 **Status:** every claim below was **measured on the H200 production trainer on 2026-09-24 — see §16.**
 §0–§15 were written before those results; where they disagree, §16 wins, and each superseded claim is marked where it stands.
+**Pushed:** `sft_gautam` → `BlubridgeAI/Tensor-Implementations` at **`1ed2ac3`** (2026-09-24, author `goutham.kumar@blubridge.com`). That commit holds exactly the 7 files validated on the H200, checked file by file.
 
 ---
 
@@ -523,6 +524,12 @@ Setting `bf16_logits = true` makes `logit_dtype()` return `Bfloat16`, the `to_dt
 becomes bf16 -> bf16, and **no cast node is built at all**. Item 4 is therefore
 `BLU_BF16_LOGITS=1` — one env var, zero code edits.
 
+**What the cast line costs when the flag is on** (`ReshapeOps.cpp:63-67`): three CPU bookkeeping macros
+(`PROFILER_SCOPE`, `GraphRecordMode::record_forward`, `TRACK_ALLOC_SCOPE_DEEP`), one dtype comparison,
+then `return input`. No GPU kernel, no allocation, no autograd node — ncu found no logits-sized convert in
+the bf16 run (§16.5). The CPU cost is *estimated* at about 1 µs per micro-step (~0.0003% of a 392 ms
+micro-step), not measured. Note it is a **convert**, not a reshape: `to_dtype` just lives in `ReshapeOps.cpp`.
+
 ### 5.6 The `loss32` line is now dead — but the comment is the real hazard
 
 `LossOps.cpp:369-376` (CUDA) and `:520-528` (CPU) both build the loss as `Float32`. No
@@ -856,7 +863,7 @@ Done on 2026-09-24:
 - [x] Measure memory, traffic and precision (§16)
 
 Still open:
-- [ ] **Commit + push `sft_gautam`**: the 7 loss files + `test_sparse_ce_ignore_index.cu` + `test_cast_equivalence.cu`
+- [x] **Commit + push `sft_gautam`**: `1ed2ac3` on BlubridgeAI (the 7 loss files + both tests)
 - [ ] **Bug D**: fix the `float_to_bfloat16` overflow at 65,536 (`Types.h:85`); it needs its own full-repo test run (§17)
 - [ ] Hand the port to the `dist_side_merge` owners as a proper branch/PR, recommending `BLU_BF16_LOGITS=1`
 - [ ] Rewrite the stale comment block above `loss32` in `bluscript_zero_ckpt.cpp` (§5.6)
@@ -866,7 +873,14 @@ Still open:
 - [ ] The 580 MiB fp32 gap between their code and ours: measured by the poller only, probably a poller artefact (§16.3)
 - [ ] Bug C's consequence (zero gradients): predicted, never observed; needs a Bug-A-only build
 - [ ] The source of the trainer's run-to-run non-determinism (§18)
-- [ ] Design follow-ups: the bf16 round trip of weight gradients, and the fp32-only optimizer input (§19)
+- **Immediate future tasks — right after the SFT work, as training-script optimisations (decided 2026-09-24):**
+  - [ ] **#1:** read how the embedding backward sums gradients for a bf16 weight (code, no GPU);
+        then `BLU_BF16_EMBED` 0 vs 1 A-B-A-B; then a long run (§19.3)
+  - [ ] **#2:** convert the gradient shard straight into `shard_grad_fp32_` — the same fix already exists in `cast_master_range` (§19.4)
+  - [ ] **#3:** research option 1, `check_type()` in `data<T>()` (§19.5, §8)
+  - [ ] **#4:** measure why the speed gain (+0.60%) is below the traffic-only prediction (0.79–0.94%):
+        per-kernel durations of the loss path, from an unprofiled nsys run (§19.6)
+- [ ] Apply the fixes on a colleague's multi-GPU system; run flag 0/1 before and after (§21)
 - [ ] Refresh the `LossKernels.h` note counts (840/59/38 -> 827/16/30)
 - [ ] **RESEARCH:** option 1 (`check_type()` in `data<T>()`) — see §8
 - [ ] `batch_size > 65536` reduction cap
@@ -1327,25 +1341,186 @@ embedding scatter-add), or GEMM algorithms chosen by timing-based autotuning.
 
 ---
 
-## 19. Other findings from today's analysis (design follow-ups, not bugs)
+## 19. Immediate future tasks: three casting follow-ups + one pending measurement (2026-09-24 — nothing changed yet)
 
-- **Weight gradients take a bf16 round trip.** `MatrixBackward.cpp:73` allocates
-  `grad_b(saved_b_.shape(), saved_b_.dtype(), …)`. `saved_b_` is the bf16 copy of the weight, so the
-  GEMM's fp32 accumulation is stored as bf16. `ToDtypeBackward` then widens it back to fp32 for the fp32
-  master. The precision is thrown away and zero-padded back. Storing `grad_b` as fp32 directly would keep
-  it and save a convert. **Unmeasured.**
-- **The optimizer only accepts fp32 gradients.** `MultiTensorKernels.h:9-12`:
-  `struct TensorInfo { float* ptr; int64_t numel; }`. So `ShardedOptimizer::cast_shard_grad_to_fp32`
-  materialises an fp32 copy of the bf16 gradient shard: a **5,890,899,968-byte (5,618 MiB)** allocation per
-  optimizer step at world_size=1, seen in the contended arm-2 OOM stack. An optimizer that reads bf16 and
-  widens in registers would remove it. This pulls against the previous item, so the two should be
-  designed together.
-- **Why fp32 master weights are non-negotiable.** A weight of 0.02 with an Adam update of 1.05e-6 is below
-  bf16's step at 0.02 (7.8e-5). After 1,000 steps an fp32 master reaches 0.018950; a bf16 master is frozen
-  at 0.020020. The rule: round freely where a number is used once, never where numbers are summed over time.
-- **Weight tying does not change the logits.** `[B,T,V]` exists either way; tying only changes where the
-  `[C,V]` weight comes from. The tied path does cast `wte` to bf16 and make a transposed contiguous copy
-  every micro-step (~232 MB each).
+**When:** all four are done **right after the SFT work**, as training-script optimisations.
+#1–#3 were found while analysing the casts (§19.3–§19.5). #4 is a measurement left open by §16.6 (§19.6).
+
+> **Correction** to the first version of this section, which said the weight-gradient round trip and the
+> fp32-only optimizer "pull in opposite directions". **That was wrong.** They apply to *different* weights
+> (§19.1), so they don't conflict.
+
+### 19.1 Which weights are bf16 and which are fp32 — proven from the parameter counts
+
+| group | stored as | contents | count | matches log |
+|---|---|---|---|---|
+| **G0** | **bf16** | the 6 Linear matrices × 26 layers (`wQ wK wV wO gate_up down`, created `Dtype::Bfloat16`; the attention four at `bluscript_zero_ckpt.cpp:540-543`) | 26 × 56,623,104 = **1,472,200,704** | ✅ exact |
+| **G1** | **fp32** | `wte` 50304×2304, plus every norm scale: 26 × (2×2304 block RMSNorm + 2×128 QK-norm) + 2304 final | 115,900,416 + 128,768 = **116,029,184** | ✅ exact |
+
+The log's "non-decayed params: 128,768" is exactly the norm scales.
+
+Activation dtypes:
+
+| activation | dtype |
+|---|---|
+| residual stream | fp32 (`bf16_resid=false`) |
+| input to each Linear | a bf16 copy of the residual (`:580`) |
+| QK-norm + RoPE | fp32 (`qk_dtype()`) |
+| attention | bf16 |
+| logits | set by `BLU_BF16_LOGITS` |
+
+### 19.2 The optimizer's master copy (the "notebook")
+
+> `ShardedOptimizer.cpp` line numbers in this section are for `dist_side_merge` (`03b94cf`). The local
+> BluTrain `master` has the same code 25 lines earlier (`:281`, `:285-288`, `:755`, `:948`).
+
+Every group has an **fp32 master copy inside the optimizer**, whatever dtype the model's weight is.
+`dist/zero/src/ShardedOptimizer.cpp:306` builds its options with `Dtype::Float32`, and `:310-313`
+allocates `shard_grad_fp32_`, `shard_master_`, `shard_m_` and `shard_v_` with them.
+
+Each step, the optimizer updates the master and then writes it back into the model's weight
+(`cast_master_range`, `:780`).
+
+**This master is what protects the tiny updates.** A weight of 0.02 with an Adam update of 1.05e-6: bf16's step
+at 0.02 is 2^-13 = 1.22e-4, so any update below half of that (6.1e-5) rounds away. After 1,000 steps an fp32 master reaches 0.018950, while a bf16 master
+stays frozen at 0.020020. The model weight's own dtype is only the compute copy.
+
+The rule: **round freely where a number is used once; never where numbers are summed over time.**
+
+### 19.3 #1 — `wte` is fp32, but the lm_head uses a bf16 copy
+
+`wte` is used twice under weight tying:
+
+```cpp
+:746  x = to_dtype(wte.forward(idx), cfg.resid_dtype());   // INPUT:  the gather reads wte as stored (fp32)
+:784  w_bf   = to_dtype(wte.weight, Dtype::Bfloat16);     // OUTPUT: a bf16 copy
+:785  w_t_bf = contiguous(transpose(w_bf, 0, 1));         //         [c,v]
+:786  logits = matmul(x_bf, w_t_bf);                      //         the lm_head uses the bf16 copy
+```
+
+Weight tying doesn't change whether the logits `[B,T,V]` exist; it only changes where the `[C,V]` weight
+comes from.
+
+**The round trip, in backward.** The lm_head half of `wte`'s gradient goes:
+1. the GEMM sums it in fp32;
+2. it is stored as bf16 (`MatrixBackward.cpp:73` takes the dtype of the bf16 copy);
+3. `ToDtypeBackward` widens it back to fp32.
+
+That last convert buys nothing: the value is bf16-rounded either way.
+
+What an fp32 `wte` does and does not buy:
+
+| | does fp32 `wte` help? |
+|---|---|
+| weight updates | **no.** The fp32 master (§19.2) protects them, so `wte` exists twice in fp32 |
+| lm_head (output) | **no.** It is cast to bf16 before use |
+| input embedding | **yes, real bits.** Its values come from the fp32 master; unlike the logits' fp32 copy, these are not zero-padding |
+| gradient sum into `wte` | **unknown.** The embedding backward adds up contributions from every occurrence of each token across B·T positions, and across micro-steps. If that sum is done in bf16, precision is lost exactly where it matters. **Not checked yet.** |
+
+**The switch already exists.** The exact lines, in `bluscript_zero_ckpt.cpp` (dist_side_merge `03b94cf`):
+
+```cpp
+:189  bool bf16_embed  = false;   // wte (under weight tying, also the lm_head weight)
+:193  Dtype embed_dtype() const { return bf16_embed  ? Dtype::Bfloat16 : Dtype::Float32; }
+:699  nn::Embedding wte;            // token embedding [vocab, d_model]
+:709  wte(static_cast<int>(c.vocab_size), static_cast<int>(c.d_model),
+:710      /*padding_idx=*/-1, c.embed_dtype()),                                 // embed dtype
+:715  init_embedding(wte, 0.02f, init_rng_);   // :522-524: copy_into_param(emb.weight, rng.normal(shape, std))
+:874  cfg.bf16_embed  = getenv_int("BLU_BF16_EMBED",  all) != 0;
+```
+
+**Two ways to remove #1:**
+
+| | `BLU_BF16_EMBED=1` | GEMM writes the `wte` gradient in fp32 (bf16 in, fp32 out) |
+|---|---|---|
+| code change | none | a BLAS epilogue + `MatrixBackward.cpp:73` |
+| round trip | gone | gone |
+| input-embedding precision | lower (bf16) | kept |
+| gradient precision | depends on how the embedding backward sums | better than today |
+| memory | `wte` 464 → 232 MB | unchanged |
+
+- **Not checked:** whether BluBLAS has an fp32-output epilogue. cuBLAS supports bf16 inputs with fp32 output.
+- **A bf16-in / fp32-out GEMM does not remove every cast.** It removes output-side widens (the `wte`
+  gradient; Linear outputs into the fp32 residual at `:645` and `:684`). It does not remove input-side
+  narrowing (fp32 residual → bf16 before each Linear, `:580`), nor the QK-norm / RoPE casts
+  (`:618-633`), which are not GEMMs.
+
+**Why this needs a longer test than the logits did.** For the logits, the fp32 copy was zero-padding and the
+two paths were proven identical (§16.2), so 20 steps were enough. For the embedding it is a **real precision
+change**. A 20-step run with warmup 2 has a noise floor of ~0.4 loss (§18) and cannot show equivalence.
+
+Plan:
+1. **Code check, no GPU:** how the embedding backward sums for a bf16 weight. If it sums in bf16, stop.
+2. **Short A-B-A-B:** `BLU_BF16_EMBED` 0 vs 1, with `BLU_BF16_LOGITS=1` on both, 2 reps. Checks memory,
+   tok/s, and that it runs cleanly.
+3. **Long run:** a few hundred steps with proper warmup, ≥2 reps per arm, val loss compared at matched steps.
+
+### 19.4 #2 — the optimizer converts the gradient shard through a temporary
+
+`dist/zero/src/ShardedOptimizer.cpp:973-980`:
+
+```cpp
+void ShardedOptimizer::cast_shard_grad_to_fp32() {
+    if (compute_dtype_ == Dtype::Float32) {
+        d2d(shard_grad_fp32_.data(), shard_grad_.data(), S_ * sizeof(float), device_);
+    } else {
+        Tensor f = shard_grad_.as_type(Dtype::Float32);                       // (1) a new fp32 temporary
+        d2d(shard_grad_fp32_.data(), f.data(), S_ * sizeof(float), device_);  // (2) copied a second time
+    }
+}
+```
+
+- For the bf16 group (G0), `as_type` allocates a full fp32 temporary. `d2d` then copies it into
+  `shard_grad_fp32_`, which is **already allocated** (`:310`).
+- At world_size=1 that temporary is G0's 1,472,200,704 params × 4 bytes ≈ **5.9 GB** every optimizer step.
+  At W=8 it is 1/8 of that per rank.
+- The contended arm-2 run (§16.7) OOMed on a **5,890,899,968-byte** allocation in
+  `convert_cuda_bf16_to_fp32_sm90`, right after step 0 (`arm2.log:63`). That is 5,888,802,816 + 2 MiB,
+  which is consistent with this temporary. The backtrace was not decoded, so this is **not proven**.
+
+**The fix has a precedent in the same file.** `cast_master_range` (`:780`, the master → weight direction)
+carries this comment:
+
+> *"Replaces the old `shard_master_.as_type()` + full-shard d2d, which allocated a whole extra S_-element
+> temporary and copied it every step (114.2 MB / 0.36 ms in report5)"*
+
+It converts straight into the destination with `convert_type_cuda_generic`. The same change applies here:
+convert `shard_grad_` directly into `shard_grad_fp32_`. **Not done, not measured.**
+
+### 19.5 #3 — `data<T>()` never checks the dtype (Bug C's family)
+
+**Bug C is fixed:** the grad scale is `const float*`. #3 is the reason Bug C was possible.
+
+- `Tensor::data<T>()` is a raw `reinterpret_cast`, used at **827 call sites**. Any of them can read a tensor as
+  the wrong type, and nothing reports it.
+- Option 1, a PyTorch-style `check_type()`, would catch all of them at runtime (§8).
+- **A known exposed site:** `fused_rms_rope_forward` (`src/UnaryOps/cpu/Normalizations.cpp:998`). It checks
+  device and shape (`:1010-1026`), but not dtype, then reads `q`, `k`, `q_gamma` and `k_gamma` through
+  `data<float>()` (`:1042-1046`). Only the trainer's `qk_dtype()` returning fp32 keeps a bf16 tensor out.
+
+This is a research item, not an inefficiency.
+
+### 19.6 #4 — the speed gain is smaller than the traffic saving predicts (measurement pending)
+
+| | value | source |
+|---|---|---|
+| measured | **+0.60%** tok/s = +248.7 tok/s = **2.35 ms** per 392.2 ms micro-step, n=2 per arm | §16.6 |
+| predicted from bytes alone | 14.78 GB less per micro-step at 4.0–4.8 TB/s = 3.1–3.7 ms = **0.79–0.94%** | §16.5 |
+| unexplained | about **0.7–1.3 ms** per micro-step of the traffic saving does not show up as time | |
+
+- **Hypothesis, not measured:** the bf16 loss kernels do the same math on half the bytes. So they may no
+  longer be purely bandwidth-bound, and they save less time than their bytes suggest.
+- **Why it is not known yet:** the ncu run (§16.5) collected DRAM bytes only, not durations. ncu also
+  locks clocks while profiling, so its times would not be production times anyway.
+- **Test plan:**
+  1. One **unprofiled nsys** run per arm (`BLU_BF16_LOGITS` 0 and 1), the same B=4 config, ≥2 reps.
+     Read the per-kernel duration of the four loss-path kernels: `vec4_convert_to_fp32`,
+     `sparse_ce_forward_…_save_stats`, `sparseCENormalize_from_stats`, `vec8_convert_to_bf16`.
+  2. Compare each kernel's duration with its bytes ÷ peak bandwidth. A kernel well above that line is not
+     bandwidth-bound.
+  3. If the bf16 loss kernels are not bandwidth-bound, run a small ncu section set (achieved bandwidth,
+     SM throughput) on only those kernels to see what limits them.
+  4. More tok/s repetitions, to tighten the +0.60% itself (n=2 today).
 
 ---
 
@@ -1500,6 +1675,58 @@ elements). It prints how many kernels it parsed before printing any number.
 | shared GPU | a co-tenant took 43 GB mid-run | check `nvidia-smi --query-compute-apps` before and after, never during |
 | pollers | `watch nvidia-smi` loops left open (1 s, 0.1 s, 0.1 s) | the preflight lists them; they're constant across runs, so the A/B stays fair |
 | B=8 | OOM on one GPU (ZeRO shards nothing at world_size=1) | B=4 |
+
+---
+
+## 21. Applying the fixes on a colleague's system
+
+The 7 files are on `BlubridgeAI/Tensor-Implementations`, branch `sft_gautam`, at `1ed2ac3`. They are
+identical, file by file, to what was validated on the H200. Take them from git, or from the tarball (§20.3).
+
+| # | file (the same relative path on both sides, under `Tensor-Implementations/`) |
+|---|---|
+| 1 | `src/Kernels/cuda/loss/LossKernels.cu` |
+| 2 | `src/Kernels/cuda/loss/arch/CrossEntropyKernels_sm103.cu` |
+| 3 | `include/ops/helpers/LossKernels.h` |
+| 4 | `include/autograd/backward/LossBackward.h` |
+| 5 | `include/autograd/operations/LossOps.h` |
+| 6 | `src/autograd/backward/LossBackward.cpp` |
+| 7 | `src/autograd/operations/LossOps.cpp` |
+
+**Before replacing:**
+- Check his tree for a local, unpushed fix: `grep -c VEC_ELEMS Tensor-Implementations/src/Kernels/cuda/loss/LossKernels.cu`.
+  More than 0 means a local fix exists: back it up and reconcile it first (§9).
+- Back up his 7 files.
+
+**After replacing:** delete `*Loss*.o` and `*CrossEntropy*.o` before building, because make does not track
+header changes. Then build as usual.
+
+**Runs — flag 0 and 1, before and after:**
+
+| run | expected |
+|---|---|
+| before, `BLU_BF16_LOGITS=0` | runs; baseline memory |
+| before, `BLU_BF16_LOGITS=1` | **crashes at step 0**, `misaligned address`. If it runs instead: a local fix exists, or the flag did not reach the ranks |
+| after, `0` | runs; memory ≈ before-0; step-0 loss identical |
+| after, `1` | **runs**; nvidia-smi ≈ 9 GiB or more lower per GPU at B=8 (9,432 MiB live, plus allocator cache) |
+
+- **Pass the flag to every rank:** `mpirun … -x BLU_BF16_LOGITS …`. Check that the log shows `logits bfloat16`.
+- **Before each run:** set `BLU_CKPT=0` and `rm -rf checkpoints_bluscript`, otherwise a run resumes the
+  previous run's checkpoint.
+- **Reading nvidia-smi:** look after step 1 is printed. The allocator doesn't return memory until the process
+  exits, so one look mid-run gives the peak.
+- **B=8** fits on 8 GPUs, because ZeRO shards the optimizer. On one GPU it OOMs — use B=4 there.
+
+**Training-script edits: none required.** These text fixes are optional, but the current text is now wrong:
+
+| where | what |
+|---|---|
+| comment near `:168` | claims a `VEC_ELEMS / Chunk16` fix that never existed (§9) |
+| the 15-line comment above `:1994` (`loss32`) | says the loss follows the logits' dtype; it is fp32 (§5.6) |
+| the `[precision] bf16 logits ON` banner | says "frees ~3 GiB" and "the loss quantizes to ~0.06"; with the fixes it frees ~9 GiB and the loss is exact |
+| `:188` | `bool bf16_logits = true;` makes bf16 the default. Change the default; don't delete the cast line |
+
+Our box edits (B=4, `[MEM]`, `BLU_VAL_STEPS`) are test-only and must not be carried over.
 
 ---
 

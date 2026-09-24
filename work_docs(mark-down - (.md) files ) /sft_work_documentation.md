@@ -2523,10 +2523,39 @@ reproducible run to run**. Full detail, every command, and every change made on 
 
 ### 30.6 Pending after today
 
-- **Commit and push:** `sft_gautam` in `Tensor-Implementations`, and the docs mirror in
-  `Neural_Networks_exp_1926`.
+- ~~Commit and push `sft_gautam`~~ — **done**: `1ed2ac3` on `BlubridgeAI/Tensor-Implementations` (§30.7).
 - **Ask the `dist_side_merge` owners whether a local, unpushed `VEC_ELEMS` fix exists**
   (loss doc §9). If it does, reconcile it with this port before merging.
 - Bug D fix (`Types.h:85`), with its own full-repo test run.
 - The port as a proper PR to `dist_side_merge`, recommending `BLU_BF16_LOGITS=1`.
 - Items in `loss_kernel_dtype_bugs.md` §13.
+
+### 30.7 Evening addendum — push done, and the three casting follow-ups analysed
+
+- **Pushed:** `sft_gautam` → `BlubridgeAI/Tensor-Implementations`, `a7da79d..1ed2ac3`, author
+  `goutham.kumar@blubridge.com`. It holds the 7 loss files plus `test_sparse_ce_ignore_index.cu` and
+  `test_cast_equivalence.cu`. Checked file by file against what ran on the H200.
+- **Applying the fix on a colleague's system:** the 7 file paths and the before/after flag 0/1 run matrix,
+  with expected results, are in loss doc §21. **No training-script edits are needed.** The flag
+  `BLU_BF16_LOGITS=1` is enough, and it must reach every rank (`mpirun -x`).
+- **With the flag on, the cast line costs nothing on the GPU.** `to_dtype` returns early
+  (`ReshapeOps.cpp:63-67`), and ncu showed no convert kernel (loss doc §5.5).
+- **Four immediate future tasks** — three casting follow-ups and one pending measurement (loss doc §19;
+  nothing changed yet):
+
+  | # | what | status |
+  |---|---|---|
+  | 1 | `wte` is fp32, but the lm_head uses a bf16 copy, so its gradient goes fp32 → bf16 → fp32. Switch: `BLU_BF16_EMBED=1` (`:189`, `:193`, `:709-710`, `:874`). | it changes precision: needs a code check, then a short A/B, then a long run |
+  | 2 | `cast_shard_grad_to_fp32` makes a ≈5.9 GB fp32 temporary per step (W=1), then copies it | small fix; same pattern already fixed in `cast_master_range` |
+  | 3 | `data<T>()` never checks dtype (827 sites) | research; option 1 = `check_type()` |
+  | 4 | speed gain +0.60% vs 0.79–0.94% predicted from the bytes saved; ~1 ms per micro-step unexplained | measurement pending: per-kernel durations from an unprofiled nsys run (loss doc §19.6) |
+
+- **Correction:** an earlier draft said #1 and #2 "pull in opposite directions". **That was wrong.** They
+  touch different weight groups. G0 = 1,472,200,704 bf16 Linear params; G1 = 116,029,184 fp32
+  (`wte` + norms). Both counts match the log exactly.
+- **Order:** the SFT work comes first. Next is testing the version-0 SFT setup with Hugging Face SFT
+  datasets, starting from the model checkpoints.
+- **Right after the SFT work**, the four tasks above are done as training-script optimisations. #1 starts
+  with a code-only check of how the embedding backward sums gradients for a bf16 weight; if it sums in
+  bf16, stop there.
+
