@@ -1868,3 +1868,557 @@ Branch `sft_gautam`, Tensor-Implementations only.
 3. `LossBackward`: thread `ignore_index`, decide `host_scale`.
 4. BluTrain: dataloader emits `num_valid_tokens`; trainer prefetches the step, sums, all-reduces,
    passes one `global_valid_tokens`.
+
+---
+
+## 26. Session log — 2026-09-22: test suite, backward wiring, and the denominator
+
+Three pieces landed today. All validated by one new file,
+`Tensor-Implementations/Tests/kernel_tests/test_sparse_ce_ignore_index.cu`
+(1085 lines, 136 cases), run on an RTX 3060 (sm_86).
+
+**Final state: 136 cases, 0 SFT failures, 32 diagnostic XFAILs.**
+
+### 26.1 The test file
+
+Built with `make run-cuda FILE=Tests/kernel_tests/test_sparse_ce_ignore_index.cu`.
+Same three-arm methodology as `test_RMSNorm_fwd.cu`: (A) fp64 reference, (B) dtype-T
+noise floor, (C) the kernel. Pass = `err_kernel <= 2*err_noisefloor + floor`.
+
+Groups: A masking-off regression (9 dtype combos) · B masking-on forward (6 patterns)
+· C masking-on backward (both paths, `grad_output != 1`, `host_scale != 1/B`)
+· D shapes · E numerical stress · F sentinel semantics · G op level + CPU/CUDA parity
+· W wiring gate · X diagnostics for pre-existing defects.
+
+**Anti-vacuity is the design centre.** A masking test that only checks
+"masked result == masked reference" passes when masking does nothing, because both
+arms are identical in that case. So every masked case also runs a control arm with
+masking off and asserts the difference equals *exactly* the loss the masked rows
+carried. Grad buffers are poisoned with 7.0 before every launch, so "row is zero"
+proves the kernel wrote zero. Masked rows must be **bit-zero**, not within tolerance.
+
+Two of my own diagnostics were vacuous on the first run and had to be fixed:
+
+- `batch_65537` passed while the bug was present. 65537 = 256*256+1, so exactly ONE
+  row falls in the dropped partial, and it may itself be masked. Replaced with
+  B=131072, which drops half the batch (measured err 5.008e-01).
+- `vocab_50303` passed at `ek = 3.723e-06` against a `9.304e-09` noise floor — 400x
+  the floor, obviously a defect, but swallowed by a `floor = 1e-5`. Tightened to 1e-7.
+
+### 26.2 Backward wiring — `ignore_index` never reached the gradient
+
+`grep -c ignore_index src/autograd/backward/LossBackward.cpp` returned **0**. The
+three backward kernel guards were correct but the caller never passed the value, so
+every backward took the `-1` default and masked nothing. Measured before the fix:
+`dirty=1609728` = 32 masked rows x 50304 columns, i.e. *every element of every masked
+row* received a gradient it should not have.
+
+Fixed by threading it through: `LossOps.cpp` -> the `SparseCrossEntropyLossBackward`
+node (`ignore_index_` member, both constructors) -> 6 CUDA call sites + the CPU loop.
+`sparse_cross_entropy_backward_cuda` had no such parameter at all and gained one; it
+forwards to `sparse_ce_backward_cuda_vec`, which already carried the guards.
+
+The CPU path **zeroes** the masked row rather than skipping it — `grad_logits_2d`
+comes from `Tensor::empty`, so skipping would leave garbage.
+
+Group W is now a real gate (not diagnostic): if it goes red, SFT is silently training
+on prompt tokens.
+
+### 26.3 The denominator — cross-checked against all three references
+
+Read from local source, not from memory:
+
+| | denominator | scales the gradient too? | target bounds check |
+|---|---|---|---|
+| PyTorch ATen | `batch_size - num_ignored` (`LossNLL.cpp:288`) | yes — forward emits `total_weight` (`:304`), backward reads it (`:384`) | `TORCH_CHECK_INDEX` CPU, `CUDA_KERNEL_ASSERT` CUDA |
+| Liger | `n_non_ignore` (`ops/cross_entropy.py`) | yes, same value both | — |
+| torchtitan | `global_valid_tokens` (`components/loss.py:322,357`) | yes — the divide is a tracked autograd op | — |
+| ours (before) | `batch_size` | **no** | **none** |
+
+All three divide the loss AND the gradient by the count of non-ignored tokens. We
+divided the loss by `batch_size` and the gradient by `batch_size` unconditionally, so
+passing a `denom` would have produced gradients scaled wrong by `denom/batch_size`.
+
+**Implemented PyTorch's mechanism exactly:**
+
+- `count_valid_targets_kernel` writes the non-ignored count as a **device scalar**,
+  clamped to >= 1 (Megatron guards the same all-masked case with
+  `torch.clamp(num_tokens, min=1)`, `pipeline_parallel/schedules.py:339`).
+- The final `sum_reduction_kernel` divides by it (stage-1 partials deliberately do
+  not, or the denominator would be applied `reduce_blocks` times).
+- The backward kernels take `const float *denom` and compute
+  `*grad_output / (*denom)` **on device** — the same signature as
+  `aten/src/ATen/native/cuda/Loss.cu:441`, `:449`. No host sync.
+- The autograd node carries the denominator tensor, so the two passes cannot disagree.
+- `denom != nullptr` overrides with the caller's globally all-reduced count
+  (torchtitan's `loss = loss / global_valid_tokens`).
+
+**The invariant that made this safe to switch on by default:** with `ignore_index = -1`
+and uint16 targets nothing can ever match, so `n_valid == batch_size` exactly and
+**every pretraining run is bit-identical**. The change can only alter behaviour where
+masking is actually on.
+
+Measured effect: `G/denom_null_masked/cuda` moved `5.769925 -> 11.539849` and now
+lands exactly on `denom_tensor_32` (32 of 64 rows masked, so it divides by 32).
+CPU and CUDA agree bit-for-bit: `cpu=11.365391 cuda=11.365391`, err `0.000e+00`.
+
+### 26.4 Three pre-existing defects found (verified against `a7da79d^`)
+
+None introduced by the SFT work. Each has a permanent XFAIL case so it cannot be
+silently reintroduced.
+
+1. **fp16/bf16 forward faults unconditionally.** `sparse_ce_forward_kernel_vec` checks
+   that the ROW BASE is 16-byte aligned, then issues `cp_async_16(&row_logits[j])`
+   with `j = tid*4`. The *global address* must also be 16B aligned:
+   `j*sizeof(T) % 16 == 0` holds for every tid at 4 bytes, but only for EVEN tid at 2
+   bytes. Row 0 of a `cudaMalloc` buffer is always aligned, so the float4 branch is
+   always taken — this kernel can never have run for a 2-byte dtype. The GPU proved it
+   ("misaligned address"). Same flaw in `sparseCENormalize_kernel_optimized` and, in a
+   different form, in `sparseCENormalize_from_stats` (casts `T*` straight to `float4*`).
+   **Latent** because the trainer upcasts first:
+   `bluscript_zero_wsd.cpp:739,:771` `sparse_cross_entropy_loss(autograd::to_dtype(logits, Dtype::Float32), ...)`.
+   torchtitan does the same (`pred.float()`), so the upcast is standard practice.
+   *Unmeasured lead:* part of the convert cost may be forced by this bug rather than chosen.
+
+2. **`batch_size > 65536` silently drops loss.** `sum_reduction_kernel` loads exactly
+   one element per thread; stage 2 is `<<<1,256>>>` over `ceil(B/256)` partials, so
+   partials 256+ are never read. 7 sites in the file. Only corrupts the *logged* loss —
+   the backward re-derives from `saved_max`/`saved_sum` and never reads `loss_output`.
+   Production runs 8192-16384 tokens per micro-batch, so it does not fire.
+
+3. **`vocab % 4 != 0` double-counts.** On 16-byte-aligned rows the float4 branch
+   overruns into the tail loop's range. At vocab 50303 that is 400x the noise floor; at
+   vocab 7 it is 6.7e-02. Our vocab is 50304, so it does not fire.
+
+### 26.5 Process note
+
+A patch script used `s.replace(a, b, 1)` with **no assert** on three edits to
+`LossOps.cpp`. That section is 2-space indented (it sits outside the `#ifdef WITH_CUDA`)
+not the 4-space assumed, so all three silently did nothing — and the script still
+printed "CPU path done". A success message that verifies nothing is the same vacuous
+pattern the test exists to catch, just in the tooling.
+
+The test named the cause immediately: both failures were exactly 2x, which is 16/8 —
+the signature of dividing by `batch_size` instead of `n_valid`. Rule going forward:
+assert the pattern matched AND matched exactly once, then grep the file back.
+
+### 26.6 Files changed
+
+| file | change |
+|---|---|
+| `include/ops/helpers/LossKernels.h` | `count_valid_targets_cuda` declared; `denom` on 2 forward + 3 backward wrappers |
+| `src/Kernels/cuda/loss/LossKernels.cu` | count kernel; `sum_reduction_kernel` optional denominator; 2 live backward kernels take `const float*`; 4 instantiation macros |
+| `include/autograd/backward/LossBackward.h` | `ignore_index_` and `denom_` members, both ctors |
+| `src/autograd/backward/LossBackward.cpp` | ctors, CPU mask + CPU denominator, 6 CUDA call sites |
+| `src/autograd/operations/LossOps.cpp` | denominator built on both paths, node carries it |
+| `Tests/kernel_tests/test_sparse_ce_ignore_index.cu` | new, 1085 lines |
+
+Only the two live backward kernels moved to the device denominator; the two dead ones
+(`sparseCENormalize_kernel`, `sparse_ce_backward_kernel_typed`) keep `float host_scale`.
+`INSTANTIATE_TWO_KERNEL` was wrongly edited mid-session and reverted — it instantiates
+`sparse_ce_backward_cuda`, which has no such parameter.
+
+---
+
+## 27. The three open items — analysis and conclusions (2026-09-22)
+
+### 27.1 Trainer-side global valid-token count
+
+**The honest position first: today's default is Megatron's default, and that is not
+the ideal one.** Worth stating plainly because it is a side effect of §26.3 that is
+easy to miss.
+
+Per-step gradient scale chain in `bluscript_zero_wsd.cpp`:
+
+```
+per micro-batch:  1 / n_valid_i        <- the loss op (was 1/batch_size before today)
+                x 1 / GRAD_ACCUM       <- grad_scale passed to loss.backward()
+      summed over GRAD_ACCUM micro-batches
+      summed over W ranks              <- ncclReduceScatter, op = sum
+                x 1 / W                <- SymmetricShardedOptimizer.cpp:798 "undo op=sum"
+```
+
+Three possible normalizations, and what each actually weights equally:
+
+| | formula | weights equally | who does this |
+|---|---|---|---|
+| old (before today) | `Sum_i sum_i / (batch_size * GA)` | every **token**, masked ones counted as zero-loss | ours until 2026-09-22 |
+| current | `(1/GA) * Sum_i (sum_i / n_valid_i)` | every **micro-batch** | Megatron default (`calculate_per_token_loss=False`) |
+| exact | `Sum_i sum_i / Sum_i n_valid_i` (all micros, all ranks) | every **valid token** | torchtitan; PyTorch for a single batch |
+
+So the old behaviour had the *wrong denominator* but the *right relative weighting*
+between tokens; the current one has the right denominator per micro-batch but gives a
+micro-batch with few valid tokens the same weight as one with many. Neither is exact.
+
+**Magnitude.** The distortion scales with the variance of `n_valid_i` across
+micro-batches. At B*T = 4096-16384 tokens per micro-batch the valid fraction is
+fairly stable, so it is small — the 13.5x figure recorded earlier was for pathological
+micro-batches, not this regime. **At `GRAD_ACCUM == 1` and `world_size == 1` the
+current behaviour is exactly PyTorch-correct**, because the local count *is* the
+global count.
+
+**What the exact fix needs — three changes that only work together:**
+
+1. **Prefetch every micro-batch of the step** before the first backward, sum
+   `n_valid` over them, all-reduce across ranks, pass the one number as `denom`.
+   This is what torchtitan does and why it prefetches.
+2. **`grad_scale = 1.0`** instead of `1/GRAD_ACCUM` — the global denominator already
+   spans all micro-batches, so dividing again double-counts.
+3. **Cancel the optimizer's `1/W`** — the global denominator already spans all ranks.
+   Either multiply the denominator by `W`, or change the optimizer scale (which would
+   also affect pretraining, so prefer the former).
+
+Doing any one or two of these alone gives a *wrong* scale, not a partially-better one.
+
+**Conclusion.** Not a bug, unbuilt work, and it belongs with the dataloader piece that
+produces `num_valid_tokens` in the first place. The `denom` parameter on
+`sparse_cross_entropy_loss` is the finished hook. **Do it as part of the dataloader
+work, not before.** Until then: single-GPU / `GRAD_ACCUM=1` SFT is already exact;
+multi-micro-batch SFT is Megatron-default, which is shipped behaviour in a major
+framework and acceptable as an interim.
+
+### 27.2 Target bounds check
+
+**Reachable — confirmed by tracing upstream, not assumed.** The chain is:
+`.bin` file -> `mmap` (uint16) -> `cudaMemcpyAsync` -> kernel `row_logits[target_idx]`.
+`dist/dataloader_dist.h` validates file size, divisibility by 2, shard bounds and B/T,
+but **never** that a token id is `< vocab_size`. There is no check anywhere between
+the file and the indexed read.
+
+So a `.bin` containing any id >= 50304 reads past the row. Concretely: our SFT sentinel
+is 65535, and on a 50304-wide row that is 61 KB past it. If `ignore_index` is left at
+the `-1` default while the labels carry 65535, the guard does not fire and the kernel
+indexes out of bounds. I hit exactly this while writing the test — it is why the
+control arm had to be skipped for out-of-vocab sentinels.
+
+This is **not** a redundant defensive check: an upstream caller can still produce the
+bad input, which is the bar for adding one.
+
+Cost: one integer compare per row, against a vocab-wide online softmax. Immeasurable.
+
+PyTorch does it on both paths — `TORCH_CHECK_INDEX(t >= 0 && t < n_classes)` on CPU
+and `CUDA_KERNEL_ASSERT(index >= 0 && index < n_classes)` on CUDA. The CUDA form
+aborts the kernel and kills the context, which is the correct trade: a loud death
+beats silent memory corruption and a plausible-looking loss curve.
+
+**Conclusion. Do it — roughly 5 lines, highest value per line of anything left.** It
+converts the most likely SFT misconfiguration (sentinel written but `ignore_index` not
+set, or a vocab/tokenizer mismatch) from silent corruption into an immediate, named
+error. Put the assert in the forward kernels right after the masking guard, and the
+`TORCH_CHECK`-style throw on the CPU path.
+
+### 27.3 sm103 / B300 masking
+
+`src/Kernels/cuda/loss/arch/CrossEntropyKernels_sm103.cu` is **163 lines, one kernel,
+forward only** (`sparse_ce_fwd_kernel_sm103_save_stats`). The backward is shared, so
+it already masks correctly.
+
+The port is a single guard in the same place as kernel #2 — after
+`if (row >= batch_size) return;`, writing `losses[row]=0, saved_max[row]=0,
+saved_sum[row]=1` — plus one parameter on the kernel, one on the launcher, and three
+instantiations. Roughly 15 lines.
+
+Routing: `LossKernels.cu` branches on `get_arch() == ArchFamily::Blackwell_B300` (103).
+**Only B300 takes this path.** H200 is `Hopper` (90) and A10/3060 is `Ampere_A10` (86),
+so both run the generic kernel that already masks.
+
+The risk if left: on B300 the forward silently does **not** mask while the backward
+does. Loss and gradient would disagree, and nothing would report it.
+
+**Conclusion. Cheap enough to just do, and the failure mode is a silent wrong answer,
+which is the worst kind.** Not blocking anything on H200. Do it in the same pass as
+the bounds check (§27.2), since both touch the same forward kernels.
+
+### 27.4 Should we validate on the 1x H200?
+
+**For the kernel work: no, it would re-run identical code.** The only arch branch in
+the loss path is `== Blackwell_B300`. H200 resolves to `ArchFamily::Hopper`, so it
+takes the same generic kernels, line for line, as the sm_86 box the 136 cases already
+passed on. An H200 run of the same test proves nothing new about correctness.
+
+Three things an H200 run *would* add, in order of value:
+
+1. **Production-shape validation.** B*T = 16384 at vocab 50304 in fp32 is 3.3 GB of
+   logits plus 3.3 GB of gradient — tight on the 3060's 11.6 GB, trivial on H200.
+   Worth one run to confirm behaviour at the real shape, and it also exercises the
+   two-stage reduction at production scale. Low risk, ~5 minutes.
+2. **An sm_90 compile check.** The code is arch-independent, but it has only ever been
+   compiled `-arch=sm_86`. Cheap to rule out.
+3. **The end-to-end SFT trainer run.** This is the high-value one — and it is blocked
+   on the dataloader / global-count work (§27.1), so it cannot happen yet.
+
+**Conclusion. Not needed now.** The productive order is: finish §27.2 and §27.3 (both
+small, both on the same files), then build the dataloader + global count, and *then*
+use the H200 for the end-to-end run where it actually tells us something. If the H200
+is idle and free, one production-shape run of the existing test is a reasonable
+5-minute confirmation — but it is confirmation, not discovery.
+
+### 27.5 Recommended order
+
+| # | item | size | why this position |
+|---|---|---|---|
+| 1 | target bounds check (§27.2) | ~5 lines | highest value per line; prevents the most likely misconfiguration |
+| 2 | sm103 masking guard (§27.3) | ~15 lines | same files as #1; silent-wrong-answer risk |
+| 3 | dataloader emits `num_valid_tokens` | new work | unblocks everything below |
+| 4 | trainer global count (§27.1) | 3 coupled changes | needs #3 |
+| 5 | end-to-end SFT run on H200 | — | needs #3 and #4 |
+
+---
+
+## 28. Session log — 2026-09-23: bf16 vector path, dead code, fp32 loss scalar
+
+Three pieces landed, all validated by `test_sparse_ce_ignore_index.cu`.
+**Final state: 136 cases, 0 SFT failures, 2 diagnostic XFAILs** (down from 32).
+
+**None of this is SFT-specific.** All of it fires on pretraining too — the only
+SFT-only work is the `ignore_index` masking and the valid-token denominator from
+§26. Worth stating plainly because it changes who benefits: production carries every
+one of these defects today.
+
+### 28.1 Bug B — the bf16/fp16 vector path
+
+The 16-byte vector accesses hardcoded **4 elements** regardless of `sizeof(T)`. That
+is correct only for a 4-byte type. For a 2-byte type it did two things wrong at once:
+
+- **misalignment** — the per-thread address is `row_base + j*sizeof(T)` with
+  `j = tid*4`, so at 2 bytes it lands on `tid*8`, not `tid*16`.
+  `cp.async.cg.shared.global ... 16` requires 16-byte alignment and the kernel died
+  with "misaligned address". The guard `(row_logits & 0xF) == 0` was **vacuous**: it
+  checked the ROW BASE while the access is per-thread.
+- **type pun** — the staging buffer was `extern __shared__ float`, so 16 bytes of
+  bf16 (8 values) were read back as 4 floats. Garbage even if aligned.
+
+Fix: `LossVec<T>` with `WIDTH = 16 / sizeof(T)` — 4 for fp32, 8 for bf16/fp16, 2 for
+fp64 — typed staging, `alignas(16)`, and `static_assert`s so the compiler checks every
+instantiation is exactly 16 B. Deriving the count from the dtype makes the per-thread
+byte offset `v*16` for every type, so **one change fixed both faults**; they were the
+same mistake seen from two angles.
+
+Applied to all 5 live kernels: `sparse_ce_forward_kernel_vec`,
+`sparse_ce_forward_kernel_vec_save_stats`, `sparseCEReduce_kernel_optimized`,
+`sparseCENormalize_kernel_optimized`, `sparseCENormalize_from_stats`.
+
+Reference for the pattern: our own `AddVecTraits` in
+`src/TensorOps/cuda/TensorOpsAdd.cu` (VEC=4 float, VEC=8 half/bf16) and PyTorch's
+`template <typename scalar_t, int vec_size> struct alignas(sizeof(scalar_t)*vec_size)
+aligned_vector { scalar_t val[vec_size]; }` (`MemoryAccess.cuh:182`), plus
+`can_vectorize_up_to<scalar_t>()` (`:509`) which derives the width from the actual
+pointer at runtime. Both keep 16 bytes constant and vary the element count.
+
+### 28.2 vocab % 4 — same root cause
+
+The loops ran to `vocab_size` while unconditionally reading 4 slots, so the remainder
+was **double-counted** in the forward and, in the two normalize kernels, the trailing
+gradient columns were **never written at all** (`sparseCENormalize_from_stats` had no
+tail; `sparseCENormalize_kernel_optimized` skipped them behind
+`if (j + 3 < vocab_size)`). `sparseCEReduce_kernel_optimized` silently dropped the
+remainder from the max/sum. Fixed with an explicit scalar tail in every kernel.
+
+Measured: `vocab_50303` went from `3.723e-06` (400x the noise floor) to `2.337e-08`
+(ratio 1.00); `vocab_7` from `6.705e-02` to `7.774e-09`, and its `removed` figure from
+`92.0434/89.5021` to an exact `89.5021/89.5021`.
+
+### 28.3 Dead code — 469 lines
+
+Five exported wrappers and the four kernels only they launched:
+`sparse_cross_entropy_forward_cuda`, `..._impl` (+ `sparse_ce_forward_kernel_typed`),
+`..._vec`, `sparse_ce_backward_cuda` (+ `sparseCEReduce_kernel`,
+`sparseCENormalize_kernel`), `..._backward_cuda_impl` (+
+`sparse_ce_backward_kernel_typed`). Plus 3 instantiation macros and 4 header decls.
+
+Not just clutter: `sparse_cross_entropy_forward_cuda` had the plainest name in the
+header, so it was the most likely thing for someone to call, and it routed to the
+3-squash kernel with **no `ignore_index` parameter** and **no `denom`** — three silent
+regressions from calling the most natural-looking function.
+
+**The near-miss worth remembering:** `sparse_cross_entropy_forward_cuda_impl_vec`, the
+function `LossOps.cpp` actually calls, had **no explicit instantiation**. It existed
+only as a side effect of the dead `..._vec` wrapper calling it. Deleting that wrapper
+removes the symbol `LossOps.o` needs. Caught by grepping for
+`template void ..._impl_vec<` and finding nothing. Added `INSTANTIATE_FWD_IMPL_VEC`
+for the 9 combos LossOps dispatches. **The live production forward had been linking
+by accident for as long as that dead code existed.** Before deleting an exported
+symbol, check what its removal de-instantiates, not just who calls it.
+
+### 28.4 fp32 loss scalar — and the bug it removed
+
+`LossBackward.cpp` bound `grad_output`'s C++ type from the LOGITS:
+
+    using LogitT = ...decltype(logits_ptr)...;
+    ..._with_stats<LogitT, ...>(..., grad_out_ptr, ...);
+
+The trainer hands `backward()` an fp32 `grad_scale`. With bf16 logits the loss is
+bf16, so that fp32 value was read as bf16 — silently, because `Tensor::data<T>()` is a
+raw `reinterpret_cast` with no dtype check. Wrong gradient scale, nothing reported.
+
+This **predates the SFT work** — all three ingredients are in `a4c80c1`
+(`LossBackward.cpp:302-303`, `LossOps.cpp:295`, and the fp32 `grad_scale`). Bug B was
+masking it: bf16 crashed in the forward before the backward could ever produce a wrong
+scale. Fixing Bug B made an older bug reachable.
+
+Fix: `loss_output` and `grad_output` are now **fp32 by declaration** for every logits
+dtype. One element each, so fp32 costs nothing, and the type is in the signature
+rather than inferred from a neighbouring tensor — a mismatch is a **compile error**.
+Plus a boundary conversion (`as_type`) in `LossBackward` if a caller hands in a
+non-fp32 gradient, since the trainer supplies `grad_scale` itself.
+
+### 28.5 The two valid designs, and which we chose
+
+| | design | who |
+|---|---|---|
+| (1) | assume the type, but **check** it | **PyTorch** |
+| (2) | **don't assume** | **Liger, Megatron** |
+
+**PyTorch** — `Loss.cu:567-580` binds `scalar_t` from `input.scalar_type()` and then
+reads `grad_output.const_data_ptr<scalar_t>()`. Structurally identical to what we did,
+but `const_data_ptr` calls `check_type()` (`TensorMethods.cpp:22`) which **throws**.
+Their engine also validates a user-supplied gradient against the output's dtype
+(`torch/autograd/__init__.py`, `out_dtype` at :119, enforced at :180/:209).
+
+**Liger** — `_input * grad_output.unsqueeze(dim=1)` (`ops/cross_entropy.py:483`) and
+`tl.load(grad_output_ptr)` (`ops/utils.py:135`). Triton reads the pointer's own dtype;
+nothing is asserted.
+
+**Megatron** — `grad_input.mul_(grad_output.unsqueeze(dim=-1))`
+(`core/tensor_parallel/cross_entropy.py:19`). Plain tensor op.
+
+We were doing **neither** — assuming without checking, the one combination nobody
+ships. Declaring the two scalars as `float*` puts us in category (2), reached through
+C++ types instead of a dynamic framework.
+
+Chose (2) because **(1) detects the bug at runtime; (2) makes it unrepresentable at
+compile time.** Also (2) is free, testable by the existing suite, and delivers the
+precision and memory wins; (1) delivers neither.
+
+### 28.6 Measured result of the fp32 scalar
+
+bf16 loss error dropped **139x**, because the final store no longer rounds:
+
+| row | before | after |
+|---|---|---|
+| `A/off_baseline bf16` | `1.565e-03` (ratio 1.00) | **`1.127e-05`** (ratio 0.01) |
+| `A/off_baseline f16` | `2.007e-04` (ratio 1.00) | **`8.629e-06`** (ratio 0.04) |
+| `B/mask_dtypes bf16` | `removed=370.0000` | **`369.1480`** vs expected `369.1512` |
+
+Before, `369.1512` was rounded to `370.0000` — a whole bf16 ulp. Group G and all 26
+group-C backward rows are byte-identical to the previous run, which is the check that
+the change did not disturb anything else.
+
+### 28.7 Trainer upcast removed
+
+Both call sites in `bluscript_zero_wsd.cpp` now pass logits at their native dtype.
+The `to_dtype(logits, Dtype::Float32)` existed **only** because the kernel could not
+read 2-byte types.
+
+Expected gain, recorded in the code comment and flagged there as
+**CALCULATED FROM TENSOR SIZES, NOT MEASURED** — at B*T=16384, vocab 50304:
+
+| | now | after |
+|---|---|---|
+| peak memory (saved_logits + grad_logits + the fp32 copy) | 9.211 GB | **3.070 GB** |
+| loss-path traffic per micro-step | 18.42 GB | **4.61 GB** |
+
+**Precision is unaffected** — bf16→fp32 is a widening conversion, so reading a bf16
+logit in-kernel is bit-identical to pre-converting the tensor.
+
+**These numbers have NOT been measured.** The test calls the loss op directly and
+never touches the trainer, so the upcast removal is validated only by the build.
+A real training run on the H200 is required before quoting them.
+
+### 28.8 Still open
+
+| item | note |
+|---|---|
+| measure the upcast removal | needs an H200 training run; the numbers above are arithmetic |
+| `batch_size > 65536` reduction cap | stage 2 is `<<<1,256>>>` over `ceil(B/256)` partials; at 131072 half the loss is dropped. Production runs 8192-16384 |
+| target bounds check | PyTorch asserts on both paths (`CHECK_INDEX_IN_CLASS`, which drops the `>= 0` half for unsigned targets via `if constexpr`); we have none |
+| sm103/B300 masking | one guard, ~15 lines, `TODO(SFT)` in the code |
+| option 1 — `check_type` in `data<T>()` | logged as a RESEARCH/FUTURE TASK in `LossKernels.h` with the 4 steps: alias table for the 38 `__nv_bfloat16`/`__half` sites first, hoist the 59 in-loop `data<T>()` calls, keep it out-of-line like PyTorch, gate on a full-repo run |
+
+---
+
+## 29. What is missing to run SFT — environment gap analysis (2026-09-23)
+
+Question asked: can we do a sample SFT run using an open-source HuggingFace model?
+Then narrowed to the realistic version: **our model, our tokenizer, HF only as a source
+of SFT text.** Both answered below from the actual repo, not from assumption.
+
+### 29.1 An open-source HF MODEL is not feasible, and SFT is not the reason
+
+Our architecture is Llama-shaped but the vocabulary is not any HF model's:
+
+    d_model 2048, n_layers 36, GQA 16q/4kv, SwiGLU 5632, RoPE NeoX, weight-tied
+    vocab_size = 50304          <- GPT-2 tiktoken (50257) padded
+
+A Llama-style body with a GPT-2 tokenizer. No HF checkpoint has that combination —
+TinyLlama is 32000, Qwen ~151936, Llama-3 128256 — so the embedding and lm_head are
+shape-incompatible with anything downloadable.
+
+And there is no import path at all. Greps across the repo (excluding
+Tensor-Implementations): `safetensors` 0 files, `from_pretrained` 0, `gguf` 0. The
+four `huggingface` hits are a **dataset cache path**
+(`/root/.cache/huggingface/hub/datasets--navingv--flux/...`), not model loading.
+`Tensor-Implementations/convert_ckpt.py` maps OUR dtype enum to torch/numpy — it is an
+exporter for our checkpoints, not an HF importer.
+
+Fine-tuning a real open-source model is therefore a separate model-import project
+(safetensors reader, tokenizer, vocab/architecture mapping, numerical parity check
+against HF's own forward). Independent of SFT and much larger.
+
+### 29.2 Our model + our tokenizer + HF text IS feasible — here is the delta
+
+**How pretraining works today** (`dist/dataloader_dist.h::next_batch`):
+
+    const u_int16_t* tokens = shard_.data_ptr() + pos_;   // flat uint16 stream, no header
+    memcpy(pinned_x_, tokens,     BT * 2);                // input  = tokens[0 .. BT)
+    memcpy(pinned_y_, tokens + 1, BT * 2);                // target = tokens[1 .. BT+1)
+    pos_ += BT;                                           // walk the stream, no boundaries
+
+One flat token river; `target` is `input` shifted by one; nothing marks where a
+document starts or ends. `list_shards` globs `*.bin` and the only file validation is
+"size divisible by 2".
+
+**The six parts that change:**
+
+| # | part | state | note |
+|---|---|---|---|
+| 1 | tokenizer | **missing entirely** | zero `*token*` files; `blu16.py` only `np.memmap`s pre-tokenized shards. Must use the SAME GPT-2 BPE that produced the pretraining shards or every id is meaningless |
+| 2 | on-disk format | **decision not made** | see below |
+| 3 | preprocessing script | **missing** | HF dataset -> chat template -> tokenize -> write shards |
+| 4 | dataloader | **must change shape** | two parallel streams instead of one shifted view; step by exactly T (no `+1`); add `num_valid_tokens` to `Batch`; validate ids `< vocab_size` once per shard |
+| 5 | trainer | **0 refs** to `ignore_index` or `denom` | 2 lines for a single-GPU run |
+| 6 | loss kernels | **DONE** (§26-§28) | — |
+
+### 29.3 The format decision (part 2) — recommended: one example per sequence, padded
+
+The flat stream has no document boundaries, and SFT examples are variable-length and
+must not bleed into each other. Simplest correct option for a first run:
+
+    input:   [prompt tokens][answer tokens][pad ...]
+    target:  [65535 x len(prompt)][answer shifted][65535 x pad]
+
+**Right-padding is safe with the attention we already have.** Attention is causal, so a
+padded position can only be attended BY LATER positions — which are also padding, and
+whose loss is masked. No attention mask is needed.
+
+Packing several examples per sequence would need a block-diagonal attention mask, which
+we do not have. Padding wastes compute but is correct, and correctness is the point of a
+first run. Packing is an optimisation for later.
+
+Note `target` is no longer `input` shifted by one, which is exactly why the dataloader
+needs two streams rather than one.
+
+### 29.4 What this does NOT need
+
+No HF model loading, no safetensors reader, no vocab remapping, no architecture mapping.
+All of that disappears because we fine-tune our own pretrained checkpoint. HuggingFace
+supplies text and nothing else.
+
+### 29.5 Honest position
+
+Roughly **2 of 8 pipeline layers** are done, and they are the bottom two (loss op +
+kernels). Everything from "which dataset" down to "the dataloader hands over a mask" has
+not started. **SFT cannot run today** — the trainer calls
+`sparse_cross_entropy_loss(logits, target)` with two arguments, so `ignore_index`
+defaults to -1, nothing is masked, and an "SFT run" would be bit-identical to
+pretraining with nothing reporting it.

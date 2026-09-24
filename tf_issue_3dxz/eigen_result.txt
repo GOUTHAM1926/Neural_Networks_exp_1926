@@ -1,0 +1,16 @@
+Eigen 3.5.0 | single-threaded DefaultDevice | float32 RowMajor | median of 9
+
+Eigen's compile-time path choice for a rank-3 RowMajor tensor:
+  {0,2} keep Y  (TF)     are_inner_most_dims=false preserve_inner_most_dims=false -> GenericDimReducer
+  {1,2} keep X  (ctrl)   are_inner_most_dims=true  preserve_inner_most_dims=false -> InnerMostDimReducer
+  {0,1} keep Z  (ctrl)   are_inner_most_dims=false preserve_inner_most_dims=true  -> InnerMostDimPreserver
+
+    X     Y     Z |  A:Eigen   B:Z-in    C:X-in   |   A/B     C/B  | ctl{1,2} ctl{0,1} | GB/s  GB/s | maxrel
+                  |     (ms)     (ms)     (ms)   |                |     (ms)     (ms) |    A     B |
+------------------+------------------------------+----------------+-------------------+------------+-------
+  512     8   512 |      2.09      0.39      2.09 |   5.30x   5.32x |     0.13     0.59 |   4.0  21.3 | 2e-07
+  512    16   512 |      4.33      0.77      4.37 |   5.61x   5.66x |     0.22     1.23 |   3.9  21.7 | 2e-07
+  256    64   256 |      2.00      0.75      1.99 |   2.66x   2.66x |     0.21     1.23 |   8.4  22.3 | 4e-07
+ 1024     8  1024 |     20.51      1.95     21.70 |  10.54x  11.16x |     0.75     4.27 |   1.6  17.2 | 1e-07
+  128   256   128 |      1.84      0.79      1.77 |   2.33x   2.23x |     0.22     0.95 |   9.1  21.2 | 6e-07
+   64   512    64 |      0.84      0.37      0.87 |   2.31x   2.38x |     0.10     0.47 |   9.9  22.9 | 4e-07
