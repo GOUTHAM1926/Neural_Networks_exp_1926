@@ -1,7 +1,9 @@
 # Loss-Kernel Dtype Bugs — Bug A, Bug B, Bug C, and the Redundant Cast
 
 **Repo:** `Tensor-Implementations` · **Branch:** `sft_gautam` · **Date:** 2026-09-24
-**Baseline compared against:** `a4070931` (submodule pinned by `BluTrain/dist_side_merge`)
+**Baseline compared against:** `8808f89` (submodule pinned by `BluTrain/dist_side_merge`)
+**Status:** every claim below was **measured on the H200 production trainer on 2026-09-24 — see §16.**
+§0–§15 were written before those results; where they disagree, §16 wins, and each superseded claim is marked where it stands.
 
 ---
 
@@ -9,18 +11,25 @@
 
 Three bugs in the sparse cross-entropy loss path, plus one redundant memory cost in the
 training script. All four are invisible today because a single line in the trainer widens
-the logits to fp32 before the loss. That line costs **6.14 GB per rank** and is the only
-thing preventing three separate failures.
+the logits to fp32 before the loss. That line costs **~9.2 GiB of live peak memory per rank at the
+production B=8** (measured 4,716 MiB at B=4, §16.3) and is the only thing preventing three separate failures.
 
 | # | name | failure mode | fires when |
 |---|------|--------------|------------|
 | A | loss scalar squashed | reported loss quantized to ~0.06 | logits are bf16 |
 | B | vector width hardcoded to 4 | crash **and** silent gradient corruption | logits are bf16 |
 | C | grad scale read at wrong type | **all gradients become 0.0** | loss dtype != logits dtype |
-| 4 | redundant fp32 upcast | 6.14 GB + 75% wasted loss-path traffic | always (today) |
+| 4 | redundant fp32 upcast | ~9.2 GiB live at B=8 + 75% of loss-path DRAM traffic (both **measured**) | always (today) |
 
-**Measured:** bf16 loss error `1.565e-03 -> 1.127e-05` (**139x**), fp16 `2.007e-04 -> 8.629e-06` (**23x**).
-**Calculated, NOT measured:** 6.14 GB memory, 75% bandwidth.
+**Measured, standalone (RTX 3060):** bf16 loss error `1.565e-03 -> 1.127e-05` (**139x**), fp16 `2.007e-04 -> 8.629e-06` (**23x**).
+
+**Measured on the H200 production trainer, B=4, two repetitions per arm (§16):**
+- their code + `BLU_BF16_LOGITS=1` crashes at step 0 (the sanitizer names the kernel); ours runs 20/20
+- live peak memory **−4,716 MiB** (exactly 3 × 1,572, identical in both reps) → **≈9.2 GiB at B=8**
+- loss-path DRAM traffic **−74.97%** (ncu) · throughput **+0.60%**
+- training loss **no detectable change** — fp32 and bf16 differ no more than fp32 differs from itself
+
+**Found along the way:** Bug D in `Types.h` (§17), and a trainer that is not reproducible run to run (§18).
 
 ---
 
@@ -102,7 +111,7 @@ And it happened **three separate times** on the way out.
 `src/Kernels/cuda/loss/LossKernels.cu`
 
 ```cpp
-// BEFORE  (a4070931)
+// BEFORE  (8808f89)
 :192, :288, :459   losses[row] = static_cast<T>(loss);                        // squash 1
 :309, :485, :894   T* d_losses = allocate(batch_size * sizeof(T));            // squash 2
 :314, :320, :323   sum_reduction_kernel<T><<<...>>>(d_partial, loss_output);  // squash 3
@@ -498,6 +507,14 @@ Also: 2 fewer kernel launches per micro-step.
 
 **These are CALCULATED from tensor sizes. NOT MEASURED.**
 
+> **MEASURED 2026-09-24 (§16).** Memory: the live-peak saving at B=4 is **4,716 MiB = 3 × 1,572**,
+> identical in both repetitions, i.e. **9,432 MiB ≈ 9.21 GiB at B=8**. The "certain" line above (6.14)
+> under-counts; the "possible peak" line (12.28) over-counts, because it priced the extra live buffer as
+> fp32 when it is bf16. The correct count: fp32 path = saved fp32 + grad fp32 + one bf16 buffer;
+> bf16 path = saved bf16 + grad bf16.
+> Traffic: ncu measured **19.714 → 4.935 GB (decimal) per micro-step at B=4 = −74.97%**, which is
+> 36.72 → 9.19 GiB at B=8 against the 36.84 → 9.21 predicted here.
+
 ### 5.5 No code edit is needed on `dist_side_merge`
 
 `ReshapeOps.cpp:67` — `if (input.dtype() == target) return input;` — verified.
@@ -584,7 +601,7 @@ dispatch (`LossBackward.cpp:339/341` in the old code) was **never entered**.
 
 "Mixed precision" means the **model** runs bf16 — not that the **loss** receives bf16.
 
-The bugs sat armed since at least `a4070931` (2026-09-08), behind a branch nobody walked
+The bugs sat armed since at least `8808f89` (2026-09-08), behind a branch nobody walked
 into.
 
 ---
@@ -665,8 +682,8 @@ Logged in `include/ops/helpers/LossKernels.h:71-82`:
 
 ## 9. Audit — status on `dist_side_merge`
 
-`BluTrain/dist_side_merge` (tip `74ec046`, 2026-09-18) pins submodule **`a4070931`**
-(2026-09-08, "memory fix"), *not* the `Tensor-Implementations/dist_side_merge` tip
+`BluTrain/dist_side_merge` (tip `74ec046`, 2026-09-18) pins submodule **`8808f89`**
+(pinned by BluTrain tip 03b94cf, 2026-09-23 "DCP fix"), *not* the `Tensor-Implementations/dist_side_merge` tip
 `c6f0dbb`. The pinned commit is what compiles, so that is what was audited.
 
 | item | status | evidence |
@@ -701,9 +718,26 @@ The pinned kernel is `tid * 4` throughout. **`BLU_BF16_LOGITS=1` will die with
 
 The knob reads as tested and shipped. It is neither.
 
-> **Caveat:** the local copy of that branch is from **2026-09-18**. If the fix landed after
-> that on an unfetched branch, this conclusion changes. A `git fetch` is required before
-> treating it as final.
+> ~~**Caveat:** the local copy of that branch is from 2026-09-18 …~~ **Resolved 2026-09-24**, on a fresh
+> clone with all **84** pushed `Tensor-Implementations` branches:
+> - `git log --all -S VEC_ELEMS -- src/Kernels/cuda/loss/` is **empty**, so `VEC_ELEMS` was never added to
+>   the loss kernels in any pushed commit. (The only `VEC_ELEMS` in the repo is in `TensorDataManip.h`,
+>   unrelated.)
+> - `Chunk16` appears **nowhere** in the repo's history.
+> - No branch tip has `VEC_ELEMS` in `LossKernels.cu`.
+> - The comment was added in BluTrain **`beda19d` (2026-09-08, bruce-yeager, "memory fix")**. That commit
+>   changed `bluscript_zero_ckpt.cpp`, `PlannerLimits.h` and `docs/memprobe*.cpp`. It never touched the loss
+>   kernels or the submodule pointer.
+>
+> **If a colleague reports `BLU_BF16_LOGITS=1` running**, it cannot have been the pushed code, which
+> crashes at step 0 (§15.3). Check, in this order:
+> 1. `grep -c VEC_ELEMS Tensor-Implementations/src/Kernels/cuda/loss/LossKernels.cu` in *their* tree.
+>    Non-zero means a local, unpushed Bug B fix. That fits their comment exactly: "kernels now accept it"
+>    plus "the reported loss is bf16 and quantizes to ~0.06" is the state "Bug B fixed, Bug A not". It must
+>    be reconciled with this port before merging, since both change `LossKernels.cu`.
+> 2. The run log's config line. `logits float32` means the flag never reached the process — for example
+>    `mpirun` without `-x BLU_BF16_LOGITS`.
+> 3. `git -C Tensor-Implementations rev-parse --short HEAD` and the trainer file actually run.
 
 ### Where their comment is RIGHT
 
@@ -714,20 +748,21 @@ fixing Bug A**, not by their code.
 
 ---
 
-## 10. Expected benefits
+## 10. Benefits — expected vs measured
 
-| benefit | number | status |
+| benefit | expected (before the H200 run) | **measured 2026-09-24** |
 |---|---|---|
-| Reported-loss precision (bf16) | **139x** | **MEASURED** |
-| Reported-loss precision (fp16) | **23x** | **MEASURED** |
-| Memory, certain | 6.14 GB / rank | calculated |
-| Memory, peak | up to 12.28 GB / rank | calculated, less certain |
-| Loss-path bandwidth | 36.84 -> 9.21 GB/micro-step (75%) | calculated |
-| Kernel launches | 2 fewer per micro-step | certain |
-| tok/s | **unknown** | no estimate offered |
+| Reported-loss precision (bf16) | 139x | **139x** (RTX 3060, standalone) |
+| Reported-loss precision (fp16) | 23x | **23x** (RTX 3060, standalone) |
+| Memory, live peak | 6.14–12.28 GB at B=8 | **−4,716 MiB at B=4**, identical in both reps → **≈9.2 GiB at B=8** |
+| Memory, reserved (what nvidia-smi shows) | — | **−5,876 MiB at B=4** |
+| Loss-path DRAM traffic | −75% | **−74.97%** (19.714 → 4.935 GB per micro-step, ncu) |
+| Kernel launches | 2 fewer per micro-step | **2 fewer** (ncu kernel sequence) |
+| tok/s | unknown | **+0.60%** (n=2 per arm; every bf16 run faster than every fp32 run) |
+| Training loss | "must track fp32" | **no detectable change** (§16.4) |
 
-Memory saved != speed gained. The loss path is one slice of the step and there is no
-measurement for this script. **That is what the H200 run is for.**
+Memory saved != speed gained. 14.8 GB less traffic per micro-step would be 0.79–0.94% if every
+byte became time at 4.0–4.8 TB/s; +0.60% was measured (§16.6).
 
 ### The benefit their own comment called impossible
 
@@ -757,18 +792,26 @@ Arm 2 is the one people skip. Without it, a win in arm 3 could be the port chang
 something unrelated. Three of the four arms are yes/no answers rather than noisy
 measurements.
 
-### Arm 3 is a NUMERICAL change, not only a memory one
+**Outcome:** executed 2026-09-24 — arms 0/1 in §15, clean arms 2/3 with two repetitions each in §16.
 
-`BLU_BF16_LOGITS=1` genuinely gives the logits and their gradients 7 mantissa bits instead
-of 23. Standard practice says that is fine; standard practice is not evidence for *our*
-model. Arm 3 must show:
+### ~~Arm 3 is a NUMERICAL change~~ — CORRECTED 2026-09-24: it is not
 
-1. **loss curve tracks arm 1** over the same step window — not merely a similar endpoint
-2. **grad-norm tracks** — where a precision problem shows first
-3. *then* tok/s and memory
+This section originally claimed `BLU_BF16_LOGITS=1` gives the logits "7 mantissa bits instead
+of 23". **That was wrong.** The lm_head matmul already writes its output as bf16
+(`GenMatmul.cpp:89`: `Tensor output(output_shape, A.dtype(), ...)`, with `A = x_bf`), so the logits
+never held more than 7 mantissa bits of information. Widening to fp32 appends 16 zero bits
+(`0x4049` → `0x40490000`, both exactly 3.140625). In backward, `ToDtypeBackward` rounds the fp32
+gradient straight back to bf16 before the matmul backward reads it. Both paths hand the matmul
+the same bf16 gradient, apart from fp32 summation order inside the loss kernel (4 vs 8 elements
+per 16-byte load).
 
-If the loss curve diverges, the correct outcome is to keep the cast and take the
-correctness fixes only.
+Measured: `test_cast_equivalence.cu` gives 99.999% of gradient elements bit-identical and the rest
+1 ulp, identical on the RTX 3060 and the H200 (§16.2). In training, fp32 and bf16 differ by no more
+than each differs from itself (§16.4). **The cast costs memory and time and buys nothing.**
+
+The arm table's "arm 2 must be BIT-IDENTICAL to arm 1" was also the wrong expectation: the trainer
+is not reproducible run to run (§18). What holds is that step 0 is identical (loss, val, gradient
+norm) and later steps stay within the same-arm noise.
 
 ### Measurement discipline (from prior campaigns)
 
@@ -777,6 +820,10 @@ correctness fixes only.
 - Compare the **same step window** across arms.
 - One config per process.
 - Pull run artefacts off the box immediately.
+- **Never compare single runs' early losses on this trainer.** The same binary on a clean GPU gave a
+  step-3 loss of 14.98 in one run and 11.17 in the next (§18). Use ≥2 repetitions per arm.
+- Measure memory with the allocator (`CachingCUDAAllocator::get_stats()`), not a 0.5 s nvidia-smi
+  poller — the poller missed the true peak by ~660 MiB (§16.3).
 
 ---
 
@@ -800,13 +847,26 @@ we added `LossVec<T>` + fp32 scalars. Those touch the same lines and conflict.
 
 ---
 
-## 13. Open items
+## 13. Open items (updated 2026-09-24 evening)
 
-- [ ] `git fetch` both repos — confirm `VEC_ELEMS` is still absent at today's tip
-- [ ] Commit the work on `sft_gautam` (nothing is committed yet)
-- [ ] Port items 1-5 onto `dist_side_merge`
-- [ ] Run the 4-arm test on H200
-- [ ] Measure the 6.14 GB / 75% claims — currently calculated only
+Done on 2026-09-24:
+- [x] Bugs verified present at today's tip `8808f89`, on the box (§15.1)
+- [x] Port onto `dist_side_merge` — 7 files, not 5 (§12, §20.3)
+- [x] Run the arms on the H200 (§15, §16)
+- [x] Measure memory, traffic and precision (§16)
+
+Still open:
+- [ ] **Commit + push `sft_gautam`**: the 7 loss files + `test_sparse_ce_ignore_index.cu` + `test_cast_equivalence.cu`
+- [ ] **Bug D**: fix the `float_to_bfloat16` overflow at 65,536 (`Types.h:85`); it needs its own full-repo test run (§17)
+- [ ] Hand the port to the `dist_side_merge` owners as a proper branch/PR, recommending `BLU_BF16_LOGITS=1`
+- [ ] Rewrite the stale comment block above `loss32` in `bluscript_zero_ckpt.cpp` (§5.6)
+- [ ] Remove the false `VEC_ELEMS / Chunk16` claim in the same file (§9)
+- [ ] More throughput repetitions: +0.60% is n=2 per arm, and the gap to the 0.79–0.94% bytes-only prediction is unexplained (§16.6)
+- [ ] Which third buffer is live at the peak (bf16 matmul output vs `ToDtypeBackward` output): memory is measured, attribution is not (§16.3)
+- [ ] The 580 MiB fp32 gap between their code and ours: measured by the poller only, probably a poller artefact (§16.3)
+- [ ] Bug C's consequence (zero gradients): predicted, never observed; needs a Bug-A-only build
+- [ ] The source of the trainer's run-to-run non-determinism (§18)
+- [ ] Design follow-ups: the bf16 round trip of weight gradients, and the fp32-only optimizer input (§19)
 - [ ] Refresh the `LossKernels.h` note counts (840/59/38 -> 827/16/30)
 - [ ] **RESEARCH:** option 1 (`check_type()` in `data<T>()`) — see §8
 - [ ] `batch_size > 65536` reduction cap
@@ -826,3 +886,828 @@ we added `LossVec<T>` + fp32 scalars. Those touch the same lines and conflict.
 A and C are the same mistake in two places. B is its mirror image. All three are invisible
 until the logits stop being fp32 — and the line that keeps them fp32 is the 6.14 GB we are
 trying to delete.
+
+---
+
+## 15. H200 VALIDATION — 2026-09-24 (measured, not calculated)
+
+Box: Verda `cold-bear-flows-fin-02`, 1x NVIDIA H200 143,771 MiB, driver 580.178.04,
+CUDA toolkit 13.0.88, gcc 13.3, 44 cores. Build: `sm_90a`, BluBridge-BLAS, 0 errors.
+
+Clone: `BluTrain@dist_side_merge` tip `03b94cf` (2026-09-23), submodule `8808f89`.
+**NOTE:** this is NOT the `a4070931` analysed earlier — the branch moved. Every bug
+below was re-verified against `8808f89` on the box.
+
+### 15.1 Smoke gate — all bugs present at today's tip
+
+```
+tid * 4                            : 11    (Bug B present)
+losses[row] = static_cast<T>(loss) :  3    (Bug A, all three squashes)
+VEC_ELEMS                          :  0    (the claimed fix DOES NOT EXIST)
+auto* grad_out_ptr                 :  1    (Bug C present)
+const float* grad_out_ptr          :  0    (not fixed upstream)
+ignore_index in LossOps            :  0    (SFT work absent, as expected)
+AccT                               : 41    (their partial squash fix)
+7th file touching loss kernels     : NONE  (6-file swap is safe)
+bf16_logits default                : false @ :188
+```
+
+### 15.2 Real model config (corrects §1.1 and §5.4)
+
+The on-box config differs from the source defaults read from a stale ref:
+
+```
+  d_model 2304 | n_layers 26 | q/kv heads 18/6 | head_dim 128 | ffn 6144
+  vocab 50304  | weight_tying ON | B x T = 8 x 4096 | world_size 1
+  parameters   : 1,588,229,888  (1.588 B)
+  param dtypes : 1472 M bf16 (AdamW G0) + 116 M fp32 (AdamW G1)
+  optimizer/GPU: 16,848 + 1,328 = 18,176 MiB  UNSHARDED at world_size=1
+  max_lr 0.0012 | warmup 200 | max_steps 8000 | grad_accum 32
+  peak BF16    : 989.4 TFLOP/s | no activation checkpointing (HFU == MFU)
+```
+
+The logits figures in §5.4 are UNCHANGED: they depend only on `B*T*V`, not on model
+size. fp32 6,288 MiB each, bf16 3,144 MiB each, saving 6,288 MiB at B=8.
+
+### 15.3 ARM 0 — Bug B PROVEN, kernel named
+
+`BLU_BF16_LOGITS=1` on their unmodified code:
+
+```
+[precision] bf16 logits ON - frees ~3 GiB ... Gradients are unaffected ...
+[mix] step 0 entering phase 'c0-static'
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  GPU->CPU transfer failed: misaligned address
+```
+
+The knob printed its own "this is safe" banner and died on step 0.
+
+The first trace pointed at `Tensor::to_cpu()`, which is only where the STICKY CUDA
+error surfaced -- not the fault site. `compute-sanitizer --tool memcheck` named it:
+
+```
+========= Invalid __global__ read of size 16 bytes
+=========   at OwnTensor::cuda::sparse_ce_forward_kernel_vec<OwnTensor::bfloat16_t, unsigned short>+0x590
+=========   by thread (65,0,0) in block (26,0,0)
+=========   Access to 0x554607ec08 is misaligned
+=========   inside the nearest allocation at 0x5545e00000 of size 3296722944 bytes
+=========   Host Frame: sparse_cross_entropy_forward_cuda_impl_vec<bfloat16_t, unsigned short>
+=========   Host Frame: autograd::sparse_cross_entropy_loss
+=========   Host Frame: main in bluscript_zero_ckpt.cpp:2102
+========= ERROR SUMMARY: 50253 errors
+```
+
+Six independent confirmations of the Bug B prediction:
+
+| predicted | observed |
+|---|---|
+| the VECTORIZED loss kernel faults | `sparse_ce_forward_kernel_**vec**` |
+| only for bf16 | templated `<bfloat16_t, unsigned short>` |
+| a 16-byte read | `Invalid __global__ read of size 16 bytes` |
+| address 8-aligned, not 16 | `0x...ec08` -> **mod 16 = 8** |
+| it reads the logits tensor | allocation `3,296,722,944` == `B*T*V*2` EXACTLY |
+| one block per row | fault offset -> row 26; sanitizer says `block (26,0,0)` |
+
+50,253 errors, not one -- pervasive, not a corner case.
+
+METHOD NOTE: the first run's stack trace was NOT sufficient evidence. `misaligned
+address` is sticky in CUDA, so it surfaces at the next synchronising call and names
+the wrong function. Only `compute-sanitizer` (or `CUDA_LAUNCH_BLOCKING=1`) identifies
+the faulting kernel. Do not claim a kernel from a sticky-error stack trace.
+
+### 15.4 ARM 1 at B=8 — OOM at exactly the tensor this work halves
+
+`BLU_BF16_LOGITS=0` on their unmodified code:
+
+```
+  [val] step 0 | val_loss 11.282295 | commoncrawl 11.282296 | code 11.282296 | math 11.282296
+[ALLOCATOR] cudaMallocAsync(size=6593445888) failed: out of memory
+[ALLOCATOR] Hard OOM. Trimming cache...
+[ALLOCATOR] FATAL: Still OOM after trim.
+what():  CUDA OOM
+```
+
+Stack: `Tensor::backward -> backward_sequential -> SparseCrossEntropyLossBackward::apply
+-> Tensor::empty -> Storage` = the `grad_logits_2d` allocation at LossBackward.cpp:250.
+
+```
+failed allocation          : 6,593,445,888 bytes
+B*T*V*4 (fp32 grad_logits) : 6,593,445,888 bytes    EXACT MATCH
+```
+
+It trimmed the allocator cache and still could not find 6,288 MiB, so that memory was
+live, not merely cached.
+
+```
+card               : 143,771 MiB
+observed peak      : 141,240 MiB   (98.2% of card)
++ the failed alloc :   6,288 MiB
+= would need       : 147,528 MiB   -> OVER BY 3,757 MiB
+```
+
+**Their shipped config does not fit on a single H200.** With bf16 logits it would need
+141,240 MiB and fit with 2,531 MiB to spare -- but that margin is too thin to rely on
+while the box is shared.
+
+CONFOUND, stated plainly: `snippet_runner` (another user) held between 908 and 25,466
+MiB throughout. The absolute peak is therefore contaminated and contention may have
+triggered the failure earlier than it otherwise would. What survives the confound is
+the arithmetic: 141,240 + 6,288 > 143,771 regardless of who else was on the card.
+
+### 15.5 Why B=8 fails here but works in production
+
+ZeRO-1 shards optimizer state, nothing else. At world_size=1 there is nothing to shard:
+
+```
+  8 GPUs : optimizer state per GPU = 18,176 / 8 =  2,272 MiB
+  1 GPU  : optimizer state per GPU =             18,176 MiB
+                                                 -----------
+                                     we pay      +15,904 MiB
+```
+
+Activations are per-GPU regardless of world size, so B=8 costs the same per GPU either
+way. The unsharded optimizer is the entire difference.
+
+### 15.6 B=4 chosen for the A/B
+
+Fixed costs (do not scale with B), from the run's own log:
+
+```
+  params  (1472M bf16 + 116M fp32) :  3,251 MiB
+  grads                            :  3,251 MiB
+  optimizer state (unsharded)      : 18,176 MiB
+  FIXED                            : 24,677 MiB
+```
+
+Everything else -- activations, logits, grad_logits -- is exactly linear in B. From the
+one measured point (B=8 needed 147,528 MiB), per unit of B = 15,356 MiB.
+
+| B | grad_accum | fp32 | bf16 | saving |
+|---|---|---|---|---|
+| 8 | 32 | 147,528 OOM | 141,240 fits (2.5 GB spare) | 6,288 MiB |
+| **4** | **64** | **86,103 fits** | **82,959 fits** | **3,144 MiB** |
+| 2 | 128 | 55,390 fits | 53,818 fits | 1,572 MiB |
+
+ROBUSTNESS ARGUMENT (independent of the fixed-cost breakdown): if F is the true fixed
+cost, B=4 needs `(147,528 + F)/2`. For that to exceed 143,771 you would need
+`F > 140,014 MiB` -- impossible, since the two logits tensors alone are 12,576 MiB of
+the 147,528 total. B=4 fits no matter how wrong the breakdown is, because no term grows
+faster than linearly in B.
+
+B=4 is chosen over B=2: both fit, but B=4 keeps the saving at 3,144 MiB (unmissable)
+with ~57 GB headroom so the co-tenant process cannot corrupt the measurement.
+
+**MEASURED:** at B=4 the fp32 run's live peak is 95,038 MiB and its reserved peak 104,904 MiB (allocator,
+§16.3). The 86,103 prediction above was 18% low: the fixed-cost parts list missed ~37 GB (CUDA context,
+BLAS workspaces, NCCL, ZeRO staging, allocator cache). The robustness argument still held — B=4 ran.
+
+### 15.7 Revised arm table
+
+| arm | code | B | flag | outcome |
+|---|---|---|---|---|
+| 0 | theirs | 8 | bf16 | **CRASH** - misaligned, kernel named by sanitizer. DONE |
+| 1 | theirs | 8 | fp32 | **OOM** at exactly the fp32 grad_logits. DONE (contended) |
+| 1b | theirs | 4 | fp32 | baseline: loss curve + tok/s + peak memory |
+| 2 | ours | 4 | fp32 | must match arm 1b |
+| 3 | ours | 4 | bf16 | expect -3,144 MiB |
+
+Arm 0's result is B-independent (alignment does not depend on batch size), so it does
+not need re-running at B=4.
+
+### 15.8 Operational notes
+
+- `mpirun` needs `--allow-run-as-root` on this box.
+- `BLU_MAX_STEPS` must be >= 4. At 2 the schedule collapses
+  (`warmup + stable >= max_steps - 1`) and the run aborts before any GPU work,
+  which makes `compute-sanitizer` report a misleading "0 errors".
+- The trainer reports no memory statistics. Peak must be measured by polling
+  `nvidia-smi --query-compute-apps` and filtering on the process name, so a co-tenant
+  process is excluded.
+- `B` is hardcoded at `bluscript_zero_ckpt.cpp:198` with no env override. Editing it
+  survives the 6-file swap, since the tarball only contains `Tensor-Implementations/`.
+
+---
+
+## 16. H200 A/B — final measured results (2026-09-24)
+
+### 16.1 What was run
+
+| | |
+|---|---|
+| box | Verda `cold-bear-flows-fin-02`, 1× H200 143,771 MiB, driver 580.178.04, CUDA 13.0.88, gcc 13.3, 44 cores |
+| code | `BluTrain@dist_side_merge` tip `03b94cf` (2026-09-23), submodule `8808f89`, plus our 7 loss files (§20.3) |
+| trainer | `bluscript_zero_ckpt.cpp`, 1.588 B params, **B=4** × T=4096, grad_accum 64, world_size 1, BluBridge-BLAS |
+| session | one exclusive GPU hour, 12:01–12:54 box time, run by `gpu_hour.sh` (Appendix A, md5 `e5d5c998…`) |
+| binary | `_runner_OURS_MEM`, md5 `1967eba692a68363faec2df14ed1bb6b`; preflight checked the 4-parameter loss symbol, `count_valid_targets_cuda`, and the `[MEM]` / `BLU_VAL_STEPS` strings **in the binary** |
+| conditions | GPU empty before and after every run. Three `watch nvidia-smi` loops (1 s, 0.1 s, 0.1 s) ran for the whole session — constant for every run |
+
+Layout:
+
+1. **Block 1** — the precision test on the H200's own sm90 convert path.
+2. **Block 2** — four training runs in A-B-A-B order (fp32, bf16, fp32, bf16), 20 steps each, allocator memory stats, no GPU poller of our own.
+3. **Block 3** — ncu DRAM bytes, arm 2 vs arm 3 (`BLU_MAX_STEPS=5`, `BLU_VAL_STEPS=1`).
+
+### 16.2 Precision — the cast adds no information
+
+`Tests/kernel_tests/test_cast_equivalence.cu` feeds **identical bf16 logits** through both paths. Both use
+the library's own code: `convert_type_cuda_generic`, which is what `Tensor::as_type` calls, and the
+production stats kernels. The predictions are written in the file header before the first run.
+B=2048, V=50304.
+
+| check | init-like (σ=0.5) | trained-like (σ=3, target +8) | prediction |
+|---|---|---|---|
+| C0 widen bf16→fp32 exact | 0 / 103,022,592 | 0 / 103,022,592 | 0 |
+| C5 control: path B run twice | 0 differences | 0 differences | 0 |
+| C1 row max | 0 / 2,048 | 0 / 2,048 | 0 |
+| C2 row sum | worst rel 1.8e-7 | worst rel 4.3e-7 | ≤ ~1e-6 |
+| C3 loss | bit-identical | bit-identical | ≤ ~1e-6 |
+| **C4 gradient into the matmul** | **99.9993%** identical, 771 at 1 ulp, **0 > 1 ulp** | **99.9989%** identical, 1,124 at 1 ulp, **0 > 1 ulp** | none > 1 ulp |
+
+**The output was identical on the RTX 3060 and on the H200, every line of both cases.** Those are two
+architectures and two different convert kernels (`__float2bfloat16` generic vs `__float22bfloat162_rn` on
+sm90), so they round identically and the loss kernels are deterministic across GPUs.
+
+The mechanism is in §11 (corrected).
+
+### 16.3 Memory — allocator stats, both repetitions
+
+| | fp32, cast ON (rep1 = rep2) | bf16, cast OFF (rep1 = rep2) | saving |
+|---|---|---|---|
+| **live peak** (`active_peak`) | 95,038 MiB | 90,322 MiB | **−4,716 MiB** |
+| reserved peak (`reserved_peak`) | 104,904 MiB | 99,028 MiB | −5,876 MiB |
+| cached free at end | 57,701 MiB | 53,005 MiB | |
+
+- **Both repetitions of each arm reported identical numbers**, to the MiB. So the saving is not noise.
+- **4,716 = 3 × 1,572 exactly.** One bf16 logits tensor at B=4 is 1,648,361,472 bytes = 1,572 MiB. At the
+  peak, the fp32 path holds three such units more than the bf16 path: the saved logits (fp32 vs bf16),
+  the gradient (fp32 vs bf16), and one extra bf16 buffer that only the fp32 path has.
+- **Which buffer is the third is not measured.** It is either the bf16 matmul output, or the
+  `ToDtypeBackward` output that coexists with both fp32 tensors.
+- **At B=8 this is 9,432 MiB ≈ 9.2 GiB of live peak memory.** Their banner says "frees ~3 GiB".
+
+**History of this number, kept for honesty.** Earlier in the day the saving was quoted from a 0.5 s
+nvidia-smi poller:
+- first **4,704** (their fp32 vs our bf16 — two variables at once), "fully accounted to 0.26%";
+- then **4,124** (our fp32 vs our bf16), "only 87% of the model".
+
+The allocator shows why both were off. The poller under-read the reserved peak by ~660 MiB
+(104,240 poller vs 104,904 allocator for the same config), because a half-second sample misses short
+peaks. The first model (three tensors) was right.
+
+The **580 MiB** gap between their fp32 and our fp32 was measured by the poller only. It is probably an
+artefact of the poller, and is unresolved.
+
+### 16.4 Loss and gradients — fp32 vs bf16 is inside the noise
+
+| step | fp32 rep1 | fp32 rep2 | bf16 rep1 | bf16 rep2 |
+|---|---|---|---|---|
+| 0 | 11.298004 | 11.298004 | 11.298004 | 11.298004 |
+| 1 | 11.960425 | 11.929283 | 11.952442 | 11.932809 |
+| 2 | 10.046557 | 10.039776 | 10.042213 | 10.041757 |
+| **3** | **14.983250** | **11.171641** | **15.361207** | **10.660113** |
+| 4 | 12.608994 | 12.981804 | 12.588583 | 12.816082 |
+| 10 | 9.117052 | 9.068036 | 8.480481 | 9.152593 |
+| 19 | 7.969253 | 8.019695 | 7.865052 | 8.018976 |
+| **val @19** | 8.137194 | 8.202946 | 8.046893 | 8.187601 |
+
+| mean \|loss diff\| over 20 steps | |
+|---|---|
+| fp32 vs fp32 (same thing, twice) | 0.435 |
+| bf16 vs bf16 (same thing, twice) | 0.611 |
+| fp32 vs bf16 (rep1 / rep2) | 0.355 / 0.156 |
+
+- The gradient norm at step 0 is 18.9713 in both fp32 runs and 18.9715 in both bf16 runs. The 0.0002 is
+  the summation-order effect from test B.
+- **Conclusion:** no detectable effect of bf16 logits on training. The bf16 val loss at step 19 is lower
+  in both reps (−0.090, −0.015), but that is well inside the fp32 rep-to-rep spread (0.066). Not a result.
+
+**Correction:** the step-3 split seen earlier in the day was put down to contention with a co-tenant
+job. **That was wrong.** These runs had an empty GPU and split just as much. The split is the trainer's
+own run-to-run non-determinism (§18).
+
+### 16.5 DRAM traffic (ncu)
+
+Both runs profiled exactly **2,500 kernels**: 3 validation forwards plus 3 complete training
+micro-steps. The CSV's real header is on line 3, after ncu's `==PROF==` lines, and it was located, not
+assumed. Units were forced to bytes.
+
+| per training micro-step (GB, decimal) | arm 2, cast ON | arm 3, cast OFF |
+|---|---|---|
+| forward cast `vec4_convert_to_fp32` | 1.648 read + 3.268 write | **not launched** |
+| loss forward `sparse_ce_forward_…_save_stats` | 3.298 + 0.001 | 1.649 + 0.000 |
+| loss backward `sparseCENormalize_from_stats` | 3.297 + 3.274 | 1.655 + 1.631 |
+| convert back `vec8_convert_to_bf16` | 3.297 + 1.631 | **not launched** |
+| **total** | **19.714** | **4.935** |
+
+- **−74.97%** against the 75% predicted in §5.4.
+- **14.78 GB** less per micro-step, **946 GB** less per optimizer step.
+- **2 fewer kernel launches** per micro-step.
+- In arm 3 the census contains **no logits-sized convert at all**.
+- The writes are a few MB short of the tensor size (3.268 vs 3.297) because dirty lines were still in the
+  H200's 50 MB L2 cache when each kernel ended.
+
+### 16.6 Throughput
+
+| | fp32 rep1 | fp32 rep2 | bf16 rep1 | bf16 rep2 |
+|---|---|---|---|---|
+| steady tok/s (trainer's summary, steps 5–19) | 41,792 | 41,760 | 42,095 | 41,955 |
+| min tok/s, steps 1–19 | 41,429 | 41,641 | 41,825 | 41,865 |
+
+- bf16 − fp32 = **+248.7 tok/s = +0.60%**. Every bf16 run was faster than every fp32 run. n=2 per arm,
+  so this is a direction plus a point estimate, not a settled number.
+- **Cross-check against the traffic.** The micro-step is 392.2 ms. If every one of the 14.78 GB saved
+  became saved time at 4.0–4.8 TB/s, the speedup would be **0.79–0.94%**. Measured: **0.60%**
+  (2.35 ms). Roughly 1 ms of the traffic saving does not appear as time.
+- *Hypothesis, not measured:* the bf16 loss kernels do the same math on half the bytes, so they may no
+  longer be fully bandwidth-bound. ncu did not collect durations, and it locks clocks while profiling.
+
+### 16.7 Earlier runs today (context; superseded where noted)
+
+| run | result | status |
+|---|---|---|
+| arm 0: their code + bf16, B=8 | `misaligned address` at step 0; sanitizer: `sparse_ce_forward_kernel_vec<bfloat16_t>`, 50,253 errors (§15.3) | **stands** |
+| arm 1: their code + fp32, B=8 | OOM at exactly `B*T*V*4` bytes (§15.4) | **stands** (co-tenant confound noted) |
+| arm 1b: their code + fp32, B=4 | 5 steps, 41,685 tok/s, poller peak 104,820 | memory number superseded by §16.3 |
+| arms 2/3, first attempt | Ananya's `snippet_runner` took up to 43,218 MiB; arm 2 OOMed with 149 MiB free | **void** (contention) |
+| arm 2, second attempt | auto-resumed from arm 3's step-20 checkpoint → 0 steps, "Training complete" | **void** (the checkpoint trap, §20.9) |
+| `arm2_final` / `clean_arm3` | 20 steps each; poller peaks 104,240 / 100,116 | superseded by §16 |
+
+### 16.8 Corrections made during the day, in one place
+
+1. "B=8 fits one H200" → it OOMs; ZeRO-1 shards nothing at world_size=1 (§15.5).
+2. The B=4 peak prediction of 86,103 MiB was 18% low (§15.6).
+3. "Arm 0 confirmed" was first claimed from a sticky-error stack trace → only the sanitizer proves the kernel (§15.3).
+4. The port was first shipped as 6 files → 7 were needed; `git status` hides committed files (§20.3).
+5. Arm 3 was said to be "a numerical change, 7 vs 23 bits" → wrong, the cast carries no information (§11).
+6. The memory saving went 4,704 → 4,124 → **4,716** (allocator; the three-tensor model was right) (§16.3).
+7. Throughput went +0.87% (mismatched windows) → +0.50% (n=1) → **+0.60%** (n=2, matched) (§16.6).
+8. The step-3 split was "contention" → it is the **trainer's own non-determinism** (§18).
+9. "Arm 2 must be bit-identical to arm 1" → wrong expectation; step 0 identical, the rest within noise (§11).
+
+### 16.9 Checks that were broken, and caught
+
+These all printed a plausible "pass" and would have gone unnoticed.
+
+| check | why it could not fail | fixed by |
+|---|---|---|
+| the first `scp` of the tarball was pasted into the box shell | nothing was extracted; `make` said "up to date"; build `[SUCCESS]` | the five greps in the swap gate all failed loudly |
+| `strings libtensor.so \| grep "fp32 accumulator"` | source comments never reach a binary | checking the mangled 4-parameter signature with `nm` |
+| `nm \| grep LossVec` | a fully inlined template leaves no symbol | same |
+| `grep -c "^[^ ]*error:"` | the anchor missed `collect2: error:` — the build had failed | unanchored `error` / `undefined reference` / `Error 1` |
+| arm 2 "completed" | it resumed from a checkpoint and ran 0 steps | a gate that asserts 20 `^step` lines and 0 resume lines |
+| peak memory parsed as 2,758 MiB | a CSV format change shifted the columns | parse the last field; then the allocator's own stats |
+| the summary table on the box | mawk aborts on a missing input file; `2>/dev/null` hid it | pass only files that exist, never hide the error |
+| the ncu `--launch-count` | validation runs first and uses the whole budget | the `BLU_VAL_STEPS` override |
+
+---
+
+## 17. Bug D — `float_to_bfloat16` turns every value ≥ 65,536 into Infinity
+
+**Where:** `include/dtype/Types.h:85`, inside `detail::float_to_bfloat16`. This is the function behind the
+`bfloat16_t(float)` constructor, and therefore behind every `static_cast<T>(float)` with `T = bfloat16_t`.
+
+```cpp
+// Overflow, clamp to Infinity
+if (exponent > 0x8E) {  // exponent > 142 decimal (127+15)      <-- the fp16 limit
+    return static_cast<uint16_t>((sign >> 16) | 0x7F80u);       <-- +/-Inf
+}
+```
+
+`127+15` is fp16's exponent limit; the fp16 converter at `Types.h:164` uses the same arithmetic. bf16 has
+fp32's 8-bit exponent, so it is finite up to ~3.4e38. **Found and proven 2026-09-24** by a host test
+(`profiling_reports/bugtest_2026_09_24/scripts/bf16_round_test.cu`). The test calls the real header
+function against a correct round-to-nearest-even reference.
+
+| input | library | correct |
+|---|---|---|
+| 65,504 / 65,535 | 65,536 | 65,536 ✓ |
+| **65,536** | **inf** | 65,536 |
+| **70,000** | **inf** | 70,144 |
+| **1e10** | **inf** | 9.999e9 |
+| **3e38** | **inf** | 3.004e38 |
+| **−1e6** | **−inf** | −999,424 |
+| 1.0, 3.14159, 1e-6, halfway 1+2⁻⁸, subnormal 1e-40 | correct | ✓ |
+
+- **6 of 16 values mismatch.** Everything below 65,536 rounds correctly (RNE), including halfway cases
+  and subnormals.
+- **Impact on this work: none.** Loss gradients are at most ~1e-6, and no run produced Inf or NaN.
+- **Impact elsewhere: unmeasured.** Any templated kernel that stores a float ≥ 65,536 into a `bfloat16_t`
+  output silently produces Infinity, which then becomes NaN. A grep cannot count the call sites, because
+  they are written as `static_cast<T>`.
+- **Fix sketch:** drop the clamp. The RNE add already overflows to Inf only above bf16's real maximum.
+  Keep the NaN branch.
+- **Not fixed.** It is a core dtype header that every kernel uses, so it needs its own full-repo test run.
+
+---
+
+## 18. The trainer is not reproducible run to run
+
+Four fp32 runs of this config today gave these **step-3 losses**:
+
+| run | step-3 loss |
+|---|---|
+| their code, morning | 13.3687 |
+| ours, `arm2_final` | 13.3632 |
+| ours, rep1 | **14.9833** |
+| ours, rep2 | **11.1716** |
+
+All four used the same data and seed; the last two were the same binary on a clean GPU.
+
+- **Step 0 is identical within an arm**: loss, val and gradient norm, to the printed precision.
+- **The runs drift from step 1** (fp32 rep1 vs rep2: 0.031 at step 1).
+- The 2-step warmup that `BLU_MAX_STEPS=20` produces makes early training chaotic (gradient norm ~1,030
+  at step 1), and that amplifies the drift to O(1) by step 3.
+- The close 13.3687 / 13.3632 match earlier in the day was luck.
+
+**Consequence for everyone A/B-ing this trainer:** a single run per arm cannot compare early losses.
+Use ≥2 repetitions and compare against the same-arm spread.
+
+**Cause: not investigated.** Unverified candidates: atomics in backward reductions (for example the
+embedding scatter-add), or GEMM algorithms chosen by timing-based autotuning.
+
+---
+
+## 19. Other findings from today's analysis (design follow-ups, not bugs)
+
+- **Weight gradients take a bf16 round trip.** `MatrixBackward.cpp:73` allocates
+  `grad_b(saved_b_.shape(), saved_b_.dtype(), …)`. `saved_b_` is the bf16 copy of the weight, so the
+  GEMM's fp32 accumulation is stored as bf16. `ToDtypeBackward` then widens it back to fp32 for the fp32
+  master. The precision is thrown away and zero-padded back. Storing `grad_b` as fp32 directly would keep
+  it and save a convert. **Unmeasured.**
+- **The optimizer only accepts fp32 gradients.** `MultiTensorKernels.h:9-12`:
+  `struct TensorInfo { float* ptr; int64_t numel; }`. So `ShardedOptimizer::cast_shard_grad_to_fp32`
+  materialises an fp32 copy of the bf16 gradient shard: a **5,890,899,968-byte (5,618 MiB)** allocation per
+  optimizer step at world_size=1, seen in the contended arm-2 OOM stack. An optimizer that reads bf16 and
+  widens in registers would remove it. This pulls against the previous item, so the two should be
+  designed together.
+- **Why fp32 master weights are non-negotiable.** A weight of 0.02 with an Adam update of 1.05e-6 is below
+  bf16's step at 0.02 (7.8e-5). After 1,000 steps an fp32 master reaches 0.018950; a bf16 master is frozen
+  at 0.020020. The rule: round freely where a number is used once, never where numbers are summed over time.
+- **Weight tying does not change the logits.** `[B,T,V]` exists either way; tying only changes where the
+  `[C,V]` weight comes from. The tied path does cast `wte` to bf16 and make a transposed contiguous copy
+  every micro-step (~232 MB each).
+
+---
+
+## 20. Reproduction recipe — every change made on the colleague's branch
+
+The box copy will not survive a box release, so this section is the only complete record of what was
+done to `dist_side_merge` today. None of it is committed to their branch.
+
+### 20.1 Box preparation
+
+```bash
+mkdir -p /root/bugtest/mix
+for d in commoncrawl code math; do ln -sfn /root/gautam_k /root/bugtest/mix/$d; done
+cd /root/bugtest && git clone -b dist_side_merge https://github.com/BlubridgeAI/BluTrain.git
+cd BluTrain && git submodule update --init --recursive
+git log -1 --format="%h %ad %s" --date=short; git -C Tensor-Implementations rev-parse --short HEAD
+```
+
+The trainer needs three data domains. The loader takes any `*.bin` whose **file name** contains `train` or
+`val` (`dist/dataloader_dist.h:38-39`), so one dataset symlinked three times works. For an A/B, all arms
+see identical data.
+
+Smoke gate, before building:
+
+```bash
+L=Tensor-Implementations/src/Kernels/cuda/loss/LossKernels.cu
+grep -c "tid \* 4" $L                              # Bug B present:  > 0
+grep -c "losses\[row\] = static_cast<T>" $L        # Bug A present:  3
+grep -c "VEC_ELEMS" $L                             # their claimed fix: 0
+grep -c "auto\* grad_out_ptr" Tensor-Implementations/src/autograd/backward/LossBackward.cpp   # Bug C: 1
+```
+
+### 20.2 Build their baseline
+
+```bash
+cd /root/bugtest/BluTrain
+make build-mpi FILE=bluscript_zero_ckpt.cpp WITH_BLUBLAS=1 -j44 2>&1 | tee /root/bugtest/build_THEIRS.log
+grep -oE "compute_90a|sm_90a|sm_86" /root/bugtest/build_THEIRS.log | sort -u     # expect compute_90a sm_90a
+```
+
+**Trap:** a saved copy of their `_runner_` stops working once `libtensor.so` is replaced. The behaviour
+lives in the shared library (`symbol lookup error … sparse_cross_entropy_loss(Tensor const&, Tensor const&)`).
+To re-run their baseline, restore their `src/` and `include/` and rebuild.
+
+### 20.3 The port — 7 files
+
+| file | carries |
+|---|---|
+| `src/Kernels/cuda/loss/LossKernels.cu` | Bug A + Bug B (`LossVec<T>`, fp32 buffers), `ignore_index`, denominator |
+| `src/Kernels/cuda/loss/arch/CrossEntropyKernels_sm103.cu` | the Bug A signature (`float* losses`) — without it, a link error |
+| `include/ops/helpers/LossKernels.h` | fp32 `loss_output` / `grad_output` signatures |
+| `include/autograd/backward/LossBackward.h` | `ignore_index_`, `denom_`, new constructor parameters |
+| `include/autograd/operations/LossOps.h` | the 4-parameter `sparse_cross_entropy_loss` — without it, a link error |
+| `src/autograd/backward/LossBackward.cpp` | Bug C (`const float*` + boundary convert) |
+| `src/autograd/operations/LossOps.cpp` | fp32 loss tensor on both paths, `ignore_index`, denominator |
+
+Why 7:
+- `LossOps.h` is in commit `a7da79d`, so `git status` does not show it. That commit's `ReductionImpl.h`
+  and `ReductionUtils.cpp` changes are comment-only and stay out.
+- Source of the files: `sft_gautam` once committed (`git show sft_gautam:<path>`), or the tarball
+  `loss_fix_7files.tgz` (md5 `6df31c4623bf01a1b3c27d1dfe053b07`, local copy in
+  `profiling_reports/bugtest_2026_09_24/scripts/`).
+
+```bash
+cd /root/bugtest/BluTrain/Tensor-Implementations
+mkdir -p /root/bugtest/backup_theirs && cp -r src include /root/bugtest/backup_theirs/
+tar xzvf /root/bugtest/loss_fix_7files.tgz
+# gate 1 -- all must flip
+grep -c "LossVec" src/Kernels/cuda/loss/LossKernels.cu                          # > 0
+grep -c "tid \* 4" src/Kernels/cuda/loss/LossKernels.cu                         # 0
+grep -c "AccT" src/Kernels/cuda/loss/LossKernels.cu                             # 0 (their partial fix, superseded)
+grep -c "const float\* grad_out_ptr" src/autograd/backward/LossBackward.cpp     # 1
+grep -c "ignore_index" src/autograd/operations/LossOps.cpp                      # > 0
+# FORCE the rebuild: tar keeps the files' old mtimes, so make would otherwise relink the OLD objects
+find . \( -name "*Loss*.o" -o -name "*CrossEntropy*.o" \) -print -delete
+cd .. && rm -f _runner_
+make build-mpi FILE=bluscript_zero_ckpt.cpp WITH_BLUBLAS=1 -j44 2>&1 | tee /root/bugtest/build_OURS.log
+# gate 2 -- unanchored, so collect2 / undefined reference cannot hide
+grep -ciE "error|undefined reference|Error 1" /root/bugtest/build_OURS.log      # 0
+# gate 3 -- the BINARY, not the source
+nm -C Tensor-Implementations/lib/libtensor.so | grep "sparse_cross_entropy_loss("   # must show (…, long, Tensor const*)
+```
+
+### 20.4 Harness-only edits to `bluscript_zero_ckpt.cpp` — box copy only, NEVER commit
+
+```bash
+cd /root/bugtest/BluTrain
+# a) B=8 -> 4 (B=8 does not fit one H200). Check the line number first; it differs by branch.
+sed -n '198p' bluscript_zero_ckpt.cpp
+sed -i '198s/int64_t B            = 8;/int64_t B            = 4;/' bluscript_zero_ckpt.cpp
+# b) print the allocator's own peak stats at the end of training
+sed -i '/=== Training complete ===/a\        { auto st = CachingCUDAAllocator::instance().get_stats(); std::cout << "[MEM] active_peak " << st.active_peak/1048576 << " MiB | allocated_peak " << st.allocated_peak/1048576 << " MiB | reserved_peak " << st.reserved_peak/1048576 << " MiB | cached_free " << st.cached_free_bytes/1048576 << " MiB" << std::endl; }' bluscript_zero_ckpt.cpp
+# c) make validation length overridable (default unchanged at 20)
+sed -i '/getenv_int("BLU_MAX_STEPS", 0); ms > 0) {/i\    cfg.val_loss_steps = getenv_int("BLU_VAL_STEPS", cfg.val_loss_steps);' bluscript_zero_ckpt.cpp
+grep -c "\[MEM\]" bluscript_zero_ckpt.cpp; grep -c "BLU_VAL_STEPS" bluscript_zero_ckpt.cpp   # 1 and 1
+make build-mpi FILE=bluscript_zero_ckpt.cpp WITH_BLUBLAS=1 -j44 2>&1 | tail -3       # trainer only, ~45 s
+cp _runner_ /root/bugtest/_runner_OURS_MEM
+```
+
+### 20.5 Running
+
+```bash
+export LDP=/usr/lib/x86_64-linux-gnu:/root/bugtest/BluTrain/Tensor-Implementations/lib:/root/bugtest/BluTrain/Profiler/lib:/root/bugtest/BluTrain/dist/lib
+cd /root/bugtest/BluTrain && rm -rf checkpoints_bluscript
+LD_LIBRARY_PATH=$LDP:$LD_LIBRARY_PATH BLU_MIX_ROOT=/root/bugtest/mix \
+BLU_BF16_LOGITS=1 BLU_MAX_STEPS=20 BLU_CKPT=0 \
+mpirun --allow-run-as-root -np 1 -x LD_LIBRARY_PATH -x BLU_MIX_ROOT -x BLU_BF16_LOGITS -x BLU_MAX_STEPS -x BLU_CKPT \
+  /root/bugtest/_runner_OURS_MEM 2>&1 | tee /root/bugtest/one_arm.log
+grep -c "^step" /root/bugtest/one_arm.log; grep -ci "resume\|loaded DCP" /root/bugtest/one_arm.log   # 20 and 0
+```
+
+- **Naming the faulting kernel:** prefix the binary with `compute-sanitizer --tool memcheck --print-limit 20`
+  (with `BLU_MAX_STEPS=5`).
+- **The full unattended session:**
+  `ALLOW_POLLERS=1 setsid nohup bash /root/bugtest/gpu_hour.sh > /root/bugtest/gpu_hour.nohup 2>&1 < /dev/null &`
+  - watch: `tail -f /root/bugtest/hour/session.log`
+  - stop: `kill -- -$(cat /root/bugtest/hour/script.pgid)`
+
+### 20.6 The local precision test
+
+```bash
+cd ~/Downloads/sft_research/BluTrain/Tensor-Implementations
+make run-cuda FILE=Tests/kernel_tests/test_cast_equivalence.cu        # on the box: add WITH_BLUBLAS=1
+# expect: "predictions violated: 0"; C4 99.999% identical, >1-ulp 0
+```
+
+### 20.7 Getting results off the box
+
+```bash
+ssh root@86.38.238.202 'cd /root/bugtest/hour && tar cf - .' | tar xf - -C <local dir>
+```
+
+`scp` with a quoted list of remote files fails on modern OpenSSH: it looks for one file with that whole
+name.
+
+### 20.8 Parsing ncu
+
+Appendix B. It locates the real `"ID"` header (ncu prints `==PROF==` lines first), asserts the units are
+bytes, and classifies the logits-path kernels by name **and** by size (2 or 4 bytes × 824,180,736
+elements). It prints how many kernels it parsed before printing any number.
+
+### 20.9 Operational gotchas hit today
+
+| trap | symptom | fix |
+|---|---|---|
+| running as root | `mpirun has detected an attempt to run as root` | `--allow-run-as-root` |
+| `BLU_MAX_STEPS` too small | `leaves no decay tail`, aborts before any GPU work (the sanitizer then says "0 errors") | ≥4; **5 verified** |
+| checkpoints | the next run auto-resumes from the previous run's checkpoint and "completes" with 0 steps | `BLU_CKPT=0` **and** `rm -rf checkpoints_bluscript` |
+| sticky CUDA errors | the trace blames `Tensor::to_cpu()`, not the faulting kernel | `compute-sanitizer` or `CUDA_LAUNCH_BLOCKING=1` |
+| header edits and `make` | "up to date" after copying files in | delete the dependent `.o` files |
+| mawk | aborts on a missing input file | pass only existing files; never `2>/dev/null` it |
+| shared GPU | a co-tenant took 43 GB mid-run | check `nvidia-smi --query-compute-apps` before and after, never during |
+| pollers | `watch nvidia-smi` loops left open (1 s, 0.1 s, 0.1 s) | the preflight lists them; they're constant across runs, so the A/B stays fair |
+| B=8 | OOM on one GPU (ZeRO shards nothing at world_size=1) | B=4 |
+
+---
+
+## Appendix A — `gpu_hour.sh` (the one-hour session, md5 `e5d5c998409fd84026f4fe8c4044581c`)
+
+```bash
+#!/usr/bin/env bash
+# =============================================================================
+# gpu_hour.sh -- one exclusive GPU hour on cold-bear-flows-fin-02, 2026-09-24
+#
+#   BLOCK 1  precision test B on H200 (sm90 convert path)          ~1 min
+#   BLOCK 2  clean A-B-A-B training reruns, 20 steps each           ~30 min
+#            fp32 noise floor, bf16 noise floor, fp32-vs-bf16 on a clean card,
+#            allocator live/reserved memory from [MEM] (no GPU poller)
+#   BLOCK 3  ncu DRAM bytes on the loss path, arm 2 vs arm 3        ~10 min
+#   SUMMARY  one block at the end of session.log
+#
+# Profiler traps honoured: no nvidia-smi polling DURING a run (only between runs),
+# leaked pollers refused at preflight, profilers write to files (never piped),
+# --print-units base, every artefact's line/step count printed before any number.
+#
+# Run:   setsid nohup bash /root/bugtest/gpu_hour.sh > /root/bugtest/gpu_hour.nohup 2>&1 < /dev/null &
+# Watch: tail -f /root/bugtest/hour/session.log
+# Stop:  kill -- -$(cat /root/bugtest/hour/script.pgid)     (whole process group: bash, mpirun, ncu, _runner_)
+# =============================================================================
+set -u
+BT=/root/bugtest
+cd $BT/BluTrain || exit 1
+LDP=/usr/lib/x86_64-linux-gnu:$BT/BluTrain/Tensor-Implementations/lib:$BT/BluTrain/Profiler/lib:$BT/BluTrain/dist/lib
+OUT=$BT/hour
+mkdir -p $OUT
+exec > >(tee -a $OUT/session.log) 2>&1
+ps -o pgid= -p $$ | tr -d " " > $OUT/script.pgid
+BIN=$BT/_runner_OURS_MEM
+
+run_train () {   # $1=tag  $2=BLU_BF16_LOGITS  $3=BLU_MAX_STEPS  $4=BLU_VAL_STEPS  (rest = optional profiler prefix)
+  local tag=$1 flag=$2 steps=$3 vsteps=$4; shift 4
+  rm -rf checkpoints_bluscript
+  LD_LIBRARY_PATH=$LDP:${LD_LIBRARY_PATH:-} BLU_MIX_ROOT=$BT/mix \
+  BLU_BF16_LOGITS=$flag BLU_MAX_STEPS=$steps BLU_VAL_STEPS=$vsteps BLU_CKPT=0 \
+  mpirun --allow-run-as-root -np 1 \
+    -x LD_LIBRARY_PATH -x BLU_MIX_ROOT -x BLU_BF16_LOGITS -x BLU_MAX_STEPS -x BLU_VAL_STEPS -x BLU_CKPT \
+    "$@" $BIN > $OUT/$tag.log 2>&1
+  return $?
+}
+cotenants () { nvidia-smi --query-compute-apps=process_name,used_memory --format=csv,noheader | tr '\n' ' '; }
+
+echo "===================== PREFLIGHT $(date '+%F %T') ====================="
+FAILS=0
+need () {  # $1=label $2=actual $3=test-op $4=expected
+  if [ "$2" "$3" "$4" ]; then echo "  ok    $1 = $2"; else echo "  FAIL  $1 = $2   (need $3 $4)"; FAILS=$((FAILS+1)); fi
+}
+POLL=$(pgrep -af "nvidia-smi|nvtop|gpustat" | grep -v pgrep)
+if [ -n "$POLL" ]; then
+  if [ "${ALLOW_POLLERS:-0}" = 1 ]; then
+    echo "  WARN  GPU pollers running -- ALLOW_POLLERS=1, continuing. They run for the whole session, so every run sees the same load:"
+    echo "$POLL" | sed 's/^/          /'
+  else
+    echo "!! GPU pollers running (close them, or relaunch with ALLOW_POLLERS=1):"; echo "$POLL"; exit 1
+  fi
+fi
+if nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -q .; then
+  echo "!! GPU not empty:"; nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv; exit 1; fi
+[ -x $BIN ] || { echo "!! missing $BIN"; exit 1; }
+md5sum $BIN
+LIB=Tensor-Implementations/lib/libtensor.so
+need "our 4-param loss symbol in libtensor.so"      "$(nm -DC $LIB | grep -c 'sparse_cross_entropy_loss(OwnTensor::Tensor const&, OwnTensor::Tensor const&, long, OwnTensor::Tensor const\*)')" -ge 1
+need "count_valid_targets_cuda (ours only) in lib"  "$(nm -DC $LIB | grep -c 'count_valid_targets_cuda')" -ge 1
+need "[MEM] print compiled into the BINARY"         "$(strings $BIN | grep -c '\[MEM\] active_peak')" -ge 1
+need "BLU_VAL_STEPS compiled into the BINARY"       "$(strings $BIN | grep -c 'BLU_VAL_STEPS')" -ge 1
+need "B=4 in trainer source"                        "$(grep -cE 'int64_t B +=[ ]*4;' bluscript_zero_ckpt.cpp)" -eq 1
+need "data shards visible (train)"                  "$(ls $BT/mix/commoncrawl/*train*.bin 2>/dev/null | wc -l)" -ge 1
+[ $FAILS -eq 0 ] || { echo "!! $FAILS preflight check(s) failed -- NOT running anything"; exit 1; }
+nvidia-smi --query-gpu=name,memory.used,memory.total,clocks.sm,clocks.max.sm,power.draw --format=csv,noheader
+
+echo; echo "===================== BLOCK 1: test B on H200  $(date +%T) ====================="
+cd $BT/BluTrain/Tensor-Implementations
+mkdir -p Tests/kernel_tests && cp $BT/test_cast_equivalence.cu Tests/kernel_tests/ 2>/dev/null
+PLANNED=$(make -n run-cuda FILE=Tests/kernel_tests/test_cast_equivalence.cu WITH_BLUBLAS=1 2>/dev/null | grep -c "nvcc")
+if [ ! -f Tests/kernel_tests/test_cast_equivalence.cu ]; then
+  echo "SKIP: test file not on the box"
+elif ! make -n run-cuda FILE=Tests/kernel_tests/test_cast_equivalence.cu WITH_BLUBLAS=1 >/dev/null 2>&1; then
+  echo "SKIP: this tree has no run-cuda make target"
+elif [ "$PLANNED" -gt 1 ]; then
+  echo "SKIP: make plans $PLANNED nvcc calls -> it would rebuild the library; not spending the hour on that"
+else
+  make run-cuda FILE=Tests/kernel_tests/test_cast_equivalence.cu WITH_BLUBLAS=1 > $OUT/testB_h200.log 2>&1
+  echo "exit $?"
+  grep -E "^C[0-9]|anti-vacuity|predictions violated|=====" $OUT/testB_h200.log
+fi
+cd $BT/BluTrain
+
+echo; echo "===================== BLOCK 2: clean A-B-A-B reruns ====================="
+for REP in 1 2; do for ARM in 2 3; do
+  [ $ARM -eq 2 ] && FLAG=0 || FLAG=1
+  TAG=rep${REP}_arm${ARM}
+  echo "--- $TAG  BLU_BF16_LOGITS=$FLAG  start $(date +%T)  cotenants-before: [$(cotenants)]"
+  run_train $TAG $FLAG 20 20; RC=$?
+  echo "    end $(date +%T)  exit $RC  cotenants-after: [$(cotenants)]"
+  echo "    steps (must be 20): $(grep -c '^step' $OUT/$TAG.log)   resume lines (must be 0): $(grep -ci 'resume\|loaded DCP' $OUT/$TAG.log)"
+  echo "    min tok/s steps 1-19 (>40000 = uncontended): $(grep '^step' $OUT/$TAG.log | awk 'NR>1{if(m==""||$11+0<m)m=$11+0} END{printf "%.2f", m}')"
+  grep "\[MEM\]" $OUT/$TAG.log | sed 's/^/    /'
+done; done
+
+echo; echo "===================== BLOCK 3: ncu DRAM traffic ====================="
+NCU=$(command -v ncu || ls /opt/nvidia/nsight-compute/*/ncu 2>/dev/null | head -1)
+echo "ncu = ${NCU:-NOT FOUND}"
+if [ -n "${NCU:-}" ]; then
+  for ARM in 2 3; do
+    [ $ARM -eq 2 ] && FLAG=0 || FLAG=1
+    echo "--- ncu_arm$ARM  start $(date +%T)"
+    run_train ncu_arm${ARM}_stdout $FLAG 5 1 \
+      $NCU --kernel-name regex:"sparse_ce|sparseCE|vec8_convert_to_bf16|vec4_convert_to_fp32|convert_type_kernel" \
+           --launch-count 2500 \
+           --metrics dram__bytes_read.sum,dram__bytes_write.sum \
+           --print-units base --csv --log-file $OUT/ncu_arm${ARM}.csv
+    RC=$?
+    echo "    end $(date +%T)  exit $RC  csv lines $(wc -l < $OUT/ncu_arm${ARM}.csv 2>/dev/null || echo MISSING)  steps $(grep -c '^step' $OUT/ncu_arm${ARM}_stdout.log)"
+  done
+fi
+
+echo; echo "===================== SUMMARY $(date '+%F %T') ====================="
+echo "--- test B on H200 ---"; grep -E "predictions violated" $OUT/testB_h200.log 2>/dev/null || echo "not run"
+tbl () {  # $1 = field of the step line (5 = train loss, 14 = grad norm, 11 = tok/s)
+  awk -v F="$1" '
+    BEGIN { n = split("rep1_arm2 rep1_arm3 rep2_arm2 rep2_arm3", names, " "); mx = -1 }
+    /^step/ { k = split(FILENAME, a, "/"); b = a[k]; sub(/[.]log$/, "", b); v[$2, b] = $F; if ($2+0 > mx) mx = $2+0 }
+    END { for (s = 0; s <= mx; s++) { printf "%-5s", s
+            for (i = 1; i <= n; i++) printf " %12s", (((s SUBSEP names[i]) in v) ? v[s, names[i]] : "-")
+            print "" } }' "${RUNLOGS[@]}"
+}
+RUNLOGS=(); for t in rep1_arm2 rep1_arm3 rep2_arm2 rep2_arm3; do
+  if [ -s $OUT/$t.log ]; then RUNLOGS+=($OUT/$t.log); else echo "  !! $t.log MISSING or empty (that run failed) -- shown as '-'"; fi
+done
+[ ${#RUNLOGS[@]} -gt 0 ] || RUNLOGS=(/dev/null)   # never let awk fall back to reading stdin
+echo "--- step | train loss   rep1_arm2    rep1_arm3    rep2_arm2    rep2_arm3 ---"; tbl 5
+echo "--- step | grad norm    rep1_arm2    rep1_arm3    rep2_arm2    rep2_arm3 ---"; tbl 14
+echo "--- step | tok/s        rep1_arm2    rep1_arm3    rep2_arm2    rep2_arm3 ---"; tbl 11
+echo "--- val at step 19 ---"
+for t in rep1_arm2 rep1_arm3 rep2_arm2 rep2_arm3; do echo "  $t  $( [ -f $OUT/$t.log ] && grep '\[val\] step 19' $OUT/$t.log | awk '{print $6}' || echo MISSING)"; done
+echo "--- steady tok/s (trainer's own summary) ---"
+for t in rep1_arm2 rep1_arm3 rep2_arm2 rep2_arm3; do echo "  $t  $( [ -f $OUT/$t.log ] && grep 'steady tok/s' $OUT/$t.log | awk '{print $NF}' || echo MISSING)"; done
+echo "--- [MEM] ---"; grep -H "\[MEM\]" $OUT/rep*.log | sed "s#$OUT/##"
+echo "--- GPU pollers at end (compare with preflight) ---"; pgrep -af "nvidia-smi|nvtop|gpustat" | grep -v pgrep | sed "s/^/  /"
+echo "--- artefacts ---"; ls -la $OUT
+echo "===================== DONE ====================="
+```
+
+## Appendix B — `parse_ncu.py`
+
+```python
+import csv, re, sys, collections
+f=sys.argv[1]
+lines=open(f,errors='replace').read().splitlines()
+h=next(i for i,l in enumerate(lines) if l.startswith('"ID"'))
+K=collections.OrderedDict()
+for r in csv.DictReader(lines[h:]):
+    i=int(r['ID']); k=K.setdefault(i,{'name':r['Kernel Name'],'rd':0,'wr':0})
+    v=float(r['Metric Value'].replace(',',''))
+    assert r['Metric Unit']=='byte', r['Metric Unit']
+    if r['Metric Name']=='dram__bytes_read.sum': k['rd']=v
+    elif r['Metric Name']=='dram__bytes_write.sum': k['wr']=v
+def short(n):
+    m=re.search(r'(\w+)(<[^()]*>)?\(',n); b=m.group(1) if m else n[:40]
+    t=m.group(2) or '' if m else ''
+    t=t.replace('OwnTensor::','').replace('unsigned short','u16').replace(' ','')
+    return b+t
+N=4*4096*50304; E2,E4=2*N,4*N
+def role(k):
+    s=short(k['name']); rd,wr=k['rd'],k['wr']; near=lambda x,y: abs(x-y)<0.03*y
+    if 'sparse' in s or 'sparseCE' in s: return 'LOSS'
+    if near(rd,E2) and near(wr,E4): return 'LOGITS bf16->fp32 convert'
+    if near(rd,E4) and near(wr,E2): return 'LOGITS fp32->bf16 convert'
+    return None
+print(f'{f}: {len(K)} kernels parsed (expect 2500)')
+c=collections.Counter(short(k['name']) for k in K.values())
+print('census:', ', '.join(f'{n} x{v}' for n,v in c.most_common()))
+print(f'\nlogits-path kernels, in launch order (B*T*V = {N:,} elements; 2 B/elem = {E2/1e9:.3f} GB, 4 B/elem = {E4/1e9:.3f} GB):')
+print(f'{"ID":>5}  {"role":27} {"kernel":58} {"read GB":>8} {"write GB":>8}')
+rows=[(i,k,role(k)) for i,k in K.items() if role(k)]
+for i,k,r in rows: print(f'{i:>5}  {r:27} {short(k["name"]):58} {k["rd"]/1e9:8.3f} {k["wr"]/1e9:8.3f}')
+```
+
+## Appendix C — `watch_hour.sh` (read-only remote watcher; reads the log file, never the GPU)
+
+```bash
+#!/usr/bin/env bash
+# Read-only watcher for /root/bugtest/hour/session.log on the H200 box.
+# Reads the LOG FILE over ssh every 180 s. Never runs nvidia-smi, never kills, never launches.
+# Exits (which wakes Claude) on: a run finishing, an anomaly, DONE, an 18-min stall, or 3 ssh failures.
+# Usage: watch_hour.sh <lines-already-seen>
+SEEN=${1:?usage: watch_hour.sh <lines already seen>}
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new root@86.38.238.202"
+fails=0; prev=-1; still=0
+while true; do
+  sleep 180
+  full=$($SSH 'cat /root/bugtest/hour/session.log' 2>/dev/null); rc=$?
+  if [ $rc -ne 0 ]; then
+    fails=$((fails+1)); [ $fails -ge 3 ] && { echo "EVENT=SSH_FAILED x3 at $(date +%T)"; exit 2; }
+    continue
+  fi
+  fails=0
+  n=$(printf '%s\n' "$full" | wc -l)
+  if [ "$n" -eq "$prev" ]; then still=$((still+1)); else still=0; fi; prev=$n
+  new=$(printf '%s\n' "$full" | tail -n +$((SEEN+1)))
+  if printf '%s\n' "$new" | grep -q "===================== DONE"; then echo "EVENT=DONE SEEN=$n"; printf '%s\n' "$new"; exit 0; fi
+  if printf '%s\n' "$new" | grep -qE "FAIL |CUDA OOM|misaligned|Aborted|exit [1-9]"; then echo "EVENT=ANOMALY SEEN=$n"; printf '%s\n' "$new"; exit 1; fi
+  if printf '%s\n' "$new" | grep -qE "min tok/s|csv lines"; then echo "EVENT=RUN_DONE SEEN=$n"; printf '%s\n' "$new"; exit 0; fi
+  if [ $still -ge 6 ]; then echo "EVENT=STALL no new log lines for 18 min, SEEN=$n"; printf '%s\n' "$full" | tail -8; exit 3; fi
+done
+```

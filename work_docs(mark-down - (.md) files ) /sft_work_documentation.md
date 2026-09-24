@@ -2422,3 +2422,111 @@ not started. **SFT cannot run today** — the trainer calls
 `sparse_cross_entropy_loss(logits, target)` with two arguments, so `ignore_index`
 defaults to -1, nothing is masked, and an "SFT run" would be bit-identical to
 pretraining with nothing reporting it.
+
+---
+
+## 30. Session log — 2026-09-24: the loss fixes validated on the H200 production trainer
+
+### 30.1 In one paragraph
+
+The three loss-kernel fixes (Bugs A, B, C) and the removal of the redundant logits cast were
+ported onto the colleagues' latest branch, `BluTrain@dist_side_merge`, and measured on a Verda H200
+with their production trainer, `bluscript_zero_ckpt.cpp`.
+
+- Their code crashes at step 0 with `BLU_BF16_LOGITS=1`; ours runs.
+- With the cast off, the live peak drops by **4,716 MiB at B=4 (≈9.2 GiB at B=8)**, loss-path DRAM
+  traffic drops **74.97%**, and throughput rises **+0.60%**.
+- Training loss shows **no detectable change**.
+
+Two new findings came out of it: **Bug D**, a bf16 overflow in `Types.h`, and **the trainer is not
+reproducible run to run**. Full detail, every command, and every change made on the box are in
+`loss_kernel_dtype_bugs.md` §15–§20 and its appendices.
+
+### 30.2 Timeline
+
+**Morning — analysis, no code changes.** Each fact below was confirmed in code before being stated.
+- `grad_scale` is created by the trainer as fp32 (`bluscript_zero_ckpt.cpp:1657`, and the
+  `TensorOptions()` default in `Tensor.h:24`). It is used exactly once, in the loss kernel
+  (`LossKernels.cu:704`).
+- **Bug C's root cause:** the old `LossKernels.h` signature used one template parameter `T` for three
+  things — logits, grad_logits and the scalar `grad_output`.
+- The dtype path from loss to optimizer: `ToDtypeBackward` recasts the gradient
+  (`ReshapeBackward.h:41-44`), and the optimizer accepts `float*` only (`MultiTensorKernels.h:9-12`).
+- **The cast adds no information.** The matmul output takes its input's dtype (`GenMatmul.cpp:89`), so
+  the logits are already bf16, and widening them is zero-padding.
+- Weight gradients make a bf16 round trip (`MatrixBackward.cpp:73`). Weight tying does not change the
+  logits tensor.
+- Wrote `loss_kernel_dtype_bugs.md`, first version, 828 lines.
+
+**Midday — the box.** Verda H200 `cold-bear-flows-fin-02`.
+- Cloned `dist_side_merge`. **The branch had moved** since the local copy: `03b94cf`, with submodule
+  `8808f89`. The smoke gate re-confirmed all three bugs at that tip.
+- Built with sm_90a and BluBridge-BLAS.
+- Arm 0: their code with bf16 logits crashed at step 0. **compute-sanitizer named the kernel**:
+  `sparse_ce_forward_kernel_vec<bfloat16_t>`, 16-byte reads at 8-aligned addresses, 50,253 errors.
+- Arm 1 at B=8 OOMed on one GPU (ZeRO shards nothing at world_size=1), so the A/B moved to B=4.
+- The port first failed to link: 6 files were shipped, and `LossOps.h` was missing because committed
+  files don't appear in `git status`. With 7 files it linked.
+- The first bf16/fp32 runs were void: a co-tenant job took 43 GB, and one run silently resumed from a
+  checkpoint with 0 steps.
+
+**Afternoon — controlled measurement.**
+- Wrote `test_cast_equivalence.cu` and ran it on the RTX 3060: 0 predictions violated.
+- A host test of `float_to_bfloat16` found **Bug D**.
+- Ran one exclusive GPU hour with `gpu_hour.sh`:
+  - **Block 1** repeated the precision test on the H200, with identical output.
+  - **Block 2** ran 4 clean training runs (fp32, bf16, fp32, bf16) with allocator memory stats.
+  - **Block 3** measured DRAM bytes with ncu.
+
+**Evening:** documentation (this section, and `loss_kernel_dtype_bugs.md` §16–§20), plus the memory note
+`project_bf16_logits_h200_validated.md`.
+
+### 30.3 Results
+
+| | cast ON (fp32 logits) | cast OFF (bf16 logits) | effect | evidence |
+|---|---|---|---|---|
+| their code | runs | **crashes at step 0** | — | sanitizer |
+| our code | runs | **runs, 20/20 steps** | — | 3 separate runs |
+| live peak memory, B=4 | 95,038 MiB | 90,322 MiB | **−4,716 MiB** (= 3 × 1,572) | allocator, identical in both reps |
+| reserved peak, B=4 | 104,904 MiB | 99,028 MiB | −5,876 MiB | allocator |
+| DRAM traffic per micro-step | 19.714 GB | 4.935 GB | **−74.97%** | ncu, 2,500 kernels per arm |
+| kernel launches per micro-step | 4 on the loss path | 2 | −2 | ncu |
+| throughput | 41,792 / 41,760 tok/s | 42,095 / 41,955 tok/s | **+0.60%** | n=2 per arm |
+| gradient into the matmul | — | — | 99.999% bit-identical, max 1 ulp | test B, RTX 3060 = H200 |
+| training loss | — | — | **no detectable change** | fp32 vs bf16 ≤ fp32 vs fp32 |
+
+### 30.4 What changed, where
+
+- **`Tensor-Implementations`, branch `sft_gautam`:** new `Tests/kernel_tests/test_cast_equivalence.cu`
+  (untracked). **No library code changed today**; the 7 loss files date from 09-21 to 09-23.
+- **The box copy of `dist_side_merge`, not in git:**
+  - the 7 loss files swapped in;
+  - trainer harness edits: B=4, the `[MEM]` allocator print, and the `BLU_VAL_STEPS` override.
+  - **Never commit these.** The exact recipe to redo it on any branch is `loss_kernel_dtype_bugs.md` §20.
+- **Docs:** `loss_kernel_dtype_bugs.md` is now 1,713 lines.
+  - §0, §5.4, §10, §11, §13 and §15.6 are corrected in place, with superseded claims marked.
+  - §9 now has the provenance of the false `VEC_ELEMS` claim.
+  - §16–§20 and Appendices A–C (`gpu_hour.sh`, `parse_ncu.py`, `watch_hour.sh`) are new.
+- **Local artefacts:** `profiling_reports/bugtest_2026_09_24/` holds every log, both ncu CSVs, the
+  scripts and the 7-file tarball. This directory is **gitignored**, so it is not pushed.
+
+### 30.5 What this means for SFT
+
+- **The loss side of SFT now runs on the production trainer with both fp32 and bf16 logits.** Caveat:
+  `ignore_index` stays at its default of −1 in pretraining, so masking was **not** exercised in these
+  runs. Masking itself was validated by the standalone kernel suite on 09-22/23.
+- `BLU_BF16_LOGITS=1` is safe with our fixes and frees ~9.2 GiB of live memory per rank at B=8. That
+  headroom helps an SFT run's batch or context budget.
+- **SFT A/Bs on this trainer need repetitions** (§18 of the loss doc). Single-run early losses are noise.
+- The remaining SFT work is unchanged from §29: data path, tokenizer, dataloader with
+  `num_valid_tokens`, and a trainer that passes `ignore_index` and `denom`.
+
+### 30.6 Pending after today
+
+- **Commit and push:** `sft_gautam` in `Tensor-Implementations`, and the docs mirror in
+  `Neural_Networks_exp_1926`.
+- **Ask the `dist_side_merge` owners whether a local, unpushed `VEC_ELEMS` fix exists**
+  (loss doc §9). If it does, reconcile it with this port before merging.
+- Bug D fix (`Types.h:85`), with its own full-repo test run.
+- The port as a proper PR to `dist_side_merge`, recommending `BLU_BF16_LOGITS=1`.
+- Items in `loss_kernel_dtype_bugs.md` §13.
