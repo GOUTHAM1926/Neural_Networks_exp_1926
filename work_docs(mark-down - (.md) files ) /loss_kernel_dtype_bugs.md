@@ -2,6 +2,8 @@
 
 **Repo:** `Tensor-Implementations` · **Branch:** `sft_gautam` · **Date:** 2026-09-24
 **Baseline compared against:** `8808f89` (submodule pinned by `BluTrain/dist_side_merge`)
+**⚠️ OPEN, HIGH PRIORITY — Bug D (§17):** `float_to_bfloat16` turns every value ≥ 65,536 into Infinity, on the CPU
+**and inside GPU kernels**. It is not fixed. It will be looked into on **2026-09-25**, together with #2 (§19.4).
 **Status:** every claim below was **measured on the H200 production trainer on 2026-09-24 — see §16.**
 §0–§15 were written before those results; where they disagree, §16 wins, and each superseded claim is marked where it stands.
 **Pushed:** `sft_gautam` → `BlubridgeAI/Tensor-Implementations` at **`1ed2ac3`** (2026-09-24, author `goutham.kumar@blubridge.com`). That commit holds exactly the 7 files validated on the H200, checked file by file.
@@ -864,7 +866,9 @@ Done on 2026-09-24:
 
 Still open:
 - [x] **Commit + push `sft_gautam`**: `1ed2ac3` on BlubridgeAI (the 7 loss files + both tests)
-- [ ] **Bug D**: fix the `float_to_bfloat16` overflow at 65,536 (`Types.h:85`); it needs its own full-repo test run (§17)
+- [ ] **⚠️ Bug D — HIGH PRIORITY, 2026-09-25 (with #2):** `float_to_bfloat16` (`Types.h:85`) turns every value ≥ 65,536
+      into Infinity, on the CPU and inside GPU kernels. Find where it can hit, fix it, run the exhaustive test, then do a
+      clean rebuild and a full-repo test run (plan in §17.1)
 - [ ] Hand the port to the `dist_side_merge` owners as a proper branch/PR, recommending `BLU_BF16_LOGITS=1`
 - [ ] Rewrite the stale comment block above `loss32` in `bluscript_zero_ckpt.cpp` (§5.6)
 - [ ] Remove the false `VEC_ELEMS / Chunk16` claim in the same file (§9)
@@ -873,10 +877,11 @@ Still open:
 - [ ] The 580 MiB fp32 gap between their code and ours: measured by the poller only, probably a poller artefact (§16.3)
 - [ ] Bug C's consequence (zero gradients): predicted, never observed; needs a Bug-A-only build
 - [ ] The source of the trainer's run-to-run non-determinism (§18)
+- [ ] **2026-09-25 (tomorrow), #2:** convert the gradient shard straight into `shard_grad_fp32_` — the same
+      fix already exists in `cast_master_range`, in the same file (§19.4)
 - **Immediate future tasks — right after the SFT work, as training-script optimisations (decided 2026-09-24):**
   - [ ] **#1:** read how the embedding backward sums gradients for a bf16 weight (code, no GPU);
         then `BLU_BF16_EMBED` 0 vs 1 A-B-A-B; then a long run (§19.3)
-  - [ ] **#2:** convert the gradient shard straight into `shard_grad_fp32_` — the same fix already exists in `cast_master_range` (§19.4)
   - [ ] **#3:** research option 1, `check_type()` in `data<T>()` (§19.5, §8)
   - [ ] **#4:** measure why the speed gain (+0.60%) is below the traffic-only prediction (0.79–0.94%):
         per-kernel durations of the loss path, from an unprofiled nsys run (§19.6)
@@ -1277,8 +1282,17 @@ These all printed a plausible "pass" and would have gone unnoticed.
 
 ## 17. Bug D — `float_to_bfloat16` turns every value ≥ 65,536 into Infinity
 
+> **⚠️ OPEN — HIGH PRIORITY.** A silent wrong-answer bug in a core header that every kernel includes. It is not
+> fixed. It will be looked into on **2026-09-25**, together with #2. The plan is in §17.1.
+
 **Where:** `include/dtype/Types.h:85`, inside `detail::float_to_bfloat16`. This is the function behind the
-`bfloat16_t(float)` constructor, and therefore behind every `static_cast<T>(float)` with `T = bfloat16_t`.
+`bfloat16_t(float)` constructor (`Types.h:199`), and therefore behind every `static_cast<T>(float)` with
+`T = bfloat16_t`.
+
+**It runs on the GPU too, not only the CPU.** It is declared `__device__ __host__` (`Types.h:66`), so any
+CUDA kernel that builds a `bfloat16_t` from a float goes through it. The bulk convert kernels are **not**
+affected: `convert_type_cuda_generic`, which `as_type` / `to_dtype` use, calls the CUDA intrinsics
+`__float2bfloat16` / `__float22bfloat162_rn` (for example `ConversionKernelsSM103.cu:47`, `:72`).
 
 ```cpp
 // Overflow, clamp to Infinity
@@ -1312,6 +1326,29 @@ function against a correct round-to-nearest-even reference.
   Keep the NaN branch.
 - **Not fixed.** It is a core dtype header that every kernel uses, so it needs its own full-repo test run.
 
+### 17.1 Plan (2026-09-25)
+
+1. **Where it can hit — read the code first.** Candidate sites in `Tensor-Implementations` (`1ed2ac3`):
+   - **33** `static_cast<T>(` in **8** `.cu`/`.cuh` files;
+   - **17** explicit `bfloat16_t(...)` constructions;
+   - the CPU ops that store bf16.
+
+   These counts are **upper bounds, not proof**. A site matters only when it is built with `T = bfloat16_t`
+   (check with `nm`), it is actually called, **and** its value can reach 65,536. The most likely are
+   reductions with a bf16 output (sums, norms, loss totals), because a sum over many elements grows past
+   65,536 easily.
+2. **Fix:** delete the clamp (`Types.h:84-87`). The rounding add already overflows to Inf only above bf16's
+   real maximum (~3.39e38). Keep the NaN/Inf branch at the top.
+3. **Exhaustive test:** check **every one of the 2³² fp32 bit patterns** against a correct round-to-nearest-even
+   reference, for example `__float2bfloat16_rn` on the GPU. That is ~4.3 billion values, seconds on a GPU,
+   and much stronger than the 16-value test. NaN bit patterns may differ between the two (the library returns
+   `0x7FC1`), so compare "is NaN" for NaNs, and bits for everything else.
+4. **Clean rebuild, then a full test run.** `make` does not track header changes, so a partial build would
+   keep the old function in stale objects. Then run the whole test suite, because every kernel includes this
+   header.
+5. **Leave the fp16 converter (`Types.h:164`) alone.** It uses the same `127+15` arithmetic, and for fp16 that
+   limit is correct (fp16's maximum is 65,504). Confirm it has its own correct test.
+
 ---
 
 ## 18. The trainer is not reproducible run to run
@@ -1343,7 +1380,8 @@ embedding scatter-add), or GEMM algorithms chosen by timing-based autotuning.
 
 ## 19. Immediate future tasks: three casting follow-ups + one pending measurement (2026-09-24 — nothing changed yet)
 
-**When:** all four are done **right after the SFT work**, as training-script optimisations.
+**When:** **#2 on 2026-09-25**, because it is a small fix with a precedent in the same file. #1, #3 and #4
+right after the SFT work, as training-script optimisations.
 #1–#3 were found while analysing the casts (§19.3–§19.5). #4 is a measurement left open by §16.6 (§19.6).
 
 > **Correction** to the first version of this section, which said the weight-gradient round trip and the
@@ -1485,7 +1523,31 @@ carries this comment:
 > temporary and copied it every step (114.2 MB / 0.36 ms in report5)"*
 
 It converts straight into the destination with `convert_type_cuda_generic`. The same change applies here:
-convert `shard_grad_` directly into `shard_grad_fp32_`. **Not done, not measured.**
+convert `shard_grad_` directly into `shard_grad_fp32_`. **Not done, not measured.** Scheduled for 2026-09-25.
+
+The planned change (`else` branch only; the fp32 branch stays as it is):
+
+```cpp
+} else {
+    OwnTensor::convert_type_cuda_generic(
+        shard_grad_.data(), shard_grad_.dtype(),          // bf16 source (created with `oc`, :284 on master)
+        shard_grad_fp32_.data(), Dtype::Float32,          // the fp32 buffer that already exists
+        static_cast<int64_t>(S_), ocuda::getCurrentStream());
+}
+```
+
+Before calling it done, check:
+
+| check | why |
+|---|---|
+| **stream order** | The old `d2d` goes through `dev::copy_memory`. The new convert is async on `getCurrentStream()`. The loss-scaler unscale and `local_adam_step` that follow (`:1058+` on master) must run on the same stream, or be synchronised, otherwise Adam could read the buffer before it is filled. |
+| **correctness** | bf16 → fp32 is exact, so `shard_grad_fp32_` must be **bit-identical** before and after. Compare it, not the loss. |
+| **memory** | The allocator's `active_peak` / `reserved_peak` before and after. The 5.9 GB temporary lowers the peak **only if** the optimizer step is where the peak is. Not known. |
+| **speed** | Expected to be tiny. Saved traffic ≈ 11.8 GB per optimizer step ≈ 2.7 ms at ~4.4 TB/s, once per ~25 s optimizer step (64 × 392 ms) ≈ **0.01%**. Estimated, not measured. |
+
+- **Where the change lives:** `dist/zero` is in the **BluTrain** repo (the dist team's code, branch
+  `dist_side_merge`), not in `Tensor-Implementations` / `sft_gautam`. Decide where it is committed before
+  pushing.
 
 ### 19.5 #3 — `data<T>()` never checks the dtype (Bug C's family)
 

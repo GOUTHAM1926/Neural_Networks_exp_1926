@@ -2555,7 +2555,13 @@ reproducible run to run**. Full detail, every command, and every change made on 
   (`wte` + norms). Both counts match the log exactly.
 - **Order:** the SFT work comes first. Next is testing the version-0 SFT setup with Hugging Face SFT
   datasets, starting from the model checkpoints.
-- **Right after the SFT work**, the four tasks above are done as training-script optimisations. #1 starts
+- **#2 is done on 2026-09-25**, because it is a small fix whose pattern already exists in the same file
+  (`cast_master_range`, `ShardedOptimizer.cpp`).
+- **⚠️ Bug D — HIGH PRIORITY, also looked into on 2026-09-25.** `float_to_bfloat16` (`Types.h:85`) turns
+  every value ≥ 65,536 into Infinity. It is `__device__ __host__`, so it runs **inside GPU kernels** as
+  well as on the CPU. Plan (loss doc §17.1): find where it can hit, fix it, test all 2³² floats, then a
+  clean rebuild and a full test run.
+- **Right after the SFT work**, #1, #3 and #4 are done as training-script optimisations. #1 starts
   with a code-only check of how the embedding backward sums gradients for a bf16 weight; if it sums in
   bf16, stop there.
 
