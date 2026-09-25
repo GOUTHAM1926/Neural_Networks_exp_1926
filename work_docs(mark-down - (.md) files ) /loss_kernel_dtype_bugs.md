@@ -1240,6 +1240,43 @@ assumed. Units were forced to bytes.
 - *Hypothesis, not measured:* the bf16 loss kernels do the same math on half the bytes, so they may no
   longer be fully bandwidth-bound. ncu did not collect durations, and it locks clocks while profiling.
 
+### 16.6b Re-verification on a fresh box (2026-09-25)
+
+**Setup:**
+- Box: `rough-word-cracks-fin-02` (2× H200). **GPU 1 only**; GPU 0 stayed at 0 MiB.
+- Fresh clone of `dist_side_merge` `03b94cf` (the same tip), submodule `8808f89`.
+- Our 7 files, md5-checked against `sft_gautam` `1ed2ac3`.
+- The same three harness edits and the same script logic (`profiling_reports/ab_2026_09_25/ab_0925.sh`).
+- Same run shape: A-B-A-B, 20 steps, B=4.
+- Logs are local in `profiling_reports/ab_2026_09_25/box_logs/`.
+
+| | fp32 rep1 | bf16 rep1 | fp32 rep2 | bf16 rep2 | vs 2026-09-24 |
+|---|---|---|---|---|---|
+| live peak (MiB) | 95,038 | 90,322 | 95,038 | 90,322 | **identical, to the MiB** |
+| reserved peak (MiB) | 104,904 | 99,028 | 104,904 | 99,028 | **identical** |
+| steady tok/s (steps 5–19) | 42,391 | 42,538 | 42,297 | 42,508 | all ~1.3% higher (different box) |
+| step-0 grad norm | 18.9714 | 18.9712 | 18.9715 | 18.9714 | see the correction below |
+| val @19 | 8.198 | 8.104 | 8.100 | 8.293 | bf16 is **not** lower this time |
+
+- **Memory reproduces exactly:** −4,716 MiB live, −5,876 MiB reserved. Same as 09-24.
+- **Throughput:** fp32 mean 42,344, bf16 mean 42,523, so **+179 tok/s = +0.42%** (09-24: +249 = +0.60%).
+  - Every bf16 run beat every fp32 run again.
+  - **Poller confound:** a `watch -n 0.1 nvidia-smi` started at 06:24:26, during run 1's last ~3 min, and ran
+    through runs 2–4.
+  - So **pair 2** (runs 3+4, both fully under the poller) is the clean pair: **+211 tok/s (+0.50%)**.
+    Pair 1 is mixed: +147.
+  - Conclusion: +0.4–0.6% across both days, n=4 pairs. The direction is solid; the size is only known roughly.
+- **Loss:** mean |Δ| over 20 steps: fp32 vs fp32 0.401, bf16 vs bf16 0.333, fp32 vs bf16 0.013–0.635.
+  - That is inside the same-arm noise, as on 09-24.
+  - One pair (fp32 rep2 vs bf16 rep1) tracked to **0.013** mean |Δ**|**: two different arms nearly identical,
+    which is more evidence the arms are numerically equivalent.
+  - The 09-24 "bf16 val lower in both reps" did not repeat (8.104 / 8.293 vs 8.198 / 8.100). It was noise.
+- **Correction to §18:** "step 0 is identical within an arm" is **false for the grad norm**. The two fp32 runs
+  gave 18.9714 and 18.9715. The loss at step 0 is still identical in all four runs.
+  - **Consequence for #2 (§19.4):** the planned check "step-0 grad norm identical before vs after" **cannot
+    prove bit-identity**. Use a direct test instead: compare the buffer the old and new code produce, on the
+    same input.
+
 ### 16.7 Earlier runs today (context; superseded where noted)
 
 | run | result | status |
@@ -1453,7 +1490,7 @@ What an fp32 `wte` does and does not buy:
 | weight updates | **no.** The fp32 master (§19.2) protects them, so `wte` exists twice in fp32 |
 | lm_head (output) | **no.** It is cast to bf16 before use |
 | input embedding | **yes, real bits.** Its values come from the fp32 master; unlike the logits' fp32 copy, these are not zero-padding |
-| gradient sum into `wte` | **unknown.** The embedding backward adds up contributions from every occurrence of each token across B·T positions, and across micro-steps. If that sum is done in bf16, precision is lost exactly where it matters. **Not checked yet.** |
+| gradient sum into `wte` | **yes — checked 2026-09-25, see §19.3.1.** With a bf16 `wte`, the embedding backward sums every occurrence of a token with bf16 `atomicAdd`. |
 
 **The switch already exists.** The exact lines, in `bluscript_zero_ckpt.cpp` (dist_side_merge `03b94cf`):
 
@@ -1492,6 +1529,97 @@ Plan:
 2. **Short A-B-A-B:** `BLU_BF16_EMBED` 0 vs 1, with `BLU_BF16_LOGITS=1` on both, 2 reps. Checks memory,
    tok/s, and that it runs cleanly.
 3. **Long run:** a few hundred steps with proper warmup, ≥2 reps per arm, val loss compared at matched steps.
+
+### 19.3.1 Code check (2026-09-25): what the fp32 `wte` really protects
+
+Question: `wte` is fp32, but the lm_head only ever sees a bf16 copy of it. So is the fp32 `wte` needed at all?
+Read on `sft_gautam` `1ed2ac3`. `wte`'s gradient is summed in three places:
+
+| sum | code | fp32 `wte` (today) | bf16 `wte` (`BLU_BF16_EMBED=1`) |
+|---|---|---|---|
+| **(a) every occurrence of a token in one micro-step** (embedding backward) | `EmbeddingBackward.cpp:33-36`: `grad_weight` takes the dtype of `grad_output`, which is the embedding output's dtype = `wte`'s dtype (`EmbeddingOps.cpp:39-42`). Then `EmbeddingKernels.cu:415-426`: fp32 goes to `embedding_backward_kernel_cooperative` (fp32 shared-memory sums, no atomics); anything else goes to `embedding_backward_kernel_optimized<T>`, which does `atomicAdd` **in T** (`:147-148`) | fp32 sums, deterministic | **bf16 `atomicAdd`: every add rounds, in random order, so it is also non-deterministic** |
+| **(b) input half + lm_head half** | `Engine.cpp:321`, `:342-343`: `sum = grads[0]; sum += grads[i]`, in the first grad's dtype | fp32 | bf16, **one** rounding |
+| **(c) over the 64 micro-steps** | `AutogradMeta.cpp:112-116`, `:158`, `:172-173`: a bf16/fp16 update is upcast and accumulated in an **fp32** buffer ("Megatron main_grad style") | fp32 | fp32 — safe |
+
+**How big is (a)?** Bit-exact CPU emulation of one `wte` row (C=2304) receiving K bf16 contributions, summed
+the way each kernel does. Source: `profiling_reports/wte_analysis_2026_09_25/emb_bf16_sum.cpp` (gitignored).
+
+| K (times the token appears in the micro-step) | bf16 atomic sum, rel. error | fp32 sum, rel. error | one bf16 rounding of the exact sum |
+|---|---|---|---|
+| 10 | 4.1e-3 | 0 | 1.7e-3 |
+| 100 | 1.2e-2 | 4e-9 | 1.6e-3 |
+| 1,000 | **3.7e-2** (3.2e-2 with a 0.2σ mean) | 2.5e-8 | 1.6e-3 |
+| 4,000 | **7.5e-2** (**1.96e-1** with a 0.2σ mean) | 5.9e-8 | 1.7e-3 |
+
+- The error grows with K: the running sum gets big, and each new small contribution is rounded away.
+  At K = 1,000 the gradient of that word's row is **~4% wrong**, **23×** worse than rounding once.
+- **K is large for exactly the most frequent tokens.** At B=8, one micro-step is 32,768 positions. A token at 3%
+  frequency (",", ".", " the") gets ~1,000 contributions. *That frequency is an estimate: no token histogram of the
+  training data was taken.*
+- The input side also changes. The lookup (`:746`) reads `wte` as stored, straight into the fp32 residual, so a
+  bf16 `wte` rounds the starting values (~0.2% relative). Smaller than (a), but it is real.
+
+**Verdict:**
+- **The user is right about the lm_head side.** fp32 master → fp32 `wte` → bf16 copy gives the matmul exactly the
+  same bits as fp32 master → bf16 `wte`: one rounding either way.
+- **But the fp32 `wte` is not useless.** It is the reason the embedding backward runs the fp32 cooperative kernel.
+  **`BLU_BF16_EMBED=1` as it stands would put a several-% error, and non-determinism, on the gradients of the most
+  frequent tokens.** Do not flip it.
+
+**What #1 would even save (estimate, not measured):**
+- The forward `to_dtype(wte)` reads 464 MB and writes 232 MB. The backward widen reads 232 MB and writes 464 MB.
+- That is ≈1.39 GB per micro-step ≈ 0.32 ms at 4.4 TB/s ≈ **0.08%** of a 392 ms micro-step, plus 232 MB of weight
+  memory.
+- **#1 is low value. Keep `wte` fp32.**
+- If it is ever done, the safe form is: bf16 `wte`, **plus** an embedding backward that sums in fp32 (fp32
+  `grad_weight` and a cooperative kernel templated on the input type). That still leaves the ~0.2% input rounding,
+  so it needs the long-run test.
+
+### 19.3.2 ⚠️ Parked for a deeper re-analysis — what §19.3.1 assumed, and what looks suspicious
+
+The user's call (2026-09-25): the §19.3.1 verdict is provisional. Something about it looks suspicious. We may be
+looking at the wrong cause, or covering an earlier mistake of our own, so this is to be analysed again, deeper,
+later. Until then, §19.3.1 is **"code-read + emulation"**, not a measured result.
+
+**Assumptions §19.3.1 rests on (none measured):**
+1. **The gradient values.** The emulation draws each position's gradient from a normal distribution (σ = 1e-4,
+   mean 0 or 0.2σ). The real layer-0 gradient distribution was never looked at, so the % errors are only as
+   good as that model.
+2. **Token frequency.** "~1,000 contributions for a 3% token" is an estimate. No token histogram of the
+   training data was taken.
+3. **Hardware rounding.** The emulation assumes every bf16 `atomicAdd` rounds to nearest-even. Not checked on
+   sm90. The real kernel was not run: only an emulation.
+4. **Which kernel runs.** The claim that fp32 → cooperative kernel depends on `BLUTRAIN_EMB_BWD_COOPERATIVE`
+   not being `0` in the environment, and on `grad_weight` being contiguous. Not checked in a real run
+   (nsys kernel names would show it).
+5. **Has bf16 `wte` ever run in training?** The trainer's default is `getenv_int("BLU_BF16_EMBED", all)`
+   (`:874`). What `all` is, and whether any past or current run set it, has not been checked. If one did,
+   its embedding gradients went through bf16 atomics.
+6. **The lm_head half's path** (`to_dtype` → `transpose` → `contiguous` → matmul, and back) was taken from
+   the code, not traced in a real backward.
+
+**Suspicious things found while reading (not analysed yet):**
+- **The comment lies.** `EmbeddingKernels.cu:123` says the atomicAdd kernel is "kept for strided (non-contiguous)
+  weight tensors only". But `:415-426` sends **every non-fp32 dtype** there too (bf16, fp16).
+- **Silent garbage for an out-of-range token on the GPU.** The embedding output is allocated uninitialised
+  (`EmbeddingOps.cpp:42`, `Tensor output(output_shape, opts)`). The GPU kernels just `return` for
+  `tok >= V` (`EmbeddingKernels.cu:48-50`, `:107`), leaving that row as whatever was in memory. The CPU path
+  throws instead (`EmbeddingOps.cpp:58-61`). **SFT relevance:** 65,535 is our `ignore_index` marker for
+  *targets*. If an SFT pipeline ever put 65,535 into the *input* ids, the embedding would silently emit
+  garbage, not fail.
+- **The cooperative kernel may be slow.** Its grid is `((C + 127) / 128, 1)` (`:420`) = **18 blocks** for
+  C = 2304, and each block loops over all N positions serially. 18 blocks on a 132-SM H200 would leave most
+  of the GPU idle. Performance not measured.
+- **Non-determinism link (§18).** The bf16 path uses atomics and is order-dependent. With fp32 `wte` the
+  cooperative kernel should be deterministic, so it should *not* be §18's cause. That is unverified too.
+
+**What the re-analysis should do:**
+- run the real kernel (both dtypes) on real layer-0 gradients;
+- take a token histogram of the training data;
+- check which embedding-backward kernel runs in nsys;
+- check `all` / `BLU_BF16_EMBED` in the trainer and past run logs;
+- time the cooperative kernel;
+- check the out-of-range behaviour against the SFT data path.
 
 ### 19.4 #2 — the optimizer converts the gradient shard through a temporary
 
@@ -1545,6 +1673,81 @@ Before calling it done, check:
 | **memory** | The allocator's `active_peak` / `reserved_peak` before and after. The 5.9 GB temporary lowers the peak **only if** the optimizer step is where the peak is. Not known. |
 | **speed** | Expected to be tiny. Saved traffic ≈ 11.8 GB per optimizer step ≈ 2.7 ms at ~4.4 TB/s, once per ~25 s optimizer step (64 × 392 ms) ≈ **0.01%**. Estimated, not measured. |
 
+**Code-verified 2026-09-25** (read on the local `origin/dist_side_merge` = `74ec046`, 2026-09-18; the box tip
+`03b94cf` has the function at `:973`, so the patch is written against the function's text, not line numbers):
+
+| fact | proof |
+|---|---|
+| the old path = one convert kernel + one copy, **both on `getCurrentStream()`** | `as_type` → `convert_type_cuda_generic(..., getCurrentStream())` (`Tensor-Implementations/src/core/AsTypeTensor.cpp:38-39`); `d2d` → `dev::copy_memory` → `cudaMemcpyAsync(..., getCurrentStream())` (`src/device/DeviceTransfer.cpp:52-53`) |
+| everything after it is on the same stream | `multi_tensor_scale_cuda` (`MultiTensorKernels.cu:243`), `multi_tensor_adam_cuda` (`:326`), `multi_tensor_grad_norm_cuda` (`:187`) all use `getCurrentStream()` |
+| source and destination dtype/size | `shard_grad_ = zeros(flat_shape(S_), oc)` with `oc` = `compute_dtype_`; `shard_grad_fp32_ = zeros(flat_shape(S_), of)` with `of` = fp32 (`ShardedOptimizer.cpp:288-293` @`74ec046`) |
+| the include already exists | `#include "ops/helpers/ConversionKernels.cuh"` (`:20` @`74ec046`), which `cast_master_range` already uses |
+
+- **So the new code launches exactly the kernel `as_type` launched, with the same arguments and stream.**
+  Only the output pointer changes, from a fresh temporary to the persistent buffer.
+- **Result:** bit-identical by construction, stream order unchanged, one 5.9 GB allocation and one 5.9 GB copy
+  fewer per optimizer step (W=1).
+- **One difference:** `as_type` also calls `set_cuda_device()`. `cast_master_range` (the precedent, same file)
+  does not, and it relies on the rank's device already being current. So does the new code.
+- **Patch:** `profiling_reports/fix2_2026_09_25/cast_shard_grad_to_fp32.new.cpp` (gitignored). It replaces the
+  whole function.
+
+**Validation plan (box):**
+1. **Step-0 gradient norm identical** before vs after, to every printed digit. It is computed from
+   `shard_grad_fp32_` right after this cast. Step 0 is identical within an arm (§18); step 1+ drifts
+   anyway, so it cannot be used.
+2. **`[MEM]` allocator peaks** before vs after, to see whether the temporary was at the peak.
+3. **nsys:** the 5.9 GB device-to-device memcpy in the optimizer step is gone, and the convert kernel is
+   still there, once.
+
+**2026-09-25 — measured on the box, then independently cross-verified:**
+- **Bit-identity test** (`Tests/kernel_tests/test_grad_cast_direct.cu`, box GPU 1): old vs new **0 mismatches** at
+  n = 1,472,200,704 and at n = 1,000,003, including ±0, ±inf, NaN, subnormals and max. Both equal the exact answer
+  (`bits << 16`). Allocator active peak: new path **+0 B**, old path **+5,888,802,816 B**. 0 predictions violated.
+- **Machine code:**
+  - the old runner's `cast_shard_grad_to_fp32` calls `Tensor::as_type` + `copy_memory`;
+  - the new one tail-calls only `convert_type_cuda_generic`;
+  - each runner carries its own copy of the function (`T` symbol, linked from `libdist.a`), so an old-vs-new binary
+    A/B is real.
+- **Two independent read-only verifiers** (on the exact box sources: BluTrain `03b94cf`, library `8808f89`) refuted
+  nothing:
+  - bit-identity holds: every bf16→fp32 path is an exact bit shift, and all buffers are 512-byte-aligned allocator
+    blocks, so the same kernel runs;
+  - stream order holds: `d2d` is `cudaMemcpyAsync` on the current stream, and all 7 readers of `shard_grad_fp32_`
+    (Adam, unscale, norm, clip) run on the current stream; no host reads;
+  - `SymmetricShardedOptimizer` already does the direct convert, and `ShardedMuon` has no such function.
+- **Corrected claim: the memory saving is NOT proven.**
+  - The temporary was a cached block, reused every step.
+  - It is probably not live at the global peak: activations are freed by the optimizer step.
+  - Reserved memory can move either way, through fragmentation.
+  - Measure `[MEM]` before and after before quoting any saving. The certain gain is one S_×4 D2D copy (8·S_ bytes of
+    traffic) and one allocator call per step.
+- **The same anti-pattern at 3 more sites that run every step** (`as_type` into a temporary, then `d2d`):
+
+  | site | runs | direction | direct fix |
+  |---|---|---|---|
+  | `:357` `init_master_from_params` | once, at construction | compute → fp32 | not worth it |
+  | `:539` `on_grad_ready` | per param per step, W>1 overlap path (the production default) | fp32 grad → bf16 | convert into `flat_stage_ + offset` |
+  | `:945` `gather_grads_into_flat` | per param per step, W=1 / reference path | fp32 grad → bf16 | same |
+  | `:977` `cast_shard_grad_to_fp32` | per step | bf16 → fp32 | **done** (above) |
+  | `:1022` `all_gather_params` | per step, non-staged (the production default) | fp32 master → bf16 | `cast_master_range(shard_begin_, shard_begin_ + S_)`: the same call, bit-identical |
+
+  - `:945` really runs every step: `grad_view()` returns the fp32 main-grad (`AutogradMeta.cpp:158`, `:173`).
+  - For `:539`, the hook's input is built in code not in the copies, and only a comment says it is fp32.
+  - **Caveat for `:539` / `:945`:** the destination `flat_stage_ + offset` can be un-aligned, which picks the scalar
+    kernel instead of the vec8 one. Both round to nearest-even (`__float2bfloat16` vs `__float22bfloat162_rn`).
+    **NaN payloads are unverified**, so the test must cover misaligned destinations plus NaNs.
+  - `SymmetricShardedOptimizer.cpp:603` has the same pattern, but only once at init.
+- **Side findings (not #2, pre-existing, not fixed):**
+  1. **Adam ignores `is_adamw` on H200/B300.** Non-Ada `multi_tensor_adam_cuda` never passes it
+     (`MultiTensorKernels.cu:338-392`), and the kernel always does decoupled AdamW decay. It does not affect this
+     trainer (AdamW); plain Adam with wd>0 silently becomes AdamW. Confirmed by reading `8808f89`.
+  2. `d2d` ignores `device_.index`: the Device-only overload uses `cudaGetDevice()` (`DeviceTransfer.cpp:22-29`).
+  3. The B300 fp32→bf16 grid-stride kernel uses `uint` counts (`ConversionKernelsSM103.cu:94-124`), which wraps at
+     n ≥ 2³² elements.
+  4. The `d_clip_coef_` host→device writes use blocking `cudaMemcpy` on the legacy stream (`:1069`, `:1172`,
+     `:1215`). Ordered only if the compute stream is a blocking stream; not proven.
+
 - **Where the change lives:** `dist/zero` is in the **BluTrain** repo (the dist team's code, branch
   `dist_side_merge`), not in `Tensor-Implementations` / `sft_gautam`. Decide where it is committed before
   pushing.
@@ -1585,6 +1788,125 @@ This is a research item, not an inefficiency.
   4. More tok/s repetitions, to tighten the +0.60% itself (n=2 today).
 
 ---
+
+## 19.7 Optimizer + trainer audit (2026-09-25)
+
+**Method:**
+- 3 read-only auditors covered the ZeRO optimizers, the optimizer/convert kernels, and the trainer's wiring.
+- Then 5 independent skeptics were told to *refute* each finding.
+- All of it was read on the exact box sources (BluTrain `03b94cf`, library `8808f89`, the trainer at `03b94cf`).
+- Raw verdicts: `profiling_reports/fix2_2026_09_25/audit_verdicts_F1-F9.json`.
+- No GPU was used.
+
+**Correction to this doc:** `GRAD_ACCUM = global_batch / (B·T·W)` (trainer `:926`). It is **64** in our 1-GPU test (B=4, W=1) and **4** in production (B=8, W=8). Earlier "per ~25 s optimizer step" figures are for the test config only.
+
+| # | finding | verdict | production default? | severity | decision |
+|---|---|---|---|---|---|
+| F1 | a **NaN/Inf gradient is written into the fp32 master weights**. The skip is gated on a LossScaler (`ShardedOptimizer.cpp:1160`, `:1201`), and none is installed. A NaN norm gives clip coef 1.0 (`GradNormKernels.cu:190-193`); an Inf norm gives coef 0 and Inf·0 = NaN. The trainer checks only the loss, before `step()` (`:2270`). On a checkpoint step the NaN state is **saved**, and auto-resume reloads it. `BLU_GLOBAL_CLIP=1` does not prevent it | **CONFIRMED** | yes (needs one non-finite gradient) | **bug** | fix; see below |
+| F2 | `accumulate_grad` does `*grad_ += update.as_type(fp32)` every micro-step for all 156 bf16 weights (`AutogradMeta.cpp:172-173`). That is an fp32 temp + add, where one mixed add would do. There is no fp32 += bf16 kernel at all (`TensorOps.cpp:203`) | CONFIRMED | yes, 4 micro-steps/step | waste, **~0.7% est.** at W=1 (11.8 GB/micro-step); production % unknown | future task: new kernel, measure first |
+| F3 | at W=1: 5 grad passes + 4 param passes per step where ~1 each would do; `shard_grad_` / `shard_master_compute_` duplicate `flat_stage_` (2.94 GB each) | CONFIRMED | only `:539`, `:977`, `:1022` run at W=8 (~1.8 ms/step est.) | waste | #2 family fix covers the production part |
+| F4 | v1 rounds the fp32-accumulated grad to bf16 once for the reduce, then widens it back (`:186-194` refuses an fp32 wire). At W=1 there is no comm at all | PARTLY (one rounding; the sum itself stays fp32) | yes (bf16 NCCL avg at W=8) | design-choice | leave; the "bit-identical" header comment (`ShardedOptimizer.h:22-24`) is wrong for bf16 groups |
+| F5 | clipping is **per dtype group** by default (`BLU_GLOBAL_CLIP=0`), not torch-style global. The logged norm is the combined pre-clip norm. The trainer's justification (`:2298-2329`) is written for Muon and does not hold for the default AdamW | CONFIRMED | yes | design-choice | leave; fix the comment |
+| F6 | checkpoint + auto-resume ON by default, cwd-relative, no config check; a forced save at the last step means an identical re-run resumes at `max_steps` and runs 0 steps; the comment `:241-249` contradicts the code | PARTLY (it prints a resume line; not silent) | yes | risk | our scripts guard it (`BLU_CKPT=0` + `rm -rf`); tell colleagues |
+| F7 | the DCP resume skips the layout-hash check; `set_config` silently keeps `step_count_=0` if the key is missing | PARTLY (sizes are checked; the key is always written) | effectively no | risk | leave |
+| F8 | `getenv_int("X")` with X set but empty reads 0, not the default (`DataLoader.h:27-30`) | CONFIRMED | no | design-choice | leave (harmless) |
+| F9 | library `nn::Adam` / `nn::AdamW` / `clip_grad_norm_`: a pinned-metadata race (>512 tensors) and a dangling `as_type` temp pointer | PARTLY | **no**: the trainer never uses them; ZeRO syncs after each launch | risk | leave |
+| — | multi-tensor Adam ignores `is_adamw` (generic + sm89; sm90 variant is dead code) | CONFIRMED | **no**: the trainer hard-codes `AdamVariant::ADAMW` (`:1108`); nothing selects ADAM | — | **leave** (user's call; the colleague is right that it is a placeholder) |
+
+**Reported by one auditor, not re-verified** (all off the production path, or cosmetic):
+- Ada-only (sm_89):
+  - the scale kernel skips factors >1 (`_sm89.cu:83`);
+  - float4 accesses assume 16-B-aligned group offsets;
+  - `fmaf` placement differs from the generic Adam, so the last bit is GPU-dependent.
+- The generic convert kernel uses a 32-bit `blockIdx.x*blockDim.x` (wraps at n ≥ 2³²). It routes int64/double through float.
+- The sm103 fp32→bf16 grid-stride kernel uses `uint` counts.
+- Stale trainer comments:
+  - `:880` "3.07 GiB" is the bf16 size;
+  - `:2060` "GRAD_ACCUM=32";
+  - `:1102` "103M embedding";
+  - "1.62B bf16 group" (it is 1.472B);
+  - `probe_layers {0,8,17,26,35}` with 26 layers.
+- The CSV log is truncated on resume (`:1779-1780`).
+- Weight decay applies to the tied wte (a design choice, matches nanoGPT).
+
+**F1 fix options (decision pending):**
+- (a) **skip** the step on a non-finite norm: drop `sc &&` at `:1160` / `:1201`, then set `last_step_skipped_` and return before `++step_count_`;
+- (b) **stop before the update**: throw/abort on a non-finite norm, so the weights and the next checkpoint stay clean and the failure stays loud.
+
+Either way the trainer should also not save a checkpoint on that step.
+
+## 19.8 Fixes applied on the box (2026-09-25): F1 + the #2 family — and the tests
+
+All edits are on the box (`rough-word-cracks-fin-02:/root/gautam_k/BluTrain`, tip `03b94cf`). Each carries a comment giving
+what changed, what it was, and why. **Not committed anywhere yet.** Full diffs and logs, local copies:
+`profiling_reports/fix2_2026_09_25/box_state/t12/`.
+
+| file | change | kind |
+|---|---|---|
+| `dist/zero/src/ShardedOptimizer.cpp` | sites **B′** `on_grad_ready`, **B** `gather_grads_into_flat`, **C** `cast_shard_grad_to_fp32`, **D** `all_gather_params`: `as_type` temp + `d2d` → one `convert_type_cuda_generic` into the destination | fix (#2) |
+| same | **F1**: both non-finite guards (`step()` per-group path + cached-norm path). With a LossScaler: unchanged. Without one: `throw ZeroNonFiniteGradError` **before** any update. The norm log shows `nan`, not 0. `nonfinite_grad_msg()` builds the error text | fix (F1) |
+| `dist/zero/include/ZeroErrors.h` | new `ZeroNonFiniteGradError` | fix (F1) |
+| `dist/zero/include/ShardedOptimizer.h` | declares `nonfinite_grad_msg` | fix (F1) |
+| `bluscript_zero_ckpt.cpp` | `try { opt->step(); } catch (ZeroNonFiniteGradError) { [FATAL] line; MPI_Abort(4) }`, with the why + kernel backtrace in the comment | fix (F1, trainer side) |
+| `bluscript_zero_ckpt.cpp` | B=4, `BLU_VAL_STEPS`, `[MEM]`, `BLU_TEST_NAN/INF_GRAD_STEP` + `BLU_TEST_BAD_GRAD_BF16` injector | **test harness only, never commit** (labelled in the code) |
+
+**Machine-code proof:** disassembly of the new binary. Every one of the 4 functions calls `convert_type_cuda_generic` and none calls `Tensor::as_type`. In the old binary each one called `as_type` + `copy_memory`.
+
+**Tests (H200, GPU 1):**
+
+| test | result |
+|---|---|
+| **T1** `test_fix_family.cu` (sites B, C, D; the old path is an exact copy of the old code) | **0 predictions violated** (v2). The memory check first used the allocator's lifetime `active_peak`, which a later case cannot raise: that was a test flaw, and v2 uses live bytes. Results: **0 bit mismatches** at C (n = 1,472,200,704), D (same n), and B (8 params, 5 destinations misaligned, so the NEW path takes the scalar kernel), including NaN/Inf/halfway/subnormal/near-max. NaN payloads were identical too. Live memory held: C old path **5,888,802,816 B**, new **0**; D old **2,944,401,408 B**, new **0** |
+| **T2a** before-F1 binary + NaN in a grad at step 2 | **bug reproduced**: step 2 printed the NaN group's norm as **0.0000**, then `ERROR: NaN/Inf loss at step 3`, MPI_Abort 2 |
+| **T2b** new binary + NaN at step 2 (fp32 group) | `[FATAL] ... grad norm^2 = nan in the fp32 group (116029184 params) ... raised BEFORE any update`, exit **4**, no checkpoint |
+| **T2c** new + Inf at step 2 | same, `grad norm^2 = inf`, exit 4 |
+| **T2d** new + NaN in a **bf16** weight (`mlp[0]`, param dtype bf16) | `[FATAL] ... nan in the bf16 group (1472200704 params)`, exit 4. The NaN went through the new site-B convert and was still caught |
+
+**Expected effect (estimates):**
+- **Memory:** ≈ 0 at the peak. The temporaries only exist in the optimizer step, when activations are already freed (~48 GiB live vs the 88 GiB backward peak).
+- **Speed:** ~0.05–0.06%.
+- **Precision:** bit-identical on finite steps (F1 only acts on a non-finite norm).
+- The #2 A/B (T3) will measure memory and speed.
+
+## 19.9 Pushed to `dist_side_merge` (2026-09-25)
+
+Direct pushes, the user's decision (no PR). Author: `Goutham Kumar <goutham.kumar@blubridge.com>`. Each remote was
+fetched first to confirm nobody had pushed since 2026-09-23.
+
+| repo | branch | range | contents |
+|---|---|---|---|
+| `BlubridgeAI/Tensor-Implementations` | `dist_side_merge` | `8808f89..ad10e7d` | the 7 loss files (Bugs A/B/C + ignore_index/denominator). It **supersedes `a407093`'s AccT partial fix** in `LossKernels.cu`; that commit's other 2 files (allocator) are untouched |
+| `BlubridgeAI/BluTrain` | `dist_side_merge` | `03b94cf..a264586` | `dist/zero/src/ShardedOptimizer.cpp` (F1 + #2 sites B′/B/C/D), `ShardedOptimizer.h`, `ZeroErrors.h`, `bluscript_zero_ckpt.cpp` (F1 try/catch + `[MEM]` print), submodule `8808f89 → ad10e7d` |
+
+**Not pushed:**
+- the test-harness edits (B=4, `BLU_VAL_STEPS`, NaN/Inf injector): removed from the box copy before the commit, so a
+  1-GPU re-test needs B=4 again;
+- the 3 untracked test files in `Tensor-Implementations/Tests/kernel_tests/`: local copies are in
+  `profiling_reports/fix2_2026_09_25/`.
+
+**Pre-push checks:**
+- Every caller of the changed loss API in both repos uses the 2-argument `sparse_cross_entropy_loss(logits, target)`,
+  which still works through the defaults:
+  - `bluscript_zero.cpp`, `bluscript_single.cpp`;
+  - `train/production/bluscript.cpp`, `train/gpt2/train.cpp`;
+  - 4 dist tests, `gpt2_fmha.cpp`.
+- Nobody else calls the removed or changed kernel functions.
+- The only NaN/Inf ZeRO test (`dist/zero/tests/test_zero.cpp:251-278`) uses a LossScaler, a path that is unchanged.
+- The 3-agent deep check was attempted but hit the session limit; none ran.
+
+**Behaviour change for other trainers:** `bluscript_zero.cpp` and `train/production/bluscript.cpp` also use
+ShardedOptimizer v1 without the catch. On a NaN/Inf gradient they now terminate with the `ZeroNonFiniteGradError`
+text, instead of writing NaN and dying one step later.
+
+**Colleagues pulling this must:**
+1. `git pull`, then `git submodule update --init` (the library pointer moved);
+2. delete the stale loss objects before building (`make` does not track header changes, §20.3):
+   `find Tensor-Implementations \( -name "*Loss*.o" -o -name "*CrossEntropy*.o" \) -delete`;
+3. rebuild.
+
+`BLU_BF16_LOGITS=1` now works: it used to crash at step 0.
+
+**Still untested:** world_size ≥ 2 (site B′ / overlap path), B=8, Muon, ZeRO-v2, `BLU_GLOBAL_CLIP=1` in a real run.
 
 ## 20. Reproduction recipe — every change made on the colleague's branch
 

@@ -2565,3 +2565,32 @@ reproducible run to run**. Full detail, every command, and every change made on 
   with a code-only check of how the embedding backward sums gradients for a bf16 weight; if it sums in
   bf16, stop there.
 
+---
+
+## 31. Session log — 2026-09-25
+
+### 31.1 #1 (`wte` fp32) — code-checked, verdict provisional
+
+- **Question:** the lm_head only ever uses a bf16 copy of `wte`, so is the fp32 `wte` needed at all?
+- **Answer from the code** (loss doc §19.3.1):
+  - For the lm_head, no. Both ways give the matmul identical bits.
+  - But with a bf16 `wte`, the embedding backward sums every occurrence of a token with bf16 `atomicAdd`
+    (`EmbeddingKernels.cu:147-148`), while fp32 gets a cooperative fp32 kernel (`:415-426`).
+  - Emulated error: ~4% at 1,000 contributions, 7.5–20% at 4,000.
+  - The halves sum is one rounding (`Engine.cpp:342`). Micro-step accumulation is already fp32
+    (`AutogradMeta.cpp:112-116`).
+  - #1 would save only ≈0.08% (estimate).
+- **Provisional verdict:** keep `wte` fp32 and do not flip `BLU_BF16_EMBED`.
+- **Parked for a deeper re-analysis** (user's call; loss doc §19.3.2). The verdict rests on unmeasured
+  assumptions: the gradient model, token frequencies, hardware rounding, and which kernel actually runs.
+- **Side findings on the way:**
+  - the atomicAdd kernel's comment is wrong;
+  - an out-of-range token gives silent garbage on the GPU. This is SFT-relevant: 65,535 is our target ignore
+    marker, and it must never reach the input ids;
+  - the cooperative kernel runs with only 18 blocks.
+- **Emulation source:** `profiling_reports/wte_analysis_2026_09_25/emb_bf16_sum.cpp` (gitignored).
+
+### 31.2 Next
+
+#2 (`ShardedOptimizer::cast_shard_grad_to_fp32`), then Bug D.
+
