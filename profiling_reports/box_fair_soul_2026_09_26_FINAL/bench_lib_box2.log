@@ -1,0 +1,81 @@
+done: round 1 old
+done: round 1 new
+done: round 2 new
+done: round 2 old
+done: round 3 old
+done: round 3 new
+done: round 4 new
+done: round 4 old
+done: round 5 old
+done: round 5 new
+done: round 6 new
+done: round 6 old
+done: round 7 old
+done: round 7 new
+done: round 8 new
+done: round 8 old
+done: round 9 old
+done: round 9 new
+done: round 10 new
+done: round 10 old
+done: round 11 old
+done: round 11 new
+done: round 12 new
+done: round 12 old
+library benchmark: 12 rounds, old = /root/gautam_k/BluTrain/TI_old, new = /root/gautam_k/BluTrain/Tensor-Implementations
+case                                             old us     new us  speedup   new/old min..max  old wrong new wrong  same bits old/new
+--------------------------------------------------------------------------------------------------------------------------------------
+gpu bf16 t*2.0f (64M)                            184.99     152.73    1.21x    0.824..0.831             0         0                yes
+gpu bf16 t*2.0f abs>=65536 (64M)                 184.96     152.73    1.21x    0.371..0.826      67108864         0                 no
+gpu bf16 t*2.0f (1M)                               4.66       3.44    1.35x    0.713..0.773             0         0                yes
+gpu bf16 t+1.5f (64M)                            184.92     152.68    1.21x    0.825..0.827             0         0                yes
+gpu bf16 t/3.0f (64M)                            279.49     279.53    1.00x    0.997..2.229      67036478  67036478                yes   (approx device math)
+gpu f16 t*2.0f (64M)                             213.31     152.58    1.40x    0.714..2.322             0         0                yes
+gpu bf16 a+b (64M)                                97.04      97.05    1.00x    0.998..4.535             0         0                yes
+gpu bf16 a*b (64M)                               308.17     197.52    1.56x    0.195..0.642             0         0                yes
+gpu bf16 a/b (64M)                               310.32     198.03    1.57x    0.195..0.639             0         0                yes   (approx device math)
+gpu f16 a-b (64M)                                328.16     197.96    1.66x    0.192..0.604       1869515         0                 no
+gpu bf16 a>b (64M)                               283.35     190.39    1.49x    0.302..0.673             -         -                yes
+gpu bf16 reduce_sum all (64M)                    109.72     109.75    1.00x    0.561..1.004             -         -                yes
+gpu c32 reduce_product axis1 [4096,64]             7.88       8.02    0.98x    0.996..1.040             -         -                 no
+gpu c32 reduce_product axis0 [64,4096]            21.27      11.04    1.93x    0.514..0.968             -         -                yes
+CONTROL gpu as_type f32->bf16 (4M)                 5.33       5.37    0.99x    0.961..51.654            -         -                yes
+CONTROL gpu gelu_forward bf16 (64M)              149.64     149.66    1.00x    0.999..1.002             -         -                yes
+cpu as_type f32->bf16 (4M)                      1538.33     576.91    2.67x    0.309..0.382             0         0                yes
+cpu as_type bf16->f32 (4M)                       762.02     524.04    1.45x    0.571..0.717             0         0                yes
+cpu as_type f32->f16 (4M)                       5083.03    2351.24    2.16x    0.294..0.465          1803         0                 no
+cpu as_type f64->bf16 (4M)                      2059.48    2401.45    0.86x    0.970..1.177            47         0                 no
+cpu bf16 reduce_mean axis0 [2,2M]               5999.00    5999.55    1.00x    0.153..10.704            -         -                yes
+cpu bf16 reduce_sum axis0 [2,2M]                3015.27    5999.69    0.50x    0.006..239.586           -         -                 no
+cpu bf16 gelu_forward (4M)                      3065.72     215.77   14.21x    0.019..62.599            -         -                 no
+cpu bf16 t*2.0f (4M)                            2791.58     771.00    3.62x    0.240..0.278             0         0                yes
+cpu bf16 a+b (4M)                               3530.27     927.84    3.80x    0.233..0.266             0         0                yes
+CONTROL cpu as_type f32->f64 (4M)              19230.19   19446.86    0.99x    0.769..1.038             -         -                yes
+CONTROL cpu f32 a+b (4M)                        1008.99    1000.15    1.01x    0.777..1.052             -         -                yes
+
+==================== SUMMARY ====================
+control CONTROL gpu as_type f32->bf16 (4M)       new/old median 1.020  (ok)
+control CONTROL gpu gelu_forward bf16 (64M)      new/old median 1.000  (ok)
+control CONTROL cpu as_type f32->f64 (4M)        new/old median 1.005  (ok)
+control CONTROL cpu f32 a+b (4M)                 new/old median 0.992  (ok)
+measurement trustworthy (all 4 controls within 3%): YES
+slower (every round new/old > 1.03): none
+faster (every round new/old < 0.97): 
+   gpu bf16 t*2.0f (64M)                        1.21x
+   gpu bf16 t*2.0f abs>=65536 (64M)             1.21x
+   gpu bf16 t*2.0f (1M)                         1.36x
+   gpu bf16 t+1.5f (64M)                        1.21x
+   gpu bf16 a*b (64M)                           1.56x
+   gpu bf16 a/b (64M)                           1.57x
+   gpu f16 a-b (64M)                            1.66x
+   gpu bf16 a>b (64M)                           1.49x
+   gpu c32 reduce_product axis0 [64,4096]       1.92x
+   cpu as_type f32->bf16 (4M)                   2.67x
+   cpu as_type bf16->f32 (4M)                   1.46x
+   cpu as_type f32->f16 (4M)                    2.16x
+   cpu bf16 t*2.0f (4M)                         3.62x
+   cpu bf16 a+b (4M)                            3.80x
+precision, exact-reference cases: old wrong 68980229, new wrong 0
+   approx case gpu bf16 t/3.0f (64M): old wrong 67036478, new wrong 67036478 (device --use_fast_math division; must be equal or lower)
+   approx case gpu bf16 a/b (64M): old wrong 0, new wrong 0 (device --use_fast_math division; must be equal or lower)
+RESULT: PASS

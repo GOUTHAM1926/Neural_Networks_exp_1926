@@ -1,0 +1,24 @@
+convert: GPU as_type converts directly like the CPU, and converts complex
+
+Measured on 1x H200: GPU Tensor::as_type against the CPU as_type for every
+dtype pair (169 real pairs, 131,072 values each incl. every bf16/fp16 bit
+pattern and 2^24 / 2^53 / INT64 / uint boundaries). Before: 110 ok, 59
+mismatched. After: 169/169. Speed unchanged (9 hot pairs within 1%, the
+fp32 <-> bf16 vector fast paths untouched).
+
+1. convert_type_kernel sent every conversion through a float temporary
+   (24 bits): int32 above 2^24, int64, uint32/64 and double lost digits,
+   negative ints -> unsigned and uint -> int went through an out-of-range
+   float (int8 -1 -> uint8 gave 0, not 255), and int/double -> bf16/fp16
+   was rounded twice. bf16/fp16 sources keep the float path (exact); wide
+   sources now use static_cast<Dst>(x) or the Types.h one-rounding
+   bf16/fp16 constructors, as the CPU does.
+2. complex -> complex was silently skipped on the GPU (output left
+   uninitialised). Now converted component by component, as the CPU does;
+   complex <-> real now throws in convert_type_cuda_generic too.
+3. The element index was a 32-bit product; now 64-bit (tensors > 2^32).
+
+Unchanged: fp32 subnormals (< 1.18e-38) still flush to zero on the GPU
+(the library is built with --use_fast_math).
+BluTrain today converts only token ids / labels to integers, which were
+exact through float, so current training results do not change.

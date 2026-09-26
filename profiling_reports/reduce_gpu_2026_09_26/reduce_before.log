@@ -1,0 +1,42 @@
+=== GPU reduction test (before)  2026-09-26 15:48:33  lib 7810aea
+babaf273967919a74b61b3109f2bcf38  src/UnaryOps/cuda/ReductionImplGPU.cu
+f4735ea2a02b1d80f0f54e629b50484c  include/ops/helpers/ReductionKernels.cuh
+-rwxr-xr-x 1 root root 57398912 2026-09-26_13:40:19 lib/libtensor.so
+--- compile (CPU only)
+--- 33 cases on GPU 0
+0 CASE|mean bf16 [65536,1024] axes {0}|CRASH|an illegal memory access was encountered
+1 CASE|mean bf16 [1024,1024] axes {0}|CRASH|an illegal memory access was encountered
+2 CASE|mean bf16 [4096,512] axes {0}|CRASH|an illegal memory access was encountered
+3 CASE|mean bf16 [33,1000] axes {0}|ok|0 of 1000 outputs off by more than 1 ulp (worst 0.5 ulp)
+4 CASE|mean bf16 [512,4096] axes {1}|WRONG|192 of 512 outputs off by more than 1 ulp (worst 3.8 ulp)
+5 CASE|mean bf16 [1024,65536] axes {1}|CRASH|an illegal memory access was encountered
+6 CASE|mean bf16 [7,300,5] axes {1}|CRASH|an illegal memory access was encountered
+7 CASE|mean bf16 [1048576] axes {}|CRASH|an illegal memory access was encountered
+8 CASE|mean bf16 [256,256] axes {0,1}|CRASH|an illegal memory access was encountered
+9 CASE|mean f16 [65536,1024] axes {0}|CRASH|an illegal memory access was encountered
+10 CASE|mean f16 [1024,1024] axes {0}|CRASH|an illegal memory access was encountered
+11 CASE|mean f16 [512,4096] axes {1}|WRONG|437 of 512 outputs off by more than 1 ulp (worst 28.5 ulp)
+12 CASE|mean f32 [65536,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+13 CASE|mean f32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+14 CASE|mean f32 [512,4096] axes {1}|WRONG|480 of 512 outputs off by more than 1 ulp (worst 4620.3 ulp)
+15 CASE|mean f64 [65536,256] axes {0}|ok|0 of 256 outputs off by more than 1 ulp (worst 0.0 ulp)
+16 CASE|mean f64 [512,4096] axes {1}|WRONG|480 of 512 outputs off by more than 1 ulp (worst 153569293824.0 ulp)
+17 CASE|sum bf16 [512,4096] axes {1}|WRONG|176 of 512 outputs off by more than 1 ulp (worst 4.8 ulp)
+18 CASE|sum f32 [512,4096] axes {1}|WRONG|479 of 512 outputs off by more than 1 ulp (worst 3422.2 ulp)
+19 CASE|sum f32 [7,300,5] axes {1}|WRONG|30 of 35 outputs off by more than 1 ulp (worst 197815.2 ulp)
+20 CASE|sum bf16 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.5 ulp)
+21 CASE|sum f32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+22 CASE|sum f32 [1048576] axes {}|ok|0 of 1 outputs off by more than 1 ulp (worst 0.0 ulp)
+23 CASE|max bf16 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.0 ulp)
+24 CASE|max f32 [512,4096] axes {1}|WRONG|476 of 512 outputs off by more than 1 ulp (worst 395.5 ulp)
+25 CASE|max f32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+26 CASE|sum f32 [4096,16] axes {1}|WRONG|4096 of 4096 outputs off by more than 1 ulp (worst 262127.1 ulp)
+27 CASE|max f32 [4096,8] axes {1}|WRONG|4096 of 4096 outputs off by more than 1 ulp (worst 44601487738605254713239690737682602451271680.0 ulp)
+28 CASE|sum f32 [2,65536] axes {1}|WRONG|2 of 2 outputs off by more than 1 ulp (worst 344.3 ulp)
+29 CASE|sum f32 [8,1048576] axes {1}|WRONG|8 of 8 outputs off by more than 1 ulp (worst 323.5 ulp)
+30 CASE|mean bf16 [4,100000] axes {1}|CRASH|an illegal memory access was encountered
+31 CASE|mean i32 [512,4096] axes {1}|WRONG|512 of 512 outputs off by more than 1 ulp (worst 151544.0 ulp)
+32 CASE|mean i32 [1024,1024] axes {0}|CRASH|an illegal memory access was encountered
+
+==================== SUMMARY (before) ====================
+ok: 9   WRONG: 13   CRASH: 11   EXCEPTION: 0

@@ -1,0 +1,3 @@
+========= COMPUTE-SANITIZER
+CASE|sum f32 [8,1048576] axes {1}|ok|GPU: 0 of 8 wrong (worst 0.0 ulp) | CPU: 0 of 8 wrong (worst 0.0 ulp)
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

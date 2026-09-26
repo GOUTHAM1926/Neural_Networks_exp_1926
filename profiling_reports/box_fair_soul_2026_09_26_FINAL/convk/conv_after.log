@@ -1,0 +1,188 @@
+=== GPU as_type test (after)  2026-09-26 17:13:17  lib 97735ad
+025573e5c80a89492336e27c2b1856ba  src/Kernels/cuda/misc/ConversionKernels.cu
+-rwxr-xr-x 1 root root 55834192 2026-09-26_17:13:17 lib/libtensor.so
+--- compile (CPU only)
+--- run on GPU 0
+PAIR|int8->int16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->int32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->int64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->uint8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->uint16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->uint32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->uint64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int8->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->int8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->int32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->int64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->uint8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->uint16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->uint32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->uint64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int16->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->int8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->int16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->int64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->uint8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->uint16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->uint32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->uint64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int32->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->int8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->int16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->int32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->uint8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->uint16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->uint32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->uint64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|int64->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->int8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->int16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->int32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->int64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->uint16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->uint32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->uint64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint8->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->int8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->int16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->int32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->int64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->uint8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->uint32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->uint64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint16->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->int8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->int16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->int32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->int64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->uint8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->uint16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->uint64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint32->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->int8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->int16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->int32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->int64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->uint8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->uint16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->uint32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|uint64->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|fp32->int8|ok|compared 35136, skipped (UB) 95936, FTZ 0, mismatches 0
+PAIR|fp32->int16|ok|compared 40013, skipped (UB) 91059, FTZ 0, mismatches 0
+PAIR|fp32->int32|ok|compared 81918, skipped (UB) 49154, FTZ 0, mismatches 0
+PAIR|fp32->int64|ok|compared 100296, skipped (UB) 30776, FTZ 0, mismatches 0
+PAIR|fp32->uint8|ok|compared 35609, skipped (UB) 95463, FTZ 0, mismatches 0
+PAIR|fp32->uint16|ok|compared 40306, skipped (UB) 90766, FTZ 0, mismatches 0
+PAIR|fp32->uint32|ok|compared 65571, skipped (UB) 65501, FTZ 0, mismatches 0
+PAIR|fp32->uint64|ok|compared 82651, skipped (UB) 48421, FTZ 0, mismatches 0
+PAIR|fp32->fp64|ok|compared 131072, skipped (UB) 0, FTZ 809, mismatches 0
+PAIR|fp32->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|fp32->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|fp32->bool|ok|compared 131072, skipped (UB) 0, FTZ 809, mismatches 0
+PAIR|fp64->int8|ok|compared 35235, skipped (UB) 95837, FTZ 0, mismatches 0
+PAIR|fp64->int16|ok|compared 40040, skipped (UB) 91032, FTZ 0, mismatches 0
+PAIR|fp64->int32|ok|compared 82002, skipped (UB) 49070, FTZ 0, mismatches 0
+PAIR|fp64->int64|ok|compared 100278, skipped (UB) 30794, FTZ 0, mismatches 0
+PAIR|fp64->uint8|ok|compared 35658, skipped (UB) 95414, FTZ 0, mismatches 0
+PAIR|fp64->uint16|ok|compared 40305, skipped (UB) 90767, FTZ 0, mismatches 0
+PAIR|fp64->uint32|ok|compared 65784, skipped (UB) 65288, FTZ 0, mismatches 0
+PAIR|fp64->uint64|ok|compared 82799, skipped (UB) 48273, FTZ 0, mismatches 0
+PAIR|fp64->fp32|ok|compared 131072, skipped (UB) 0, FTZ 798, mismatches 0
+PAIR|fp64->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|fp64->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|fp64->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bf16->int8|ok|compared 68610, skipped (UB) 62462, FTZ 0, mismatches 0
+PAIR|bf16->int16|ok|compared 72706, skipped (UB) 58366, FTZ 0, mismatches 0
+PAIR|bf16->int32|ok|compared 80898, skipped (UB) 50174, FTZ 0, mismatches 0
+PAIR|bf16->int64|ok|compared 97282, skipped (UB) 33790, FTZ 0, mismatches 0
+PAIR|bf16->uint8|ok|compared 67072, skipped (UB) 64000, FTZ 0, mismatches 0
+PAIR|bf16->uint16|ok|compared 69120, skipped (UB) 61952, FTZ 0, mismatches 0
+PAIR|bf16->uint32|ok|compared 73216, skipped (UB) 57856, FTZ 0, mismatches 0
+PAIR|bf16->uint64|ok|compared 81408, skipped (UB) 49664, FTZ 0, mismatches 0
+PAIR|bf16->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bf16->fp64|ok|compared 131072, skipped (UB) 0, FTZ 508, mismatches 0
+PAIR|bf16->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bf16->bool|ok|compared 131072, skipped (UB) 0, FTZ 508, mismatches 0
+PAIR|fp16->int8|ok|compared 90128, skipped (UB) 40944, FTZ 0, mismatches 0
+PAIR|fp16->int16|ok|compared 122882, skipped (UB) 8190, FTZ 0, mismatches 0
+PAIR|fp16->int32|ok|compared 126976, skipped (UB) 4096, FTZ 0, mismatches 0
+PAIR|fp16->int64|ok|compared 126976, skipped (UB) 4096, FTZ 0, mismatches 0
+PAIR|fp16->uint8|ok|compared 77824, skipped (UB) 53248, FTZ 0, mismatches 0
+PAIR|fp16->uint16|ok|compared 94208, skipped (UB) 36864, FTZ 0, mismatches 0
+PAIR|fp16->uint32|ok|compared 94208, skipped (UB) 36864, FTZ 0, mismatches 0
+PAIR|fp16->uint64|ok|compared 94208, skipped (UB) 36864, FTZ 0, mismatches 0
+PAIR|fp16->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|fp16->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|fp16->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|fp16->bool|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->int8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->int16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->int32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->int64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->uint8|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->uint16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->uint32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->uint64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->fp32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->fp64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->bf16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|bool->fp16|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|c32->c64|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|c32->c128|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|c64->c32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|c64->c128|ok|compared 131072, skipped (UB) 0, FTZ 1564, mismatches 0
+PAIR|c128->c32|ok|compared 131072, skipped (UB) 0, FTZ 0, mismatches 0
+PAIR|c128->c64|ok|compared 131072, skipped (UB) 0, FTZ 1572, mismatches 0
+PAIR|c32->fp32|ok|complex<->real: CPU refused, GPU refused
+PAIR|fp32->c32|ok|complex<->real: CPU refused, GPU refused
+PAIR|c64->fp32|ok|complex<->real: CPU refused, GPU refused
+PAIR|fp32->c64|ok|complex<->real: CPU refused, GPU refused
+PAIR|c128->fp32|ok|complex<->real: CPU refused, GPU refused
+PAIR|fp32->c128|ok|complex<->real: CPU refused, GPU refused
+PAIR|direct convert_type_cuda_generic c64->fp32|ok|refused: convert_type_cuda_generic: cannot convert between complex and non-complex types (dtype 14 -> 10)
+TIME|fp32->bf16|n=67108864|median 96.9 us
+TIME|bf16->fp32|n=67108864|median 102.2 us
+TIME|fp32->fp16|n=67108864|median 188.3 us
+TIME|fp16->fp32|n=67108864|median 192.7 us
+TIME|int32->fp32|n=67108864|median 205.3 us
+TIME|fp64->fp32|n=67108864|median 229.8 us
+TIME|fp32->fp64|n=67108864|median 236.9 us
+TIME|int64->int32|n=67108864|median 227.4 us
+TIME|fp64->bf16|n=67108864|median 206.4 us
+
+==================== SUMMARY ====================
+pairs: 169, ok 169, MISMATCH 0
+RESULT: PASS
+--- exit code 0

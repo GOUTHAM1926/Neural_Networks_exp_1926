@@ -1,0 +1,91 @@
+Types.h fp16 host code under test: manual fallback path
+
+== T1 fp32 -> fp16 vs x86 F16C hardware  (4294967296 inputs)
+   NEW Types.h float_to_float16       wrong            0   NaN-not-NaN      0
+   OLD Types.h float_to_float16       wrong    100815872   NaN-not-NaN      0   first input 0x33000001
+   PT fp16_ieee_from_fp32_value       wrong            0   NaN-not-NaN      0
+   FPL fp16_ieee_from_fp32_value      wrong            0   NaN-not-NaN      0
+   EIG float_to_half_rtne             wrong            0   NaN-not-NaN      0
+   NP FromFloatBits                   wrong            0   NaN-not-NaN      0
+   GCC _Float16                       wrong            0   NaN-not-NaN      0
+   CU __float2half_rn (host)          wrong            0   NaN-not-NaN      0
+   NEW struct float16_t(float)        wrong            0   NaN-not-NaN      0
+
+== T2 fp16 -> fp32 vs x86 F16C hardware  (65536 inputs)
+   NEW Types.h float16_to_float       wrong            0   NaN-not-NaN      0
+   OLD Types.h float16_to_float       wrong            0   NaN-not-NaN      0
+   PT fp16_ieee_to_fp32_value         wrong            0   NaN-not-NaN      0
+   FPL fp16_ieee_to_fp32_value        wrong            0   NaN-not-NaN      0
+   EIG half_to_float                  wrong            0   NaN-not-NaN      0
+   NP ToFloatBits                     wrong            0   NaN-not-NaN      0
+   GCC _Float16                       wrong            0   NaN-not-NaN      0
+   CU __half2float (host)             wrong            0   NaN-not-NaN      0
+
+== T3 fp32 -> bf16 vs exact-by-value reference  (4294967296 inputs)
+   NEW Types.h float_to_bfloat16      wrong            0   NaN-not-NaN      0
+   OLD Types.h float_to_bfloat16      wrong   1878982656   NaN-not-NaN      0   first input 0x47800000
+   PT round_to_nearest_even           wrong            0   NaN-not-NaN      0
+   EIG float_to_bfloat16_rtne<false>  wrong            0   NaN-not-NaN      0
+   GCC __bf16                         wrong            0   NaN-not-NaN      0
+   CU __float2bfloat16_rn (host)      wrong            0   NaN-not-NaN      0
+   NEW struct bfloat16_t(float)       wrong            0   NaN-not-NaN      0
+   NEW Vectorized store (AVX2)        wrong            0   NaN-not-NaN      0
+   OLD Vectorized store (AVX2)        wrong   2139062400   NaN-not-NaN 131070   first input 0x8001
+   NEW vector store vs NEW scalar (bits, NaN too): 0 differ
+
+== T4 bf16 -> fp32 vs bits<<16 (every bit, NaN payload too)  (65536 inputs)
+   NEW Types.h bfloat16_to_float      wrong            0   NaN-not-NaN      0
+   OLD Types.h bfloat16_to_float      wrong            0   NaN-not-NaN      0
+   PT f32_from_bits                   wrong            0   NaN-not-NaN      0
+   EIG bfloat16_to_float              wrong            0   NaN-not-NaN      0
+   CU __bfloat162float (host)         wrong            0   NaN-not-NaN      0
+
+== T5 fp16 <-> bf16 through fp32 vs ONE direct rounding (all 65,536 each)
+   fp16->fp32->bf16 (NEW) vs EX direct      wrong 0  NaN-not-NaN 0
+   bf16->fp32->fp16 (NEW) vs EX direct      wrong 0  NaN-not-NaN 0
+
+(T6 inputs: 1802792 targeted around every bf16/fp16 step + 402653184 random)
+
+== T6 double -> bf16 / fp16 vs FPU-exact reference  (404455976 inputs)
+   NEW double_to_bfloat16             wrong            0   NaN-not-NaN      0
+   NEW struct bfloat16_t(double)      wrong            0   NaN-not-NaN      0
+   CU __double2bfloat16 (host)        wrong            0   NaN-not-NaN      0
+   GCC __bf16(double)                 wrong            0   NaN-not-NaN      0
+   OLD struct (float, then OLD f2bf)  wrong     76575040   NaN-not-NaN      0   first input 0x6
+   via float, then FIXED f2bf         wrong       366742   NaN-not-NaN      0   first input 0x6
+   NEW double_to_float16              wrong            0   NaN-not-NaN      0
+   NEW struct float16_t(double)       wrong            0   NaN-not-NaN      0
+   NP FromDoubleBits                  wrong            0   NaN-not-NaN      0
+   CU __double2half (host)            wrong            0   NaN-not-NaN      0
+   GCC _Float16(double)               wrong            0   NaN-not-NaN      0
+   OLD struct (float, then OLD f2h)   wrong     19553543   NaN-not-NaN      0
+   via float, then FIXED f2h          wrong       356810   NaN-not-NaN      0
+   examples: bfloat16_t(1+2^-8+2^-30)=0x3f81 (want 0x3f81)  float16_t(1+2^-11+2^-40)=0x3c01 (want 0x3c01)
+
+== T7a all 2^32 int32 / uint32 -> bf16 / fp16 vs GCC  (4294967296 inputs)
+   NEW bfloat16_t(int32) vs GCC       wrong            0   NaN-not-NaN      0
+   CU __int2bfloat16_rn vs GCC        wrong            0   NaN-not-NaN      0
+   OLD bfloat16_t(int32) vs GCC       wrong   4294836225   NaN-not-NaN      0   first input 0x10000
+   NEW bfloat16_t(uint32) vs GCC      wrong            0   NaN-not-NaN      0
+   CU __uint2bfloat16_rn vs GCC       wrong            0   NaN-not-NaN      0
+   NEW float16_t(int32) vs GCC        wrong            0   NaN-not-NaN      0
+   CU __int2half_rn vs GCC            wrong            0   NaN-not-NaN      0
+   OLD float16_t(int32) vs GCC        wrong         5140   NaN-not-NaN      0   first input 0x801
+   NEW float16_t(uint32) vs GCC       wrong            0   NaN-not-NaN      0
+   CU __uint2half_rn vs GCC           wrong            0   NaN-not-NaN      0
+
+== T7b int64 / uint64 -> bf16 / fp16 vs GCC (targeted + random)  (268894214 inputs)
+   NEW bfloat16_t(int64) vs GCC       wrong            0   NaN-not-NaN      0
+   CU __ll2bfloat16_rn vs GCC         wrong            0   NaN-not-NaN      0
+   NEW bfloat16_t(uint64) vs GCC      wrong            0   NaN-not-NaN      0
+   CU __ull2bfloat16_rn vs GCC        wrong            0   NaN-not-NaN      0
+   NEW float16_t(int64) vs GCC        wrong            0   NaN-not-NaN      0
+   OLD bfloat16_t(int64) vs GCC       wrong    116568562   NaN-not-NaN      0   first input 0x10000
+   NEW float16_t(uint64) vs GCC       wrong            0   NaN-not-NaN      0
+   example: bfloat16_t(2^24+2^16+1)=0x4b81 (want 0x4b81)
+
+== T8 operator= / complex32_t / Bug D spot checks: 0 wrong
+
+== NaN output of the NEW host code is exactly 0x7FFF: 0 exceptions
+
+RESULT: PASS (0 required checks failed)

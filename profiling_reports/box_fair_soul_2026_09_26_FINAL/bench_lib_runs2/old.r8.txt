@@ -1,0 +1,29 @@
+LIB|/root/gautam_k/BluTrain/TI_old/lib/libtensor.so
+FP|0x7f80
+CASE|gpu bf16 t*2.0f (64M)|185.077|0|0|71453777e0bf9fe0|exact
+CASE|gpu bf16 t*2.0f abs>=65536 (64M)|184.962|67108864|0|34e2d85ea149d283|exact
+CASE|gpu bf16 t*2.0f (1M)|4.815|0|0|44cf763f1dde42fc|exact
+CASE|gpu bf16 t+1.5f (64M)|184.960|0|0|e2ab06bcc7347a80|exact
+CASE|gpu bf16 t/3.0f (64M)|279.497|67036478|0|7832f37f1f482fd0|approx
+CASE|gpu f16 t*2.0f (64M)|213.430|0|0|bd6a7e39235d9949|exact
+CASE|gpu bf16 a+b (64M)|97.105|0|0|cdf90ff072af8179|exact
+CASE|gpu bf16 a*b (64M)|308.167|0|0|e2b8c0b054a0c1b1|exact
+CASE|gpu bf16 a/b (64M)|310.364|0|0|c7f8ae383d134306|approx
+CASE|gpu f16 a-b (64M)|328.374|1869515|0|27025bc0d1216815|exact
+CASE|gpu bf16 a>b (64M)|283.311|0|0|b11aef3ae195db4b|none
+CASE|gpu bf16 reduce_sum all (64M)|109.743|0|0|99603a00c467e6be|none
+CASE|gpu c32 reduce_product axis1 [4096,64]|7.976|0|0|076ee11bf21d8383|none
+CASE|gpu c32 reduce_product axis0 [64,4096]|21.320|0|0|9f7ecada60feb47f|none
+CASE|CONTROL gpu as_type f32->bf16 (4M)|5.190|0|0|c0342f8e07fac19b|none
+CASE|CONTROL gpu gelu_forward bf16 (64M)|149.681|0|0|850d63836f510d4a|none
+CASE|cpu as_type f32->bf16 (4M)|1537.957|0|0|c0342f8e07fac19b|exact
+CASE|cpu as_type bf16->f32 (4M)|764.730|0|0|92c028a08a843f5d|exact
+CASE|cpu as_type f32->f16 (4M)|5065.123|1803|0|e54b9b6e7e840b6a|exact
+CASE|cpu as_type f64->bf16 (4M)|2058.699|47|0|c0342f8e07fac19b|exact
+CASE|cpu bf16 reduce_mean axis0 [2,2M]|5960.373|0|0|341f057cc08254b3|none
+CASE|cpu bf16 reduce_sum axis0 [2,2M]|6000.072|0|0|91c42435929cafe0|none
+CASE|cpu bf16 gelu_forward (4M)|5999.766|0|0|28bf8c3eaa820db7|none
+CASE|cpu bf16 t*2.0f (4M)|2790.494|0|0|4cc85a9154dd4fb4|exact
+CASE|cpu bf16 a+b (4M)|3523.759|0|0|cf61e4a1392b1074|exact
+CASE|CONTROL cpu as_type f32->f64 (4M)|19214.108|0|0|9bf6363e02bda8d5|none
+CASE|CONTROL cpu f32 a+b (4M)|990.465|0|0|539e2cd776739345|none

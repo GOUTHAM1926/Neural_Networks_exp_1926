@@ -1,0 +1,31 @@
+zero: stop on a NaN/Inf gradient in ShardedMuon and SymmetricShardedOptimizer (F1)
+
+Same fix ShardedOptimizer (v1) got in a264586. Both guards were
+`if (sc && !isfinite(nsq))`, and no trainer installs a LossScaler,
+so a NaN/Inf gradient was never caught:
+  - v2 (BLU_ZERO_V2=1): the NaN/Inf reached Adam and was written
+    into the weights and into m/v.
+  - Muon (BLU_OPTIMIZER=muon), 1-D tensors: NaN written into the
+    weights.
+  - Muon, 2-D matrices: silent. The NaN entered the momentum m in
+    place, then the Newton-Schulz check dropped the update. The
+    weights stayed finite, but m kept the NaN, so that matrix's
+    update was dropped on every later step too: it stopped
+    learning with no error.
+  - BLU_GLOBAL_CLIP=1 did not help: step() measured the NaN again
+    and went on.
+Now, without a scaler, step() throws ZeroNonFiniteGradError before
+any update (with a scaler: unchanged, skip + back off), and a NaN
+norm is logged as nan instead of 0. The existing catch in
+bluscript_zero_ckpt covers all three optimizers: one [FATAL] line,
+exit code 4, no checkpoint written. Trainer change: comment only.
+A finite step takes exactly the old code path.
+
+Tested on 1x H200, standalone optimizer test (bf16 + fp32; NaN/Inf
+in a matrix and in a vector; global-clip path; with and without a
+LossScaler; a finite control step):
+  before: v1 12/12 pass; v2 and Muon fail all 16 no-scaler cases
+  after:  36/36 pass; weights, m/v and step count unchanged on
+          every stopped step; finite steps still update
+Trainer builds. Not run with more than 1 GPU (every rank sees the
+same all-reduced norm, so all ranks stop together).

@@ -1,0 +1,213 @@
+--- applied/src/UnaryOps/cuda/ReductionImplGPU.cu	2026-09-26 21:40:55.426879098 +0530
++++ applied2/src/UnaryOps/cuda/ReductionImplGPU.cu	2026-09-26 21:59:02.181461331 +0530
+@@ -49,6 +49,49 @@
+     num_mp = cached_num_mp; max_tpm = cached_max_tpm;
+ }
+ 
++// Modified: new helper. Generic layouts (reduced axes that are not consecutive, e.g. {0, 2}, or a
++// non-contiguous input such as a transposed view) arrive from compute_reduction_layout with only
++// path = Generic: num_outputs = reduced_count = 0 and no offset information. The dispatchers used
++// to launch them with EMPTY offset calculators, and build_reduce_config clamps both counts to 1, so
++// the kernel computed a single output from src[0 .. ] -- wrong for every such reduction.
++// This fills in the counts and builds the two calculators the Generic kernel path already uses
++// (out_base = output_calc.get(output_idx), in_off = input_calc.get(i), value = src[out_base + in_off]):
++//   output_calc walks the NON-reduced dims in order -> the output tensor's C order;
++//   input_calc  walks the REDUCED dims             -> one reduction step each.
++// Both use the input's real strides, so any view is addressed correctly. No-op for Tier 1/2.
++// OffsetCalculator holds at most MAX_DIMS dims per side and silently ignores the rest, so more
++// dims than that is refused here instead of computed wrongly.
++static void setup_generic_path(detail::ReductionLayout& layout, const Tensor& input,
++                               const std::vector<int64_t>& axes,
++                               detail::OffsetCalculator<1, uint32_t>& input_calc,
++                               detail::OffsetCalculator<1, uint32_t>& output_calc) {
++    if (layout.path != detail::ReductionLayout::Path::Generic) return;
++    const auto& dims    = input.shape().dims;
++    const auto& strides = input.stride().strides;
++    const int nd = static_cast<int>(dims.size());
++    bool is_reduced[64] = {false};
++    for (int64_t a : axes) is_reduced[a] = true;
++
++    std::vector<int64_t> r_sz, r_st, o_sz, o_st;
++    int64_t reduced = 1, outputs = 1;
++    for (int d = 0; d < nd; ++d) {
++        if (is_reduced[d]) { r_sz.push_back(dims[d]); r_st.push_back(strides[d]); reduced *= dims[d]; }
++        else               { o_sz.push_back(dims[d]); o_st.push_back(strides[d]); outputs *= dims[d]; }
++    }
++    constexpr int kMaxDims = detail::OffsetCalculator<1, uint32_t>::MAX_DIMS;
++    if (static_cast<int>(r_sz.size()) > kMaxDims || static_cast<int>(o_sz.size()) > kMaxDims)
++        throw std::runtime_error("GPU reduction: a Generic-path reduction supports at most " +
++                                 std::to_string(kMaxDims) + " reduced and " + std::to_string(kMaxDims) +
++                                 " kept dims (got " + std::to_string(r_sz.size()) + " and " +
++                                 std::to_string(o_sz.size()) + ")");
++    layout.num_outputs   = outputs;
++    layout.reduced_count = reduced;
++    const int64_t* rsp = r_st.data();
++    const int64_t* osp = o_st.data();
++    input_calc  = detail::OffsetCalculator<1, uint32_t>(static_cast<int>(r_sz.size()), r_sz.data(), &rsp);
++    output_calc = detail::OffsetCalculator<1, uint32_t>(static_cast<int>(o_sz.size()), o_sz.data(), &osp);
++}
++
+ // ═══════════════════════════════════════════════════════════
+ // GPU VALUE REDUCTION DISPATCHER
+ // All 10 scalar ops: sum, product, min, max, nansum, nanproduct,
+@@ -93,10 +136,12 @@
+ 
+     // ── 4. Config solver ──
+     int num_mp, max_tpm; get_device_props(num_mp, max_tpm);
+-    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+-
+-    // ── 5. OffsetCalculator (empty: Tier 1/2 use direct pointer math) ──
++    // ── 5. OffsetCalculator (empty for Tier 1/2; built for Generic) ──
++    // Modified: built BEFORE the config, because setup_generic_path also sets the Generic
++    // layout's num_outputs / reduced_count, which the config is sized from.
+     detail::OffsetCalculator<1, uint32_t> input_calc{}, output_calc{};
++    setup_generic_path(layout, input, normalized_axes, input_calc, output_calc);
++    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+     int64_t step_stride = (layout.path == detail::ReductionLayout::Path::OuterContiguous)
+                           ? layout.inner_count : 1;
+ 
+@@ -108,7 +153,8 @@
+     const CudaT*   src = reinterpret_cast<const CudaT*>(input.data<T>());
+     OutputCudaT*   dst = reinterpret_cast<OutputCudaT*>(output.data<OutputCppT>());
+     cuda::launch_reduce_kernel<CudaT, OutputCudaT, ops_t>(
+-        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream);
++        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream,
++        (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.input_outer_stride : 0);
+ 
+     cudaError_t err = cudaGetLastError();
+     if (err != cudaSuccess)
+@@ -143,8 +189,10 @@
+     using arg_t = decltype(ops.identity()); // = ValueIndex<CudaT>
+ 
+     int num_mp, max_tpm; get_device_props(num_mp, max_tpm);
+-    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
++    // Modified: calculators built before the config (setup_generic_path sets the Generic counts).
+     detail::OffsetCalculator<1, uint32_t> input_calc{}, output_calc{};
++    setup_generic_path(layout, input, normalized_axes, input_calc, output_calc);
++    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+     int64_t step_stride = (layout.path == detail::ReductionLayout::Path::OuterContiguous)
+                           ? layout.inner_count : 1;
+     int smem = std::max(config.shared_memory_size(),
+@@ -153,7 +201,8 @@
+     const CudaT* src = reinterpret_cast<const CudaT*>(input.data<T>());
+     int64_t*     dst = output.data<int64_t>();
+     cuda::launch_reduce_kernel<CudaT, int64_t, ops_t>(
+-        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream);
++        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream,
++        (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.input_outer_stride : 0);
+ 
+     cudaError_t err = cudaGetLastError();
+     if (err != cudaSuccess)
+@@ -224,15 +273,18 @@
+     using arg_t = decltype(ops.identity());
+ 
+     int num_mp, max_tpm; get_device_props(num_mp, max_tpm);
+-    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
++    // Modified: calculators built before the config (setup_generic_path sets the Generic counts).
+     detail::OffsetCalculator<1, uint32_t> input_calc{}, output_calc{};
++    setup_generic_path(layout, input, normalized_axes, input_calc, output_calc);
++    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+     int64_t step_stride = (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.inner_count : 1;
+     int smem = std::max(config.shared_memory_size(), (config.block_width * config.block_height / 32 + 1) * (int)sizeof(arg_t));
+ 
+     const CudaT* src = reinterpret_cast<const CudaT*>(input.data<T>());
+     OutCudaT*    dst = reinterpret_cast<OutCudaT*>(output.data<OutT>());
+     cuda::launch_reduce_kernel<CudaT, OutCudaT, ops_t>(
+-        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream);
++        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream,
++        (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.input_outer_stride : 0);
+ 
+     cudaError_t err = cudaGetLastError();
+     if (err != cudaSuccess)
+@@ -277,8 +329,10 @@
+     using arg_t = decltype(ops.identity()); // = WelfordData<AccScalar>
+ 
+     int num_mp, max_tpm; get_device_props(num_mp, max_tpm);
+-    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
++    // Modified: calculators built before the config (setup_generic_path sets the Generic counts).
+     detail::OffsetCalculator<1, uint32_t> input_calc{}, output_calc{};
++    setup_generic_path(layout, input, normalized_axes, input_calc, output_calc);
++    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+     int64_t step_stride = (layout.path == detail::ReductionLayout::Path::OuterContiguous)
+                           ? layout.inner_count : 1;
+     int smem = std::max(config.shared_memory_size(),
+@@ -287,7 +341,8 @@
+     const CudaT*  src = reinterpret_cast<const CudaT*>(input.data<T>());
+     OutputCudaT*  dst = reinterpret_cast<OutputCudaT*>(output.data<OutputCppT>());
+     cuda::launch_reduce_kernel<CudaT, OutputCudaT, ops_t>(
+-        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream);
++        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream,
++        (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.input_outer_stride : 0);
+ 
+     cudaError_t err = cudaGetLastError();
+     if (err != cudaSuccess)
+--- applied/include/ops/helpers/ReductionKernels.cuh	2026-09-26 21:40:55.426879098 +0530
++++ applied2/include/ops/helpers/ReductionKernels.cuh	2026-09-26 21:59:02.181461331 +0530
+@@ -144,10 +144,14 @@
+     int num_outputs       = static_cast<int>(layout.num_outputs);
+     int inputs_per_output = static_cast<int>(layout.reduced_count);
+ 
+-    // OuterContiguous: inner_count is the "fast" dimension (outputs),
+-    // num_outputs is how many rows we reduce over.
++    // Modified: OuterContiguous keeps num_outputs = layout.num_outputs (= outer * inner). It was
++    // reset to inner_count, which is right only for a leading-axis reduction (outer == 1). For a
++    // middle-axis reduction (outer > 1, e.g. axis 1 of [7, 300, 5]) only the first `inner` outputs
++    // got a thread, so every later slab of the output was never written (measured on the H200:
++    // 30 of 35 outputs wrong, sum fp32 and mean bf16). The kernel now maps each output index to its
++    // slab (ReduceOp::outer_stride). For outer == 1 both values are equal, so nothing changes there.
+     if (layout.path == ReductionLayout::Path::OuterContiguous) {
+-        num_outputs       = static_cast<int>(layout.inner_count);
++        num_outputs       = static_cast<int>(layout.num_outputs);
+         inputs_per_output = static_cast<int>(layout.reduced_count);
+     } else if (layout.path == ReductionLayout::Path::Generic) {
+         if (num_outputs       == 0) num_outputs       = 1;
+@@ -236,6 +240,11 @@
+     const scalar_t*  __restrict__ src;
+     out_scalar_t*    __restrict__ dst;
+     int64_t step_stride;
++    // Modified: OuterContiguous only -- element stride between outer slabs (reduced * inner), so a
++    // middle-axis output (o_outer, o_inner) reads the column starting at
++    // src + o_outer * outer_stride + o_inner. For a leading-axis reduction every output_idx < inner,
++    // so o_outer == 0 and the address is src + output_idx exactly as before.
++    int64_t outer_stride = 0;
+     // Multi-CTA staging (populated only when config.should_global_reduce()).
+     // cta_buf: num_outputs * ctas_per_output * sizeof(arg_t), uninitialised.
+     // semaphores: num_outputs ints, zero-initialised by host before launch.
+@@ -270,8 +279,7 @@
+     //     max fp32 476 / 512, mean fp64 480 / 512;
+     //   block_width 16 / 8 (two / four rows per warp): sum [4096, 16] and max [4096, 8]
+     //     4096 / 4096 each;
+-    //   block_width > 32: sum [2, 65536] 2 / 2; multi-CTA sum [8, 1 << 20] 8 / 8;
+-    //   middle axis: sum fp32 [7, 300, 5] 30 / 35.
++    //   block_width > 32: sum [2, 65536] 2 / 2; multi-CTA sum [8, 1 << 20] 8 / 8.
+     // Reductions without block_x_reduce (axis 0 and full reductions, block_y only) were right.
+     // Shared memory: only when a row spans more than one warp, indexed by the full 2-D thread
+     // id, num_threads slots -- exactly config.shared_memory_size(), which is 0 when
+@@ -416,8 +424,12 @@
+     else if constexpr (PATH == detail::ReductionLayout::Path::OuterContiguous) {
+         // TIER 2: Single-stride – output dimension is innermost, reduced dim is outer.
+         // Covers ~25% of DL workloads (e.g. sum(axis=0) on NCHW → C).
+-        const scalar_t* __restrict__ base_ptr = op.src + output_idx;
++        // Modified: map the flat output index to its slab. Outputs are ordered (o_outer, o_inner)
++        // with inner_count == step_stride. It was src + output_idx, right only when outer == 1.
+         const index_t row_stride = (index_t)op.step_stride;
++        const index_t o_outer    = output_idx / row_stride;
++        const index_t o_inner    = output_idx - o_outer * row_stride;
++        const scalar_t* __restrict__ base_ptr = op.src + o_outer * (index_t)op.outer_stride + o_inner;
+ 
+         // ILP main loop: VT0 independent accumulators, strided access
+         while (idx + (VT0 - 1) * stride < end) {
+@@ -588,10 +600,12 @@
+     detail::ReductionLayout::Path path,
+     int64_t step_stride,
+     int smem,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    int64_t outer_stride = 0)   // Modified: OuterContiguous slab stride, see ReduceOp::outer_stride
+ {
+     // Pack into single struct for minimal launch parameter overhead
+     detail::ReduceOp<scalar_t, out_scalar_t, ops_t, index_t> op;
++    op.outer_stride = outer_stride;
+     op.ops = ops;
+     op.config = config;
+     op.input_calc = input_calc;

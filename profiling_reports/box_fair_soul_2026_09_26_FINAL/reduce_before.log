@@ -1,0 +1,26 @@
+CASE|mean bf16 [65536,1024] axes {0}|CRASH|an illegal memory access was encountered
+CASE|mean bf16 [1024,1024] axes {0}|CRASH|an illegal memory access was encountered
+CASE|mean bf16 [4096,512] axes {0}|CRASH|an illegal memory access was encountered
+CASE|mean bf16 [33,1000] axes {0}|ok|0 of 1000 outputs off by more than 1 ulp (worst 0.5 ulp)
+CASE|mean bf16 [512,4096] axes {1}|WRONG|187 of 512 outputs off by more than 1 ulp (worst 4.0 ulp)
+CASE|mean bf16 [1024,65536] axes {1}|CRASH|an illegal memory access was encountered
+CASE|mean bf16 [7,300,5] axes {1}|CRASH|an illegal memory access was encountered
+CASE|mean bf16 [1048576] axes {}|CRASH|an illegal memory access was encountered
+CASE|mean bf16 [256,256] axes {0,1}|CRASH|an illegal memory access was encountered
+CASE|mean f16 [65536,1024] axes {0}|CRASH|an illegal memory access was encountered
+CASE|mean f16 [1024,1024] axes {0}|CRASH|an illegal memory access was encountered
+CASE|mean f16 [512,4096] axes {1}|WRONG|438 of 512 outputs off by more than 1 ulp (worst 39.5 ulp)
+CASE|mean f32 [65536,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+CASE|mean f32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+CASE|mean f32 [512,4096] axes {1}|WRONG|480 of 512 outputs off by more than 1 ulp (worst 4281.4 ulp)
+CASE|mean f64 [65536,256] axes {0}|ok|0 of 256 outputs off by more than 1 ulp (worst 0.0 ulp)
+CASE|mean f64 [512,4096] axes {1}|WRONG|480 of 512 outputs off by more than 1 ulp (worst 137473127488.0 ulp)
+CASE|sum bf16 [512,4096] axes {1}|WRONG|209 of 512 outputs off by more than 1 ulp (worst 4.8 ulp)
+CASE|sum f32 [512,4096] axes {1}|WRONG|478 of 512 outputs off by more than 1 ulp (worst 3668.7 ulp)
+CASE|sum f32 [7,300,5] axes {1}|WRONG|30 of 35 outputs off by more than 1 ulp (worst 197815.2 ulp)
+CASE|sum bf16 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.5 ulp)
+CASE|sum f32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+CASE|sum f32 [1048576] axes {}|ok|0 of 1 outputs off by more than 1 ulp (worst 0.0 ulp)
+CASE|max bf16 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.0 ulp)
+CASE|max f32 [512,4096] axes {1}|WRONG|471 of 512 outputs off by more than 1 ulp (worst 400.2 ulp)
+CASE|max f32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)

@@ -1,0 +1,15 @@
+LIB|/root/gautam_k/BluTrain/TI_old/lib/libtensor.so
+FP|0x7f80
+CASE|gpu bf16 t*2.0f (64M)|185.059|0|0|71453777e0bf9fe0|exact
+CASE|gpu bf16 t*2.0f |x|>=65536 (64M)|184.999|67108864|0|34e2d85ea149d283|exact
+CASE|gpu bf16 t*2.0f (1M)|4.780|0|0|44cf763f1dde42fc|exact
+CASE|gpu bf16 t+1.5f (64M)|185.006|0|0|e2ab06bcc7347a80|exact
+CASE|gpu bf16 t/3.0f (64M)|280.085|67036478|0|7832f37f1f482fd0|approx
+CASE|gpu f16 t*2.0f (64M)|213.363|0|0|bd6a7e39235d9949|exact
+CASE|gpu bf16 a+b (64M)|97.126|0|0|cdf90ff072af8179|exact
+CASE|gpu bf16 a*b (64M)|308.215|0|0|e2b8c0b054a0c1b1|exact
+CASE|gpu bf16 a/b (64M)|310.481|0|0|c7f8ae383d134306|approx
+CASE|gpu f16 a-b (64M)|328.283|1869515|0|27025bc0d1216815|exact
+CASE|gpu bf16 a>b (64M)|283.551|0|0|b11aef3ae195db4b|none
+CASE|gpu bf16 reduce_sum all (64M)|109.830|0|0|99603a00c467e6be|none
+CUDA error an illegal memory access was encountered at /root/gautam_k/conv_final/bench/bench_lib.cu:173

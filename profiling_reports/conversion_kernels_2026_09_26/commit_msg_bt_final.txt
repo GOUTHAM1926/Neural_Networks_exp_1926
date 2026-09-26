@@ -1,0 +1,6 @@
+bump Tensor-Implementations to 3a08ade: GPU as_type conversion fixes
+
+GPU as_type converts directly like the CPU (int32 > 2^24, int64, uint,
+double were rounded through float; int/double -> bf16/fp16 rounded twice),
+complex -> complex is converted instead of silently skipped. 169/169 dtype
+pairs match the CPU on 1x H200; speed unchanged.

@@ -1,0 +1,6 @@
+bump Tensor-Implementations to @SHA@: reduction fixes
+
+GPU mean crash (bf16/fp16/int), wrong last-axis and middle-axis reductions,
+integer mean returning 0 (now fp64, bit-identical to the CPU), Generic-path
+offsets, CPU middle axis, multi-CTA shared-memory race. 43/43 on GPU and CPU
+on 1x H200; memcheck and racecheck clean.

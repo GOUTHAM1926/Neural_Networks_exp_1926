@@ -1,0 +1,49 @@
+=== F1 test (old)  2026-09-26 15:31:35  BluTrain e3633e8
+5b75c6e75590fdc31857d07c77737dbe  dist/zero/src/ShardedMuon.cpp
+603c483e683a3a34348ddd2fa8373138  dist/zero/src/SymmetricShardedOptimizer.cpp
+f6e45b96f784f3a52ad04aa0d4f0ffe2  dist/zero/src/ShardedOptimizer.cpp
+--- compile (CPU only): /usr/bin/mpic++ -std=c++2a -fPIC -O3 -g -DWITH_CUDA -fopenmp -DUSE_FUSED_RMS_ROPE=1 -ITensor-Implementations/include -IProfiler/include -I/usr/local/cuda/include -Idist -Idist/FSDP -Idist/Tensor-Parallelism -Idist/Tensor-Parallelism/tensor -Idist/Tensor-Parallelism/dnn -Idist/Tensor-Parallelism/bridge -Idist/Tensor-Parallelism/memory -Idist/Data-Parallel/include -Idist/communication/include -Idist/zero/include -Idist/Distributed_Checkpointing/include -I/opt/nvidia/nsight-compute/2026.1.1/host/target-linux-x64/nvtx/include -o /root/gautam_k/f1/test_f1_old /root/gautam_k/f1/test_f1_nonfinite.cpp dist/FSDP/fsdp_init.cpp dist/FSDP/fsdp_comm.cpp dist/FSDP/fsdp_ddp.cpp dist/zero/src/ShardedOptimizer.cpp dist/zero/src/SymmetricShardedOptimizer.cpp dist/zero/src/ShardedMuon.cpp -LTensor-Implementations/lib -LProfiler/lib -Ldist/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/root/gautam_k/BluTrain/Tensor-Implementations/lib -Wl,-rpath,/root/gautam_k/BluTrain/Profiler/lib -Wl,-rpath,/root/gautam_k/BluTrain/dist/lib -Wl,-rpath,/usr/lib/x86_64-linux-gnu -ldist -ltensor -lprofiler -lblublas -lcuda -lcudart -lcublas -lcurand -lnccl -lmpi -lgomp -lpthread -ldl -lz
+--- compiled in 34 s
+--- new message strings in the binary (old: 0, new: 2): 0
+--- run on GPU 0
+CASE|v1|bf16|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0, grad_norm 1.654424
+CASE|v1|bf16|nan_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|bf16|nan_vector|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|bf16|inf_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = inf in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|bf16|nan_globalclip|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; reduce_and_measure=-1.000000; [ZeRO] non-finite gradient: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|bf16|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|v1|fp32|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0, grad_norm 1.654400
+CASE|v1|fp32|nan_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|fp32|nan_vector|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|fp32|inf_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = inf in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|fp32|nan_globalclip|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; reduce_and_measure=-1.000000; [ZeRO] non-finite gradient: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|fp32|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|v2|bf16|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0, grad_norm 1.654424
+CASE|v2|bf16|nan_matrix|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; 
+CASE|v2|bf16|nan_vector|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; 
+CASE|v2|bf16|inf_matrix|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; 
+CASE|v2|bf16|nan_globalclip|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; reduce_and_measure=-1.000000; 
+CASE|v2|bf16|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|v2|fp32|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0, grad_norm 1.654400
+CASE|v2|fp32|nan_matrix|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; 
+CASE|v2|fp32|nan_vector|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; 
+CASE|v2|fp32|inf_matrix|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; 
+CASE|v2|fp32|nan_globalclip|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; reduce_and_measure=-1.000000; 
+CASE|v2|fp32|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|mu|bf16|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0; step-1 NS updates rejected 0; NEXT finite step: NS updates rejected 0, non-finite m/v 0, grad_norm 1.654424
+CASE|mu|bf16|nan_matrix|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 1; step-1 NS updates rejected 1; NEXT finite step: NS updates rejected 1, non-finite m/v 1; 
+CASE|mu|bf16|nan_vector|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; step-1 NS updates rejected 0; NEXT finite step: NS updates rejected 0, non-finite m/v 2; 
+CASE|mu|bf16|inf_matrix|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 1; step-1 NS updates rejected 1; NEXT finite step: NS updates rejected 1, non-finite m/v 1; 
+CASE|mu|bf16|nan_globalclip|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 1; step-1 NS updates rejected 1; NEXT finite step: NS updates rejected 1, non-finite m/v 1; reduce_and_measure=-1.000000; 
+CASE|mu|bf16|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|mu|fp32|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0; step-1 NS updates rejected 0; NEXT finite step: NS updates rejected 0, non-finite m/v 0, grad_norm 1.654400
+CASE|mu|fp32|nan_matrix|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 1; step-1 NS updates rejected 1; NEXT finite step: NS updates rejected 1, non-finite m/v 1; 
+CASE|mu|fp32|nan_vector|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 1, non-finite m/v 2; step-1 NS updates rejected 0; NEXT finite step: NS updates rejected 0, non-finite m/v 2; 
+CASE|mu|fp32|inf_matrix|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 1; step-1 NS updates rejected 1; NEXT finite step: NS updates rejected 1, non-finite m/v 1; 
+CASE|mu|fp32|nan_globalclip|FAIL|DID NOT THROW, step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 1; step-1 NS updates rejected 1; NEXT finite step: NS updates rejected 1, non-finite m/v 1; reduce_and_measure=-1.000000; 
+CASE|mu|fp32|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+
+==================== SUMMARY ====================
+cases: 36, PASS 20, FAIL 16
+RESULT: FAIL
+--- exit code 1

@@ -1,0 +1,53 @@
+run failed: old round 1 (see /root/gautam_k/bench_lib_runs/old.r1.txt)
+done: round 1 old
+run failed: new round 1 (see /root/gautam_k/bench_lib_runs/new.r1.txt)
+done: round 1 new
+run failed: new round 2 (see /root/gautam_k/bench_lib_runs/new.r2.txt)
+done: round 2 new
+run failed: old round 2 (see /root/gautam_k/bench_lib_runs/old.r2.txt)
+done: round 2 old
+run failed: old round 3 (see /root/gautam_k/bench_lib_runs/old.r3.txt)
+done: round 3 old
+run failed: new round 3 (see /root/gautam_k/bench_lib_runs/new.r3.txt)
+done: round 3 new
+run failed: new round 4 (see /root/gautam_k/bench_lib_runs/new.r4.txt)
+done: round 4 new
+run failed: old round 4 (see /root/gautam_k/bench_lib_runs/old.r4.txt)
+done: round 4 old
+run failed: old round 5 (see /root/gautam_k/bench_lib_runs/old.r5.txt)
+done: round 5 old
+run failed: new round 5 (see /root/gautam_k/bench_lib_runs/new.r5.txt)
+done: round 5 new
+run failed: new round 6 (see /root/gautam_k/bench_lib_runs/new.r6.txt)
+done: round 6 new
+run failed: old round 6 (see /root/gautam_k/bench_lib_runs/old.r6.txt)
+done: round 6 old
+run failed: old round 7 (see /root/gautam_k/bench_lib_runs/old.r7.txt)
+done: round 7 old
+run failed: new round 7 (see /root/gautam_k/bench_lib_runs/new.r7.txt)
+done: round 7 new
+run failed: new round 8 (see /root/gautam_k/bench_lib_runs/new.r8.txt)
+done: round 8 new
+run failed: old round 8 (see /root/gautam_k/bench_lib_runs/old.r8.txt)
+done: round 8 old
+run failed: old round 9 (see /root/gautam_k/bench_lib_runs/old.r9.txt)
+done: round 9 old
+run failed: new round 9 (see /root/gautam_k/bench_lib_runs/new.r9.txt)
+done: round 9 new
+run failed: new round 10 (see /root/gautam_k/bench_lib_runs/new.r10.txt)
+done: round 10 new
+run failed: old round 10 (see /root/gautam_k/bench_lib_runs/old.r10.txt)
+done: round 10 old
+run failed: old round 11 (see /root/gautam_k/bench_lib_runs/old.r11.txt)
+done: round 11 old
+run failed: new round 11 (see /root/gautam_k/bench_lib_runs/new.r11.txt)
+done: round 11 new
+run failed: new round 12 (see /root/gautam_k/bench_lib_runs/new.r12.txt)
+done: round 12 new
+run failed: old round 12 (see /root/gautam_k/bench_lib_runs/old.r12.txt)
+done: round 12 old
+Traceback (most recent call last):
+  File "/root/gautam_k/conv_final/bench/summarize_lib.py", line 28, in <module>
+    d[v][r] = float(us); d["prec"][v] = (int(w), int(nb), cs, kind)
+              ^^^^^^^^^
+ValueError: could not convert string to float: 'x'

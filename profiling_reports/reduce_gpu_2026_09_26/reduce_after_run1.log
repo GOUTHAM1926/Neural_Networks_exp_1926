@@ -1,0 +1,54 @@
+=== GPU reduction test (after)  2026-09-26 16:20:10  lib 7810aea
+b91fe4e6790e4e11ded605b06c9b1c50  src/UnaryOps/cuda/ReductionImplGPU.cu
+fad00b91c498414fa3ab6c9bf21411d3  include/ops/helpers/ReductionKernels.cuh
+-rwxr-xr-x 1 root root 55690752 2026-09-26_16:20:10 lib/libtensor.so
+--- compile (CPU only)
+--- 33 cases on GPU 0
+0 CASE|mean bf16 [65536,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.5 ulp)
+1 CASE|mean bf16 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.5 ulp)
+2 CASE|mean bf16 [4096,512] axes {0}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.5 ulp)
+3 CASE|mean bf16 [33,1000] axes {0}|ok|0 of 1000 outputs off by more than 1 ulp (worst 0.5 ulp)
+4 CASE|mean bf16 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.5 ulp)
+5 CASE|mean bf16 [1024,65536] axes {1}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.5 ulp)
+6 CASE|mean bf16 [7,300,5] axes {1}|WRONG|30 of 35 outputs off by more than 1 ulp (worst 164.8 ulp)
+7 CASE|mean bf16 [1048576] axes {}|ok|0 of 1 outputs off by more than 1 ulp (worst 0.0 ulp)
+8 CASE|mean bf16 [256,256] axes {0,1}|ok|0 of 1 outputs off by more than 1 ulp (worst 0.1 ulp)
+9 CASE|mean f16 [65536,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.5 ulp)
+10 CASE|mean f16 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.5 ulp)
+11 CASE|mean f16 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.5 ulp)
+12 CASE|mean f32 [65536,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+13 CASE|mean f32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+14 CASE|mean f32 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.0 ulp)
+15 CASE|mean f64 [65536,256] axes {0}|ok|0 of 256 outputs off by more than 1 ulp (worst 0.0 ulp)
+16 CASE|mean f64 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.0 ulp)
+17 CASE|sum bf16 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.5 ulp)
+18 CASE|sum f32 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.0 ulp)
+19 CASE|sum f32 [7,300,5] axes {1}|WRONG|30 of 35 outputs off by more than 1 ulp (worst 197815.2 ulp)
+20 CASE|sum bf16 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.5 ulp)
+21 CASE|sum f32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+22 CASE|sum f32 [1048576] axes {}|ok|0 of 1 outputs off by more than 1 ulp (worst 0.0 ulp)
+23 CASE|max bf16 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.0 ulp)
+24 CASE|max f32 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.0 ulp)
+25 CASE|max f32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp)
+26 CASE|sum f32 [4096,16] axes {1}|ok|0 of 4096 outputs off by more than 1 ulp (worst 0.0 ulp)
+27 CASE|max f32 [4096,8] axes {1}|ok|0 of 4096 outputs off by more than 1 ulp (worst 0.0 ulp)
+28 CASE|sum f32 [2,65536] axes {1}|ok|0 of 2 outputs off by more than 1 ulp (worst 0.0 ulp)
+29 CASE|sum f32 [8,1048576] axes {1}|ok|0 of 8 outputs off by more than 1 ulp (worst 0.0 ulp)
+30 CASE|mean bf16 [4,100000] axes {1}|ok|0 of 4 outputs off by more than 1 ulp (worst 0.2 ulp)
+31 CASE|mean i32 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.0 ulp); vs CPU: dtype same, bits identical
+32 CASE|mean i32 [1024,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.0 ulp); vs CPU: dtype same, bits identical
+--- compute-sanitizer memcheck, case 0
+CASE|mean bf16 [65536,1024] axes {0}|ok|0 of 1024 outputs off by more than 1 ulp (worst 0.5 ulp)
+========= ERROR SUMMARY: 0 errors
+--- compute-sanitizer racecheck, case 4
+CASE|mean bf16 [512,4096] axes {1}|ok|0 of 512 outputs off by more than 1 ulp (worst 0.5 ulp)
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+--- compute-sanitizer racecheck, case 29
+=========     and Read access at void OwnTensor::cuda::unified_reduce_kernel<float, float, OwnTensor::detail::SumOp<float>, unsigned int, (OwnTensor::detail::ReductionLayout::Path)0, (int)512, (int)4>(OwnTensor::detail::ReduceOp<T1, T2, T3, T4>)+0x1db0 [2048 hazards]
+=========     and Read access at void OwnTensor::cuda::unified_reduce_kernel<float, float, OwnTensor::detail::SumOp<float>, unsigned int, (OwnTensor::detail::ReductionLayout::Path)0, (int)512, (int)4>(OwnTensor::detail::ReduceOp<T1, T2, T3, T4>)+0x1e50 [1664 hazards]
+=========     and Read access at void OwnTensor::cuda::unified_reduce_kernel<float, float, OwnTensor::detail::SumOp<float>, unsigned int, (OwnTensor::detail::ReductionLayout::Path)0, (int)512, (int)4>(OwnTensor::detail::ReduceOp<T1, T2, T3, T4>)+0x1ee0 [1792 hazards]
+=========     and Read access at void OwnTensor::cuda::unified_reduce_kernel<float, float, OwnTensor::detail::SumOp<float>, unsigned int, (OwnTensor::detail::ReductionLayout::Path)0, (int)512, (int)4>(OwnTensor::detail::ReduceOp<T1, T2, T3, T4>)+0x1f90 [1536 hazards]
+=========     and Read access at void OwnTensor::cuda::unified_reduce_kernel<float, float, OwnTensor::detail::SumOp<float>, unsigned int, (OwnTensor::detail::ReductionLayout::Path)0, (int)512, (int)4>(OwnTensor::detail::ReduceOp<T1, T2, T3, T4>)+0x2060 [4224 hazards]
+
+==================== SUMMARY (after) ====================
+ok: 33   WRONG: 2   CRASH: 0   EXCEPTION: 0

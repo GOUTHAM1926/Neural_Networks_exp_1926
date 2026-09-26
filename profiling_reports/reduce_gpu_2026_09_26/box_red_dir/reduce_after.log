@@ -1,0 +1,70 @@
+=== GPU reduction test (after)  2026-09-26 16:47:30  lib 7810aea
+90a94392b445d1cffc06c4440efbc0c2  src/UnaryOps/cuda/ReductionImplGPU.cu
+e79df4452b34463361ff420fd2303f49  include/ops/helpers/ReductionKernels.cuh
+-rwxr-xr-x 1 root root 55746400 2026-09-26_16:47:30 lib/libtensor.so
+--- compile (CPU only)
+--- 43 cases on GPU 0
+0 CASE|mean bf16 [65536,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.5 ulp) | CPU: 0 of 1024 wrong (worst 0.5 ulp)
+1 CASE|mean bf16 [1024,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.5 ulp) | CPU: 0 of 1024 wrong (worst 0.5 ulp)
+2 CASE|mean bf16 [4096,512] axes {0}|ok|GPU: 0 of 512 wrong (worst 0.5 ulp) | CPU: 0 of 512 wrong (worst 0.5 ulp)
+3 CASE|mean bf16 [33,1000] axes {0}|ok|GPU: 0 of 1000 wrong (worst 0.5 ulp) | CPU: 0 of 1000 wrong (worst 0.5 ulp)
+4 CASE|mean bf16 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.5 ulp) | CPU: 0 of 512 wrong (worst 0.5 ulp)
+5 CASE|mean bf16 [1024,65536] axes {1}|ok|GPU: 0 of 1024 wrong (worst 0.5 ulp) | CPU: 0 of 1024 wrong (worst 0.5 ulp)
+6 CASE|mean bf16 [7,300,5] axes {1}|ok|GPU: 0 of 35 wrong (worst 0.5 ulp) | CPU: 0 of 35 wrong (worst 0.5 ulp)
+7 CASE|mean bf16 [1048576] axes {}|ok|GPU: 0 of 1 wrong (worst 0.0 ulp) | CPU: 0 of 1 wrong (worst 0.0 ulp)
+8 CASE|mean bf16 [256,256] axes {0,1}|ok|GPU: 0 of 1 wrong (worst 0.1 ulp) | CPU: 0 of 1 wrong (worst 0.1 ulp)
+9 CASE|mean f16 [65536,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.5 ulp) | CPU: 0 of 1024 wrong (worst 0.5 ulp)
+10 CASE|mean f16 [1024,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.5 ulp) | CPU: 0 of 1024 wrong (worst 0.5 ulp)
+11 CASE|mean f16 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.5 ulp) | CPU: 0 of 512 wrong (worst 0.5 ulp)
+12 CASE|mean f32 [65536,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.0 ulp) | CPU: 0 of 1024 wrong (worst 0.0 ulp)
+13 CASE|mean f32 [1024,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.0 ulp) | CPU: 0 of 1024 wrong (worst 0.0 ulp)
+14 CASE|mean f32 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.0 ulp) | CPU: 0 of 512 wrong (worst 0.0 ulp)
+15 CASE|mean f64 [65536,256] axes {0}|ok|GPU: 0 of 256 wrong (worst 0.0 ulp) | CPU: 0 of 256 wrong (worst 0.0 ulp)
+16 CASE|mean f64 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.0 ulp) | CPU: 0 of 512 wrong (worst 0.0 ulp)
+17 CASE|sum bf16 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.5 ulp) | CPU: 0 of 512 wrong (worst 0.5 ulp)
+18 CASE|sum f32 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.0 ulp) | CPU: 0 of 512 wrong (worst 0.0 ulp)
+19 CASE|sum f32 [7,300,5] axes {1}|ok|GPU: 0 of 35 wrong (worst 0.0 ulp) | CPU: 0 of 35 wrong (worst 0.0 ulp)
+20 CASE|sum bf16 [1024,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.5 ulp) | CPU: 0 of 1024 wrong (worst 0.5 ulp)
+21 CASE|sum f32 [1024,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.0 ulp) | CPU: 0 of 1024 wrong (worst 0.0 ulp)
+22 CASE|sum f32 [1048576] axes {}|ok|GPU: 0 of 1 wrong (worst 0.0 ulp) | CPU: 0 of 1 wrong (worst 0.0 ulp)
+23 CASE|max bf16 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.0 ulp) | CPU: 0 of 512 wrong (worst 0.0 ulp)
+24 CASE|max f32 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.0 ulp) | CPU: 0 of 512 wrong (worst 0.0 ulp)
+25 CASE|max f32 [1024,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.0 ulp) | CPU: 0 of 1024 wrong (worst 0.0 ulp)
+26 CASE|sum f32 [4096,16] axes {1}|ok|GPU: 0 of 4096 wrong (worst 0.0 ulp) | CPU: 0 of 4096 wrong (worst 0.0 ulp)
+27 CASE|max f32 [4096,8] axes {1}|ok|GPU: 0 of 4096 wrong (worst 0.0 ulp) | CPU: 0 of 4096 wrong (worst 0.0 ulp)
+28 CASE|sum f32 [2,65536] axes {1}|ok|GPU: 0 of 2 wrong (worst 0.0 ulp) | CPU: 0 of 2 wrong (worst 0.0 ulp)
+29 CASE|sum f32 [8,1048576] axes {1}|ok|GPU: 0 of 8 wrong (worst 0.0 ulp) | CPU: 0 of 8 wrong (worst 0.0 ulp)
+30 CASE|mean bf16 [4,100000] axes {1}|ok|GPU: 0 of 4 wrong (worst 0.2 ulp) | CPU: 0 of 4 wrong (worst 0.2 ulp)
+31 CASE|mean i32 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.0 ulp) | CPU: 0 of 512 wrong (worst 0.0 ulp); GPU vs CPU: dtype same, bits identical
+32 CASE|mean i32 [1024,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.0 ulp) | CPU: 0 of 1024 wrong (worst 0.0 ulp); GPU vs CPU: dtype same, bits identical
+33 CASE|sum f32 [4,64,128] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.0 ulp) | CPU: 0 of 512 wrong (worst 0.0 ulp)
+34 CASE|mean bf16 [3,1000,7] axes {1}|ok|GPU: 0 of 21 wrong (worst 0.4 ulp) | CPU: 0 of 21 wrong (worst 0.4 ulp)
+35 CASE|max f32 [2,3,4,5] axes {1,2}|ok|GPU: 0 of 10 wrong (worst 0.0 ulp) | CPU: 0 of 10 wrong (worst 0.0 ulp)
+36 CASE|mean i32 [6,50,9] axes {1}|ok|GPU: 0 of 54 wrong (worst 0.0 ulp) | CPU: 0 of 54 wrong (worst 0.0 ulp); GPU vs CPU: dtype same, bits identical
+37 CASE|sum f32 [4,5,6] axes {0,2}|ok|GPU: 0 of 5 wrong (worst 0.0 ulp) | CPU: 0 of 5 wrong (worst 0.0 ulp)
+38 CASE|mean bf16 [8,16,32] axes {0,2}|ok|GPU: 0 of 16 wrong (worst 0.5 ulp) | CPU: 0 of 16 wrong (worst 0.5 ulp)
+39 CASE|max f32 [6,7,8,9] axes {1,3}|ok|GPU: 0 of 48 wrong (worst 0.0 ulp) | CPU: 0 of 48 wrong (worst 0.0 ulp)
+40 CASE|sum f32 [48,64] axes {0} TRANSPOSED view|ok|GPU: 0 of 64 wrong (worst 0.0 ulp) | CPU: 0 of 64 wrong (worst 0.0 ulp)
+41 CASE|sum f32 [48,64] axes {1} TRANSPOSED view|ok|GPU: 0 of 48 wrong (worst 0.0 ulp) | CPU: 0 of 48 wrong (worst 0.0 ulp)
+42 CASE|mean bf16 [300,200] axes {1} TRANSPOSED view|ok|GPU: 0 of 300 wrong (worst 0.5 ulp) | CPU: 0 of 300 wrong (worst 0.5 ulp)
+--- compute-sanitizer memcheck, case 0
+CASE|mean bf16 [65536,1024] axes {0}|ok|GPU: 0 of 1024 wrong (worst 0.5 ulp) | CPU: 0 of 1024 wrong (worst 0.5 ulp)
+========= ERROR SUMMARY: 0 errors
+--- compute-sanitizer racecheck, case 4
+CASE|mean bf16 [512,4096] axes {1}|ok|GPU: 0 of 512 wrong (worst 0.5 ulp) | CPU: 0 of 512 wrong (worst 0.5 ulp)
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+--- compute-sanitizer racecheck, case 29 (both sides of each hazard)
+CASE|sum f32 [8,1048576] axes {1}|ok|GPU: 0 of 8 wrong (worst 0.0 ulp) | CPU: 0 of 8 wrong (worst 0.0 ulp)
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)
+--- compute-sanitizer memcheck, case 37
+CASE|sum f32 [4,5,6] axes {0,2}|ok|GPU: 0 of 5 wrong (worst 0.0 ulp) | CPU: 0 of 5 wrong (worst 0.0 ulp)
+========= ERROR SUMMARY: 0 errors
+--- compute-sanitizer memcheck, case 40
+CASE|sum f32 [48,64] axes {0} TRANSPOSED view|ok|GPU: 0 of 64 wrong (worst 0.0 ulp) | CPU: 0 of 64 wrong (worst 0.0 ulp)
+========= ERROR SUMMARY: 0 errors
+--- compute-sanitizer memcheck, case 42
+CASE|mean bf16 [300,200] axes {1} TRANSPOSED view|ok|GPU: 0 of 300 wrong (worst 0.5 ulp) | CPU: 0 of 300 wrong (worst 0.5 ulp)
+========= ERROR SUMMARY: 0 errors
+
+==================== SUMMARY (after) ====================
+cases: 43   ok: 43   WRONG: 0   CRASH: 0   EXCEPTION: 0

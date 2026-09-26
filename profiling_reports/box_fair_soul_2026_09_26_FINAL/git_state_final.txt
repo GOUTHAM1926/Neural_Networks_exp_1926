@@ -1,0 +1,17 @@
+== BluTrain
+4e92e6c bump Tensor-Implementations to 3a08ade: GPU as_type conversion fixes
+f1618d8 bump Tensor-Implementations to 97735ad: reduction fixes
+23ae1e5 zero: stop on a NaN/Inf gradient in ShardedMuon and SymmetricShardedOptimizer (F1)
+e3633e8 bump Tensor-Implementations to 7810aea: bf16/fp16 conversion fixes
+a264586 zero: stop before the update on a NaN/Inf gradient (F1), drop as_type temporaries; bump TI to ad10e7d
+03b94cf DCP fix
+ ? Tensor-Implementations
+== Tensor-Implementations
+3a08ade convert: GPU as_type converts directly like the CPU, and converts complex
+97735ad reduce: fix GPU/CPU reduction bugs (mean crash, wrong axes, int mean, race)
+7810aea dtype: correct bf16/fp16 conversions and use NVIDIA intrinsics on the GPU
+ad10e7d loss: fp32 loss scalar, dtype-aware vector loads, fp32 grad_output (Bugs A/B/C) + ignore_index/denominator
+8808f89 curriculum learning
+c6f0dbb Mixed dataloader
+?? Tests/kernel_tests/test_conversions_e2e.cu
+?? Tests/kernel_tests/test_types_conversions_gpu.cu

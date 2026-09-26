@@ -1,0 +1,40 @@
+========= COMPUTE-SANITIZER
+========= Invalid __shared__ write of size 4 bytes
+=========     at void OwnTensor::cuda::unified_reduce_kernel<__nv_bfloat16, __nv_bfloat16, OwnTensor::detail::MeanOps<__nv_bfloat16>, unsigned int, (OwnTensor::detail::ReductionLayout::Path)1, (int)512, (int)4>(OwnTensor::detail::ReduceOp<T1, T2, T3, T4>)+0x930
+=========     by thread (0,9,0) in block (8,0,0)
+=========     Access to 0x890 is out of bounds
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: cuLaunchKernel [0x39fc14] in libcuda.so.1
+=========         Host Frame:  [0x14e8c] in libcudart.so.13
+=========         Host Frame: cudaLaunchKernel [0x820a7] in libcudart.so.13
+=========         Host Frame: void OwnTensor::cuda::launch_reduce_kernel<__nv_bfloat16, __nv_bfloat16, OwnTensor::detail::MeanOps<__nv_bfloat16>, unsigned int, 4>(OwnTensor::detail::MeanOps<__nv_bfloat16> const&, OwnTensor::detail::GpuReduceConfig const&, OwnTensor::detail::OffsetCalculator<1, unsigned int> const&, OwnTensor::detail::OffsetCalculator<1, unsigned int> const&, __nv_bfloat16 const*, __nv_bfloat16*, OwnTensor::detail::ReductionLayout::Path, long, int, CUstream_st*) [clone .isra.0] [0xb6e4b9] in libtensor.so
+=========         Host Frame: OwnTensor::Tensor OwnTensor::detail::dispatch_mean_gpu<OwnTensor::bfloat16_t, OwnTensor::detail::SumOp>(OwnTensor::Tensor const&, std::vector<long, std::allocator<long> > const&, bool, CUstream_st*) [0xdcfef5] in libtensor.so
+=========         Host Frame: OwnTensor::Tensor OwnTensor::detail::reduce_kernel_mean<OwnTensor::bfloat16_t, OwnTensor::detail::SumOp>(OwnTensor::Tensor const&, std::vector<long, std::allocator<long> > const&, bool, CUstream_st*) [0x3d3588] in libtensor.so
+=========         Host Frame: OwnTensor::reduce_mean(OwnTensor::Tensor const&, std::vector<long, std::allocator<long> > const&, bool, CUstream_st*) [0x396394] in libtensor.so
+=========         Host Frame: main [0x445c] in trm
+========= 
+========= Invalid __shared__ write of size 4 bytes
+=========     at void OwnTensor::cuda::unified_reduce_kernel<__nv_bfloat16, __nv_bfloat16, OwnTensor::detail::MeanOps<__nv_bfloat16>, unsigned int, (OwnTensor::detail::ReductionLayout::Path)1, (int)512, (int)4>(OwnTensor::detail::ReduceOp<T1, T2, T3, T4>)+0x930
+=========     by thread (1,9,0) in block (8,0,0)
+=========     Access to 0x894 is out of bounds
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: cuLaunchKernel [0x39fc14] in libcuda.so.1
+=========         Host Frame:  [0x14e8c] in libcudart.so.13
+=========         Host Frame: cudaLaunchKernel [0x820a7] in libcudart.so.13
+=========         Host Frame: void OwnTensor::cuda::launch_reduce_kernel<__nv_bfloat16, __nv_bfloat16, OwnTensor::detail::MeanOps<__nv_bfloat16>, unsigned int, 4>(OwnTensor::detail::MeanOps<__nv_bfloat16> const&, OwnTensor::detail::GpuReduceConfig const&, OwnTensor::detail::OffsetCalculator<1, unsigned int> const&, OwnTensor::detail::OffsetCalculator<1, unsigned int> const&, __nv_bfloat16 const*, __nv_bfloat16*, OwnTensor::detail::ReductionLayout::Path, long, int, CUstream_st*) [clone .isra.0] [0xb6e4b9] in libtensor.so
+=========         Host Frame: OwnTensor::Tensor OwnTensor::detail::dispatch_mean_gpu<OwnTensor::bfloat16_t, OwnTensor::detail::SumOp>(OwnTensor::Tensor const&, std::vector<long, std::allocator<long> > const&, bool, CUstream_st*) [0xdcfef5] in libtensor.so
+=========         Host Frame: OwnTensor::Tensor OwnTensor::detail::reduce_kernel_mean<OwnTensor::bfloat16_t, OwnTensor::detail::SumOp>(OwnTensor::Tensor const&, std::vector<long, std::allocator<long> > const&, bool, CUstream_st*) [0x3d3588] in libtensor.so
+=========         Host Frame: OwnTensor::reduce_mean(OwnTensor::Tensor const&, std::vector<long, std::allocator<long> > const&, bool, CUstream_st*) [0x396394] in libtensor.so
+=========         Host Frame: main [0x445c] in trm
+========= 
+========= Invalid __shared__ write of size 4 bytes
+=========     at void OwnTensor::cuda::unified_reduce_kernel<__nv_bfloat16, __nv_bfloat16, OwnTensor::detail::MeanOps<__nv_bfloat16>, unsigned int, (OwnTensor::detail::ReductionLayout::Path)1, (int)512, (int)4>(OwnTensor::detail::ReduceOp<T1, T2, T3, T4>)+0x930
+=========     by thread (2,9,0) in block (8,0,0)
+=========     Access to 0x898 is out of bounds
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: cuLaunchKernel [0x39fc14] in libcuda.so.1
+=========         Host Frame:  [0x14e8c] in libcudart.so.13
+=========         Host Frame: cudaLaunchKernel [0x820a7] in libcudart.so.13
+=========         Host Frame: void OwnTensor::cuda::launch_reduce_kernel<__nv_bfloat16, __nv_bfloat16, OwnTensor::detail::MeanOps<__nv_bfloat16>, unsigned int, 4>(OwnTensor::detail::MeanOps<__nv_bfloat16> const&, OwnTensor::detail::GpuReduceConfig const&, OwnTensor::detail::OffsetCalculator<1, unsigned int> const&, OwnTensor::detail::OffsetCalculator<1, unsigned int> const&, __nv_bfloat16 const*, __nv_bfloat16*, OwnTensor::detail::ReductionLayout::Path, long, int, CUstream_st*) [clone .isra.0] [0xb6e4b9] in libtensor.so
+=========         Host Frame: OwnTensor::Tensor OwnTensor::detail::dispatch_mean_gpu<OwnTensor::bfloat16_t, OwnTensor::detail::SumOp>(OwnTensor::Tensor const&, std::vector<long, std::allocator<long> > const&, bool, CUstream_st*) [0xdcfef5] in libtensor.so
+=========         Host Frame: OwnTensor::Tensor OwnTensor::detail::reduce_kernel_mean<OwnTensor::bfloat16_t, OwnTensor::detail::SumOp>(OwnTensor::Tensor const&, std::vector<long, std::allocator<long> > const&, bool, CUstream_st*) [0x3d3588] in libtensor.so

@@ -1,0 +1,13 @@
+--- BLAS backend : blublas ---
+--- Compiling [CUDA] (sm_90): Tests/kernel_tests/test_conversions_e2e.cu ---
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -DWITH_MYBLAS -IBluBridge-BLAS/include -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -o run_cuda_runner Tests/kernel_tests/test_conversions_e2e.cu \
+        -L/usr/local/cuda/lib64 -L/usr/local/cuda/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -ltensor -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -lblublas -lcuda
+\n--- Running Tests/kernel_tests/test_conversions_e2e.cu ---
+   E1 GPU bf16 tensor * 2.0f, |x| >= 65,536 (Bug D)               ok     got 4809 4800 44fa c9f4  want 4809 4800 44fa c9f4
+   E1 GPU bf16 tensor *= 2.0f, |x| >= 65,536 (Bug D)              ok     got 4809 4800 44fa c9f4
+   E2 CPU reduce_mean bf16, mean = 1 + 2^-8 + 2^-30               ok     got 0x3f81  want 0x3f81 (0x3f80 = two roundings, or a float-accumulating path)
+   E3 CPU reduce_mean bf16 over axis 0 (vector store path)        ok     0 of 24 wrong (0 truncated to 0x3f81); want all 0x3f82
+   E4 CPU gelu_forward bf16, 7 elements (scalar tail)             ok     0 of 7 not rounded up (truncation gives the lower value)
+
+RESULT: PASS (0 failed)
+\n--- Removed run_cuda_runner (exit 0) ---
