@@ -9,6 +9,16 @@
 (BluBLAS / matmul, which is now on hold at 99.80% of cuBLAS) onto **SFT research in
 post-training**. This document is the record of everything established on day 1.
 
+**Status 2026-09-26:** no SFT code yet. The day went to library correctness fixes found on the way, all pushed
+to `dist_side_merge`:
+- Bug D and the bf16/fp16 conversions;
+- F1 (NaN/Inf stop) for Muon and ZeRO-v2;
+- 7 reduction bugs;
+- the GPU `as_type` fix.
+
+They are documented in `loss_kernel_dtype_bugs.md` §17.3 and §22–§25. The SFT tasks 1–7 and every other pending
+item are listed in that file's §26.
+
 ---
 
 ## Table of contents
@@ -2593,4 +2603,98 @@ reproducible run to run**. Full detail, every command, and every change made on 
 ### 31.2 Next
 
 #2 (`ShardedOptimizer::cast_shard_grad_to_fp32`), then Bug D.
+
+---
+
+## 32. Does SFT need attention changes? — researched 2026-09-25
+
+**Method:**
+- 4 researchers: our kernels (library `8808f89`, BluTrain `03b94cf`); TRL; torchtitan + Megatron (local clones); the web.
+- Then a synthesis that re-read every code claim.
+- Raw report: `Neural_Networks_exp_1926/profiling_reports/sft_attention_research_2026_09_25.json`.
+- **No numeric test has been run yet.**
+- **Question:** colleagues (who build the post-training environment) said attention must be masked so that one prompt
+  cannot see another.
+
+### 32.1 Verdict
+
+- **v1 (one example per sequence, RIGHT-padded): no attention change is needed.** The colleagues' requirement already
+  holds.
+- **The colleagues are right for packing** (several examples in one row), padding-free/flattened batches, and
+  left-padded RL/generation batches. There a block-diagonal ("document") mask is **required**.
+
+Why v1 is safe, from the code:
+
+| fact | evidence |
+|---|---|
+| The trainer calls one attention op: GQA `scaled_dot_product_attention(q,k,v, is_causal=true)`, `[B,H,T,hd]` bf16. On H200 that is forward **v62**, backward **Vj1d** by default (Vj1 with `USE_FLASH=1`, v44 with `USE_DETERMINISTIC_DQ=1`) | `bluscript_zero_ckpt.cpp:639-641`; `GQA_fwd_generic.cu:333-338`; `GQA_bwd_generic.cu:697-704` |
+| **Batch rows never attend to each other**: Q offset `(b*Hq+hq)*S`, K/V `(b*Hkv+hkv)*S` | `GQA_fwd_sm90.cu:389,397,434`; `GQA_bwd_vj1d_sm90.cu:424,447,469` |
+| Causality = tile skipping + a diagonal-tile element mask. **No** attention/padding/document mask, no `cu_seqlens`, no position ids, no sliding window anywhere | `GQA_fwd_sm90.cu:436,498`; `GQA_bwd_vj1d_sm90.cu:465,496,257-262`; a grep finds none |
+| With right padding a real token (i < L) only reads keys j ≤ i < L, so it **never sees a pad**. No fully-masked rows, so no NaN | same lines |
+| Pad rows give **exactly zero** gradient (the loss backward writes 0 at ignored rows), as long as pad activations are finite | derivation `dS = P·(dP − D)`; the loss backward zeroes ignored rows |
+| RoPE: one scalar `pos_offset` (0) for the whole batch, so each example starts at position 0 | `bluscript_zero_ckpt.cpp:614-616`; all RoPE kernels use `t + pos_offset` |
+
+External evidence (web):
+- Every framework checked (TRL, HF, NeMo, LongAlign, Llama 3) adds document masking **only when packing**.
+- TRL's SFT collator pads **right**. Left padding is for generation only.
+
+### 32.2 New hazards found (act on them in v1)
+
+1. **Input pad id: use `50256` (EOT).**
+   - `65535` only works by accident (`padding_idx=-1` → `(uint16)-1 == 65535` gives a zero row).
+   - Ids **50304–65534** make the embedding kernel skip the row and leave **uninitialised memory** (`EmbeddingKernels.cu:43-50`, `:96-107`).
+   - So any input id ≥ 50304 must be a hard error in the loader.
+   - 65535 is a *label* sentinel only.
+2. **EOT must be a target** at the end of each completion (the target of the last answer token = 50256). Otherwise the
+   model never learns to stop.
+   - The local shards separate documents with 50256: `flux_train_000001` has 74,264 EOT per 100M tokens, one at index 0,
+     so EOT goes *before* each document.
+   - Not checked against the production shards.
+   - Truncating a long example drops its EOT target, so drop or cap such examples.
+3. **Never left-pad in training:** no pad mask exists, and it creates fully-masked rows.
+4. **Zero valid tokens:** a batch with 0 valid targets gives 0/0 = NaN under a per-micro-batch denominator. Drop such
+   examples.
+5. **B300 cannot run this model today.**
+   - There is no causal attention kernel for `head_dim=128` on sm103. The forward and backward throw "causal attention is
+     only implemented for head_dim 64" (`GQA_fwd_generic.cu:340-359`, `GQA_bwd_generic.cu:706-727`).
+   - The B300 loss forward also ignores `ignore_index` (the `TODO(SFT)` at `LossKernels.cu:938`).
+   - **SFT is H200-only for now.**
+   - Found by reading the code; not run on a B300.
+6. **Shape limits:** the v62 forward needs `T % 256 == 0` (backward `T % 64`) and `T ≤ 4096` (the RoPE cache length).
+
+### 32.3 Why packing matters (the reason the colleagues want the mask)
+
+- **Padding waste** (web): the average SFT example is ~90–1,800 tokens (Alpaca ~92, FLAN ~387, UltraChat ~568, Tulu-v2 mix
+  ~1,759).
+- Padding to T = 4096 therefore wastes ~57–98% of the GEMM work, and more of the attention work (useful ≈ (L/T)²).
+- **Reported packing speedups:** ~2× (HF: FLAN, 1.4× OrcaMath), ~1.9× (IBM), 3.9–6.7× (Packing Analysis, 70B), up to 6×
+  (NeMo).
+- **Cost of NOT masking when packing:**
+  - pretraining (Zhao et al., ACL 2024, 1.3B): masking cut perplexity 9.17 → 8.41 and raised in-context-learning accuracy
+    63.5 → 70.5;
+  - Llama 3: the mask had a "limited impact during standard pre-training" but was "important in continued pre-training on
+    very long sequences";
+  - for SFT, no clean ablation was found.
+
+### 32.4 Plan
+
+| stage | what | attention change | notes |
+|---|---|---|---|
+| **v1** | one example/row, right-padded with 50256, labels 65535 on prompt+pad, EOT target, ignore_index + global denom wired in the trainer | **none** | preprocess ~150–250 lines, SFT loader ~150–300, trainer wiring ~40–80 (estimates). Refuse SFT on B300 |
+| **v1.5** | length bucketing: each micro-batch padded only to its longest example, rounded up to 256 | none | ~2× (LongAlign). Changes GEMM shapes; check our GEMM dispatch |
+| **v2** | packing with a **block-diagonal mask**: query i sees key j only if `doc_start[i] ≤ j ≤ i` (per-token `doc_start` [B,T] from the loader). Pack already-shifted (input, target) pairs, so each example's last target = 65535 | forward v62: mask every boundary tile + a **−inf guard** (a later document can see a fully-masked first tile, which is NaN today). Backward Vj1d: a runtime-masked version for boundary tiles. Other kernels throw. Optional per-token RoPE positions (the mask alone isolates; RoPE depends only on i−j) | ~300–500 + 100–200 lines (tile skipping; the producer/consumer tile counts must agree or it hangs). Retune batch/LR |
+
+**Tests that cannot pass by accident:**
+- v1:
+  - **pad invariance**: an example at T=L (rounded up to 256) vs padded to 4096 gives the same loss/grads;
+  - pad-content invariance (bitwise, with `USE_DETERMINISTIC_DQ=1`);
+  - **row leakage**: changing row 1 leaves row 0's logits bitwise unchanged;
+  - causality;
+  - denominator (GRAD_ACCUM 4 vs 1, 2 ranks vs 1).
+- v2:
+  - kernel vs an fp32 masked reference (boundaries at tile edges / mid-tile / 1-token documents / a document starting
+    after the first tile);
+  - `doc_start` all-zero is bitwise equal to today's kernel;
+  - **document leakage**: changing document A leaves document B's logits bitwise unchanged;
+  - packed vs unpacked equivalence.
 

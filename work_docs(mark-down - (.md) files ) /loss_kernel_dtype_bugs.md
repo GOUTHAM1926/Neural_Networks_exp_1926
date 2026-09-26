@@ -34,6 +34,9 @@ production B=8** (measured 4,716 MiB at B=4, §16.3) and is the only thing preve
 
 **Found along the way:** Bug D in `Types.h` (§17), and a trainer that is not reproducible run to run (§18).
 
+**2026-09-26, all pushed:** Bug D and the bf16/fp16 conversions (§17.3), F1 for Muon and ZeRO-v2 (§22), 7 reduction
+bugs (§23), GPU `as_type` (§24); pushes and colleague steps in §25; every pending task in §26.
+
 ---
 
 ## 1. Background — what you need to know first
@@ -856,7 +859,7 @@ we added `LossVec<T>` + fp32 scalars. Those touch the same lines and conflict.
 
 ---
 
-## 13. Open items (updated 2026-09-24 evening)
+## 13. Open items (updated 2026-09-24 evening; the full current list is §26)
 
 Done on 2026-09-24:
 - [x] Bugs verified present at today's tip `8808f89`, on the box (§15.1)
@@ -866,7 +869,7 @@ Done on 2026-09-24:
 
 Still open:
 - [x] **Commit + push `sft_gautam`**: `1ed2ac3` on BlubridgeAI (the 7 loss files + both tests)
-- [ ] **⚠️ Bug D — HIGH PRIORITY, 2026-09-25 (with #2):** `float_to_bfloat16` (`Types.h:85`) turns every value ≥ 65,536
+- [x] **DONE 2026-09-26, pushed `7810aea` (§17.3). Was: ⚠️ Bug D — HIGH PRIORITY, 2026-09-25 (with #2):** `float_to_bfloat16` (`Types.h:85`) turns every value ≥ 65,536
       into Infinity, on the CPU and inside GPU kernels. Find where it can hit, fix it, run the exhaustive test, then do a
       clean rebuild and a full-repo test run (plan in §17.1)
 - [ ] Hand the port to the `dist_side_merge` owners as a proper branch/PR, recommending `BLU_BF16_LOGITS=1`
@@ -877,7 +880,7 @@ Still open:
 - [ ] The 580 MiB fp32 gap between their code and ours: measured by the poller only, probably a poller artefact (§16.3)
 - [ ] Bug C's consequence (zero gradients): predicted, never observed; needs a Bug-A-only build
 - [ ] The source of the trainer's run-to-run non-determinism (§18)
-- [ ] **2026-09-25 (tomorrow), #2:** convert the gradient shard straight into `shard_grad_fp32_` — the same
+- [x] **DONE 2026-09-25, pushed `a264586` (§19.9). Was: #2:** convert the gradient shard straight into `shard_grad_fp32_` — the same
       fix already exists in `cast_master_range`, in the same file (§19.4)
 - **Immediate future tasks — right after the SFT work, as training-script optimisations (decided 2026-09-24):**
   - [ ] **#1:** read how the embedding backward sums gradients for a bf16 weight (code, no GPU);
@@ -1387,6 +1390,101 @@ function against a correct round-to-nearest-even reference.
    limit is correct (fp16's maximum is 65,504). Confirm it has its own correct test.
 
 ---
+
+### 17.2 Update 2026-09-26: fix proven exhaustively, blast radius
+
+**The fix proven over all 2³² fp32 inputs**, CPU only, 6.5 s (`profiling_reports/bugd_2026_09_26/bugd_exhaustive.cpp`):
+
+| check | result |
+|---|---|
+| fixed function (clamp at `Types.h:84-87` deleted) vs an independent exact RNE reference, all non-NaN inputs | **0 mismatches** |
+| NaN inputs (16,777,214) | all stay NaN |
+| old function vs the reference | **1,878,982,656 wrong (44% of all fp32 bit patterns)**, every one a finite \|x\| ≥ 65,536 |
+
+- The prediction said 1,879,048,192. The 65,536 difference is the inputs within half a ulp of bf16's max, which
+  *should* round to Inf. The old clamp gets those right by accident.
+- For \|x\| < 65,536 the old and new code are the same code path, so they are bit-identical.
+- A real overflow still becomes Inf after the fix, through the rounding carry.
+
+**Where it runs.** The function is `__device__ __host__`, behind `bfloat16_t(float)` and `operator=(float)`.
+- **Safe paths:** the CUDA intrinsics (`__float2bfloat16`, `__float22bfloat162_rn`): `convert_type_*`, the attention
+  kernels (`gqa_*`), `multi_tensor_cast_f32_to_bf16`, BLAS epilogues. From an Aug-2026 nsys kernel list of the
+  trainer.
+- **Affected:** templated kernels on the library's own `bfloat16_t`, for example:
+  - `scalar_mul_inplace<bfloat16_t>`: `ScalarOps.cu:89` does `static_cast<T>(s)`, so a scalar ≥ 65,536 becomes Inf;
+  - `add_inplace_kernel<bfloat16_t>` (bfloat16_t operator arithmetic);
+  - the CPU ops, and fills.
+- **Concrete trigger: loss scaling.** Its standard initial scale is 65,536 = 2¹⁶ (`test_zero.cpp` uses
+  `LossScaler(65536.0f)`). Multiplying a bf16 tensor by it gives Inf immediately.
+- **In normal default training it is latent.** Activations and gradients are far below 65,536, and the loss is fp32
+  now. It fires on outliers or divergence (then F1 stops the run, but the root cause is hidden), and on loss scaling.
+- **Harmless side effect:** `get_lowest_value<bfloat16_t>()` / `get_max_value<bfloat16_t>()` (`ReductionOps.h`)
+  return ±Inf instead of ±3.39e38. That is still a valid identity for max/min.
+
+**Related, smaller: the fp16 converter** (`Types.h`, `float_to_float16`).
+- It rounds half-up (`mant + 0x1000`), not RNE.
+- It truncates subnormals.
+- Its overflow limit is correct for fp16.
+- It is not used by the trainer (bf16).
+
+**Plan:**
+1. Delete the 4-line clamp (comment why).
+2. **Clean rebuild**: `Types.h` is included everywhere and `make` does not track headers.
+3. Re-run the CUDA suites, plus a device test through `bfloat16_t(float)` with values ≥ 65,536.
+4. A short trainer run: step-0 loss must be bit-identical (no training value reaches 65,536).
+
+Target: library `dist_side_merge`.
+
+
+### 17.3 Applied, tested and pushed (2026-09-26)
+
+**Pushed:** library `dist_side_merge` `ad10e7d..7810aea`; BluTrain `e3633e8` (submodule bump). The first bump,
+`7bd97a7`, was committed as `root@…` because that box's BluTrain had no identity set. It was amended to the
+company identity and replaced with `--force-with-lease`.
+
+**Files (4):** `include/dtype/Types.h`, `include/ops/helpers/Vectorized.h`, `src/UnaryOps/cpu/Activations.cpp`,
+`include/ops/helpers/ReductionImpl.h`. Every change carries a `Modified:` comment with the reason and the
+measurement.
+
+| conversion | GPU (device) now | CPU (host) now | was |
+|---|---|---|---|
+| fp32 → bf16 | `__float2bfloat16_rn` (F2FP.BF16 on sm_80+) | bias trick `u += 0x7FFF + ((u>>16)&1)`, NaN → 0x7FFF | **Bug D**: every \|x\| ≥ 65,536 → Inf (1,878,982,656 of 2³²) |
+| fp32 → fp16 | `__float2half_rn` | F16C `_cvtss_sh` when `__F16C__` (the library is built with `-mf16c`), else manual RNE | round-half-up + truncated subnormals: 100,815,872 of 2³² wrong |
+| bf16 → fp32 | one shift (SHF.L.U32) on every arch | one shift | 3 branches that all returned the shift (same result) |
+| double → bf16 / fp16 | `__double2bfloat16` / `__double2half` (one rounding) | round-to-odd into float, then one RNE (Boldo & Melquiond 2008) | double → float → bf16: two roundings |
+| int → bf16 / fp16 | `__int2bfloat16_rn`, `__ll2bfloat16_rn`, … | int32 via double + round-to-odd; int64 fast path + `int64_to_float_rto` | through float: two roundings; int32 → bf16 also hit Bug D |
+| CPU vector bf16 store (`Vectorized.h`) | — | rounds (RNE) | truncated (2.14 B of 2³² wrong) |
+| CPU GELU bf16 tails (`Activations.cpp`, 3 sites) | — | `detail::float_to_bfloat16` | truncated |
+| CPU mean (`ReductionImpl.h`, 7 sites) | — | one rounding (`static_cast<T>(double mean)`) | double → float → bf16 |
+
+The GPU intrinsics are chosen per arch at compile time (`NV_IF_ELSE_TARGET` in `cuda_bf16.hpp` /
+`cuda_fp16.hpp`). They cannot fail at runtime, so the manual bit code is CPU-only (`#if defined(__CUDA_ARCH__)`).
+There is no C++ intrinsic for fp16 ↔ bf16. Going through fp32 is exact, and on the H200 it matched the direct
+`cvt.rn.bf16.f16` (0 differences).
+
+**Verification:**
+- CPU, exhaustive against 7 references: 0 wrong over more than 13.4 B inputs, in both the F16C and the manual build.
+  The references: PyTorch, TF/Eigen, NumPy, IEEE RNE, CUDA's host code, and 2 exact oracles.
+- GPU test on the H200: 16/16 rows, 0 wrong. End-to-end test: 5/5.
+- SASS on 7 archs: 0 `0x8e` clamps. `ScalarOps` instructions −48%.
+
+**Speed** (the old and new `.so` in one process, ABBA order, 12 rounds, medians, 3% controls):
+- GPU micro-benchmark: 1.03–1.76× faster on memory-bound kernels, 2–33× on conversion-heavy ones, 0 slower.
+- Library benchmark: GPU ops 1.21–1.93× faster; CPU `as_type` and ops 1.46–3.8× faster. No op was slower in
+  every round. The controls were within 3%.
+- Precision: old 68,980,229 wrong, new 0.
+- Two caveats: CPU double → bf16 `as_type` is 17% slower on the median (not in every round), and the
+  multi-thread CPU reduce/GELU timings were too noisy to call.
+
+**Artefacts:** `profiling_reports/bugd_2026_09_26/final/`: `patch_conversions.py`, `test_types_conversions_gpu.cu`,
+`test_conversions_e2e.cu`, `bench/` (11 files), `review/` (the 4 patched files + `conversions.diff`), and
+`box_results/`.
+
+**Found while doing this, fixed later the same day:**
+- The GPU `as_type` float box → §24.
+- The GPU `reduce_mean` crash → §23.
+
+**Left alone** (user decision): `fp4.h` double → fp4 (rounds twice) and `long double` → bf16 (CPU only, unused).
 
 ## 18. The trainer is not reproducible run to run
 
@@ -1908,6 +2006,41 @@ text, instead of writing NaN and dying one step later.
 
 **Still untested:** world_size ≥ 2 (site B′ / overlap path), B=8, Muon, ZeRO-v2, `BLU_GLOBAL_CLIP=1` in a real run.
 
+## 19.10 2-GPU test (2026-09-25): site B′ and F1 at world_size 2
+
+**Setup:**
+- Both H200s (`CUDA_VISIBLE_DEVICES=0,1`, `mpirun -np 2`), B=4 per rank, `grad_accum=32`, `BLU_BF16_LOGITS=1`, 20 steps.
+- A-B-A-B: `_runner_OURS_MEM` (old optimizer) vs `_runner_FIX_ALL` (F1 + #2; same code as the push plus the test harness).
+- Every T4 run printed `[ZeRO-1] overlap: reduce=ON (hook-driven, during backward)`, so **`on_grad_ready` (site B′) ran**
+  in the new arm.
+- Script `profiling_reports/fix2_2026_09_25/t4_w2.sh`; logs in `box_state/t4/`.
+
+| | old rep1 | new rep1 | old rep2 | new rep2 |
+|---|---|---|---|---|
+| step-0 loss | 11.297731 | 11.297731 | 11.297731 | 11.297731 |
+| step-0 grad norm (computed after B′) | 18.8893 | 18.8892 | 18.8892 | 18.8893 |
+| live peak (MiB) | 75,050 | 75,050 | 75,050 | 75,050 |
+| **reserved peak (MiB)** | 79,376 | **76,566** | 79,376 | **76,566** |
+| steady tok/s | 84,216 | 84,343 | 84,246 | 84,346 |
+
+**Results:**
+- **Reserved −2,810 MiB per GPU in both pairs**, which is exactly the ÷2 prediction (5,616 / 2 = 2,808). The ÷W rule for
+  #2 holds.
+- **The live peak is unchanged.**
+- **Speed:** +0.13% (84,231 → 84,345), in the same direction in both pairs. That is small, and consistent with the
+  expected ~0.05–0.1%.
+- **Loss:**
+  - mean |Δ| over 20 steps: old vs new 0.300 / 0.199;
+  - same code twice: old 0.466, new 0.181. Inside the noise.
+  - val@19: old 8.221 / 8.040, new 7.996 / 7.971. Overlapping.
+- **Site B′ verdict:** correct. A wrong slice or offset would give a very different norm and loss. Bit-identity of the
+  conversion itself is proven by `test_fix_family` (misaligned slices included).
+- **F1 at W=2** (reference path `BLU_NO_OVERLAP_BWD=1`, NaN at step 2):
+  - **both ranks** printed `[FATAL] ... grad norm^2 = nan ... raised BEFORE any update`, exit 4;
+  - no hang, no checkpoint.
+  - The injector cannot reach the optimizer on the overlap path: grads are copied inside backward. So F1 on the overlap
+    path is covered by code reading only, not by a run. It is the same `step()` guard after the same all-reduce.
+
 ## 20. Reproduction recipe — every change made on the colleague's branch
 
 The box copy will not survive a box release, so this section is the only complete record of what was
@@ -2111,6 +2244,236 @@ header changes. Then build as usual.
 | `:188` | `bool bf16_logits = true;` makes bf16 the default. Change the default; don't delete the cast line |
 
 Our box edits (B=4, `[MEM]`, `BLU_VAL_STEPS`) are test-only and must not be carried over.
+
+---
+
+
+## 22. F1 for ShardedMuon and SymmetricShardedOptimizer (2026-09-26)
+
+**Pushed:** BluTrain `dist_side_merge` `e3633e8..23ae1e5`. Files: `dist/zero/src/ShardedMuon.cpp`,
+`dist/zero/src/SymmetricShardedOptimizer.cpp`, and a comment-only change in `bluscript_zero_ckpt.cpp`.
+
+**The bug.** It is the same as v1's (§19.7 F1, fixed in `a264586`). Every guard was `if (sc && !isfinite(nsq))`,
+and no trainer installs a LossScaler, so a NaN/Inf gradient was never caught. The 09-25 note "F1 doesn't apply to
+Muon/v2" was wrong. Measured before the fix (standalone test, 1 × H200, bf16 and fp32):
+
+| optimizer / tensor | what a NaN or Inf gradient did |
+|---|---|
+| v2 (`BLU_ZERO_V2=1`) | no error; NaN written into the weight and into m/v; step counted |
+| Muon, 1-D tensors (AdamW path) | no error; NaN written into the weight |
+| Muon, 2-D matrices (the body) | **silent**. `muon_momentum_cuda` writes the NaN into m **in place** before `muon_has_nonfinite_cuda` rejects the Newton-Schulz output. The weights stay finite, but m keeps the NaN, so that matrix's update is rejected on every later step: it stops learning with no error |
+| `BLU_GLOBAL_CLIP=1` | no help. `reduce_and_measure` returns −1, the trainer only drops the global coefficient and calls `step()`, which measures the NaN again and goes on |
+
+**The fix** is the v1 pattern. Without a scaler, `step()` throws `ZeroNonFiniteGradError` **before any update**.
+With a scaler nothing changes (skip and back off). A NaN norm is logged as nan, not 0. `nonfinite_grad_msg` is
+file-local, so no header changes and no trainer rebuild are forced. The trainer's existing catch wraps `step()` for
+every group, so all three optimizers stop with one `[FATAL]` line and exit 4, and no checkpoint is written.
+
+**Test** (`profiling_reports/f1_muon_v2_2026_09_26/test_f1_nonfinite.cpp`): 36 cases, covering v1/v2/Muon ×
+bf16/fp32 × {finite, NaN matrix, NaN vector, Inf, global-clip path, with scaler}. Before: v1 12/12, v2 and Muon
+fail all 16 no-scaler cases. After: **36/36**; weights, m/v and step count unchanged on every stopped step. The
+trainer builds.
+
+**Test traps (4 re-runs):**
+- lr 3e-4 cannot move a bf16 weight in one step.
+- Muon test matrices under 64 (64×48, 32×64) made every Newton-Schulz update be rejected, even healthy ones.
+  BluBLAS's transposed bf16 GEMM is wrong there (§26).
+- A healthy control belongs in the **first** run.
+
+**Not covered:**
+- `max_grad_norm = 0` with no scaler: v1/v2 measure no norm, so there is nothing to check.
+- `bluscript_zero.cpp` and `train/production/bluscript.cpp` have no catch (they stop via `std::terminate`).
+- Muon/v2 were not run at W > 1.
+
+---
+
+## 23. Reductions: 7 GPU/CPU bugs fixed (2026-09-26)
+
+**Pushed:** library `7810aea..97735ad`; BluTrain `23ae1e5..f1618d8`. Files: `src/UnaryOps/cuda/ReductionImplGPU.cu`,
+`include/ops/helpers/ReductionKernels.cuh`, `include/ops/helpers/ReductionOps.h`, `include/ops/helpers/ReductionImpl.h`.
+
+**How it was found:** the §17.3 library benchmark crashed in `reduce_mean` (bf16, axis 0). compute-sanitizer:
+"Invalid `__shared__` write of size 4" in `unified_reduce_kernel<__nv_bfloat16,…,MeanOps,…,Path 1,512>`.
+
+**Test** (`profiling_reports/reduce_gpu_2026_09_26/test_reduce_mean_gpu.cu`):
+- 43 cases, one process each, GPU **and CPU** against an exact double reference (1 output ulp).
+- Covered: mean/sum/max; bf16/fp16/fp32/fp64/int32; leading, last and middle axes; non-consecutive axes;
+  transposed views; block widths 8/16/32/>32; multi-CTA.
+
+| | before | after |
+|---|---|---|
+| GPU | 9 ok / 13 WRONG / 11 CRASH (of the first 33) | **43/43** |
+| CPU (checked for the first time) | wrong on all 6 middle-axis cases | **43/43** |
+| compute-sanitizer | memcheck: invalid shared write; racecheck: 11,521 errors | memcheck 0 (4 cases); racecheck 0 hazards (2 cases) |
+
+| # | bug | fix |
+|---|---|---|
+| 1 | **mean crash** (bf16/fp16/int): `dispatch_mean_gpu` sized the config and shared memory with the INPUT type, but the kernel stores `arg_t` (float = 4 B for a 2 B input) | `build_reduce_config<arg_t>`, as the other 3 dispatchers and PyTorch (`ReduceConfig(sizeof(arg_t))`, Reduce.cuh:1039). Block shape unchanged (MaxThreads = 512 for all types) |
+| 2 | **wrong last-axis results** (every dtype/op): `block_x_reduce` treated the 2-D block as 1-D (`smem[threadIdx.x/32]` ignored the row; the shuffle crossed rows) | PyTorch's `block_x_reduce` line for line (Reduce.cuh:634, source 5f76830b728) |
+| 3 | **integer mean = 0**: `factor = static_cast<int64_t>(1.0/n)` = 0 | `MeanOps::FactorT` = double for integer accumulators; exact int64 sum; `project` returns double |
+| 3b | integer-mean dtype | **Float64**, as the CPU mean and NumPy (was Float32). GPU and CPU are bit-identical (tested) |
+| 4 | **GPU middle axis** (`outer > 1`): config reset `num_outputs` to `inner`, so only the first slab was computed (30/35 wrong) | `num_outputs = outer*inner`, new `ReduceOp::outer_stride`, slab remap in the kernel |
+| 5 | **GPU Generic path** (non-consecutive axes, transposed input): EMPTY offset calculators | new `setup_generic_path` in all 4 dispatchers; refuses more than 10 dims per side instead of computing wrongly |
+| 6 | **CPU middle axis**: the OuterContiguous consumers assumed `outer == 1` | `cpu_demote_middle_to_generic` at all 6 CPU sites (the leading axis keeps SIMD) |
+| 7 | **multi-CTA race**: `block_y_reduce` → `block_x_reduce` on the same shared slots, no barrier. The values were right (same value, same slot), but it is a data race | one `__syncthreads()` there (only the last CTA of each tile runs it) |
+
+**Integer-mean output dtype, checked in each library's source:**
+- PyTorch refuses integer mean (`ReduceOps.cpp:310`). With `dtype=` it sums in that float type.
+- NumPy returns float64 (`_methods.py`: "Cast bool, unsigned int, and int to float64").
+- TensorFlow sums in int64, then does an integer division and returns the int type (truncated; `reduction_ops.h`
+  `CASTING_SPECIALIZATION`).
+- JAX returns float32 by default (`to_inexact_dtype`).
+
+Our choice combines them: PyTorch's int64 accumulator (`AccumulateType.h` int → int64, the same table as ours),
+NumPy's fp64 output, and our CPU's formula. The accumulation cost does not depend on the output dtype; only the
+final store grows by 4 B.
+
+**History:** fixes 2, 4, 5 and 6 are the user's **June 2026** fixes (`master_gau_latest_sm_86_RTX_3060` / BBP,
+validated 87/87 on sm_86 and sm_89). They were **never committed** to BlubridgeAI/Tensor-Implementations: no
+commit or branch ever had the 2-D `block_x_reduce`. The 06-11 "merge the v2 compiler" commit (`3160082`) brought
+in the unified kernel with the 1-D version. June Bug 4 (the trailing barrier) was needed for June's vec4 kernel,
+which this tree does not have. Here, only the call-site barrier (fix 7) is needed.
+
+**Build note:** the Tensor-Implementations Makefile sets no `-j`. Always `make -j$(nproc)`. `ReductionImplGPU.cu`
+alone takes more than 4 minutes (one translation unit, every op × dtype).
+
+**Not measured / not covered:**
+- Reduction speed (no before/after A/B). The changes add one integer division per thread and one barrier per
+  multi-CTA tile.
+- argmax/argmin and variance over a middle axis (same remap/demote, not tested).
+
+---
+
+## 24. GPU `as_type`: no float box, complex converted (2026-09-26)
+
+**Pushed:** library `97735ad..3a08ade`; BluTrain `f1618d8..4e92e6c`. File: `src/Kernels/cuda/misc/ConversionKernels.cu`.
+
+**The bugs** (measured on the old code: 110 of 169 real dtype pairs ok, **59 mismatched**):
+
+| bug | example from the test |
+|---|---|
+| every value went through a `float` temporary (24 bits) | int32 16,777,217 → int64 gave 16,777,216; uint32 0xFFFFFFFF → fp64 gave 4294967296 |
+| negative int → unsigned through an out-of-range float | int8 −1 → uint8 gave **0** (CPU: 255) |
+| uint → int through an out-of-range float | uint32 0xFFFFFFFF → int32 gave 0x7FFFFFFF (CPU: −1) |
+| double → int rounded first | fp64 15939.99999999 → int16 gave 15940 (CPU: 15939) |
+| int / double → bf16 / fp16 rounded twice | int32 147,324,935 → bf16 gave 0x4d0c (CPU: 0x4d0d) |
+| a tiny double → bool | 1e-40 → false (CPU: true) |
+| **complex → complex silently SKIPPED** | output left uninitialised, no error |
+| 32-bit index product | wraps above 2³² elements |
+
+**The fix** mirrors the CPU `as_type` (`AsTypeTensor.cpp`):
+- bf16/fp16 sources keep the float path (exact for them).
+- Wide sources → bf16/fp16 use the Types.h one-rounding constructors (the GPU intrinsics).
+- Wide → wide is `static_cast<Dst>(x)`, direct.
+- complex → complex is component by component; complex ↔ real throws in `convert_type_cuda_generic` too.
+- The index is 64-bit.
+
+fp32 → bf16/fp16 still use the same intrinsic, so they are bit-identical. The SM90/SM103 vector fast paths are
+untouched.
+
+**Test** (`profiling_reports/conversion_kernels_2026_09_26/test_as_type_gpu.cu`):
+- GPU against CPU for all 169 real pairs and 6 complex pairs, 131,072 values each.
+- Inputs: every bf16/fp16 bit pattern; the 2²⁴, 2⁵³, INT64 and uint boundaries; ±Inf, NaN, subnormals.
+- Out-of-range float → int is skipped as undefined behaviour.
+- Result after: **169/169**, complex 6/6, the direct kernel call refuses complex ↔ real.
+- Speed: 9 hot pairs within 1%, e.g. fp32 → bf16 96.7 vs 96.9 µs and bf16 → fp32 102.3 vs 102.2 µs at 67 M elements.
+
+**Unchanged:** fp32 subnormals (< 1.18e-38) still flush to zero on the GPU. The whole library is built with
+`--use_fast_math`, so the FTZ counts are the same before and after.
+
+**BluTrain impact today: none.** Its integer `as_type` calls convert only token ids and labels
+(`DistributedNN.h:788, 801, 1613`, the CP script). Those are below 16.7 M, so they were exact through float.
+
+**Test traps:**
+- My fp32 → complex case reused the complex buffer, so `memcpy` overflowed the heap and the run died with "double
+  free".
+- The FTZ category briefly hid the real fp64 → bool bug (28,629 elements in the before-run, 0 after).
+
+---
+
+## 25. Everything pushed on 2026-09-26, and what colleagues must do
+
+All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dist_side_merge`.
+
+| work | Tensor-Implementations | BluTrain | section |
+|---|---|---|---|
+| Bug D + bf16/fp16 conversions | `ad10e7d..7810aea` | `e3633e8` | §17.3 |
+| F1 for Muon + ZeRO-v2 | — | `e3633e8..23ae1e5` | §22 |
+| 7 reduction bugs | `7810aea..97735ad` | `23ae1e5..f1618d8` | §23 |
+| GPU `as_type` conversions | `97735ad..3a08ade` | `f1618d8..4e92e6c` | §24 |
+
+**Colleagues must:**
+1. `git pull` BluTrain, then `git submodule update --init`.
+2. Rebuild with `make -j$(nproc) tensor WITH_BLUBLAS=1 SM_ARCH=<arch>`, then rebuild the trainer (`make build-mpi …`).
+
+**Behaviour changes to announce:**
+- The GPU integer mean now returns **Float64**. It was Float32, and its values were 0.
+- GPU `as_type` complex → complex now converts, and complex ↔ real raises an error.
+- Muon/v2 runs now stop with `[FATAL] … exit 4` on a NaN/Inf gradient, instead of corrupting the weights or
+  silently freezing matrices.
+
+**Box:** `fair-soul-wanders-fin-02` (1 × H200) was released after a final copy. Everything is in
+`profiling_reports/box_fair_soul_2026_09_26_FINAL/` (125 files) and the per-topic folders named above.
+
+---
+
+## 26. Future tasks: every pending item (updated 2026-09-26)
+
+**Next (2026-09-27):**
+- [ ] **F2 — fused gradient accumulation.** `AutogradMeta.cpp:163-170` does `*grad_ += update.as_type(fp32)` every
+      micro-step after the first, for every bf16 weight. That is a full-size fp32 temporary plus 2 kernels: 18 B of
+      traffic per element.
+      - The plan: one fused kernel `grad_fp32 += float(update_bf16)`, 10 B per element, no temporary. bf16 → fp32
+        is exact and the add is the same fp32 add, so it is bit-identical.
+      - Scope: the CUDA path when both are contiguous, with the old path as the fallback.
+      - Measure: bit-exactness, kernel time, and a trainer A/B at GRAD_ACCUM = 4 (estimated ~0.7% at W=1, not measured).
+
+**From today's work:**
+- [ ] Reduction **speed** A/B, before vs after §23 (not measured).
+- [ ] Tests for argmax/argmin and variance over a middle axis (§23; same fixes, not measured).
+- [ ] Review: `unified_reduce_kernel` returns early (`output_idx >= num_outputs`) before later `__syncthreads()`.
+      PyTorch does not; it computes and masks. Sanitizers were clean on every tested case.
+- [ ] CPU middle-axis reductions now use the Generic path (no SIMD). A per-slab SIMD loop could come if CPU speed there ever matters.
+- [ ] `OffsetCalculator` holds 10 dims per side. The GPU Generic path now refuses more; extend it if a model ever needs that.
+- [ ] Reduction scratch allocation: the stream is `getCurrentStream()` vs the kernel's stream (a secondary risk; see
+      the reduction 32-bit index guard notes).
+- [ ] **BluBLAS transposed bf16 GEMM** returns wrong numbers, with no error, when M/N are not multiples of 64 (seen
+      via Muon Newton-Schulz at 48/32). Reproduce with a direct `cuda_matmul` vs CPU test at M/N ∈ {32, 48, 96, 100},
+      then add a shape guard with a fallback, or real residue support.
+- [ ] `ConditionalOps.cu`: complex32 from a double scalar rounds twice (4 spots).
+- [ ] Optional: build `ConversionKernels.cu` without FTZ, if exact fp32 subnormals in GPU conversions are ever wanted.
+- [ ] F1 gaps (§22):
+      - `max_grad_norm = 0` with no scaler has no check;
+      - `bluscript_zero.cpp` and `train/production/bluscript.cpp` have no catch;
+      - Muon/v2 were not run at W > 1.
+- [ ] §19.7 audit items still open: F2 (above), F3 (5 grad and 4 param passes per step at W=1), F4 (v1's bf16 wire at
+      W=1), per the decisions in that table.
+
+**Carried from §13 (still open):**
+- [ ] Hand the port to the `dist_side_merge` owners as a branch/PR, recommending `BLU_BF16_LOGITS=1`.
+- [ ] Rewrite the stale comment above `loss32` in `bluscript_zero_ckpt.cpp` (§5.6), and remove the false
+      `VEC_ELEMS / Chunk16` claim (§9).
+- [ ] More throughput repetitions for the bf16-logits A/B (+0.60% is n = 2); explain the gap to 0.79–0.94% (§16.6, #4).
+- [ ] Attribute the third live buffer at the peak, and the 580 MiB fp32 poller gap (§16.3).
+- [ ] Observe Bug C's zero gradients with a Bug-A-only build.
+- [ ] Trainer run-to-run non-determinism (§18).
+- [ ] #1 embedding backward for a bf16 weight (checked: keep fp32); #3 `check_type()` in `data<T>()` (§19.5, §8).
+- [ ] Apply the fixes on a colleague's multi-GPU system; run flag 0/1 before and after (§21).
+- [ ] Refresh the `LossKernels.h` note counts; the `batch_size > 65536` reduction cap; the target bounds check;
+      sm103/B300 masking (`TODO(SFT)`).
+
+**SFT (the assignment):**
+1. [ ] Weights-only checkpoint loader for `navingv/curriculum_8btokens` `blumodel_step_8000` (Muon, 4-GPU DCP).
+2. [ ] Pick the dataset.
+3. [ ] Preprocessing script.
+4. [ ] SFT dataloader.
+5. [ ] Trainer changes: `ignore_index = 65535`, the denominator, SFT hyperparameters, weights-only load.
+6. [ ] Loss-kernel bounds check.
+7. [ ] A sample SFT run on an H200.
+
+**Housekeeping:**
+- [ ] **Rotate the GitHub tokens** used in today's push commands (the org PAT), and the token in the blublas remote URL.
+- [ ] Commit the local `tf_issue_3dxz/` changes (unrelated to this doc) when ready.
 
 ---
 
