@@ -1,35 +1,40 @@
-// Isolates ONE variable: the order in which Eigen traverses the reduced axes.
+// Pins down one thing only, which is the order Eigen walks the reduced axes in.
 //
-// Case under test: 3-D row-major [X,Y,Z], reduce axes {0,2}, keep Y.
-// TensorFlow hands this straight to Eigen -- reduction_ops_common.h:209-213
+// The case is a 3-D row-major [X,Y,Z] reduced over axes {0,2}, keeping Y, and TF
+// hands that straight to Eigen with no transpose and no copy on the way --
+// reduction_ops_common.h:209-213
 //   } else if ((helper.ndims() == 3) && helper.reduce_first_axis()) {
 //       Functor::Reduce(ctx, helper.out<T,1>(&tmp_out), helper.in<T,3>(data),
 //                       constants.kZeroTwo, reducer);
-// no transpose, no copy.
 //
-// IMPORTANT: the axis sets are passed as Eigen::IndexList<type2index<...>>,
-// NOT Eigen::array. That matters. Eigen picks its reduction path with the
-// COMPILE-TIME traits are_inner_most_dims / preserve_inner_most_dims, which are
-// always false for a runtime Eigen::array -- so using an array would push every
-// case onto the generic path and prove nothing. TF's CPU path uses the IndexList
-// form (Constants<CPUDevice> : ConstantsBase, reduction_ops_common.h:61-67),
-// so that is what is used here.
+// Worth knowing before you edit anything, the axis sets go in as
+// Eigen::IndexList<type2index<...>> and not Eigen::array, which matters more than
+// it looks, since Eigen picks its path using are_inner_most_dims and
+// preserve_inner_most_dims, both compile-time traits, and both come out false for
+// a runtime Eigen::array, so swapping one in quietly drops every axis set onto the
+// generic path and the whole comparison stops saying anything, and TF's CPU path
+// uses the IndexList form anyway (Constants<CPUDevice> : ConstantsBase,
+// reduction_ops_common.h:61-67), so that's what's matched here.
 //
-// ARMS, all computing the same numbers:
-//   A  Eigen  in.sum({0,2})               - the TF path
-//   B  manual, innermost loop over Z      - stride 1  (the PyTorch order)
-//   C  manual, innermost loop over X      - stride Y*Z (imitates GenericDimReducer)
-// C exists to show A's cost is the traversal order, not Eigen overhead.
+// Three arms, all producing the same numbers:
+//   A  Eigen's own in.sum({0,2})        the TF path
+//   B  hand loop, Z innermost           stride 1, the way PyTorch would order it
+//   C  hand loop, X innermost           stride Y*Z, walking like GenericDimReducer
 //
-// CONTROLS - other axis sets on the same tensor, same element count:
-//   {1,2} keep X  -> are_inner_most_dims      == true  -> InnerMostDimReducer
-//   {0,1} keep Z  -> preserve_inner_most_dims == true  -> InnerMostDimPreserver
-// Both are fast Eigen paths. Only {0,2} is false for both and falls to
-// GenericDimReducer. The program prints those two compile-time flags per axis
-// set so the path choice is visible, not assumed.
+// C is the interesting one, because if A and C land on the same time then Eigen
+// isn't slow for being Eigen, it's slow because of the order, and B says what you
+// get back by turning the loop around.
+//
+// Two controls run alongside, other axis sets on the same tensor with the same
+// element count, so size isn't the variable:
+//   {1,2} keep X  -> are_inner_most_dims true      -> InnerMostDimReducer
+//   {0,1} keep Z  -> preserve_inner_most_dims true -> InnerMostDimPreserver
+// Both of those are fast Eigen paths, and {0,2} is the only set that's false for
+// both and ends up on GenericDimReducer, and the program prints those two flags
+// per axis set so you can see the path choice rather than assume it.
 //
 // Build:  g++ -O3 -march=native -std=c++17 -I<eigen> eigen_3dxz_bench.cpp -o bench
-// Single threaded (Eigen DefaultDevice) = TF intra_op_parallelism_threads(1).
+// Single threaded on purpose (Eigen DefaultDevice), same as TF intra_op = 1.
 
 #include <unsupported/Eigen/CXX11/Tensor>
 #include <algorithm>

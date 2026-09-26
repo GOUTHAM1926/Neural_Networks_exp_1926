@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-tf.reduce_sum(x, axis=[0,2]) on a 3-D tensor -- the case that lands in
-Eigen's GenericDimReducer via reduction_ops_common.h:209-213.
+Times tf.reduce_sum(x, axis=[0,2]) on a 3-D tensor, which is the case that ends up
+in Eigen's GenericDimReducer via reduction_ops_common.h:209-213.
 
-Two controls on the SAME tensor with the SAME number of elements reduced:
-  axis=[1,2] -> Eigen InnerMostDimReducer
-  axis=[0,1] -> Eigen InnerMostDimPreserver
-If [0,2] is much slower than both, the axis set is the variable, not the size.
+Two other axis sets run alongside it on the same tensor with the same number of
+elements reduced, [1,2] which Eigen sends to InnerMostDimReducer and [0,1] which
+goes to InnerMostDimPreserver, so if [0,2] is the only slow one then the axis set
+is the variable and not the size of the problem.
 
-PyTorch is timed on the identical shapes when it is importable, as a reference
-for what the same reduction costs with stride-ordered traversal.
+PyTorch gets timed on the same shapes when it's importable, as a reference for what
+this costs with stride-ordered traversal.
 
 Run:
   python3 tf_3dxz_bench.py --threads 1
-  python3 tf_3dxz_bench.py --threads 0      # 0 = framework default
+  python3 tf_3dxz_bench.py --threads 0      # 0 leaves the framework default
 """
 import argparse, os, sys, time
 
