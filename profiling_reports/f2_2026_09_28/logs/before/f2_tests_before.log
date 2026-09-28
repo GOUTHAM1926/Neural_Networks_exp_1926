@@ -1,0 +1,64 @@
+==== F2 standalone tests (before)  2026-09-28 14:04:42  host=fair-face-lies-fin-02  CUDA_VISIBLE_DEVICES=0
+0, NVIDIA H200, 4755 MiB, 143771 MiB, 6 %
+2473013, /root/mahesh/BluTrain/Tensor-Implementations/Tests/h5_baseline/bin/b3_gqa_bwd_bench, 4746 MiB
+Tensor-Implementations: 3a08ade convert: GPU as_type converts directly like the CPU, and converts complex
+?? Tests/kernel_tests/test_fused_grad_accum.cu
+?? Tests/kernel_tests/test_linear_backward_3d.cu
+?? output_build.log
+26736f60b0db5237a1f61788584d8591  src/core/AutogradMeta.cpp
+7b52ea49fe0aa3473488036b2ecd3647  src/TensorOps/cuda/TensorOpsAdd.cu
+e19b9e770134b254f6436add7c51c20f  include/ops/TensorOps.cuh
+3ae82ba3b93760bb18a14ac113eec5ef  include/ops/helpers/KernelPolicy.h
+ff4dbdc1abef046bcc358aaf314a4396  src/autograd/backward/LinearBackward.cpp
+816e35d455d581a4ca8b3b6d660d3235  lib/libtensor.so
+F2 symbol in lib/libtensor.so: 0
+
+==== test_linear_backward_3d
+--- BLAS backend : cublas ---
+--- Compiling [CUDA] (sm_90): Tests/kernel_tests/test_linear_backward_3d.cu ---
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -o run_cuda_runner Tests/kernel_tests/test_linear_backward_3d.cu \
+        -L/usr/local/cuda/lib64 -L/usr/local/cuda/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -ltensor -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -lcuda
+\n--- Running Tests/kernel_tests/test_linear_backward_3d.cu ---
+device 0: NVIDIA H200 (sm_90)
+FAIL L1  fp32 3-D  weight has NO gradient (the bug)
+FAIL L2  fp32 3-D  weight-grad mismatches linear vs matmul: n/a (no grad)
+PASS L3  fp32 3-D  input-grad mismatches linear vs matmul: 0
+PASS L4  fp32 2-D  weight-grad mismatches linear vs matmul: 0
+PASS L4  fp32 2-D  input-grad mismatches linear vs matmul: 0
+FAIL L5  fp32 3-D +bias  weight-grad mismatches linear vs matmul: n/a (no grad)
+PASS L3  fp32 3-D +bias  input-grad mismatches linear vs matmul: 0
+PASS L5  fp32 3-D +bias  bias grad vs column sums: worst rel err 1.42e-06
+FAIL L1  bf16 3-D  weight has NO gradient (the bug)
+FAIL L2  bf16 3-D  weight-grad mismatches linear vs matmul: n/a (no grad)
+PASS L3  bf16 3-D  input-grad mismatches linear vs matmul: 0
+PASS L4  bf16 2-D  weight-grad mismatches linear vs matmul: 0
+PASS L4  bf16 2-D  input-grad mismatches linear vs matmul: 0
+FAIL L5  bf16 3-D +bias  weight-grad mismatches linear vs matmul: n/a (no grad)
+PASS L3  bf16 3-D +bias  input-grad mismatches linear vs matmul: 0
+PASS L5  bf16 3-D +bias  bias grad vs column sums: worst rel err 0.00362
+
+RESULT FAIL  (6 failed checks)
+\n--- Removed run_cuda_runner (exit 1) ---
+make: *** [Makefile:523: run-cuda] Error 1
+
+==== SUMMARY (before)
+==== test_linear_backward_3d
+FAIL L1  fp32 3-D  weight has NO gradient (the bug)
+FAIL L2  fp32 3-D  weight-grad mismatches linear vs matmul: n/a (no grad)
+PASS L3  fp32 3-D  input-grad mismatches linear vs matmul: 0
+PASS L4  fp32 2-D  weight-grad mismatches linear vs matmul: 0
+PASS L4  fp32 2-D  input-grad mismatches linear vs matmul: 0
+FAIL L5  fp32 3-D +bias  weight-grad mismatches linear vs matmul: n/a (no grad)
+PASS L3  fp32 3-D +bias  input-grad mismatches linear vs matmul: 0
+PASS L5  fp32 3-D +bias  bias grad vs column sums: worst rel err 1.42e-06
+FAIL L1  bf16 3-D  weight has NO gradient (the bug)
+FAIL L2  bf16 3-D  weight-grad mismatches linear vs matmul: n/a (no grad)
+PASS L3  bf16 3-D  input-grad mismatches linear vs matmul: 0
+PASS L4  bf16 2-D  weight-grad mismatches linear vs matmul: 0
+PASS L4  bf16 2-D  input-grad mismatches linear vs matmul: 0
+FAIL L5  bf16 3-D +bias  weight-grad mismatches linear vs matmul: n/a (no grad)
+PASS L3  bf16 3-D +bias  input-grad mismatches linear vs matmul: 0
+PASS L5  bf16 3-D +bias  bias grad vs column sums: worst rel err 0.00362
+RESULT FAIL  (6 failed checks)
+PASS lines: 20   FAIL lines: 12
+log: /root/gautam_k/f2_logs/before/f2_tests_before.log

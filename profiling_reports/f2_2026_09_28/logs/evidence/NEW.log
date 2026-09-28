@@ -1,0 +1,92 @@
+[precision] bf16 logits ON — frees ~3 GiB ([B,T,vocab] fp32 activation + gradient). Gradients are unaffected (fp32 softmax stats, exact 1.0 backward seed), but the REPORTED loss is bf16 and quantizes to ~0.06 steps: compare tokens/s and grad-norm across an A/B, not the loss digits.
+[bench] BLU_MAX_STEPS=6 (warmup=1 stable=3)
+================ Configuration ================
+  d_model         : 2304
+  n_layers        : 26
+  q_heads/kv_heads: 18 / 6  (G=3)
+  head_dim        : 128
+  ffn_hidden      : 6144  (SwiGLU)
+  context_length  : 4096
+  rope_theta      : 500000  (interleaved=NeoX)
+  vocab_size      : 50304
+  weight_tying    : ON
+  precision       : resid float32 | logits bfloat16 | embed float32
+                    (matmuls bf16, QK-norm+RoPE fp32, optimizer masters fp32 — all fixed)
+  B x T           : 4 x 4096
+  world_size      : 1
+  global_batch    : 1048576  (grad_accum=64)
+  max_lr / min_lr : 0.0012 / 0.00012
+  warmup / steps  : 1 / 6
+  WSD stable_steps: 3  (decay tail=2)
+===============================================
+Initializing model on CUDA device 0...
+Number of parameters: 1588229888
+==================== MFU accounting ====================
+  device            : NVIDIA H200 x 1
+  peak BF16 (dense) : 989.400 TFLOP/s per GPU
+  cluster peak      : 0.989 PFLOP/s
+  fwd FLOPs/token   : 3.667 GFLOP  (causal)
+  fwd+bwd /token    : 11.001 GFLOP  (causal, x3) <-- headline
+  fwd+bwd /token    : 12.473 GFLOP  (PaLM convention)
+  6*N cross-check   : 9.529 GFLOP  (weight matmuls only; excludes the T-dependent attention core)
+  model FLOPs/step  : 11.535 PFLOP  over 1048576 tokens
+  100% MFU would be : 11658.766 ms/step
+  note              : no activation checkpointing in this loop, so HFU == MFU
+========================================================
+[ZeRO-1] overlap: reduce=off (monolithic, after backward) | refresh=off (synchronous publish in step)
+[ZeRO-1] variant: v1 reduce/broadcast | symmetric memory: off  (BLU_ZERO_V2=0 BLU_SYMMETRIC=0)
+[ZeRO-1] params=1472200704 padded=1472225280 W=1 shard=1472225280 | optimizer state/GPU: 16848.281 MB (vs 16848.000 MB unsharded)
+[ZeRO-1] params=116029184 padded=116029440 W=1 shard=116029440 | optimizer state/GPU: 1327.852 MB (vs 1327.849 MB unsharded)
+[optimizer] AdamW  (BLU_OPTIMIZER=adamw)
+  G0 adamw:bfloat16/1472M : zero1-v1 reduce/broadcast | lr 0.001 -> 0.000
+  G1 adamw:float32/116M : zero1-v1 reduce/broadcast | lr 0.001 -> 0.000
+[ZeRO-1] grad_clip=1.000 APPLIES TO 1588229888 / 1588229888 params (100.00%)
+decayed params: 1588101120, non-decayed: 128768 | ZeRO-1 optimizer groups: 2 | world_size: 1
+
+=== Data mixture: preset c0 (static) ===
+  [c0-static ] from step      0 :  commoncrawl=0.700  code=0.200  math=0.100
+=================================================
+[MixedLoader] domain 'commoncrawl': 3 shards, weight=0.700 (/root/gautam_k/mix/commoncrawl)
+[MixedLoader] domain 'code': 3 shards, weight=0.200 (/root/gautam_k/mix/code)
+[MixedLoader] domain 'math': 3 shards, weight=0.100 (/root/gautam_k/mix/math)
+found 1 shards for split val
+found 1 shards for split val
+found 1 shards for split val
+
+Starting training...
+
+
+[mix] step 0 entering phase 'c0-static'
+[MixedLoader] weights -> {commoncrawl=0.700, code=0.200, math=0.100}  (phase 'c0-static')  [selection accounting rebased]
+  [val] step 0 | val_loss 11.273848 | commoncrawl 11.273848 | code 11.273848 | math 11.273848
+step      0 | train 11.298004 | val 11.273848 | tok/s 42395.56 | norm 18.9713 | dt 24733.16 ms | mfu 47.14% | TF/gpu 466.4 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 18.8699 | G1(adamw:float32/116M) 1.9593
+Collecting data...
+step      1 | train 11.392174 | val 11.273848 | tok/s 42434.77 | norm 467.1791 | dt 24710.30 ms | mfu 47.18% | TF/gpu 466.8 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 467.1413 | G1(adamw:float32/116M) 5.9478
+step      2 | train 12.139969 | val 11.273848 | tok/s 42606.07 | norm 22.0192 | dt 24610.96 ms | mfu 47.37% | TF/gpu 468.7 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 2.8011 | G1(adamw:float32/116M) 21.8403
+Generating '/tmp/nsys-report-fdb8.qdstrm'
+[1/1] [0%                          ] NEW.nsys-rep[1/1] [0%                          ] NEW.nsys-rep[1/1] [0%                          ] NEW.nsys-rep[1/1] [6%                          ] NEW.nsys-rep[1/1] [7%                          ] NEW.nsys-rep[1/1] [8%                          ] NEW.nsys-rep[1/1] [9%                          ] NEW.nsys-rep[1/1] [10%                         ] NEW.nsys-rep[1/1] [6%                          ] NEW.nsys-rep[1/1] [===22%                      ] NEW.nsys-rep[1/1] [===23%                      ] NEW.nsys-rep[1/1] [=17%                        ] NEW.nsys-rep[1/1] [14%                         ] NEW.nsys-rep[1/1] [12%                         ] NEW.nsys-rep[1/1] [10%                         ] NEW.nsys-rep[1/1] [9%                          ] NEW.nsys-rep[1/1] [8%                          ] NEW.nsys-rep[1/1] [7%                          ] NEW.nsys-rep[1/1] [6%                          ] NEW.nsys-rep[1/1] [5%                          ] NEW.nsys-rep[1/1] [5%                          ] NEW.nsys-rep[1/1] [7%                          ] NEW.nsys-rep[1/1] [8%                          ] NEW.nsys-rep[1/1] [9%                          ] NEW.nsys-rep[1/1] [10%                         ] NEW.nsys-rep[1/1] [12%                         ] NEW.nsys-rep[1/1] [13%                         ] NEW.nsys-rep[1/1] [14%                         ] NEW.nsys-rep[1/1] [=15%                        ] NEW.nsys-rep[1/1] [=17%                        ] NEW.nsys-rep[1/1] [==18%                       ] NEW.nsys-rep[1/1] [==19%                       ] NEW.nsys-rep[1/1] [==21%                       ] NEW.nsys-rep[1/1] [===22%                      ] NEW.nsys-rep[1/1] [===23%                      ] NEW.nsys-rep[1/1] [===24%                      ] NEW.nsys-rep[1/1] [====26%                     ] NEW.nsys-rep[1/1] [====27%                     ] NEW.nsys-rep[1/1] [====28%                     ] NEW.nsys-rep[1/1] [=====29%                    ] NEW.nsys-rep[1/1] [=====31%                    ] NEW.nsys-rep[1/1] [=====32%                    ] NEW.nsys-rep[1/1] [======33%                   ] NEW.nsys-rep[1/1] [======35%                   ] NEW.nsys-rep[1/1] [=======36%                  ] NEW.nsys-rep[1/1] [=======37%                  ] NEW.nsys-rep[1/1] [=======38%                  ] NEW.nsys-rep[1/1] [========40%                 ] NEW.nsys-rep[1/1] [========41%                 ] NEW.nsys-rep[1/1] [========42%                 ] NEW.nsys-rep[1/1] [=========44%                ] NEW.nsys-rep[1/1] [=========45%                ] NEW.nsys-rep[1/1] [=========46%                ] NEW.nsys-rep[1/1] [==========47%               ] NEW.nsys-rep[1/1] [==========49%               ] NEW.nsys-rep[1/1] [===========50%              ] NEW.nsys-rep[1/1] [========================100%] NEW.nsys-rep[1/1] [========================100%] NEW.nsys-rep
+Generated:
+	/root/gautam_k/f2_evidence/NEW.nsys-rep
+--------------------------------------------------------------------------
+mpirun has exited due to process rank 0 with PID 0 on
+node fair-face-lies-fin-02 exiting improperly. There are three reasons this could occur:
+
+1. this process did not call "init" before exiting, but others in
+the job did. This can cause a job to hang indefinitely while it waits
+for all processes to call "init". By rule, if one process calls "init",
+then ALL processes must call "init" prior to termination.
+
+2. this process called "init", but exited without calling "finalize".
+By rule, all processes that call "init" MUST call "finalize" prior to
+exiting or it will be considered an "abnormal termination"
+
+3. this process called "MPI_Abort" or "orte_abort" and the mca parameter
+orte_create_session_dirs is set to false. In this case, the run-time cannot
+detect that the abort call was an abnormal termination. Hence, the only
+error message you will receive is this one.
+
+This may have caused other processes in the application to be
+terminated by signals sent by mpirun (as reported here).
+
+You can avoid this message by specifying -quiet on the mpirun command line.
+--------------------------------------------------------------------------

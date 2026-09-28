@@ -1,0 +1,25 @@
+loss-forward kernels captured: OLD 77, NEW 77  -> 13 overlapping 64-micro-step windows usable per arm
+
+==== one exact window = 64 micro-steps = 1 optimizer step (first window in each arm)
+wall time (loss-fwd #0 to #64): OLD 24791.4 ms  NEW 24671.5 ms  change -119.9 ms
+kernels (= launches) in window: OLD 138090  NEW 128106  change -9984   (expected -9984)
+memcpy OLD 528 NEW 528   memset OLD 2058 NEW 2058
+
+kernels whose count changed (OLD -> NEW over the window), with their GPU time:
+    23425 ->   13441 (  -9984)     791.68 ms ->   646.35 ms   OwnTensor::sm90::vec4_convert_to_fp32(const __nv_bfloat16 *, float *, unsigned long)
+    16768 ->    6784 (  -9984)     278.75 ms ->     9.71 ms   void OwnTensor::add_inplace_kernel_sm90<float, (int)2>(T1 *, const T1 *, unsigned long)
+        0 ->    9984 (  +9984)       0.00 ms ->   275.68 ms   void OwnTensor::grad_accum::accum_lowp_fp32_vec_kernel<(bool)1, (int)2>(float *, const unsigned shor
+  GPU time in these kernels: OLD 1070.43 ms  NEW 931.73 ms  change -138.69 ms  = -2.167 ms per micro-step
+all kernel GPU time in window: OLD 24579.6 ms  NEW 24484.5 ms  change -95.1 ms
+
+CUDA API calls whose count changed in the window:
+   107946 ->   97962 (  -9984)   cuKernelGetName
+   107946 ->   97962 (  -9984)   cudaLaunchKernel_v7000
+  cudaMalloc: OLD 0  NEW 0
+  cudaFree: OLD 0  NEW 0
+  cudaMallocAsync: OLD 0  NEW 0
+  cudaFreeAsync: OLD 0  NEW 0
+
+==== all 13 overlapping windows (not independent samples)
+OLD: kernels per window [138090]   wall ms min 24774.9 median 24780.5 max 24791.4
+NEW: kernels per window [128106]   wall ms min 24636.3 median 24660.7 max 24671.5

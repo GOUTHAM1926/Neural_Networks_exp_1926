@@ -1,0 +1,289 @@
+diff --git a/include/ops/TensorOps.cuh b/include/ops/TensorOps.cuh
+index e2097fa..7bc8145 100644
+--- a/include/ops/TensorOps.cuh
++++ b/include/ops/TensorOps.cuh
+@@ -16,6 +16,14 @@ void cuda_div_tensor(const Tensor& A, const Tensor& B, Tensor& output, cudaStrea
+ 
+ //void cuda_add_tensor_inplace( Tensor& A, const Tensor& B);
+ void cuda_add_tensor_inplace( Tensor& A, const Tensor& B, cudaStream_t stream = 0);
++
++// acc += float(update) in one kernel, for an fp32 acc and a bf16/fp16 update that
++// are both contiguous CUDA tensors of the same shape. Returns false and touches
++// nothing when those conditions do not hold, so the caller can fall back.
++bool cuda_accumulate_lowp_into_fp32(Tensor& acc, const Tensor& update, cudaStream_t stream = 0);
++// Successful cuda_accumulate_lowp_into_fp32 calls in this process (for tests and
++// for BLUTRAIN_REPORT_FUSED_GRAD_ACC=1, which prints it at exit).
++uint64_t fused_grad_accum_call_count();
+ void cuda_sub_tensor_inplace( Tensor& A, const Tensor& B, cudaStream_t stream = 0);
+ void cuda_mul_tensor_inplace( Tensor& A, const Tensor& B, cudaStream_t stream = 0);
+ void cuda_div_tensor_inplace( Tensor& A, const Tensor& B, cudaStream_t stream = 0);
+diff --git a/include/ops/helpers/KernelPolicy.h b/include/ops/helpers/KernelPolicy.h
+index e71f718..2d2e59b 100644
+--- a/include/ops/helpers/KernelPolicy.h
++++ b/include/ops/helpers/KernelPolicy.h
+@@ -101,5 +101,14 @@ inline bool disable_sm90_add_flat() {
+     return v;
+ }
+ 
++// Fused bf16/fp16 -> fp32 gradient accumulation — cuda_accumulate_lowp_into_fp32,
++// called from AutogradMeta::accumulate_grad. BLUTRAIN_NO_FUSED_GRAD_ACC=1 restores
++// `grad += update.as_type(Float32)`. Both give the same bits, so the switch exists
++// for A/B timing only. Not an sm_90 kernel, so BLUTRAIN_NO_SM90 does not affect it.
++inline bool disable_fused_grad_accum() {
++    static const bool v = detail::env_flag_enabled("BLUTRAIN_NO_FUSED_GRAD_ACC");
++    return v;
++}
++
+ }  // namespace cuda
+ }  // namespace OwnTensor
+diff --git a/src/TensorOps/cuda/TensorOpsAdd.cu b/src/TensorOps/cuda/TensorOpsAdd.cu
+index 6a9866e..d3320c6 100644
+--- a/src/TensorOps/cuda/TensorOpsAdd.cu
++++ b/src/TensorOps/cuda/TensorOpsAdd.cu
+@@ -12,6 +12,11 @@
+ #include <algorithm>
+ #include "ops/helpers/Vectorization.cuh"
+ #include "profiler/RecordFunction.h"
++#include <atomic>
++#include <cstdint>
++#include <cstdlib>
++#include <stdexcept>
++#include <string>
+ 
+ 
+ namespace OwnTensor
+@@ -760,4 +765,167 @@ namespace OwnTensor
+         });
+     }
+ 
++    /*########################################################
++        FUSED LOW-PRECISION GRADIENT ACCUMULATION
++    ##########################################################*/
++
++    // F2 -- acc_fp32[i] += float(update[i]) for a bf16 or fp16 update, in one pass.
++    //
++    // What:   one kernel reads the low-precision update (16 B = 8 values) and the fp32
++    //         accumulator (2 x 16 B), widens in registers, adds, and writes the fp32 back.
++    // Was:    AutogradMeta::accumulate_grad did `acc += update.as_type(Float32)`, which wrote
++    //         the widened update to a full-size fp32 temporary and read it back: 18 B of DRAM
++    //         traffic per element and two launches, against 10 B and one launch here.
++    // Why:    widening bf16/fp16 to fp32 is exact (bf16 is the top half of an fp32; every fp16
++    //         value is an fp32 value), and the add below is the same single fp32 add as
++    //         add_inplace_kernel_sm90<float> in this file -- same TU, same flags, FADD.FTZ in
++    //         the SASS of both -- so the result is bit-identical to the old path.
++    // Proven: Tests/kernel_tests/test_fused_grad_accum.cu on H200 (sm_90): 0 mismatches against
++    //         the old path after 4 accumulation steps, bf16 and fp16, sizes 1 to 33,554,437
++    //         (vector, tail and misaligned-scalar paths), with +-0, subnormals, +-inf, NaN and
++    //         overflow planted; 1.41-1.97x faster per call at 5-34M elements.
++    namespace grad_accum {
++
++    template <bool IS_BF16>
++    __device__ __forceinline__ float widen(uint32_t bits16) {
++        if constexpr (IS_BF16) {
++            return __uint_as_float(bits16 << 16);                  // bf16 = top half of an fp32
++        } else {
++            return __half2float(__ushort_as_half(static_cast<unsigned short>(bits16)));
++        }
++    }
++
++    // 8 low-precision values (one int4) into 8 floats (two float4). Element 2k is
++    // the low half of 32-bit word k (little-endian).
++    template <bool IS_BF16>
++    __device__ __forceinline__ void add8(float4& lo, float4& hi, const int4 u) {
++        const uint32_t w0 = static_cast<uint32_t>(u.x), w1 = static_cast<uint32_t>(u.y);
++        const uint32_t w2 = static_cast<uint32_t>(u.z), w3 = static_cast<uint32_t>(u.w);
++        lo.x = lo.x + widen<IS_BF16>(w0 & 0xFFFFu);  lo.y = lo.y + widen<IS_BF16>(w0 >> 16);
++        lo.z = lo.z + widen<IS_BF16>(w1 & 0xFFFFu);  lo.w = lo.w + widen<IS_BF16>(w1 >> 16);
++        hi.x = hi.x + widen<IS_BF16>(w2 & 0xFFFFu);  hi.y = hi.y + widen<IS_BF16>(w2 >> 16);
++        hi.z = hi.z + widen<IS_BF16>(w3 & 0xFFFFu);  hi.w = hi.w + widen<IS_BF16>(w3 >> 16);
++    }
++
++    // Both pointers 16-B aligned. Grid-stride, 2x unrolled, the same shape as
++    // add_inplace_kernel_sm90.
++    template <bool IS_BF16, int UNROLL = 2>
++    __global__ __launch_bounds__(256)
++    void accum_lowp_fp32_vec_kernel(float* __restrict__ acc,
++                                    const uint16_t* __restrict__ upd,
++                                    size_t n)
++    {
++        const size_t n_vec  = n / 8;
++        const size_t tid    = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
++        const size_t stride = (size_t)blockDim.x * gridDim.x;
++
++        float4*     __restrict__ a_v = reinterpret_cast<float4*>(acc);
++        const int4* __restrict__ u_v = reinterpret_cast<const int4*>(upd);
++
++        size_t i = tid;
++        for (; i + (UNROLL - 1) * stride < n_vec; i += UNROLL * stride) {
++            int4 u[UNROLL];
++            float4 lo[UNROLL], hi[UNROLL];
++            #pragma unroll
++            for (int k = 0; k < UNROLL; k++) {
++                const size_t j = i + k * stride;
++                u[k] = u_v[j]; lo[k] = a_v[2 * j]; hi[k] = a_v[2 * j + 1];
++            }
++            #pragma unroll
++            for (int k = 0; k < UNROLL; k++) {
++                const size_t j = i + k * stride;
++                add8<IS_BF16>(lo[k], hi[k], u[k]);
++                a_v[2 * j] = lo[k]; a_v[2 * j + 1] = hi[k];
++            }
++        }
++        for (; i < n_vec; i += stride) {
++            float4 lo = a_v[2 * i], hi = a_v[2 * i + 1];
++            add8<IS_BF16>(lo, hi, u_v[i]);
++            a_v[2 * i] = lo; a_v[2 * i + 1] = hi;
++        }
++
++        // Ragged tail (n % 8, at most 7 elements), first threads of the grid.
++        const size_t tail_base  = n_vec * 8;
++        const size_t tail_count = n - tail_base;
++        if (tid < tail_count) {
++            acc[tail_base + tid] = acc[tail_base + tid] + widen<IS_BF16>(upd[tail_base + tid]);
++        }
++    }
++
++    // Either pointer not 16-B aligned (a view with an element offset). Same
++    // arithmetic, one element per iteration.
++    template <bool IS_BF16>
++    __global__ __launch_bounds__(256)
++    void accum_lowp_fp32_scalar_kernel(float* __restrict__ acc,
++                                       const uint16_t* __restrict__ upd,
++                                       size_t n)
++    {
++        const size_t tid    = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
++        const size_t stride = (size_t)blockDim.x * gridDim.x;
++        for (size_t i = tid; i < n; i += stride) {
++            acc[i] = acc[i] + widen<IS_BF16>(upd[i]);
++        }
++    }
++
++    std::atomic<uint64_t> calls{0};
++
++    void report_at_exit() {
++        std::fprintf(stderr, "[grad-accum] fused bf16/fp16 -> fp32 accumulations: %llu\n",
++                     static_cast<unsigned long long>(calls.load()));
++    }
++
++    template <bool IS_BF16>
++    void launch(float* a, const uint16_t* u, size_t n, bool aligned, cudaStream_t stream) {
++        const int block = 256;
++        if (aligned) {
++            size_t grid = get_optimal_grid_size(accum_lowp_fp32_vec_kernel<IS_BF16, 2>, block, n / 8);
++            accum_lowp_fp32_vec_kernel<IS_BF16, 2><<<grid, block, 0, stream>>>(a, u, n);
++        } else {
++            size_t grid = get_optimal_grid_size(accum_lowp_fp32_scalar_kernel<IS_BF16>, block, n);
++            accum_lowp_fp32_scalar_kernel<IS_BF16><<<grid, block, 0, stream>>>(a, u, n);
++        }
++    }
++
++    }  // namespace grad_accum
++
++    uint64_t fused_grad_accum_call_count() { return grad_accum::calls.load(); }
++
++    bool cuda_accumulate_lowp_into_fp32(Tensor& acc, const Tensor& update, cudaStream_t stream)
++    {
++        const Dtype ud = update.dtype();
++        if (acc.dtype() != Dtype::Float32) return false;
++        if (ud != Dtype::Bfloat16 && ud != Dtype::Float16) return false;
++        if (!acc.device().is_cuda() || !update.device().is_cuda()) return false;
++        if (acc.device().index != update.device().index) return false;
++        if (!acc.is_contiguous() || !update.is_contiguous()) return false;
++        if (acc.shape().dims != update.shape().dims) return false;
++
++        static const bool report = [] {
++            const bool on = cuda::detail::env_flag_enabled("BLUTRAIN_REPORT_FUSED_GRAD_ACC");
++            if (on) std::atexit(grad_accum::report_at_exit);
++            return on;
++        }();
++        (void)report;
++
++        const size_t n = acc.numel();
++        if (n == 0) return true;
++
++        CUDA_KERNEL_SCOPE("cuda_accumulate_lowp_into_fp32", stream);
++        float* a = static_cast<float*>(acc.data());
++        const uint16_t* u = static_cast<const uint16_t*>(update.data());
++        const bool aligned = (reinterpret_cast<uintptr_t>(a) % 16 == 0) &&
++                             (reinterpret_cast<uintptr_t>(u) % 16 == 0);
++        if (ud == Dtype::Bfloat16) grad_accum::launch<true >(a, u, n, aligned, stream);
++        else                       grad_accum::launch<false>(a, u, n, aligned, stream);
++
++        // A failed launch would silently drop a gradient; fail loudly instead.
++        const cudaError_t err = cudaPeekAtLastError();
++        if (err != cudaSuccess) {
++            throw std::runtime_error(std::string("cuda_accumulate_lowp_into_fp32: launch failed: ") +
++                                     cudaGetErrorString(err));
++        }
++        grad_accum::calls.fetch_add(1, std::memory_order_relaxed);
++        return true;
++    }
++
+ }
+\ No newline at end of file
+diff --git a/src/autograd/backward/LinearBackward.cpp b/src/autograd/backward/LinearBackward.cpp
+index e3f8c9f..bbe6780 100644
+--- a/src/autograd/backward/LinearBackward.cpp
++++ b/src/autograd/backward/LinearBackward.cpp
+@@ -54,7 +54,18 @@ std::vector<Tensor> LinearBackward::apply(std::vector<Tensor>&& grads) {
+             Tensor g_flat = grad_output.reshape(Shape{{-1, output_dim}});
+             
+             Tensor grad_input_flat = Tensor(a_flat.shape(), a_flat.opts().with_device(grad_output.device()));
+-            Tensor grad_weight = Tensor(saved_weight_.shape(), saved_weight_.opts().with_device(grad_output.device()));
++            // What:   assign the OUTER grad_weight (declared at the top of apply()).
++            // Was:    `Tensor grad_weight = ...` declared a new local here, so the outer one stayed
++            //         empty and "2. Gradient for Weight" below returned it: autograd::linear with a
++            //         3-D input gave the weight NO gradient. The engine skips empty gradients, so
++            //         nothing reported it. In since 4a62424 (2026-03-10).
++            // Why:    Case 1 above already assigns the outer variable; this makes Case 2 match.
++            //         The trainer never reached it (nn::Linear uses autograd::matmul / addmm), but
++            //         DTensor::Linear (dist/Tensor-Parallelism) calls autograd::linear.
++            // Proven: Tests/kernel_tests/test_linear_backward_3d.cu on H200: before, L1/L2/L5 FAIL
++            //         (no weight gradient); after, 16/16 PASS, and the weight gradient equals the
++            //         autograd::matmul path bit for bit (fp32 and bf16, with and without bias).
++            grad_weight = Tensor(saved_weight_.shape(), saved_weight_.opts().with_device(grad_output.device()));
+             
+             cuda_matmul_backward(g_flat, a_flat, saved_weight_, grad_input_flat, grad_weight, stream);
+             
+diff --git a/src/core/AutogradMeta.cpp b/src/core/AutogradMeta.cpp
+index bcc3e73..ecf1c92 100644
+--- a/src/core/AutogradMeta.cpp
++++ b/src/core/AutogradMeta.cpp
+@@ -3,6 +3,11 @@
+ #include "core/TensorImpl.h"
+ #include "autograd/Hooks.h"
+ #include "ops/TensorOps.h" // Needed for operator+
++#ifdef WITH_CUDA
++#include "ops/TensorOps.cuh"          // cuda_accumulate_lowp_into_fp32
++#include "ops/helpers/KernelPolicy.h" // cuda::disable_fused_grad_accum
++#include "device/DeviceCore.h"        // cuda::getCurrentStream
++#endif
+ #include <stdexcept>
+ #include "profiler/RecordFunction.h"
+ 
+@@ -170,6 +175,25 @@ void AutogradMeta::accumulate_grad(Tensor&& update) {
+         // grad_ is fp32 for low-precision params; upcast the incoming update to
+         // match so the accumulation stays in fp32.
+         if (update.dtype() != grad_->dtype()) {
++#ifdef WITH_CUDA
++            // F2 -- fused gradient accumulation.
++            // What:   cuda_accumulate_lowp_into_fp32 (TensorOpsAdd.cu) widens the bf16/fp16
++            //         update to fp32 in registers and adds it straight into grad_, one kernel.
++            // Was:    only the `*grad_ += update.as_type(...)` line below: a new full-size fp32
++            //         temporary per bf16 weight per micro-step, 2 kernels, 18 B/element of DRAM
++            //         traffic. Now 10 B/element, 1 kernel, no temporary.
++            // Why:    bf16/fp16 -> fp32 is exact and the add is the same FADD.FTZ, so the bits
++            //         cannot change; the temporary only carried the widened value between kernels.
++            // Proven: Tests/kernel_tests/test_fused_grad_accum.cu on H200: 0 mismatches against
++            //         the old line after 4 accumulation steps, bf16 and fp16, 1 to 33.5M elements,
++            //         with +-0, subnormals, +-inf, NaN and overflow; 1.41-1.97x faster per call.
++            // Falls through (returns false) for CPU, non-contiguous or shape-mismatched updates.
++            // BLUTRAIN_NO_FUSED_GRAD_ACC=1 forces the old line (A/B runs).
++            if (!cuda::disable_fused_grad_accum() &&
++                cuda_accumulate_lowp_into_fp32(*grad_, update, cuda::getCurrentStream())) {
++                return;
++            }
++#endif
+             *grad_ += update.as_type(grad_->dtype());
+         } else {
+             *grad_ += update;

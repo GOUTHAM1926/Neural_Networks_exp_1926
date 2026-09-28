@@ -1,0 +1,42 @@
+==== F2 evidence  2026-09-28 14:57:12  host=fair-face-lies-fin-02  GPU=0  steps=6  nsys delay=100s duration=30s
+0c2765d8770d0d60f35d9f7d853fba0a  /root/gautam_k/_runner_F2b
+f81b78e4620e9d6892f57ab7fc473e1a  /root/gautam_k/BluTrain/Tensor-Implementations/lib/libtensor.so
+NVIDIA Nsight Systems version 2025.6.3.541-256337736014v0
+preflight GPU apps:
+
+---- OLD start 14:57:13  BLUTRAIN_NO_FUSED_GRAD_ACC=1
+---- OLD exit=1 end 14:59:31  step lines=3
+-rw-rw-r-- 1 root root 14592717 Sep 28 14:59 /root/gautam_k/f2_evidence/OLD.nsys-rep
+stats exit=0
+/root/gautam_k/f2_evidence/OLD_cuda_api_sum.csv
+/root/gautam_k/f2_evidence/OLD_cuda_gpu_kern_sum.csv
+
+---- NEW start 14:59:34  BLUTRAIN_NO_FUSED_GRAD_ACC=0
+---- NEW exit=1 end 15:01:52  step lines=3
+-rw-rw-r-- 1 root root 13801199 Sep 28 15:01 /root/gautam_k/f2_evidence/NEW.nsys-rep
+stats exit=0
+/root/gautam_k/f2_evidence/NEW_cuda_api_sum.csv
+/root/gautam_k/f2_evidence/NEW_cuda_gpu_kern_sum.csv
+
+==== SUMMARY
+OLD: micro-steps captured (loss-forward instances) = 77   kernel launches = 166986  -> 2168.6 per micro-step
+NEW: micro-steps captured (loss-forward instances) = 77   kernel launches = 155753  -> 2022.8 per micro-step
+
+kernel launches per micro-step: OLD 2168.6  NEW 2022.8  change -145.9
+
+kernels whose count per micro-step changed (OLD -> NEW), with GPU time per micro-step:
+     365.7 ->    210.7  ( -155.0)    12.356 ms ->  10.124 ms   OwnTensor::sm90::vec4_convert_to_fp32(const __nv_bfloat16 *, float *, unsigned long)
+     261.7 ->    106.7  ( -155.0)     4.350 ms ->   0.152 ms   void OwnTensor::add_inplace_kernel_sm90<float, (int)2>(T1 *, const T1 *, unsigned long)
+     211.9 ->    212.7  (   +0.8)     9.826 ms ->   9.862 ms   OwnTensor::sm90::vec8_convert_to_bf16(const float *, __nv_bfloat16 *, unsigned long)
+     207.9 ->    208.7  (   +0.8)     5.420 ms ->   5.409 ms   void OwnTensor::sm90::strided_inner_vec_copy_kernel<uint4, unsigned short, (int)8, (int)3, unsigned int>(const
+     156.8 ->    158.0  (   +1.2)    72.708 ms ->  73.386 ms   void bgemm_sm90_kernel<Sm90WarpspecConfig<(int)128, (int)256, (int)64, (int)0, (int)8, (int)1, (int)24, (int)2
+       0.0 ->    157.0  ( +157.0)     0.000 ms ->   4.334 ms   void OwnTensor::grad_accum::accum_lowp_fp32_vec_kernel<(bool)1, (int)2>(float *, const unsigned short *, unsig
+  GPU time in these kernels per micro-step: OLD 104.661 ms  NEW 103.268 ms  change -1.393 ms
+  all GPU kernel time per micro-step: OLD 383.75 ms  NEW 383.98 ms  change +0.22 ms
+
+OLD [ALLOC]: MISSING
+OLD [MEM]  : None
+
+NEW [ALLOC]: MISSING
+NEW [MEM]  : None
+==== done 2026-09-28 15:01:54

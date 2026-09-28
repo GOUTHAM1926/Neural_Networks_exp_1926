@@ -1,0 +1,103 @@
+[precision] bf16 logits ON — frees ~3 GiB ([B,T,vocab] fp32 activation + gradient). Gradients are unaffected (fp32 softmax stats, exact 1.0 backward seed), but the REPORTED loss is bf16 and quantizes to ~0.06 steps: compare tokens/s and grad-norm across an A/B, not the loss digits.
+[bench] BLU_MAX_STEPS=20 (warmup=2 stable=10)
+================ Configuration ================
+  d_model         : 2304
+  n_layers        : 26
+  q_heads/kv_heads: 18 / 6  (G=3)
+  head_dim        : 128
+  ffn_hidden      : 6144  (SwiGLU)
+  context_length  : 4096
+  rope_theta      : 500000  (interleaved=NeoX)
+  vocab_size      : 50304
+  weight_tying    : ON
+  precision       : resid float32 | logits bfloat16 | embed float32
+                    (matmuls bf16, QK-norm+RoPE fp32, optimizer masters fp32 — all fixed)
+  B x T           : 4 x 4096
+  world_size      : 1
+  global_batch    : 1048576  (grad_accum=64)
+  max_lr / min_lr : 0.0012 / 0.00012
+  warmup / steps  : 2 / 20
+  WSD stable_steps: 10  (decay tail=8)
+===============================================
+Initializing model on CUDA device 0...
+Number of parameters: 1588229888
+==================== MFU accounting ====================
+  device            : NVIDIA H200 x 1
+  peak BF16 (dense) : 989.400 TFLOP/s per GPU
+  cluster peak      : 0.989 PFLOP/s
+  fwd FLOPs/token   : 3.667 GFLOP  (causal)
+  fwd+bwd /token    : 11.001 GFLOP  (causal, x3) <-- headline
+  fwd+bwd /token    : 12.473 GFLOP  (PaLM convention)
+  6*N cross-check   : 9.529 GFLOP  (weight matmuls only; excludes the T-dependent attention core)
+  model FLOPs/step  : 11.535 PFLOP  over 1048576 tokens
+  100% MFU would be : 11658.766 ms/step
+  note              : no activation checkpointing in this loop, so HFU == MFU
+========================================================
+[ZeRO-1] overlap: reduce=off (monolithic, after backward) | refresh=off (synchronous publish in step)
+[ZeRO-1] variant: v1 reduce/broadcast | symmetric memory: off  (BLU_ZERO_V2=0 BLU_SYMMETRIC=0)
+[ZeRO-1] params=1472200704 padded=1472225280 W=1 shard=1472225280 | optimizer state/GPU: 16848.281 MB (vs 16848.000 MB unsharded)
+[ZeRO-1] params=116029184 padded=116029440 W=1 shard=116029440 | optimizer state/GPU: 1327.852 MB (vs 1327.849 MB unsharded)
+[optimizer] AdamW  (BLU_OPTIMIZER=adamw)
+  G0 adamw:bfloat16/1472M : zero1-v1 reduce/broadcast | lr 0.001 -> 0.000
+  G1 adamw:float32/116M : zero1-v1 reduce/broadcast | lr 0.001 -> 0.000
+[ZeRO-1] grad_clip=1.000 APPLIES TO 1588229888 / 1588229888 params (100.00%)
+decayed params: 1588101120, non-decayed: 128768 | ZeRO-1 optimizer groups: 2 | world_size: 1
+
+=== Data mixture: preset c0 (static) ===
+  [c0-static ] from step      0 :  commoncrawl=0.700  code=0.200  math=0.100
+=================================================
+[MixedLoader] domain 'commoncrawl': 3 shards, weight=0.700 (/root/gautam_k/mix/commoncrawl)
+[MixedLoader] domain 'code': 3 shards, weight=0.200 (/root/gautam_k/mix/code)
+[MixedLoader] domain 'math': 3 shards, weight=0.100 (/root/gautam_k/mix/math)
+found 1 shards for split val
+found 1 shards for split val
+found 1 shards for split val
+
+Starting training...
+
+
+[mix] step 0 entering phase 'c0-static'
+[MixedLoader] weights -> {commoncrawl=0.700, code=0.200, math=0.100}  (phase 'c0-static')  [selection accounting rebased]
+  [val] step 0 | val_loss 11.273848 | commoncrawl 11.273848 | code 11.273848 | math 11.273848
+step      0 | train 11.298004 | val 11.273848 | tok/s 42364.42 | norm 18.9712 | dt 24751.33 ms | mfu 47.10% | TF/gpu 466.0 | lr 6.0000e-04 | G0(adamw:bfloat16/1472M) 18.8697 | G1(adamw:float32/116M) 1.9593
+step      1 | train 11.935732 | val 11.273848 | tok/s 42501.43 | norm 1028.0222 | dt 24671.55 ms | mfu 47.26% | TF/gpu 467.6 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 1027.2251 | G1(adamw:float32/116M) 40.4751
+step      2 | train 10.041162 | val 11.273848 | tok/s 42394.72 | norm 15.6739 | dt 24733.64 ms | mfu 47.14% | TF/gpu 466.4 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 14.6229 | G1(adamw:float32/116M) 5.6427
+step      3 | train 10.614923 | val 11.273848 | tok/s 42459.94 | norm 11.2527 | dt 24695.65 ms | mfu 47.21% | TF/gpu 467.1 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 3.6702 | G1(adamw:float32/116M) 10.6373
+step      4 | train 11.562239 | val 11.273848 | tok/s 42482.26 | norm 4.1977 | dt 24682.68 ms | mfu 47.23% | TF/gpu 467.3 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 1.4843 | G1(adamw:float32/116M) 3.9266
+step      5 | train 16.139992 | val 11.273848 | tok/s 42539.97 | norm 46.4476 | dt 24649.19 ms | mfu 47.30% | TF/gpu 468.0 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 5.5664 | G1(adamw:float32/116M) 46.1128
+step      6 | train 14.400255 | val 11.273848 | tok/s 42418.71 | norm 42.1318 | dt 24719.66 ms | mfu 47.16% | TF/gpu 466.6 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 3.7059 | G1(adamw:float32/116M) 41.9685
+step      7 | train 11.985224 | val 11.273848 | tok/s 42413.29 | norm 24.1700 | dt 24722.82 ms | mfu 47.16% | TF/gpu 466.6 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 1.8143 | G1(adamw:float32/116M) 24.1018
+step      8 | train 10.910378 | val 11.273848 | tok/s 42390.56 | norm 6.5856 | dt 24736.07 ms | mfu 47.13% | TF/gpu 466.3 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 0.3987 | G1(adamw:float32/116M) 6.5735
+step      9 | train 10.656005 | val 11.273848 | tok/s 42338.12 | norm 3.9047 | dt 24766.71 ms | mfu 47.07% | TF/gpu 465.8 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 0.1915 | G1(adamw:float32/116M) 3.9000
+step     10 | train 10.345328 | val 11.273848 | tok/s 42336.49 | norm 3.9906 | dt 24767.67 ms | mfu 47.07% | TF/gpu 465.7 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 0.1829 | G1(adamw:float32/116M) 3.9864
+step     11 | train 9.953523 | val 11.273848 | tok/s 42304.57 | norm 3.9174 | dt 24786.35 ms | mfu 47.04% | TF/gpu 465.4 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 0.1699 | G1(adamw:float32/116M) 3.9137
+step     12 | train 9.409180 | val 11.273848 | tok/s 42363.91 | norm 3.7636 | dt 24751.63 ms | mfu 47.10% | TF/gpu 466.0 | lr 1.2000e-03 | G0(adamw:bfloat16/1472M) 0.1610 | G1(adamw:float32/116M) 3.7602
+step     13 | train 8.820127 | val 11.273848 | tok/s 42316.63 | norm 3.1632 | dt 24779.29 ms | mfu 47.05% | TF/gpu 465.5 | lr 1.1465e-03 | G0(adamw:bfloat16/1472M) 0.1475 | G1(adamw:float32/116M) 3.1598
+step     14 | train 8.934256 | val 11.273848 | tok/s 42279.76 | norm 14.4819 | dt 24800.90 ms | mfu 47.01% | TF/gpu 465.1 | lr 9.9668e-04 | G0(adamw:bfloat16/1472M) 0.6601 | G1(adamw:float32/116M) 14.4669
+step     15 | train 8.777130 | val 11.273848 | tok/s 42216.97 | norm 11.8778 | dt 24837.78 ms | mfu 46.94% | TF/gpu 464.4 | lr 7.8016e-04 | G0(adamw:bfloat16/1472M) 0.4978 | G1(adamw:float32/116M) 11.8674
+step     16 | train 8.606752 | val 11.273848 | tok/s 42136.82 | norm 5.4628 | dt 24885.03 ms | mfu 46.85% | TF/gpu 463.5 | lr 5.3984e-04 | G0(adamw:bfloat16/1472M) 0.2242 | G1(adamw:float32/116M) 5.4582
+step     17 | train 8.397755 | val 11.273848 | tok/s 42010.54 | norm 4.4796 | dt 24959.83 ms | mfu 46.71% | TF/gpu 462.1 | lr 3.2332e-04 | G0(adamw:bfloat16/1472M) 0.1754 | G1(adamw:float32/116M) 4.4762
+step     18 | train 8.287192 | val 11.273848 | tok/s 42009.11 | norm 3.7290 | dt 24960.68 ms | mfu 46.71% | TF/gpu 462.1 | lr 1.7348e-04 | G0(adamw:bfloat16/1472M) 0.1410 | G1(adamw:float32/116M) 3.7263
+  [val] step 19 | val_loss 8.364088 | commoncrawl 8.364088 | code 8.364088 | math 8.364088
+step     19 | train 8.181438 | val 8.364088 | tok/s 42089.48 | norm 3.1757 | dt 24913.02 ms | mfu 46.80% | TF/gpu 463.0 | lr 1.2000e-04 | G0(adamw:bfloat16/1472M) 0.1181 | G1(adamw:float32/116M) 3.1735
+
+==================== MFU summary ====================
+  steady-state MFU  : 47.01%   (15 steps, first 5 excluded)
+  best-step MFU     : 47.30%
+  model TFLOP/s/gpu : 465.08  of 989.40 peak
+  cluster PFLOP/s   : 0.47
+  steady tok/s      : 42277
+  total model FLOPs : 0.173 EFLOP over 6.201 min
+=====================================================
+
+=== Domain Mixture Stats ===
+  domain        target    phase     run       samples     shard     epochs
+  commoncrawl   0.7000    0.6999    0.6999    898         0/3       0
+  code          0.2000    0.2003    0.2003    257         0/3       0
+  math          0.1000    0.0998    0.0998    128         0/3       0
+  samples this phase=1283  whole run=1283
+============================
+
+=== Training complete ===
+[MEM] active_peak 90322 MiB | allocated_peak 90322 MiB | reserved_peak 93410 MiB | cached_free 47387 MiB
+[grad-accum] fused bf16/fp16 -> fp32 accumulations: 199524

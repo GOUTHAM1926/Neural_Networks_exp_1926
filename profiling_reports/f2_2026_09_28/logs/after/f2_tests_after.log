@@ -1,0 +1,290 @@
+==== F2 standalone tests (after)  2026-09-28 14:12:36  host=fair-face-lies-fin-02  CUDA_VISIBLE_DEVICES=0
+0, NVIDIA H200, 0 MiB, 143771 MiB, 0 %
+Tensor-Implementations: 3a08ade convert: GPU as_type converts directly like the CPU, and converts complex
+ M include/ops/TensorOps.cuh
+ M include/ops/helpers/KernelPolicy.h
+ M src/TensorOps/cuda/TensorOpsAdd.cu
+ M src/autograd/backward/LinearBackward.cpp
+ M src/core/AutogradMeta.cpp
+?? Tests/kernel_tests/test_fused_grad_accum.cu
+?? Tests/kernel_tests/test_linear_backward_3d.cu
+?? include/ops/TensorOps.cuh.orig_f2
+?? include/ops/helpers/KernelPolicy.h.orig_f2
+?? output_build.log
+?? src/TensorOps/cuda/TensorOpsAdd.cu.orig_f2
+?? src/autograd/backward/LinearBackward.cpp.orig_f2
+?? src/core/AutogradMeta.cpp.orig_f2
+9ddb027eeb152f9669f419df7062de3c  src/core/AutogradMeta.cpp
+8ff14863a607a03443004f7065ac6106  src/TensorOps/cuda/TensorOpsAdd.cu
+f28067789f3a7e3a951eefc1d99b1109  include/ops/TensorOps.cuh
+c41cd233fe6f7915205950ec598e550a  include/ops/helpers/KernelPolicy.h
+4bb37289c4d3e9ed6841decfc3b81fb2  src/autograd/backward/LinearBackward.cpp
+1f4ad9d8b5b5ad310486f4d9bd6e3269  lib/libtensor.so
+F2 symbol in lib/libtensor.so: 1
+
+==== test_linear_backward_3d
+--- BLAS backend : cublas ---
+--- Compiling [CUDA] (sm_90): Tests/kernel_tests/test_linear_backward_3d.cu ---
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -o run_cuda_runner Tests/kernel_tests/test_linear_backward_3d.cu \
+        -L/usr/local/cuda/lib64 -L/usr/local/cuda/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -ltensor -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -lcuda
+\n--- Running Tests/kernel_tests/test_linear_backward_3d.cu ---
+device 0: NVIDIA H200 (sm_90)
+PASS L1  fp32 3-D  weight has a gradient
+PASS L2  fp32 3-D  weight-grad mismatches linear vs matmul: 0
+PASS L3  fp32 3-D  input-grad mismatches linear vs matmul: 0
+PASS L4  fp32 2-D  weight-grad mismatches linear vs matmul: 0
+PASS L4  fp32 2-D  input-grad mismatches linear vs matmul: 0
+PASS L5  fp32 3-D +bias  weight-grad mismatches linear vs matmul: 0
+PASS L3  fp32 3-D +bias  input-grad mismatches linear vs matmul: 0
+PASS L5  fp32 3-D +bias  bias grad vs column sums: worst rel err 1.42e-06
+PASS L1  bf16 3-D  weight has a gradient
+PASS L2  bf16 3-D  weight-grad mismatches linear vs matmul: 0
+PASS L3  bf16 3-D  input-grad mismatches linear vs matmul: 0
+PASS L4  bf16 2-D  weight-grad mismatches linear vs matmul: 0
+PASS L4  bf16 2-D  input-grad mismatches linear vs matmul: 0
+PASS L5  bf16 3-D +bias  weight-grad mismatches linear vs matmul: 0
+PASS L3  bf16 3-D +bias  input-grad mismatches linear vs matmul: 0
+PASS L5  bf16 3-D +bias  bias grad vs column sums: worst rel err 0.00362
+
+RESULT PASS  (0 failed checks)
+\n--- Removed run_cuda_runner (exit 0) ---
+
+==== test_fused_grad_accum (fused path ON)
+--- BLAS backend : cublas ---
+--- Compiling [CUDA] (sm_90): Tests/kernel_tests/test_fused_grad_accum.cu ---
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -o run_cuda_runner Tests/kernel_tests/test_fused_grad_accum.cu \
+        -L/usr/local/cuda/lib64 -L/usr/local/cuda/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -ltensor -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -lcuda
+\n--- Running Tests/kernel_tests/test_fused_grad_accum.cu ---
+device 0: NVIDIA H200 (sm_90)
+PASS P1  bf16 n=1 mismatches=0 changed=1/1
+INFO P4  bf16 n=1 control_diffs=0 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=2 mismatches=0 changed=2/2
+INFO P4  bf16 n=2 control_diffs=2 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=7 mismatches=0 changed=7/7
+INFO P4  bf16 n=7 control_diffs=5 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=8 mismatches=0 changed=8/8
+INFO P4  bf16 n=8 control_diffs=5 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=9 mismatches=0 changed=9/9
+INFO P4  bf16 n=9 control_diffs=4 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=15 mismatches=0 changed=15/15
+INFO P4  bf16 n=15 control_diffs=6 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=16 mismatches=0 changed=16/16
+INFO P4  bf16 n=16 control_diffs=7 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=17 mismatches=0 changed=17/17
+INFO P4  bf16 n=17 control_diffs=8 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=31 mismatches=0 changed=31/31
+INFO P4  bf16 n=31 control_diffs=14 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=1023 mismatches=0 changed=1007/1023
+PASS P4  bf16 n=1023 control_diffs=588 (must be > 0)
+PASS P1  bf16 n=1024 mismatches=0 changed=1002/1024
+PASS P4  bf16 n=1024 control_diffs=586 (must be > 0)
+PASS P1  bf16 n=1025 mismatches=0 changed=1004/1025
+PASS P4  bf16 n=1025 control_diffs=605 (must be > 0)
+PASS P1  bf16 n=65539 mismatches=0 changed=64534/65539
+PASS P4  bf16 n=65539 control_diffs=39452 (must be > 0)
+PASS P1  bf16 n=5308416 mismatches=0 changed=5225462/5308416
+PASS P4  bf16 n=5308416 control_diffs=3185586 (must be > 0)
+PASS P1  bf16 n=11534336 mismatches=0 changed=11354024/11534336
+PASS P4  bf16 n=11534336 control_diffs=6921337 (must be > 0)
+PASS P1  bf16 n=14155776 mismatches=0 changed=13935521/14155776
+PASS P4  bf16 n=14155776 control_diffs=8494476 (must be > 0)
+PASS P1  bf16 n=33554437 mismatches=0 changed=33032529/33554437
+PASS P4  bf16 n=33554437 control_diffs=20138452 (must be > 0)
+PASS P1  fp16 n=1 mismatches=0 changed=1/1
+INFO P4  fp16 n=1 control_diffs=1 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=2 mismatches=0 changed=2/2
+INFO P4  fp16 n=2 control_diffs=2 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=7 mismatches=0 changed=7/7
+INFO P4  fp16 n=7 control_diffs=7 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=8 mismatches=0 changed=7/8
+INFO P4  fp16 n=8 control_diffs=7 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=9 mismatches=0 changed=8/9
+INFO P4  fp16 n=9 control_diffs=7 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=15 mismatches=0 changed=14/15
+INFO P4  fp16 n=15 control_diffs=10 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=16 mismatches=0 changed=15/16
+INFO P4  fp16 n=16 control_diffs=11 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=17 mismatches=0 changed=16/17
+INFO P4  fp16 n=17 control_diffs=12 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=31 mismatches=0 changed=30/31
+INFO P4  fp16 n=31 control_diffs=26 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=1023 mismatches=0 changed=1022/1023
+PASS P4  fp16 n=1023 control_diffs=977 (must be > 0)
+PASS P1  fp16 n=1024 mismatches=0 changed=1023/1024
+PASS P4  fp16 n=1024 control_diffs=967 (must be > 0)
+PASS P1  fp16 n=1025 mismatches=0 changed=1024/1025
+PASS P4  fp16 n=1025 control_diffs=981 (must be > 0)
+PASS P1  fp16 n=65539 mismatches=0 changed=65533/65539
+PASS P4  fp16 n=65539 control_diffs=62896 (must be > 0)
+PASS P1  fp16 n=5308416 mismatches=0 changed=5308121/5308416
+PASS P4  fp16 n=5308416 control_diffs=5092709 (must be > 0)
+PASS P1  fp16 n=11534336 mismatches=0 changed=11533718/11534336
+PASS P4  fp16 n=11534336 control_diffs=11067960 (must be > 0)
+PASS P1  fp16 n=14155776 mismatches=0 changed=14154950/14155776
+PASS P4  fp16 n=14155776 control_diffs=13582541 (must be > 0)
+PASS P1  fp16 n=33554437 mismatches=0 changed=33552517/33554437
+PASS P4  fp16 n=33554437 control_diffs=32194595 (must be > 0)
+PASS P2  bf16 n=1025 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  bf16 n=11534339 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  fp16 n=1025 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  fp16 n=11534339 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P3  fp32 update  returned false, acc untouched
+PASS P3  bf16 acc  returned false, acc untouched
+PASS P3  shape mismatch [8,4] vs [4,8]  returned false, acc untouched
+PASS P3  non-contiguous update  returned false, acc untouched
+PASS P3  CPU tensors  returned false, acc untouched
+PASS P5  fused_switch=ON pass1_delta=0 pass2_delta=1 grad_fp32=1 grad(2 passes)!=2*grad(1): 0
+P6   n=5308416    old 0.0250 ms (3818 GB/s at 18 B/elem)  new 0.0127 ms (4188 GB/s at 10 B/elem)  speedup 1.97x
+P6   n=11534336   old 0.0545 ms (3813 GB/s at 18 B/elem)  new 0.0344 ms (3349 GB/s at 10 B/elem)  speedup 1.58x
+P6   n=14155776   old 0.0659 ms (3868 GB/s at 18 B/elem)  new 0.0426 ms (3327 GB/s at 10 B/elem)  speedup 1.55x
+P6   n=33554437   old 0.1471 ms (4106 GB/s at 18 B/elem)  new 0.1041 ms (3222 GB/s at 10 B/elem)  speedup 1.41x
+
+RESULT PASS  (0 failed checks)  fused calls in this process: 1287
+\n--- Removed run_cuda_runner (exit 0) ---
+
+==== test_fused_grad_accum (BLUTRAIN_NO_FUSED_GRAD_ACC=1, fused path OFF in autograd)
+--- BLAS backend : cublas ---
+--- Compiling [CUDA] (sm_90): Tests/kernel_tests/test_fused_grad_accum.cu ---
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -o run_cuda_runner Tests/kernel_tests/test_fused_grad_accum.cu \
+        -L/usr/local/cuda/lib64 -L/usr/local/cuda/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -ltensor -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -lcuda
+\n--- Running Tests/kernel_tests/test_fused_grad_accum.cu ---
+device 0: NVIDIA H200 (sm_90)
+PASS P1  bf16 n=1 mismatches=0 changed=1/1
+INFO P4  bf16 n=1 control_diffs=0 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=2 mismatches=0 changed=2/2
+INFO P4  bf16 n=2 control_diffs=2 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=7 mismatches=0 changed=7/7
+INFO P4  bf16 n=7 control_diffs=5 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=8 mismatches=0 changed=8/8
+INFO P4  bf16 n=8 control_diffs=5 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=9 mismatches=0 changed=9/9
+INFO P4  bf16 n=9 control_diffs=4 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=15 mismatches=0 changed=15/15
+INFO P4  bf16 n=15 control_diffs=6 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=16 mismatches=0 changed=16/16
+INFO P4  bf16 n=16 control_diffs=7 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=17 mismatches=0 changed=17/17
+INFO P4  bf16 n=17 control_diffs=8 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=31 mismatches=0 changed=31/31
+INFO P4  bf16 n=31 control_diffs=14 (must be > 0)  (not a gate for n <= 32)
+PASS P1  bf16 n=1023 mismatches=0 changed=1007/1023
+PASS P4  bf16 n=1023 control_diffs=588 (must be > 0)
+PASS P1  bf16 n=1024 mismatches=0 changed=1002/1024
+PASS P4  bf16 n=1024 control_diffs=586 (must be > 0)
+PASS P1  bf16 n=1025 mismatches=0 changed=1004/1025
+PASS P4  bf16 n=1025 control_diffs=605 (must be > 0)
+PASS P1  bf16 n=65539 mismatches=0 changed=64534/65539
+PASS P4  bf16 n=65539 control_diffs=39452 (must be > 0)
+PASS P1  bf16 n=5308416 mismatches=0 changed=5225462/5308416
+PASS P4  bf16 n=5308416 control_diffs=3185586 (must be > 0)
+PASS P1  bf16 n=11534336 mismatches=0 changed=11354024/11534336
+PASS P4  bf16 n=11534336 control_diffs=6921337 (must be > 0)
+PASS P1  bf16 n=14155776 mismatches=0 changed=13935521/14155776
+PASS P4  bf16 n=14155776 control_diffs=8494476 (must be > 0)
+PASS P1  bf16 n=33554437 mismatches=0 changed=33032529/33554437
+PASS P4  bf16 n=33554437 control_diffs=20138452 (must be > 0)
+PASS P1  fp16 n=1 mismatches=0 changed=1/1
+INFO P4  fp16 n=1 control_diffs=1 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=2 mismatches=0 changed=2/2
+INFO P4  fp16 n=2 control_diffs=2 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=7 mismatches=0 changed=7/7
+INFO P4  fp16 n=7 control_diffs=7 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=8 mismatches=0 changed=7/8
+INFO P4  fp16 n=8 control_diffs=7 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=9 mismatches=0 changed=8/9
+INFO P4  fp16 n=9 control_diffs=7 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=15 mismatches=0 changed=14/15
+INFO P4  fp16 n=15 control_diffs=10 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=16 mismatches=0 changed=15/16
+INFO P4  fp16 n=16 control_diffs=11 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=17 mismatches=0 changed=16/17
+INFO P4  fp16 n=17 control_diffs=12 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=31 mismatches=0 changed=30/31
+INFO P4  fp16 n=31 control_diffs=26 (must be > 0)  (not a gate for n <= 32)
+PASS P1  fp16 n=1023 mismatches=0 changed=1022/1023
+PASS P4  fp16 n=1023 control_diffs=977 (must be > 0)
+PASS P1  fp16 n=1024 mismatches=0 changed=1023/1024
+PASS P4  fp16 n=1024 control_diffs=967 (must be > 0)
+PASS P1  fp16 n=1025 mismatches=0 changed=1024/1025
+PASS P4  fp16 n=1025 control_diffs=981 (must be > 0)
+PASS P1  fp16 n=65539 mismatches=0 changed=65533/65539
+PASS P4  fp16 n=65539 control_diffs=62896 (must be > 0)
+PASS P1  fp16 n=5308416 mismatches=0 changed=5308121/5308416
+PASS P4  fp16 n=5308416 control_diffs=5092709 (must be > 0)
+PASS P1  fp16 n=11534336 mismatches=0 changed=11533718/11534336
+PASS P4  fp16 n=11534336 control_diffs=11067960 (must be > 0)
+PASS P1  fp16 n=14155776 mismatches=0 changed=14154950/14155776
+PASS P4  fp16 n=14155776 control_diffs=13582541 (must be > 0)
+PASS P1  fp16 n=33554437 mismatches=0 changed=33552517/33554437
+PASS P4  fp16 n=33554437 control_diffs=32194595 (must be > 0)
+PASS P2  bf16 n=1025 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  bf16 n=11534339 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  fp16 n=1025 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  fp16 n=11534339 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P3  fp32 update  returned false, acc untouched
+PASS P3  bf16 acc  returned false, acc untouched
+PASS P3  shape mismatch [8,4] vs [4,8]  returned false, acc untouched
+PASS P3  non-contiguous update  returned false, acc untouched
+PASS P3  CPU tensors  returned false, acc untouched
+PASS P5  fused_switch=OFF(BLUTRAIN_NO_FUSED_GRAD_ACC=1) pass1_delta=0 pass2_delta=0 grad_fp32=1 grad(2 passes)!=2*grad(1): 0
+P6   n=5308416    old 0.0251 ms (3812 GB/s at 18 B/elem)  new 0.0127 ms (4177 GB/s at 10 B/elem)  speedup 1.97x
+P6   n=11534336   old 0.0544 ms (3816 GB/s at 18 B/elem)  new 0.0344 ms (3353 GB/s at 10 B/elem)  speedup 1.58x
+P6   n=14155776   old 0.0658 ms (3871 GB/s at 18 B/elem)  new 0.0426 ms (3325 GB/s at 10 B/elem)  speedup 1.55x
+P6   n=33554437   old 0.1472 ms (4104 GB/s at 18 B/elem)  new 0.1040 ms (3225 GB/s at 10 B/elem)  speedup 1.41x
+
+RESULT PASS  (0 failed checks)  fused calls in this process: 1286
+\n--- Removed run_cuda_runner (exit 0) ---
+
+==== SUMMARY (after)
+==== test_linear_backward_3d
+PASS L1  fp32 3-D  weight has a gradient
+PASS L2  fp32 3-D  weight-grad mismatches linear vs matmul: 0
+PASS L3  fp32 3-D  input-grad mismatches linear vs matmul: 0
+PASS L4  fp32 2-D  weight-grad mismatches linear vs matmul: 0
+PASS L4  fp32 2-D  input-grad mismatches linear vs matmul: 0
+PASS L5  fp32 3-D +bias  weight-grad mismatches linear vs matmul: 0
+PASS L3  fp32 3-D +bias  input-grad mismatches linear vs matmul: 0
+PASS L5  fp32 3-D +bias  bias grad vs column sums: worst rel err 1.42e-06
+PASS L1  bf16 3-D  weight has a gradient
+PASS L2  bf16 3-D  weight-grad mismatches linear vs matmul: 0
+PASS L3  bf16 3-D  input-grad mismatches linear vs matmul: 0
+PASS L4  bf16 2-D  weight-grad mismatches linear vs matmul: 0
+PASS L4  bf16 2-D  input-grad mismatches linear vs matmul: 0
+PASS L5  bf16 3-D +bias  weight-grad mismatches linear vs matmul: 0
+PASS L3  bf16 3-D +bias  input-grad mismatches linear vs matmul: 0
+PASS L5  bf16 3-D +bias  bias grad vs column sums: worst rel err 0.00362
+RESULT PASS  (0 failed checks)
+==== test_fused_grad_accum (fused path ON)
+PASS P2  bf16 n=1025 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  bf16 n=11534339 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  fp16 n=1025 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  fp16 n=11534339 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P3  fp32 update  returned false, acc untouched
+PASS P3  bf16 acc  returned false, acc untouched
+PASS P3  shape mismatch [8,4] vs [4,8]  returned false, acc untouched
+PASS P3  non-contiguous update  returned false, acc untouched
+PASS P3  CPU tensors  returned false, acc untouched
+PASS P5  fused_switch=ON pass1_delta=0 pass2_delta=1 grad_fp32=1 grad(2 passes)!=2*grad(1): 0
+P6   n=5308416    old 0.0250 ms (3818 GB/s at 18 B/elem)  new 0.0127 ms (4188 GB/s at 10 B/elem)  speedup 1.97x
+P6   n=11534336   old 0.0545 ms (3813 GB/s at 18 B/elem)  new 0.0344 ms (3349 GB/s at 10 B/elem)  speedup 1.58x
+P6   n=14155776   old 0.0659 ms (3868 GB/s at 18 B/elem)  new 0.0426 ms (3327 GB/s at 10 B/elem)  speedup 1.55x
+P6   n=33554437   old 0.1471 ms (4106 GB/s at 18 B/elem)  new 0.1041 ms (3222 GB/s at 10 B/elem)  speedup 1.41x
+RESULT PASS  (0 failed checks)  fused calls in this process: 1287
+==== test_fused_grad_accum (BLUTRAIN_NO_FUSED_GRAD_ACC=1, fused path OFF in autograd)
+PASS P2  bf16 n=1025 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  bf16 n=11534339 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  fp16 n=1025 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P2  fp16 n=11534339 views_misaligned=1 mismatches=0 elem0_untouched=1
+PASS P3  fp32 update  returned false, acc untouched
+PASS P3  bf16 acc  returned false, acc untouched
+PASS P3  shape mismatch [8,4] vs [4,8]  returned false, acc untouched
+PASS P3  non-contiguous update  returned false, acc untouched
+PASS P3  CPU tensors  returned false, acc untouched
+PASS P5  fused_switch=OFF(BLUTRAIN_NO_FUSED_GRAD_ACC=1) pass1_delta=0 pass2_delta=0 grad_fp32=1 grad(2 passes)!=2*grad(1): 0
+P6   n=5308416    old 0.0251 ms (3812 GB/s at 18 B/elem)  new 0.0127 ms (4177 GB/s at 10 B/elem)  speedup 1.97x
+P6   n=11534336   old 0.0544 ms (3816 GB/s at 18 B/elem)  new 0.0344 ms (3353 GB/s at 10 B/elem)  speedup 1.58x
+P6   n=14155776   old 0.0658 ms (3871 GB/s at 18 B/elem)  new 0.0426 ms (3325 GB/s at 10 B/elem)  speedup 1.55x
+P6   n=33554437   old 0.1472 ms (4104 GB/s at 18 B/elem)  new 0.1040 ms (3225 GB/s at 10 B/elem)  speedup 1.41x
+RESULT PASS  (0 failed checks)  fused calls in this process: 1286
+PASS lines: 136   FAIL lines: 0
+log: /root/gautam_k/f2_logs/after/f2_tests_after.log

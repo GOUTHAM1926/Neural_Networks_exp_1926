@@ -1,0 +1,30 @@
+==== F2 trainer A/B  2026-09-28 15:05:22  host=fair-face-lies-fin-02  GPU=0  steps=4  order=[OLD NEW]
+F2 symbol in libtensor.so: 1
+0c2765d8770d0d60f35d9f7d853fba0a  /root/gautam_k/_runner_F2b
+f81b78e4620e9d6892f57ab7fc473e1a  /root/gautam_k/BluTrain/Tensor-Implementations/lib/libtensor.so
+	libdist.so => /root/gautam_k/BluTrain/dist/lib/libdist.so (0x000072226253a000)
+	libtensor.so => /root/gautam_k/BluTrain/Tensor-Implementations/lib/libtensor.so (0x000072225f400000)
+	libprofiler.so => /root/gautam_k/BluTrain/Profiler/lib/libprofiler.so (0x0000722262506000)
+	libblublas.so => /root/gautam_k/BluTrain/Tensor-Implementations/lib/libblublas.so (0x0000722215c00000)
+preflight GPU apps:
+
+---- run1_OLD start 15:05:22  BLUTRAIN_NO_FUSED_GRAD_ACC=1
+0 MiB, 0 %, 37
+---- run1_OLD exit=0 end 15:08:08  step lines=4  resumed=0
+
+---- run2_NEW start 15:08:08  BLUTRAIN_NO_FUSED_GRAD_ACC=0
+0 MiB, 0 %, 60
+---- run2_NEW exit=0 end 15:10:54  step lines=4  resumed=0
+
+==== SUMMARY  (tok/s window = steps 2..3, same for every run)
+run1_OLD   steps=4   tok/s mean=  42491.4 median=  42491.4 (n=2)
+           [MEM] active_peak 90322 MiB | allocated_peak 90322 MiB | reserved_peak 93410 MiB | cached_free 47387 MiB
+run2_NEW   steps=4   tok/s mean=  42680.4 median=  42680.4 (n=2)
+           [MEM] active_peak 90322 MiB | allocated_peak 90322 MiB | reserved_peak 93410 MiB | cached_free 47387 MiB
+           fused calls=39780  -> per micro-step (after the first) = 156.000  (expected: the number of bf16 weight tensors, a whole number)
+OLD: mean tok/s per run = 42491.4  -> 42491.4
+NEW: mean tok/s per run = 42680.4  -> 42680.4
+NEW vs OLD tok/s: +0.44%   (OLD run-to-run spread: 0.00%)
+loss gap run1_OLD vs run2_NEW: 0.0492
+step-0 loss (identical inputs, must match exactly): run1_OLD=11.298004, run2_NEW=11.298004
+==== done 2026-09-28 15:10:54

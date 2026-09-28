@@ -1,0 +1,5 @@
+Generating SQLite file /root/gautam_k/f2_evidence/NEW.sqlite from /root/gautam_k/f2_evidence/NEW.nsys-rep
+Processing [/root/gautam_k/f2_evidence/NEW.sqlite] with [/opt/nvidia/nsight-systems/2025.6.3/host-linux-x64/reports/cuda_gpu_kern_sum.py] to [/root/gautam_k/f2_evidence/NEW_cuda_gpu_kern_sum.csv]... PROCESSED
+
+Processing [/root/gautam_k/f2_evidence/NEW.sqlite] with [/opt/nvidia/nsight-systems/2025.6.3/host-linux-x64/reports/cuda_api_sum.py] to [/root/gautam_k/f2_evidence/NEW_cuda_api_sum.csv]... PROCESSED
+

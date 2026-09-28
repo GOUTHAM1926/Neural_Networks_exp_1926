@@ -1,0 +1,21 @@
+diff --git a/bluscript_zero_ckpt.cpp b/bluscript_zero_ckpt.cpp
+index 61b45a3..66988df 100644
+--- a/bluscript_zero_ckpt.cpp
++++ b/bluscript_zero_ckpt.cpp
+@@ -195,7 +195,7 @@ struct ModelConfig {
+     static Dtype qk_dtype() { return Dtype::Float32; }
+ 
+     // ---- optimization / data ----
+-    int64_t B            = 8;                            // micro-batch per rank
++    int64_t B            = 4;                            // micro-batch per rank
+     int64_t T            = 4096;                         // sequence length (== context_length)
+     int64_t global_batch = 1048576;                       // tokens per optimizer step (all ranks)
+     float   grad_clip    = 1.0f;
+@@ -2663,6 +2663,7 @@ int main(int argc, char** argv) {
+         //   active_peak = live peak (most memory in use at once); reserved_peak = most memory
+         //   held from the GPU (what nvidia-smi shows, minus the CUDA context).
+         { auto st = CachingCUDAAllocator::instance().get_stats(); std::cout << "[MEM] active_peak " << st.active_peak/1048576 << " MiB | allocated_peak " << st.allocated_peak/1048576 << " MiB | reserved_peak " << st.reserved_peak/1048576 << " MiB | cached_free " << st.cached_free_bytes/1048576 << " MiB" << std::endl; }
++        { auto st = CachingCUDAAllocator::instance().get_stats(); std::cout << "[ALLOC] allocs " << st.num_allocs << " | frees " << st.num_frees << " | cache_hits " << st.num_cache_hits << " | cache_misses " << st.num_cache_misses << " | cuda_mallocs " << st.num_cuda_mallocs << " | splits " << st.num_splits << " | merges " << st.num_merges << std::endl; }
+     }
+ 
+     MPI_Finalize();

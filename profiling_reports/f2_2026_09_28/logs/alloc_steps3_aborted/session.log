@@ -1,0 +1,26 @@
+==== F2 trainer A/B  2026-09-28 15:02:57  host=fair-face-lies-fin-02  GPU=0  steps=3  order=[OLD NEW]
+F2 symbol in libtensor.so: 1
+0c2765d8770d0d60f35d9f7d853fba0a  /root/gautam_k/_runner_F2b
+f81b78e4620e9d6892f57ab7fc473e1a  /root/gautam_k/BluTrain/Tensor-Implementations/lib/libtensor.so
+	libdist.so => /root/gautam_k/BluTrain/dist/lib/libdist.so (0x00007c0e3f54c000)
+	libtensor.so => /root/gautam_k/BluTrain/Tensor-Implementations/lib/libtensor.so (0x00007c0e3c400000)
+	libprofiler.so => /root/gautam_k/BluTrain/Profiler/lib/libprofiler.so (0x00007c0e3f518000)
+	libblublas.so => /root/gautam_k/BluTrain/Tensor-Implementations/lib/libblublas.so (0x00007c0df2c00000)
+preflight GPU apps:
+
+---- run1_OLD start 15:02:57  BLUTRAIN_NO_FUSED_GRAD_ACC=1
+0 MiB, 0 %, 41
+---- run1_OLD exit=1 end 15:03:00  step lines=0  resumed=0
+
+---- run2_NEW start 15:03:00  BLUTRAIN_NO_FUSED_GRAD_ACC=0
+0 MiB, 0 %, 42
+---- run2_NEW exit=1 end 15:03:03  step lines=0  resumed=0
+
+==== SUMMARY  (tok/s window = steps 2..2, same for every run)
+run1_OLD   steps=0 NO STEPS
+           [MEM] MISSING
+run2_NEW   steps=0 NO STEPS
+           [MEM] MISSING
+loss gap run1_OLD vs run2_NEW: nan
+step-0 loss (identical inputs, must match exactly): 
+==== done 2026-09-28 15:03:03
