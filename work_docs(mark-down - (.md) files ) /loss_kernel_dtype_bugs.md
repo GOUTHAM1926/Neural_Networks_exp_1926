@@ -2487,11 +2487,41 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
 **SFT (the assignment):**
 1. [ ] Weights-only checkpoint loader for `navingv/curriculum_8btokens` `blumodel_step_8000` (Muon, 4-GPU DCP).
 2. [ ] Pick the dataset.
-3. [ ] Preprocessing script.
+3. [ ] Preprocessing script. Must also (SFT doc §34.2): check that the tokenized prompt is an exact prefix of the
+   full tokenization; put exactly one EOT at the end; drop over-long examples instead of truncating.
 4. [ ] SFT dataloader.
-5. [ ] Trainer changes: `ignore_index = 65535`, the denominator, SFT hyperparameters, weights-only load.
+5. [ ] Trainer changes: `ignore_index = 65535`, the denominator, SFT hyperparameters, weights-only load. Also log
+   token accuracy and entropy (SFT doc §34.2). v2 later: no target across packed documents (§34.2 #3).
 6. [ ] Loss-kernel bounds check.
 7. [ ] A sample SFT run on an H200.
+
+**FIRST TASK 2026-09-30 (user's request, 2026-09-29): bf16 vs fp32 embedding ablation (§19.3, §19.3.1).**
+- [ ] Does summing the embedding gradient in bf16 really hurt, on real data, at our scale?
+  - The mechanism: with `BLU_BF16_EMBED=1` (as in `BLU_ALL_BF16=1`, which Navin's checkpoint used), every occurrence
+    of a token in a micro-batch adds its gradient row into `wte.grad[token]` with a bf16 `atomicAdd`
+    (`EmbeddingKernels.cu:147-148`): one rounding per add, in a random order. The fp32 `wte` uses the cooperative
+    fp32 kernel (`:415-426`). The micro-step accumulation into the fp32 main grad is fp32 in both cases, so the
+    error depends on how often a token repeats **inside one micro-batch** (16,384 tokens at B = 4), not across the
+    whole dataset.
+  - Forward: under weight tying the lm_head already multiplies with a bf16 copy of `wte`; with bf16 residuals the
+    embedding output is cast to bf16 anyway. So the forward differs little; the question is the backward.
+  - **Part 1, standalone test (laptop RTX 3060, then H200):** embedding backward only. Inputs: 16,384 token ids +
+    gradient rows `[16,384 × 2304]`. Data sets: (a) uniform random ids, few repeats; (b) real pretraining batches
+    from the flux shards (natural repetition); (c) SFT-style batches (template markers + EOT); (d) one id repeated
+    K = 10, 100, 1,000, 4,000, 16,384 times. Gradient rows: real ones captured from the trainer if possible, else
+    random with a realistic scale. Arms: bf16 `wte`, fp32 `wte`, and an fp64 CPU reference. Measure: per-row
+    relative error vs fp64 (max, median, by repeat count K); run-to-run bit differences; the weight difference
+    after one optimizer update.
+  - **Part 2, training ablation (H200):** from Navin's checkpoint (task 1 loader), N steps with `BLU_BF16_EMBED=1`
+    vs `0`, everything else equal, at least 2 runs each (§18 noise). Compare the loss curves and the drift of the
+    embedding weights. The fp32 arm loads a bf16 `wte` into an fp32 one, which needs the 1-line conversion in
+    `ZeroDcpModule::sync_back_to_model()` (today `Tensor::copy_` refuses different dtypes).
+  - Decision it feeds: keep `BLU_ALL_BF16=1` for SFT, or train with an fp32 `wte`.
+
+**Immediate, right after task 7 (decided 2026-09-29, SFT doc §33):**
+- [ ] Remove the redundant lm_head matmul on ignored rows (TRL's default `chunked_nll`): lm_head is 6.3% of
+      per-token compute. Measure 6 cases: v1 / v1.5 / v2, each with and without; answer tokens per second, step
+      time, peak memory, lm_head GEMM time; at least 2 runs per arm.
 
 **Housekeeping:**
 - [ ] **Rotate the GitHub tokens** used in today's push commands (the org PAT), and the token in the blublas remote URL.

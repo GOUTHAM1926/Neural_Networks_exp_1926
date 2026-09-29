@@ -2705,3 +2705,123 @@ External evidence (web):
   - **document leakage**: changing document A leaves document B's logits bitwise unchanged;
   - packed vs unpacked equivalence.
 
+---
+
+## 33. Immediate future task: remove the redundant lm_head matmul on ignored rows (decided 2026-09-29)
+
+**The waste.** The lm_head (`hidden [N × 2304] × W [2304 × 50,304] → logits [N × 50,304]`) runs on every row, but
+the scores of a row whose label is 65535 (prompt, padding) are never used. Our loss kernel already skips the softmax
+of those rows (`LossKernels.cu:211-219`); the matmul before it is still computed, and in backward its 2 matmuls
+multiply the zero gradient rows.
+- lm_head per token: forward 2 × 2304 × 50,304 = 0.232 GFLOP, forward + backward 0.695 GFLOP = **6.3%** of the
+  model's 11.0 GFLOP per token (the trainer's own MFU line).
+- Logits + their gradient: 2 × N × 50,304 values (bf16 at N = 16,384: 1.65 GB + 1.65 GB).
+- **Not the same as the 26 layers:** a prompt token must still go through every layer (answer tokens attend to it).
+  Only its lm_head row + loss are waste. Padding is waste in every layer (removed by v1.5 / v2, §32.4).
+
+**What the references do** (local clones, 2026-09-17/18):
+
+| library | lm_head on ignored rows | where |
+|---|---|---|
+| **TRL SFT** | **dropped before the matmul, by default** (`loss_type="chunked_nll"`) | `trl/trainer/sft_trainer.py:122-232`, `sft_config.py:106-114` |
+| Liger-Kernel fused linear CE | computed (chunks save memory, not the ignored rows' matmul) | `ops/fused_linear_cross_entropy.py:156-168` |
+| Megatron-LM | computed, then `losses * loss_mask` | `pretrain_gpt.py:255-258` |
+| torchtitan | computed, then CE with `ignore_index=-100` | `components/loss.py:33-60` |
+
+TRL's method: `valid = labels != -100`; move valid rows to the front (`argsort`, a static-shape op); run the lm_head
+only on chunks of 256 valid rows; each chunk's logits live only during its own forward/backward (gradient
+checkpointing, so the lm_head forward runs twice for valid rows); divide by the global valid count
+(`num_items_in_batch`); one device-to-host sync per call for the chunk count.
+
+**Plan for BluTrain:**
+- Option A first: gather the non-ignored rows of `hidden` → lm_head on `[M × 2304]` → our existing loss → scatter the
+  gradient back (zeros elsewhere). Round M up to a multiple of 256 (fill with label 65535) to bound the number of
+  GEMM shapes BluBLAS must handle.
+- Option B (TRL-style chunks + recompute) only if logits memory becomes the limit.
+- Same math, not bit-identical (summation order changes).
+
+**Measure it in all 3 stages, with and without: 6 cases.**
+
+| stage | without | with |
+|---|---|---|
+| v1: pad every row to 4096 | case 1 | case 2 |
+| v1.5: length bucketing | case 3 | case 4 |
+| v2: packing + block-diagonal mask | case 5 | case 6 |
+
+The ignored share (and so the saving) is largest in v1 (prompt + padding) and smallest in v2 (prompt only).
+Per case: **answer tokens per second** (raw tok/s is misleading, since padding differs per stage), step time, peak
+active / reserved memory, lm_head GEMM time (nsys), loss equal within noise. At least 2 runs per arm: the trainer is
+not reproducible run to run (loss doc §18).
+
+**When:** right after the first SFT run (task 7), before v1.5.
+
+---
+
+## 34. SFT reference survey: what the best implementations do, and what we were missing (2026-09-29)
+
+**Method:** read from code in the local clones (TRL `478624d`, torchtitan `1e4d33d`, Megatron-LM `8b2f660`,
+Liger-Kernel `19d92e7`, all 2026-09-17/18, and the local PyTorch source); Axolotl, LLaMA-Factory, Unsloth and Apple
+CCE from their docs. NeMo, ms-swift and OpenRLHF were not read.
+
+### 34.1 Feature by feature
+
+| feature | TRL | torchtitan | Megatron-LM | Axolotl / LLaMA-Factory | BluTrain |
+|---|---|---|---|---|---|
+| prompt masking (ignore label) | completion-only / assistant-only (`{% generation %}` masks) | `ChatProcessor` masks the prompt | `loss_mask` | yes | **done** (65535) |
+| global-count denominator | `num_items_in_batch` | yes | `--calculate-per-token-loss` | yes | in the API; **trainer not wired** (task 5) |
+| lm_head only on answer rows | **default** `loss_type="chunked_nll"` (`sft_trainer.py:122-232`) | no | no | — | §33 |
+| no full logits in memory | chunks of 256 + recompute | no | no | via Liger | no (bf16 logits halve it) |
+| length bucketing | no | no | no | — | v1.5 |
+| packing | `bfd`, `bfd_split`, `wrapped` | concat-then-split, first-fit (`components/data/packing.py`) | per-sample packing (`training/datasets/sft_dataset.py`) | multipack / `neat_packing` | v2 |
+| document mask when packed | FlashAttention varlen via `position_ids` (padding-free) | FlexAttention `block_causal` (`get_document_mask_mod`, `models/common/attention.py:467`) | `cu_seqlens` (`PackedSeqParams`) | FlashAttention varlen | v2 (v62 / Vj1d) |
+| positions reset per document | yes | yes | yes | yes | "optional" (§32.4) |
+| label bounds check | — | "labels must be -100 or in [0, V)" (`components/loss.py:139-142`) | — | — | task 6 |
+| fused kernels | via Liger | partly | yes | via Liger | fused RMSNorm + RoPE |
+| activation checkpointing / offload | both | yes | yes | yes | none |
+
+PyTorch provides both packing building blocks: `torch.nn.attention.varlen.varlen_attn` (`cu_seq_q`, `cu_seq_k`) and
+FlexAttention block masks.
+
+### 34.2 Missing from our plan until now
+
+| # | item | reference | why | when |
+|---|---|---|---|---|
+| 1 | tokenizing the prompt alone must be an exact prefix of the full tokenization; otherwise error | torchtitan `_require_token_prefix` | BPE can merge across the prompt/answer boundary and move the mask by a token | task 3 |
+| 2 | exactly one EOT at the end, never duplicated | torchtitan `ChatProcessor` | a doubled EOT teaches the wrong ending | task 3 |
+| 3 | packing: no target across documents (the last token of A must not predict the first token of B) | TRL `sft_trainer.py:516` | a silent wrong target at every boundary | v2 |
+| 4 | drop over-long examples instead of truncating | torchtitan drops (TRL truncates `keep_start`) | truncation removes the EOT target | task 3 (already our rule, §32.2) |
+| 5 | log token accuracy and entropy | TRL | standard SFT health signals, cheap | task 5 |
+| 6 | no full logits in memory (chunked or fused CE: TRL, Liger, Apple CCE) | TRL / Liger / CCE | frees ~3 GB at B = 4 for a bigger B | after §33 |
+| 7 | activation checkpointing | all | memory for a longer T or bigger B | only if memory limits |
+| 8 | loss variants (DFT, NEFTune noise) | TRL / transformers | recipe experiments, not waste | after v1 works |
+
+The global denominator is confirmed by an industry bug: in October 2024 Unsloth and Hugging Face found that
+averaging per micro-batch gives wrong losses and gradients under gradient accumulation, and fixed it by dividing by
+the whole step's token count (`num_items_in_batch`, transformers PR #34191). That is our `denom`.
+
+### 34.3 The waste, in one list
+
+| waste | status |
+|---|---|
+| softmax / loss on ignored rows | **removed** (`LossKernels.cu:211-219`) |
+| lm_head matmul on ignored rows | §33, 6 measured cases |
+| all layers on padding | v1.5 (bucketing), v2 (packing) |
+| attention tiles for padding queries | removed by v1.5 / v2 |
+| full logits memory `[N × 50,304]` | chunked / fused CE, later (34.2 #6) |
+| prompt tokens in the 26 layers | **not waste**: the answer attends to them |
+
+### 34.4 Not verified
+
+- NeMo, ms-swift, OpenRLHF: not read.
+- Apple CCE: confirmed that it never materializes the logits and skips negligible gradient elements; whether it
+  drops ignored rows before the matmul is not stated on its page.
+
+**Conclusion:** the plan (v1 → v1.5 → v2, plus §33) matches the best references. The new must-haves are 34.2
+items 1–5; they fit into tasks 3 and 5 and v2, with no extra stage.
+
+**Sources (web):** [Axolotl multipack](https://docs.axolotl.ai/docs/multipack.html) ·
+[LLaMA-Factory PR #4224](https://github.com/hiyouga/LlamaFactory/pull/4224) ·
+[Unsloth gradient accumulation](https://unsloth.ai/blog/gradient) ·
+[HF: fixing gradient accumulation](https://www.huggingface.co/blog/gradient_accumulation) ·
+[transformers PR #34191](https://github.com/huggingface/transformers/pull/34191) ·
+[Apple Cut Cross-Entropy](https://github.com/apple/ml-cross-entropy)
