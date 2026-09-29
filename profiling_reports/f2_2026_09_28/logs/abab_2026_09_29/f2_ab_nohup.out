@@ -1,0 +1,48 @@
+==== F2 trainer A/B  2026-09-29 06:18:30  host=dry-door-shines-fin-02  GPU=0  steps=20  order=[OLD NEW OLD NEW]
+F2 symbol in libtensor.so: 1
+62117196a981a887c5199f1dba6bfc18  /root/gautam_k/_runner_F2
+a08036277bbeef710b8360b7b9874855  /root/gautam_k/BluTrain/Tensor-Implementations/lib/libtensor.so
+	libdist.so => /root/gautam_k/BluTrain/dist/lib/libdist.so (0x000072d964ca1000)
+	libtensor.so => /root/gautam_k/BluTrain/Tensor-Implementations/lib/libtensor.so (0x000072d961c00000)
+	libprofiler.so => /root/gautam_k/BluTrain/Profiler/lib/libprofiler.so (0x000072d964c6d000)
+	libblublas.so => /root/gautam_k/BluTrain/Tensor-Implementations/lib/libblublas.so (0x000072d917600000)
+preflight GPU apps:
+
+---- run1_OLD start 06:18:31  BLUTRAIN_NO_FUSED_GRAD_ACC=1
+0 MiB, 0 %, 30
+---- run1_OLD exit=0 end 06:27:54  step lines=20  resumed=0
+
+---- run2_NEW start 06:27:54  BLUTRAIN_NO_FUSED_GRAD_ACC=0
+0 MiB, 100 %, 54
+---- run2_NEW exit=0 end 06:37:14  step lines=20  resumed=0
+
+---- run3_OLD start 06:37:14  BLUTRAIN_NO_FUSED_GRAD_ACC=1
+0 MiB, 100 %, 57
+---- run3_OLD exit=0 end 06:46:36  step lines=20  resumed=0
+
+---- run4_NEW start 06:46:36  BLUTRAIN_NO_FUSED_GRAD_ACC=0
+0 MiB, 100 %, 57
+---- run4_NEW exit=0 end 06:55:55  step lines=20  resumed=0
+
+==== SUMMARY  (tok/s window = steps 2..19, same for every run)
+run1_OLD   steps=20  tok/s mean=  42199.9 median=  42216.3 (n=18)
+           [MEM] active_peak 90322 MiB | allocated_peak 90322 MiB | reserved_peak 93410 MiB | cached_free 47387 MiB
+run2_NEW   steps=20  tok/s mean=  42396.7 median=  42397.6 (n=18)
+           [MEM] active_peak 90322 MiB | allocated_peak 90322 MiB | reserved_peak 93410 MiB | cached_free 47387 MiB
+           fused calls=199524  -> per micro-step (after the first) = 156.000  (expected: the number of bf16 weight tensors, a whole number)
+run3_OLD   steps=20  tok/s mean=  42257.8 median=  42253.3 (n=18)
+           [MEM] active_peak 90322 MiB | allocated_peak 90322 MiB | reserved_peak 93410 MiB | cached_free 47387 MiB
+run4_NEW   steps=20  tok/s mean=  42501.2 median=  42483.2 (n=18)
+           [MEM] active_peak 90322 MiB | allocated_peak 90322 MiB | reserved_peak 93410 MiB | cached_free 47387 MiB
+           fused calls=199524  -> per micro-step (after the first) = 156.000  (expected: the number of bf16 weight tensors, a whole number)
+OLD: mean tok/s per run = 42199.9, 42257.8  -> 42228.8
+NEW: mean tok/s per run = 42396.7, 42501.2  -> 42449.0
+NEW vs OLD tok/s: +0.52%   (OLD run-to-run spread: 0.14%)
+loss gap OLD vs OLD (noise): 1.1381
+loss gap NEW vs NEW (noise): 0.4432
+loss gap run1_OLD vs run2_NEW: 1.0885
+loss gap run1_OLD vs run4_NEW: 1.0142
+loss gap run3_OLD vs run2_NEW: 0.0563
+loss gap run3_OLD vs run4_NEW: 0.4528
+step-0 loss (identical inputs, must match exactly): run1_OLD=11.298004, run2_NEW=11.298004, run3_OLD=11.298004, run4_NEW=11.298004
+==== done 2026-09-29 06:55:55
