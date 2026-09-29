@@ -1,0 +1,21 @@
+==== F2 trainer A/B  2026-09-29 10:25:34  host=dry-door-shines-fin-02  GPU=0  steps=5  order=[NEW]
+F2 symbol in libtensor.so: 1
+7a70df1fe134b306b7608e51e1d75cd2  /root/gautam_k/_runner_bluccl
+a06d4112662655fcc98dc0d0a912de41  /root/gautam_k/BluTrain_bluccl/Tensor-Implementations/lib/libtensor.so
+	libdist.so => /root/gautam_k/BluTrain_bluccl/dist/lib/libdist.so (0x000072a2fb600000)
+	libtensor.so => /root/gautam_k/BluTrain_bluccl/Tensor-Implementations/lib/libtensor.so (0x000072a2f8600000)
+	libprofiler.so => /root/gautam_k/BluTrain_bluccl/Profiler/lib/libprofiler.so (0x000072a2fbf04000)
+	libblublas.so => /root/gautam_k/BluTrain_bluccl/Tensor-Implementations/lib/libblublas.so (0x000072a2ae000000)
+preflight GPU apps:
+
+---- run1_NEW start 10:25:35  BLUTRAIN_NO_FUSED_GRAD_ACC=0
+0 MiB, 0 %, 30
+---- run1_NEW exit=0 end 10:27:40  step lines=5  resumed=0
+
+==== SUMMARY  (tok/s window = steps 2..4, same for every run)
+run1_NEW   steps=5   tok/s mean=  41247.9 median=  41243.1 (n=3)
+           [MEM] active_peak 70598 MiB | allocated_peak 70598 MiB | reserved_peak 73328 MiB | cached_free 23539 MiB
+           fused calls=50083  -> per micro-step (after the first) = 157.000  (expected: the number of bf16 weight tensors, a whole number)
+NEW: mean tok/s per run = 41247.9  -> 41247.9
+step-0 loss (identical inputs, must match exactly): run1_NEW=11.280431
+==== done 2026-09-29 10:27:41

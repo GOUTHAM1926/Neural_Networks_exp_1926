@@ -1,0 +1,411 @@
+diff --git a/bluscript_zero_ckpt.cpp b/bluscript_zero_ckpt.cpp
+index 35e8a4e..61b45a3 100644
+--- a/bluscript_zero_ckpt.cpp
++++ b/bluscript_zero_ckpt.cpp
+@@ -2387,7 +2387,35 @@ int main(int argc, char** argv) {
+             auto& opt = optimizers[oi];
+             opt->set_lr(get_lr(step, group_lr[oi].first, group_lr[oi].second,
+                                cfg.warmup_steps, cfg.max_steps, cfg.stable_steps));
+-            opt->step();
++            // F1, trainer side.
++            // What: catch the optimizer's ZeroNonFiniteGradError and abort with one clear line
++            //       and exit code 4 (the NaN-LOSS check earlier in this loop uses 2).
++            // Which optimizers raise it: all three -- ShardedOptimizer (v1, the default),
++            //   SymmetricShardedOptimizer (BLU_ZERO_V2=1) and ShardedMuon (BLU_OPTIMIZER=muon). This
++            //   loop steps every group, so this one catch covers all of them.
++            // Why the check is NOT here in the trainer but in each optimizer's step():
++            //   - the loss check (NaN/Inf loss, earlier in this loop) runs before step() and only sees
++            //     the loss; a finite loss can still carry a NaN/Inf gradient;
++            //   - step() already has the all-reduced gradient norm (needed for clipping), so the
++            //     check there is one isfinite() per group per step -- no GPU work, no memory, no
++            //     change to finite steps -- and it fires BEFORE any weight update;
++            //   - a per-element check inside the Adam kernel could not stop the step as a whole.
++            //   Old path, for the record: NaN norm -> clip coef 1.0 (GradNormKernels.cu:190-193)
++            //   -> scale skipped (MultiTensorKernels.cu:235-240) -> Adam wrote NaN into master/m/v
++            //   (MultiTensorKernels.cu:321-334) -> run died one step later, and a checkpoint taken
++            //   on that step would have saved the NaN state (auto-resume would reload it).
++            // Why catch at all: without it the program still stops before the update and before
++            //   the save (safe), but via std::terminate + MPI signal backtraces on every rank.
++            try {
++                opt->step();
++            } catch (const owt::zero::ZeroNonFiniteGradError& e) {
++                // step() raises this BEFORE touching master/m/v, and the checkpoint
++                // save below is never reached, so no poisoned state is persisted.
++                std::cerr << "[FATAL] rank " << rank << " step " << step << ": " << e.what()
++                          << " -- stopped before the weight update; no checkpoint written"
++                          << std::endl;
++                MPI_Abort(MPI_COMM_WORLD, 4);
++            }
+             const float g = opt->last_grad_norm();
+             group_norm[oi] = g;
+             grad_norm_sq += g * g;
+@@ -2631,6 +2659,10 @@ int main(int argc, char** argv) {
+         train_loader.print_mixture_stats();
+ 
+         std::cout << "\n=== Training complete ===" << std::endl;
++        // Allocator memory stats, printed once at the end (no cost during training):
++        //   active_peak = live peak (most memory in use at once); reserved_peak = most memory
++        //   held from the GPU (what nvidia-smi shows, minus the CUDA context).
++        { auto st = CachingCUDAAllocator::instance().get_stats(); std::cout << "[MEM] active_peak " << st.active_peak/1048576 << " MiB | allocated_peak " << st.allocated_peak/1048576 << " MiB | reserved_peak " << st.reserved_peak/1048576 << " MiB | cached_free " << st.cached_free_bytes/1048576 << " MiB" << std::endl; }
+     }
+ 
+     MPI_Finalize();
+diff --git a/dist/zero/include/ShardedOptimizer.h b/dist/zero/include/ShardedOptimizer.h
+index 70e0c9c..eb9ff56 100644
+--- a/dist/zero/include/ShardedOptimizer.h
++++ b/dist/zero/include/ShardedOptimizer.h
+@@ -196,6 +196,7 @@ private:
+     void gather_grads_into_flat();               // model grads -> flat_stage_
+     void reduce_scatter_grads();                 // flat_stage_ -> shard_grad_ (avg)
+     void cast_shard_grad_to_fp32();              // shard_grad_ -> shard_grad_fp32_
++    std::string nonfinite_grad_msg(float nsq) const;   // F1: text for ZeroNonFiniteGradError
+     bool unscale_and_check_overflow();           // returns true if overflow (skip step)
+     void clip_gradients();                       // global-norm clip on shard_grad_fp32_
+     // Gradient reduce + FP32 cast + loss-scaler unscale — the part of step() that
+diff --git a/dist/zero/include/ZeroErrors.h b/dist/zero/include/ZeroErrors.h
+index 42db949..cd71185 100644
+--- a/dist/zero/include/ZeroErrors.h
++++ b/dist/zero/include/ZeroErrors.h
+@@ -32,6 +32,16 @@ struct ZeroCollectiveError : ZeroError {
+         : ZeroError("collective: " + what) {}
+ };
+ 
++// F1 (new error type).
++// The gradient norm came out NaN/Inf and no LossScaler is installed to skip the
++// step. Raised by step() BEFORE any weight/moment update, so the master weights
++// and any later checkpoint stay clean; the caller is expected to stop. Every
++// rank sees the same all-reduced norm, so every rank raises it together.
++struct ZeroNonFiniteGradError : ZeroError {
++    explicit ZeroNonFiniteGradError(const std::string& what)
++        : ZeroError("non-finite gradient: " + what) {}
++};
++
+ // The optimizer was configured or used in a way that is not supported
+ // (e.g. an unsupported optimizer variant, mixed param dtypes, etc.).
+ struct ZeroConfigError : ZeroError {
+diff --git a/dist/zero/src/ShardedMuon.cpp b/dist/zero/src/ShardedMuon.cpp
+index d0a1dd7..fd23ed9 100644
+--- a/dist/zero/src/ShardedMuon.cpp
++++ b/dist/zero/src/ShardedMuon.cpp
+@@ -38,6 +38,18 @@ namespace {
+ 
+ inline size_t elem_size(Dtype d) { return Tensor::dtype_size(d); }
+ 
++// F1. Text for ZeroNonFiniteGradError: which optimizer and group, how big, which rank and
++// step, so the log names the failing group. Same wording as v1's
++// ShardedOptimizer::nonfinite_grad_msg. File-local on purpose: a new member function would
++// change the header, and every trainer that includes it would need a rebuild.
++std::string nonfinite_grad_msg(float nsq, Dtype dt, size_t numel, int rank, int64_t next_step) {
++    const char* g = dt == Dtype::Bfloat16 ? "bf16" : dt == Dtype::Float32 ? "fp32" : "other";
++    return std::string("ShardedMuon: grad norm^2 = ") + std::to_string(nsq) + " in the " + g +
++           " group (" + std::to_string(numel) + " params), rank " + std::to_string(rank) +
++           ", optimizer step " + std::to_string(next_step) +
++           "; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update";
++}
++
+ inline void d2d(void* dst, const void* src, size_t bytes, OwnTensor::DeviceIndex di) {
+     if (bytes == 0) return;
+     dev::copy_memory(dst, di.device, src, di.device, bytes);
+@@ -1137,8 +1149,18 @@ bool ShardedMuon::compute_norm_and_clip() {
+     // reduce_and_measure() already produced the norm + all-reduce this step.
+     if (cached_nsq_ >= 0.0f) {
+         const float nsq = cached_nsq_;
+-        last_grad_norm_ = (nsq > 0.0f) ? std::sqrt(nsq) : 0.0f;
+-        if (sc && !std::isfinite(nsq)) { sc->update(true); last_step_skipped_ = true; return false; }
++        // F1 (cached-norm path, BLU_GLOBAL_CLIP=1). Same change as the guard in the
++        // per-step path below; the full explanation is there.
++        //   was: last_grad_norm_ = (nsq > 0) ? sqrt(nsq) : 0   -> a NaN norm was LOGGED AS 0
++        //   was: if (sc && !isfinite(nsq)) skip               -> no scaler installed = never fires
++        // reduce_and_measure() caches only a finite norm, so this guard cannot fire today; it is
++        // kept in the same form as the one below so the two paths cannot drift apart.
++        last_grad_norm_ = (nsq > 0.0f || std::isnan(nsq)) ? std::sqrt(nsq) : 0.0f;   // NaN logs as nan, not 0
++        if (!std::isfinite(nsq)) {
++            if (!sc) throw ZeroNonFiniteGradError(nonfinite_grad_msg(nsq, compute_dtype_, total_numel_,
++                                                                     rank_, step_count_ + 1));
++            sc->update(true); last_step_skipped_ = true; return false;
++        }
+         // Fall through to the clip below, which reads last_grad_norm_.
+     } else {
+ 
+@@ -1163,10 +1185,45 @@ bool ShardedMuon::compute_norm_and_clip() {
+     }
+     cudaMemcpy(h_norm_pinned_, d_norm_sq_, sizeof(float), cudaMemcpyDeviceToHost);
+     const float nsq = *h_norm_pinned_;
+-    last_grad_norm_ = (nsq > 0.0f) ? std::sqrt(nsq) : 0.0f;
++    last_grad_norm_ = (nsq > 0.0f || std::isnan(nsq)) ? std::sqrt(nsq) : 0.0f;   // NaN logs as nan, not 0
+ 
+     // --- global non-finite guard: atomic step skip (params untouched) ---
+-    if (sc && !std::isfinite(nsq)) {
++    // F1 (the default path; same fix as ShardedOptimizer::step() got in v1).
++    // Was:  `if (sc && !std::isfinite(nsq)) { skip }`. set_scaler() is called only from
++    //       dist/zero/tests, so in training `sc` is null and this guard NEVER fired. A NaN/Inf
++    //       gradient then went on into the update:
++    //         1. nsq = NaN or Inf (multi_tensor_grad_norm keeps NaN/Inf); the old
++    //            `(nsq > 0) ? sqrt(nsq) : 0` logged a NaN norm as 0
++    //         2. Muon-path tensors (every 2-D matrix, i.e. the body) -- SILENT: update_one() applies
++    //            weight decay, then muon_momentum_cuda writes the NaN/Inf into the momentum m IN
++    //            PLACE, and only then does muon_has_nonfinite_cuda reject the Newton-Schulz output.
++    //            The weights stay finite, but m keeps the NaN (m = mu*m + ..., so it never leaves):
++    //            every LATER step of that matrix is rejected too, and it silently stops learning
++    //            (weight decay only). A checkpoint saves that m, and auto-resume reloads it.
++    //         3. AdamW-path tensors: NaN -> last_grad_norm_ = 0 -> clip_coef_ = min(1, max/1e-6) = 1,
++    //            no clip, fused Adam writes NaN into master/m/v. Inf -> clip_coef_ = 0, and
++    //            Inf * 0 = NaN, same result.
++    //         4. a NaN weight makes the next forward's loss NaN -> the trainer aborts one step LATE;
++    //            if this step was a checkpoint step, the NaN state was already saved.
++    //       Measured before this fix (test_f1_nonfinite, W=1, bf16 and fp32, 256x192 + 128x256
++    //       matrices): NaN or Inf in one matrix gradient -> no error, 0 NaN weights, the NaN kept
++    //       in m, and that matrix's update rejected on this step AND on the next finite step (the
++    //       finite control: 0 and 0 rejected); NaN in a vector -> NaN written into the weight.
++    //       BLU_GLOBAL_CLIP=1 did not help: reduce_and_measure() returns -1 for a non-finite norm,
++    //       the trainer then only drops the global coefficient and still calls step(), which
++    //       arrives here (cached_nsq_ = -1), measures the same NaN again, and went on.
++    // Why here: this one number is already computed and all-reduced every step (it is logged
++    //       even with clipping off), so the check is free (one isfinite on a host float, once
++    //       per group per step), it runs BEFORE update_owned() and before step_count_ advances,
++    //       and every rank holds the same all-reduced value, so every rank takes the same branch
++    //       (no rank is left waiting in a later collective).
++    // Now:  with a LossScaler, unchanged (skip + back off). Without one, throw
++    //       ZeroNonFiniteGradError; bluscript_zero_ckpt catches it and aborts with exit code 4,
++    //       so no poisoned weights and no poisoned checkpoint. A finite norm takes exactly the
++    //       old code path, so training is bit-identical.
++    if (!std::isfinite(nsq)) {
++        if (!sc) throw ZeroNonFiniteGradError(nonfinite_grad_msg(nsq, compute_dtype_, total_numel_,
++                                                                 rank_, step_count_ + 1));
+         sc->update(true);
+         last_step_skipped_ = true;
+         return false;
+diff --git a/dist/zero/src/ShardedOptimizer.cpp b/dist/zero/src/ShardedOptimizer.cpp
+index 156e1ca..d5387d9 100644
+--- a/dist/zero/src/ShardedOptimizer.cpp
++++ b/dist/zero/src/ShardedOptimizer.cpp
+@@ -536,8 +536,20 @@ void ShardedOptimizer::on_grad_ready(size_t pidx, const Tensor& grad) {
+     void* dst = static_cast<char*>(flat_stage_.data()) + rec.offset * esz;
+     Tensor g = grad;
+     if (!g.is_contiguous())          g = g.contiguous();
+-    if (g.dtype() != compute_dtype_) g = g.as_type(compute_dtype_);
+-    d2d(dst, g.data(), rec.numel * esz, device_);
++    if (g.dtype() != compute_dtype_) {
++        // #2 family, site B' (W>1 overlap path).
++        // What: convert the fp32 main-grad straight into its flat_stage_ slice.
++        // Was:  g = g.as_type(compute_dtype_)  (a fresh temporary per param)  + d2d copy.
++        // Why:  the temporary and the second copy did no useful work -- the same pattern
++        //       is already fixed in cast_master_range (this file) and in
++        //       SymmetricShardedOptimizer::stage_grad_into_flat. Same stream; fp32->bf16 is
++        //       round-to-nearest-even on every kernel path, so the bits are unchanged
++        //       (test_fix_family.cu: 0 mismatches, incl. misaligned slices and NaN/Inf).
++        OwnTensor::convert_type_cuda_generic(g.data(), g.dtype(), dst, compute_dtype_,
++                                             static_cast<int64_t>(rec.numel), ocuda::getCurrentStream());
++    } else {
++        d2d(dst, g.data(), rec.numel * esz, device_);
++    }
+     grad_fired_[pidx] = true;
+ 
+     // Release each overlapping bucket; fire the ones that just filled.
+@@ -942,8 +954,17 @@ void ShardedOptimizer::gather_grads_into_flat() {
+         if (rec.param.has_grad()) {
+             Tensor g = rec.param.grad_view();
+             if (!g.is_contiguous()) g = g.contiguous();
+-            if (g.dtype() != compute_dtype_) g = g.as_type(compute_dtype_);
+-            d2d(dst, g.data(), rec.numel * esz, device_);
++            if (g.dtype() != compute_dtype_) {
++                // #2 family, site B (W=1 / reference path).
++                // What: convert the fp32 main-grad straight into its flat_stage_ slice.
++                // Was:  g = g.as_type(compute_dtype_) (temporary per param) + d2d copy.
++                // Why:  same as on_grad_ready above -- one pass instead of two, bit-identical
++                //       (test_fix_family.cu: 0 mismatches incl. misaligned slices).
++                OwnTensor::convert_type_cuda_generic(g.data(), g.dtype(), dst, compute_dtype_,
++                                                     static_cast<int64_t>(rec.numel), ocuda::getCurrentStream());
++            } else {
++                d2d(dst, g.data(), rec.numel * esz, device_);
++            }
+         } else {
+             // param requires grad but produced none this step (unused): its
+             // averaged gradient is 0, matching DDP semantics.
+@@ -974,8 +995,21 @@ void ShardedOptimizer::cast_shard_grad_to_fp32() {
+     if (compute_dtype_ == Dtype::Float32) {
+         d2d(shard_grad_fp32_.data(), shard_grad_.data(), S_ * sizeof(float), device_);
+     } else {
+-        Tensor f = shard_grad_.as_type(Dtype::Float32);
+-        d2d(shard_grad_fp32_.data(), f.data(), S_ * sizeof(float), device_);
++        // #2 family, site C.
++        // What: convert shard_grad_ (bf16) straight into shard_grad_fp32_, which is
++        //       already allocated in allocate_buffers().
++        // Was:  Tensor f = shard_grad_.as_type(Float32); d2d(shard_grad_fp32_, f, ...)
++        //       -- a whole extra S_-element fp32 temporary (5,888,802,816 B at W=1) plus a
++        //       full copy, every optimizer step.
++        // Why:  as_type launches exactly this kernel (AsTypeTensor.cpp:38-39), on the same
++        //       stream as d2d and as every later reader of shard_grad_fp32_ (unscale, norm,
++        //       clip, Adam), so writing directly is bit-identical and keeps the ordering.
++        //       Proven: test_grad_cast_direct.cu 0/1,472,200,704 mismatches; disassembly shows
++        //       as_type + copy_memory gone. Same fix cast_master_range already carries.
++        OwnTensor::convert_type_cuda_generic(
++            shard_grad_.data(), shard_grad_.dtype(),
++            shard_grad_fp32_.data(), Dtype::Float32,
++            static_cast<int64_t>(S_), ocuda::getCurrentStream());
+     }
+ }
+ 
+@@ -1019,8 +1053,15 @@ void ShardedOptimizer::all_gather_params() {
+     if (compute_dtype_ == Dtype::Float32) {
+         d2d(shard_master_compute_.data(), shard_master_.data(), S_ * sizeof(float), device_);
+     } else {
+-        Tensor c = shard_master_.as_type(compute_dtype_);
+-        d2d(shard_master_compute_.data(), c.data(), S_ * esz, device_);
++        // #2 family, site D.
++        // What: convert the fp32 master straight into shard_master_compute_.
++        // Was:  Tensor c = shard_master_.as_type(compute_dtype_); d2d(...) -- an S_-element
++        //       bf16 temporary (2.94 GB at W=1) plus a full copy, every optimizer step.
++        // Why:  identical to cast_master_range(shard_begin_, shard_begin_ + S_) (same call,
++        //       same stream), so bit-identical (test_fix_family.cu site D: 0 mismatches).
++        OwnTensor::convert_type_cuda_generic(shard_master_.data(), Dtype::Float32,
++                                             shard_master_compute_.data(), compute_dtype_,
++                                             static_cast<int64_t>(S_), ocuda::getCurrentStream());
+     }
+     if (W_ == 1) {
+         d2d(flat_stage_.data(), shard_master_compute_.data(), S_ * esz, device_);
+@@ -1121,6 +1162,17 @@ float ShardedOptimizer::reduce_and_measure() {
+     return nsq;
+ }
+ 
++// F1. Text for ZeroNonFiniteGradError: which group, how big, which rank and
++// step, so the log names the failing group instead of printing a norm of 0.
++std::string ShardedOptimizer::nonfinite_grad_msg(float nsq) const {
++    const char* g = compute_dtype_ == Dtype::Bfloat16 ? "bf16"
++                  : compute_dtype_ == Dtype::Float32  ? "fp32" : "other";
++    return "grad norm^2 = " + std::to_string(nsq) + " in the " + g + " group (" +
++           std::to_string(total_numel_) + " params), rank " + std::to_string(rank_) +
++           ", optimizer step " + std::to_string(step_count_ + 1) +
++           "; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update";
++}
++
+ void ShardedOptimizer::step() {
+     last_step_skipped_ = false;
+ 
+@@ -1156,8 +1208,13 @@ void ShardedOptimizer::step() {
+         // clipping); reuse it instead of paying a second all-reduce.
+         const float nsq = cached_nsq_;
+         cached_nsq_ = -1.0f;
+-        last_grad_norm_ = (nsq > 0.0f) ? std::sqrt(nsq) : 0.0f;
+-        if (sc && !std::isfinite(nsq)) {
++        // F1 (cached-norm path, BLU_GLOBAL_CLIP=1). Same change as the guard in
++        // the per-group path below; see the full explanation there.
++        //   was: last_grad_norm_ = (nsq > 0) ? sqrt(nsq) : 0   -> a NaN norm was LOGGED AS 0
++        //   was: if (sc && !isfinite(nsq)) skip               -> no scaler installed = never fires
++        last_grad_norm_ = (nsq > 0.0f || std::isnan(nsq)) ? std::sqrt(nsq) : 0.0f;   // NaN logs as nan, not 0
++        if (!std::isfinite(nsq)) {
++            if (!sc) throw ZeroNonFiniteGradError(nonfinite_grad_msg(nsq));
+             sc->update(true);
+             last_step_skipped_  = true;
+             external_clip_coef_ = -1.0f;
+@@ -1195,10 +1252,37 @@ void ShardedOptimizer::step() {
+         }
+         cudaMemcpy(h_norm_pinned_, d_norm_sq_, sizeof(float), cudaMemcpyDeviceToHost);
+         float nsq = *h_norm_pinned_;
+-        last_grad_norm_ = (nsq > 0.0f) ? std::sqrt(nsq) : 0.0f;
++        last_grad_norm_ = (nsq > 0.0f || std::isnan(nsq)) ? std::sqrt(nsq) : 0.0f;   // NaN logs as nan, not 0
+ 
+         // --- global non-finite guard: atomic step skip (params untouched) ---
+-        if (sc && !std::isfinite(nsq)) {
++        // F1 (the default per-group-clip path).
++        // Was:  `if (sc && !std::isfinite(nsq)) { skip }`. The trainer never installs a
++        //       LossScaler, so `sc` is null and this guard NEVER fired. A NaN/Inf gradient
++        //       then went straight into Adam. Backtrace of what happened (TI 8808f89):
++        //         1. nsq = NaN or Inf (multi_tensor_grad_norm keeps NaN/Inf, MultiTensorKernels.cu:136-184)
++        //         2. last_grad_norm_ logged 0 for NaN (the old `(nsq > 0) ? .. : 0`), hiding it
++        //         3. compute_clip_coef_cuda (GradNormKernels.cu:190-193): max/(NaN) = NaN, and
++        //            `(NaN < 1) ? .. : 1.0f` gives coef = 1.0; for Inf, coef = 0
++        //         4. multi_tensor_scale_cuda returns early at coef == 1.0 (MultiTensorKernels.cu:235-240),
++        //            or multiplies Inf by 0 = NaN
++        //         5. multi_tensor_adam_cuda (MultiTensorKernels.cu:321-334) writes NaN into master, m, v
++        //         6. the next forward's loss is NaN -> the trainer aborts one step LATE; if this step
++        //            was a checkpoint step, the NaN state was already saved and auto-resume reloads it.
++        //       Reproduced on the H200 2026-09-25 (t12/T2a: NaN injected at step 2 -> "NaN/Inf loss
++        //       at step 3", group norm printed 0.0000).
++        // Why here: step() already computes this one number (the norm, needed for clipping) and
++        //       all-reduces it, so checking it is free (one isfinite on a host float, once per group
++        //       per step), it happens BEFORE any update, and every rank sees the same value and
++        //       takes the same branch (no rank can hang in a later collective). A per-element check
++        //       in the Adam kernel could not skip the step as a whole; the trainer's loss check runs
++        //       before step() and a finite loss can still carry a NaN gradient.
++        // Now:  with a LossScaler, unchanged (skip + back off). Without one, throw
++        //       ZeroNonFiniteGradError before touching master/m/v; the trainer catches it and
++        //       aborts cleanly, so no poisoned weights and no poisoned checkpoint.
++        //       Verified: t12/T2b (NaN) and T2c (Inf) stop at step 2 with exit code 4.
++        //       A finite norm takes exactly the old code path -> training is bit-identical.
++        if (!std::isfinite(nsq)) {
++            if (!sc) throw ZeroNonFiniteGradError(nonfinite_grad_msg(nsq));
+             sc->update(true);
+             last_step_skipped_  = true;
+             external_clip_coef_ = -1.0f;
+diff --git a/dist/zero/src/SymmetricShardedOptimizer.cpp b/dist/zero/src/SymmetricShardedOptimizer.cpp
+index 728a119..b26b9a1 100644
+--- a/dist/zero/src/SymmetricShardedOptimizer.cpp
++++ b/dist/zero/src/SymmetricShardedOptimizer.cpp
+@@ -77,6 +77,19 @@ inline void wait_or_throw(const std::shared_ptr<Work>& w, const char* what, size
+         "step is aborted rather than applied.");
+ }
+ 
++
++// F1. Text for ZeroNonFiniteGradError: which optimizer and group, how big, which rank and
++// step, so the log names the failing group. Same wording as v1's
++// ShardedOptimizer::nonfinite_grad_msg. File-local on purpose: a new member function would
++// change the header, and every trainer that includes it would need a rebuild.
++std::string nonfinite_grad_msg(float nsq, Dtype dt, size_t numel, int rank, int64_t next_step) {
++    const char* g = dt == Dtype::Bfloat16 ? "bf16" : dt == Dtype::Float32 ? "fp32" : "other";
++    return std::string("SymmetricShardedOptimizer: grad norm^2 = ") + std::to_string(nsq) + " in the " + g +
++           " group (" + std::to_string(numel) + " params), rank " + std::to_string(rank) +
++           ", optimizer step " + std::to_string(next_step) +
++           "; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update";
++}
++
+ } // anonymous namespace
+ 
+ // ======================================================================
+@@ -997,12 +1010,44 @@ bool SymmetricShardedOptimizer::apply_grad_scale_and_check() {
+         const float denom = w * loss_scale;
+         const float nsq   = nsq_raw / (denom * denom);
+ 
+-        if (sc && !std::isfinite(nsq)) {
++        // F1 (same fix as ShardedOptimizer::step() got in v1).
++        // Was:  `if (sc && !std::isfinite(nsq)) { skip }`, and last_grad_norm_ set AFTER it.
++        //       set_scaler() is called only from dist/zero/tests, so in training `sc` is null and
++        //       this guard NEVER fired. A NaN/Inf gradient then went on into Adam:
++        //         1. nsq = NaN or Inf (multi_tensor_grad_norm keeps NaN/Inf)
++        //         2. NaN: the old `nsq > 0 ? sqrt(nsq) : 0` set last_grad_norm_ = 0 (logged as 0),
++        //            so coef = max / (0 + 1e-6), clamped to 1 -> no clip, the NaN elements go on.
++        //            Inf: last_grad_norm_ = Inf -> coef = 0 -> every gradient is scaled by 0, and
++        //            Inf * 0 = NaN on the Inf elements.
++        //         3. local_adam_step writes NaN into master/m/v for those elements
++        //         4. a NaN weight makes the next forward's loss NaN -> the trainer aborts one step
++        //            LATE; if this step was a checkpoint step, the NaN state was already saved and
++        //            auto-resume reloads it.
++        //       Measured before this fix (test_f1_nonfinite, W=1, bf16 and fp32): NaN or Inf in one
++        //       gradient element -> no error, step_count advanced, that weight written as NaN.
++        //       BLU_GLOBAL_CLIP=1 did not help: reduce_and_measure() returns -1 for a non-finite norm,
++        //       the trainer then only drops the global coefficient and still calls step(), which
++        //       arrives here (cached_nsq_ = -1), measures the same NaN again, and went on.
++        // Why here: this norm is already computed and all-reduced for clipping, so the check is
++        //       free (one isfinite on a host float, once per group per step), it runs BEFORE the
++        //       scale and before local_adam_step / step_count_, and every rank holds the same
++        //       all-reduced value, so every rank takes the same branch.
++        // Now:  with a LossScaler, unchanged (skip + back off). Without one, throw
++        //       ZeroNonFiniteGradError; bluscript_zero_ckpt catches it and aborts with exit code 4.
++        //       last_grad_norm_ is now set before the guard, as in v1, so a skipped step logs the
++        //       non-finite norm instead of the previous step's. A finite norm takes exactly the old
++        //       code path, so training is bit-identical.
++        // Not covered (same in v1): with max_grad_norm = 0 AND no scaler, need_norm is false and
++        //       no norm is measured at all, so nothing can be checked. The trainers set
++        //       max_grad_norm = cfg.grad_clip, default 1.0.
++        last_grad_norm_ = (nsq > 0.0f || std::isnan(nsq)) ? std::sqrt(nsq) : 0.0f;   // NaN logs as nan, not 0
++        if (!std::isfinite(nsq)) {
++            if (!sc) throw ZeroNonFiniteGradError(nonfinite_grad_msg(nsq, compute_dtype_, total_numel_,
++                                                                     rank_, step_count_ + 1));
+             sc->update(true);
+             last_step_skipped_ = true;
+             return false;
+         }
+-        last_grad_norm_ = nsq > 0.0f ? std::sqrt(nsq) : 0.0f;
+ 
+         if (cfg_.max_grad_norm > 0.0f) {
+             // Same formula as v1's compute_clip_coef_cuda: max/(norm+1e-6), <= 1.

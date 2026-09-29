@@ -1511,6 +1511,16 @@ Use ≥2 repetitions and compare against the same-arm spread.
 **Cause: not investigated.** Unverified candidates: atomics in backward reductions (for example the
 embedding scatter-add), or GEMM algorithms chosen by timing-based autotuning.
 
+**Update 2026-09-29** (the F2 ABAB, §27.4: B = 4, 20 steps, 2 runs per arm, one binary):
+- Step 0 is identical in all 4 runs (11.298004). From step 1 they drift.
+- By steps 3–5, two OLD runs of the same binary differ by up to **7.9** (step 5: 20.1567 vs 12.2290).
+- Mean |Δloss| over the 20 steps: OLD vs OLD **1.14**, NEW vs NEW 0.44. Every OLD-vs-NEW pair falls inside that
+  (0.06–1.09), and one OLD-NEW pair (0.06) is closer than either same-arm pair.
+- Last step: OLD 8.30 / 7.97, NEW 7.99 / 8.01.
+
+With noise this large, comparing losses between runs needs many repetitions or a deterministic mode. The cause is
+still not investigated (§26).
+
 ---
 
 ## 19. Immediate future tasks: three casting follow-ups + one pending measurement (2026-09-24 — nothing changed yet)
@@ -1901,7 +1911,7 @@ This is a research item, not an inefficiency.
 | # | finding | verdict | production default? | severity | decision |
 |---|---|---|---|---|---|
 | F1 | a **NaN/Inf gradient is written into the fp32 master weights**. The skip is gated on a LossScaler (`ShardedOptimizer.cpp:1160`, `:1201`), and none is installed. A NaN norm gives clip coef 1.0 (`GradNormKernels.cu:190-193`); an Inf norm gives coef 0 and Inf·0 = NaN. The trainer checks only the loss, before `step()` (`:2270`). On a checkpoint step the NaN state is **saved**, and auto-resume reloads it. `BLU_GLOBAL_CLIP=1` does not prevent it | **CONFIRMED** | yes (needs one non-finite gradient) | **bug** | fix; see below |
-| F2 | `accumulate_grad` does `*grad_ += update.as_type(fp32)` every micro-step for all 156 bf16 weights (`AutogradMeta.cpp:172-173`). That is an fp32 temp + add, where one mixed add would do. There is no fp32 += bf16 kernel at all (`TensorOps.cpp:203`) | CONFIRMED | yes, 4 micro-steps/step | waste, **~0.7% est.** at W=1 (11.8 GB/micro-step); production % unknown | future task: new kernel, measure first |
+| F2 | `accumulate_grad` does `*grad_ += update.as_type(fp32)` every micro-step for all 156 bf16 weights (`AutogradMeta.cpp:172-173`). That is an fp32 temp + add, where one mixed add would do. There is no fp32 += bf16 kernel at all (`TensorOps.cpp:203`) | CONFIRMED | yes, 4 micro-steps/step | waste, **~0.7% est.** at W=1 (11.8 GB/micro-step); production % unknown | **DONE (§27):** fused kernel, bit-identical, measured +0.52% / +0.60% tok/s at W=1 (64 micro-steps/step) |
 | F3 | at W=1: 5 grad passes + 4 param passes per step where ~1 each would do; `shard_grad_` / `shard_master_compute_` duplicate `flat_stage_` (2.94 GB each) | CONFIRMED | only `:539`, `:977`, `:1022` run at W=8 (~1.8 ms/step est.) | waste | #2 family fix covers the production part |
 | F4 | v1 rounds the fp32-accumulated grad to bf16 once for the reduce, then widens it back (`:186-194` refuses an fp32 wire). At W=1 there is no comm at all | PARTLY (one rounding; the sum itself stays fp32) | yes (bf16 NCCL avg at W=8) | design-choice | leave; the "bit-identical" header comment (`ShardedOptimizer.h:22-24`) is wrong for bf16 groups |
 | F5 | clipping is **per dtype group** by default (`BLU_GLOBAL_CLIP=0`), not torch-style global. The logged norm is the combined pre-clip norm. The trainer's justification (`:2298-2329`) is written for Muon and does not hold for the default AdamW | CONFIRMED | yes | design-choice | leave; fix the comment |
@@ -2417,16 +2427,27 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
 
 ---
 
-## 26. Future tasks: every pending item (updated 2026-09-26)
+## 26. Future tasks: every pending item (updated 2026-09-29)
 
-**Next (2026-09-27):**
-- [ ] **F2 — fused gradient accumulation.** `AutogradMeta.cpp:163-170` does `*grad_ += update.as_type(fp32)` every
-      micro-step after the first, for every bf16 weight. That is a full-size fp32 temporary plus 2 kernels: 18 B of
-      traffic per element.
-      - The plan: one fused kernel `grad_fp32 += float(update_bf16)`, 10 B per element, no temporary. bf16 → fp32
-        is exact and the add is the same fp32 add, so it is bit-identical.
-      - Scope: the CUDA path when both are contiguous, with the old path as the fallback.
-      - Measure: bit-exactness, kernel time, and a trainer A/B at GRAD_ACCUM = 4 (estimated ~0.7% at W=1, not measured).
+**Done 2026-09-28/29:**
+- [x] **F2 — fused gradient accumulation** (§27): bit-identical, +0.52% / +0.60% tok/s at W=1, −156 kernels and
+      −156 allocations per micro-step, peak memory unchanged.
+- [x] **LinearBackward** 3-D input gave the weight no gradient (§28).
+
+**From F2 (2026-09-28/29):**
+- [ ] The fused kernel runs at 3.4 TB/s in the trainer, against 4.2 TB/s for the old fp32 add (§27.7). About 50 ms
+      per step (~0.2%) is left. Cause not investigated.
+- [ ] Measure F2 at production (W=8, B=8, GRAD_ACCUM=4). Estimate ~0.25–0.3%, not measured.
+- [ ] **F2b:** `zero_grad` as set-to-none instead of a zero-fill, so the first micro-step of each step assigns
+      instead of adding into zeros. That saves one zero-fill and one accumulation per weight per step: 1/64 of the
+      accumulation work at W=1, but 1/4 at production GRAD_ACCUM=4. First check that every reader of the grad
+      handles an undefined grad.
+- [ ] Let the weight-gradient GEMM accumulate straight into the fp32 main grad (beta = 1, as Megatron does). That
+      removes the bf16 gradient tensor and the accumulation kernel altogether.
+- [ ] A tensor-parallel run through `DTensor::Linear`, to confirm its weights now train (§28).
+
+**From the BLUCCL port (2026-09-29, §30):**
+- [ ] Multi-GPU and the BluCCL comm paths were not tested with our changes; F1 did not fire in the test run.
 
 **From today's work:**
 - [ ] Reduction **speed** A/B, before vs after §23 (not measured).
@@ -2446,8 +2467,8 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
       - `max_grad_norm = 0` with no scaler has no check;
       - `bluscript_zero.cpp` and `train/production/bluscript.cpp` have no catch;
       - Muon/v2 were not run at W > 1.
-- [ ] §19.7 audit items still open: F2 (above), F3 (5 grad and 4 param passes per step at W=1), F4 (v1's bf16 wire at
-      W=1), per the decisions in that table.
+- [ ] §19.7 audit items still open: F3 (5 grad and 4 param passes per step at W=1), F4 (v1's bf16 wire at W=1), per
+      the decisions in that table. F2 is done (§27).
 
 **Carried from §13 (still open):**
 - [ ] Hand the port to the `dist_side_merge` owners as a branch/PR, recommending `BLU_BF16_LOGITS=1`.
@@ -2456,7 +2477,8 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
 - [ ] More throughput repetitions for the bf16-logits A/B (+0.60% is n = 2); explain the gap to 0.79–0.94% (§16.6, #4).
 - [ ] Attribute the third live buffer at the peak, and the 580 MiB fp32 poller gap (§16.3).
 - [ ] Observe Bug C's zero gradients with a Bug-A-only build.
-- [ ] Trainer run-to-run non-determinism (§18).
+- [ ] Trainer run-to-run non-determinism (§18). Measured larger on 2026-09-29: two identical runs differ by up to 7.9
+      in loss at step 5, which makes any loss A/B between runs hard.
 - [ ] #1 embedding backward for a bf16 weight (checked: keep fp32); #3 `check_type()` in `data<T>()` (§19.5, §8).
 - [ ] Apply the fixes on a colleague's multi-GPU system; run flag 0/1 before and after (§21).
 - [ ] Refresh the `LossKernels.h` note counts; the `batch_size > 65536` reduction cap; the target bounds check;
@@ -2473,7 +2495,311 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
 
 **Housekeeping:**
 - [ ] **Rotate the GitHub tokens** used in today's push commands (the org PAT), and the token in the blublas remote URL.
+      Also the org token pasted in chat on 2026-09-29.
 - [ ] Commit the local `tf_issue_3dxz/` changes (unrelated to this doc) when ready.
+
+---
+
+## 27. F2: fused bf16/fp16 → fp32 gradient accumulation (2026-09-28, A/B repeated 2026-09-29)
+
+**Pushed:** library `3a08ade..d96b991`; BluTrain `4e92e6c..909ab75` (§29).
+**Off switch:** `BLUTRAIN_NO_FUSED_GRAD_ACC=1` restores the old path. Both paths give the same bits, so the switch
+exists only for A/B timing. `BLUTRAIN_REPORT_FUSED_GRAD_ACC=1` prints the fused-call count at exit.
+
+### 27.1 The waste (§19.7 F2)
+
+`AutogradMeta::accumulate_grad` keeps an fp32 `grad_` (the "main grad") for every bf16 weight. After the first
+micro-step of the run, every micro-step did `*grad_ += update.as_type(Float32)` (`AutogradMeta.cpp:173`):
+
+| part | traffic per element | cost |
+|---|---|---|
+| `as_type` writes the widened update into a new full-size fp32 temporary | read 2 B, write 4 B | 1 kernel, 1 allocation, 1 free |
+| the fp32 add reads the grad and the temporary, writes the grad | read 8 B, write 4 B | 1 kernel |
+| **total** | **18 B** | **2 kernels, 1 allocation, 1 free** per weight per micro-step |
+
+`zero_grad` fills with zeros rather than deleting (`ShardedOptimizer.cpp:1339-1348`). So the `+=` path runs on every
+micro-step of every step; only the very first micro-step of the run assigns.
+
+In the 1.7B trainer that is 26 layers × 6 bf16 weights (wQ, wK, wV, wO, gate_up, down) = **156 tensors,
+1,472,200,704 elements**, 64 times per optimizer step at W=1, B=4 (GRAD_ACCUM = 1,048,576 / (4 × 4096)).
+
+### 27.2 The fix (5 files, +221 / −1)
+
+| file | lines | what |
+|---|---|---|
+| `src/TensorOps/cuda/TensorOpsAdd.cu` | +168 | `namespace grad_accum`: vector kernel, scalar kernel, launcher, call counter; `cuda_accumulate_lowp_into_fp32()` |
+| `src/core/AutogradMeta.cpp` | +24 | calls the fused function before the old line 173; falls back to the old line when it returns false |
+| `include/ops/helpers/KernelPolicy.h` | +9 | `disable_fused_grad_accum()` (`BLUTRAIN_NO_FUSED_GRAD_ACC`) |
+| `include/ops/TensorOps.cuh` | +8 | the two declarations |
+| `src/autograd/backward/LinearBackward.cpp` | +12 / −1 | the §28 fix (same commit) |
+
+**The kernel** computes `acc_fp32[i] += float(update[i])` in one pass:
+- Each thread reads 16 B of the update (8 bf16/fp16 values) and 2 × 16 B of the fp32 grad, widens in registers,
+  adds, and writes the fp32 back: **10 B per element, 1 kernel, no temporary**.
+- Grid-stride loop, 2× unrolled, 256 threads per block: the same shape as `add_inplace_kernel_sm90<float>`.
+- A tail loop handles `n % 8`. A scalar kernel handles views that are not 16-B aligned.
+- The function returns false and touches nothing unless: the grad is fp32; the update is bf16 or fp16; both are
+  CUDA tensors on the same device; both are contiguous; both have the same shape. The caller then uses the old line.
+
+**Why it is bit-identical:**
+- bf16 → fp32 is a 16-bit shift (bf16 is the top half of an fp32). fp16 → fp32 is exact for every fp16 value.
+- The add is the same single fp32 add as the old path: same file, same flags (`--use_fast_math`), `FADD.FTZ` in
+  the SASS of both kernels.
+
+### 27.3 Standalone tests (H200, `Tests/kernel_tests/test_fused_grad_accum.cu`)
+
+| test | what it checks | result |
+|---|---|---|
+| P1 | new vs old, bit for bit, after 4 accumulation steps; 17 sizes from 1 to 33,554,437; bf16 and fp16; ±0, subnormals, ±Inf, NaN and overflow planted | 0 mismatches |
+| P2 | views at an element offset (not 16-B aligned) take the scalar kernel; element 0 left untouched | 0 mismatches |
+| P3 | unsupported inputs return false and leave the grad untouched: fp32 update, bf16 grad, shape mismatch, non-contiguous update, CPU tensors | 5 of 5 |
+| P4 | control: skipping one update must change the result, so the test can fail (a gate only for n > 32: at n = 1 a tiny bf16 update is absorbed by fp32 rounding) | fires |
+| P5 | wiring: `autograd::matmul` backward twice; the second pass goes through `accumulate_grad` (counter +1 with the switch on, +0 with it off); grad after 2 passes = 2 × grad after 1 | pass |
+| P6 | speed, 12 rounds ABBA, median | table below |
+
+**All checks: 136 PASS, 0 FAIL.** That is the F2 test run twice (switch on and off) plus the 16 checks of §28.
+
+| elements | old (convert + add) | new (fused) | faster |
+|---|---|---|---|
+| 5,308,416 | 0.0251 ms (3.80 TB/s at 18 B) | 0.0127 ms (4.18 TB/s at 10 B) | 1.98× |
+| 11,534,336 | 0.0545 ms (3.81 TB/s) | 0.0344 ms (3.35 TB/s) | 1.58× |
+| 14,155,776 | 0.0658 ms (3.87 TB/s) | 0.0426 ms (3.32 TB/s) | 1.54× |
+| 33,554,437 | 0.1471 ms (4.11 TB/s) | 0.1042 ms (3.22 TB/s) | 1.41× |
+
+### 27.4 Trainer A/B
+
+1.7B trainer (`bluscript_zero_ckpt.cpp`), 1 × H200, B = 4, T = 4096, GRAD_ACCUM = 64, BluBLAS, `BLU_BF16_LOGITS=1`,
+20 steps per run, checkpoints off. One binary for both arms; only the env switch differs. tok/s is the mean over
+steps 2–19.
+
+| date, box | run | tok/s | time per step |
+|---|---|---|---|
+| 09-28, `fair-face-lies-fin-02` (CUDA 13.2) | OLD | 42,055.0 | 24,933.6 ms |
+| | NEW | 42,305.7 | 24,786.0 ms |
+| 09-29, `dry-door-shines-fin-02` (CUDA 13.0) | run1 OLD | 42,199.9 | 24,847.9 ms |
+| | run2 NEW | 42,396.7 | 24,732.5 ms |
+| | run3 OLD | 42,257.8 | 24,813.8 ms |
+| | run4 NEW | 42,501.2 | 24,671.7 ms |
+
+- **09-29: NEW +0.52%, −128.8 ms per step = −2.0 ms per micro-step.** The two OLD runs differ by 0.14%.
+- The slower NEW run beats the faster OLD run. Both NEW runs beat both OLD runs in 18 of 18 steps. Each NEW run
+  against the OLD run before it: faster in 36 of 36 steps (min +0.19%, median +0.51%, max +1.08%).
+- 09-28 (one run per arm): +0.60%, −147.6 ms per step, NEW faster in 18 of 18 steps.
+- Compare within a day only: the two boxes had different CUDA toolkits.
+
+### 27.5 Direct evidence: exact counts
+
+**nsys** (09-28; `--trace=cuda`; `f2_exact_window.py`). The window is cut on micro-step boundaries: from the start
+of loss-forward kernel *k* to the start of kernel *k*+64. That is exactly 64 backward passes and exactly one
+optimizer step. All 13 overlapping windows in each capture give the same counts.
+
+| per optimizer step (64 micro-steps) | OLD | NEW | change |
+|---|---|---|---|
+| kernels launched (= `cudaLaunchKernel` calls) | 138,090 | 128,106 | **−9,984 = 156 × 64** |
+| `vec4_convert_to_fp32` (bf16 → fp32) | 23,425 | 13,441 | −9,984 |
+| `add_inplace_kernel_sm90<float>` | 16,768 | 6,784 | −9,984 |
+| `accum_lowp_fp32_vec_kernel` (new) | 0 | 9,984 | +9,984 |
+| GPU time in these three kernels | 1,070.4 ms | 931.7 ms | **−138.7 ms (−2.17 ms per micro-step)** |
+| memcpy / memset / cudaMalloc / cudaFree | 528 / 2,058 / 0 / 0 | 528 / 2,058 / 0 / 0 | same |
+| wall time per window (median of 13, under nsys) | 24,780.5 ms | 24,660.7 ms | −119.8 ms |
+
+**Caching-allocator counters** (a box-only `[ALLOC]` print, §29; 09-29 runs, 20 steps = 1,279 micro-steps after the
+first):
+
+| | OLD | NEW | change |
+|---|---|---|---|
+| allocations | 2,557,236 | 2,357,712 | **−199,524 = 156 × 1,279** |
+| frees | 2,556,659 | 2,357,135 | −199,524 |
+| real `cudaMalloc` calls | 1,240 | 1,240 | same |
+| fused calls | 0 | 199,524 | 156.000 per micro-step |
+
+The two OLD runs have identical counters, and so do the two NEW runs.
+
+### 27.6 Memory and precision
+
+- **Peak memory: unchanged** in all 6 runs (active 90,322 MiB, reserved 93,410 MiB). The temporaries were made and
+  freed one at a time, and the cache reused the same blocks. The largest was gate_up, 2304 × 12288 × 4 B = 108 MiB,
+  so 108 MiB was the upper bound of any peak saving. The peak is set by activations. **The gain is time and GPU
+  work, not memory.**
+- **Precision:** step-0 loss is 11.298004 in all 6 runs. From step 1 the losses drift, but OLD-vs-OLD drifts as
+  much as OLD-vs-NEW (§18 update), so precision rests on the bit-exact tests of §27.3.
+
+### 27.7 The fused kernel is not yet at bandwidth
+
+Effective bandwidth in the trainer (nsys, total bytes ÷ kernel time per micro-step):
+
+| kernel | bytes per element | bandwidth |
+|---|---|---|
+| old `vec4_convert_to_fp32` | 6 | 3.89 TB/s |
+| old `add_inplace_kernel_sm90<float>` | 12 | 4.20 TB/s |
+| new fused kernel | 10 | **3.42 TB/s** |
+
+- The fused kernel takes about as long as the old add alone (27.6 vs 26.9 µs per call), though it moves 17% fewer
+  bytes. So the saving is almost the whole convert kernel.
+- At 4.2 TB/s it would save about another 51 ms per step (~0.2%, estimate). Standalone P6 shows the same pattern
+  (4.18 TB/s at 5.3 M elements, 3.2–3.4 TB/s from 11.5 M up). **Cause not investigated** (§26).
+
+**Production (W=8, B=8, GRAD_ACCUM=4): not measured.** The accumulation work per micro-step is the same, but each
+micro-step does about twice the compute of B=4, so expect roughly half the percentage (~0.25–0.3%, estimate).
+
+### 27.8 Test traps
+
+- **nsys inside mpirun cannot finish the run.** When `--duration` ends, nsys (the rank process) exits and mpirun
+  tears down the job, even with `--kill=none`. The kernel data was complete, but the end-of-run prints never came.
+  The allocator counts came from separate runs without nsys.
+- `BLU_MAX_STEPS=3` aborts at start ("no decay tail"). 4 is the minimum.
+- The patch anchor for the include lines matched twice (a commented-out copy of the file further down), so the
+  patch uses a 2-line anchor.
+
+**Files:** `profiling_reports/f2_2026_09_28/`:
+- `patch_f2.py`, `run_f2_tests.sh`, `f2_trainer_ab.sh`, `f2_evidence.sh`, `f2_exact_window.py`, `harness_alloc_print.py`;
+- `tests/`, `box_final/` (the 5 pushed sources, the 2 tests, the diff, the harness diff);
+- `logs/` (standalone before/after, trainer A/B 09-28, `evidence/` nsys, `alloc/`, `abab_2026_09_29/`).
+
+---
+
+## 28. LinearBackward: a 3-D input gave the weight no gradient (2026-09-28)
+
+**Pushed:** in the same commits as §27. File: `src/autograd/backward/LinearBackward.cpp:57`.
+
+**The bug:**
+- For a 3-D input, the backward flattens to 2-D ("Case 2"). That block declared a new local
+  `Tensor grad_weight = ...`, which shadowed the `grad_weight` declared at the top of `apply()`.
+- The matmul wrote into the inner one, and "2. Gradient for Weight" returned the outer one, which was still empty.
+- The engine skips empty gradients, so nothing reported it. **The weight got no gradient and never learned.**
+- In since `4a62424` (2026-03-10).
+
+**Who it hits:** `DTensor::Linear` (`dist/Tensor-Parallelism`) calls `autograd::linear`, so tensor-parallel linear
+layers with a 3-D input would not train. The 1.7B trainer never reached this code, because `nn::Linear` uses
+`autograd::matmul` / `addmm`.
+
+**The fix:** assign the outer variable (one line), as Case 1 already did.
+
+**Test** (`Tests/kernel_tests/test_linear_backward_3d.cu`): `autograd::linear` against `autograd::matmul`, in fp32
+and bf16, for 2-D and 3-D input, with and without bias.
+
+| check | before | after |
+|---|---|---|
+| L1: the weight has a gradient (3-D) | FAIL (none) | PASS |
+| L2: weight grad vs the matmul path, bit for bit (3-D) | FAIL (no grad) | PASS, 0 mismatches |
+| L3: input grad vs matmul (3-D, with and without bias) | PASS | PASS, 0 mismatches |
+| L4: weight and input grad vs matmul (2-D) | PASS | PASS, 0 mismatches |
+| L5: with bias: weight grad vs matmul, bias grad vs column sums | weight FAIL | PASS (bias rel err 1.42e-6 fp32, 3.62e-3 bf16) |
+| **total, fp32 + bf16** | **10 pass, 6 fail** | **16 / 16** |
+
+**Not tested:** a real tensor-parallel training run through `DTensor::Linear` (§26).
+
+---
+
+## 29. Everything pushed on 2026-09-28, and what colleagues must do
+
+Commits by `Goutham Kumar <goutham.kumar@blubridge.com>` on branch `dist_side_merge`:
+
+| repo | commits | what |
+|---|---|---|
+| Tensor-Implementations | `3a08ade..d96b991` | F2 (§27) + LinearBackward (§28) + 2 tests: 7 files, +773 / −1 |
+| BluTrain | `4e92e6c..909ab75` | submodule pointer to `d96b991` (1 file) |
+| Neural_Networks_exp_1926 | `4ef618a..a98c05c`, `a98c05c..e6109ce` | all scripts, logs, nsys evidence, box copy; the 09-29 ABAB logs |
+
+**Colleagues must:**
+1. `git pull` BluTrain, then `git submodule update --init`.
+2. Rebuild with `make -j$(nproc) tensor WITH_BLUBLAS=1 SM_ARCH=<arch>`, then rebuild the trainer (`make build-mpi …`).
+
+**Behaviour changes:** none in the numbers. F2 is on by default and bit-identical to the old path.
+`DTensor::Linear` weights with a 3-D input now get gradients.
+
+**Not committed, on purpose:** the box-only test edits in `bluscript_zero_ckpt.cpp`: `B = 4` at line 198, and the
+`[ALLOC]` allocator print after the `[MEM]` line. They are saved as
+`profiling_reports/f2_2026_09_28/box_final/bluscript_harness_B4_ALLOC.diff` (`git apply` it on a fresh box).
+
+**Fresh-box notes (`dry-door-shines-fin-02`, 2026-09-29):**
+- The image had **no OpenMPI**. The `dist` stage failed with `/usr/bin/mpic++: No such file or directory`, and its
+  nvcc calls with `nvcc fatal : Failed to preprocess host compiler properties` (they use `-ccbin=/usr/bin/mpic++`).
+  Fix: `apt-get install -y openmpi-bin libopenmpi-dev`. The libraries built before `dist` were fine.
+- CUDA 13.0 here; the 09-28 box had 13.2.
+- A non-interactive `ssh` has no `nvcc` on PATH: `export PATH=/usr/local/cuda/bin:$PATH`.
+- Data: `flux_train_000001–3.bin` + `flux_val_000000.bin` (4 × 200 MB) in `~/gautam_k/data`, and
+  `~/gautam_k/mix/{commoncrawl,code,math}` linked to it (`BLU_MIX_ROOT=~/gautam_k/mix`).
+
+**Boxes:** `fair-face-lies-fin-02` (09-28) was closed after a final copy (all 28 run files checked by md5).
+`dry-door-shines-fin-02` (09-29) ran the ABAB; its logs are in `logs/abab_2026_09_29/`.
+
+---
+
+## 30. Ported to `dist_side_merge_BLUCCL` (2026-09-29)
+
+**Why:** a colleague works on `dist_side_merge_BLUCCL` (BluCCL, the in-house collective library). Before this port it
+had only one of our changes: the loss fixes (library `ad10e7d`), which the colleague had merged on 09-25.
+
+**Pushed:** author `Goutham Kumar <goutham.kumar@blubridge.com>`, direct push, no PR (the user's decision).
+
+| repo | branch | push | contents |
+|---|---|---|---|
+| Tensor-Implementations | `dist_side_merge_BLUCCL` | `38d0332..b975be5` | the library changes of `dist_side_merge` after `ad10e7d`: `7810aea`, `97735ad`, `3a08ade`, `d96b991` (15 files, +1536 / −216) |
+| BluTrain | `dist_side_merge_BLUCCL` | `786098a..e6eaeba` | our BluTrain changes `a264586` + `23ae1e5` (6 files), the pointer to `b975be5`, and the new `[ALLOC]` print (+250 / −20) |
+
+### 30.1 What the branch had before
+
+| our change | in BLUCCL before? |
+|---|---|
+| loss fixes A/B/C + ignore_index / denominator (library `ad10e7d`) | **yes**, merged by the colleague on 09-25 (library `38d0332`) |
+| F1 + #2 + trainer catch + `[MEM]` (BluTrain `a264586`) | no |
+| Bug D + conversions (`7810aea`), reductions (`97735ad`), GPU `as_type` (`3a08ade`), F2 + LinearBackward (`d96b991`) | no |
+| F1 for Muon + Symmetric (BluTrain `23ae1e5`) | no |
+
+None of our BluTrain lines had been copied by hand (checked line by line). After the fork point `03b94cf`, BluTrain
+`dist_side_merge` held only our 6 commits; BLUCCL had 15 commits of its own (3 authors).
+
+### 30.2 Method: one patch per repo
+
+- **Library:** `git diff ad10e7d origin/dist_side_merge`, applied onto their `38d0332`. Their 5 library files
+  (`DataLoader.h`, `EmbeddingKernels.h`, `EmbeddingBackward.cpp`, `EmbeddingKernels.cu`, the BluBridge-BLAS pointer)
+  and our 15 do not overlap.
+- **BluTrain:** `git diff 03b94cf origin/dist_side_merge -- <our 6 files>`, applied with `git apply --3way` onto
+  `786098a`. 5 of the 6 files were also changed by the colleague; all applied cleanly.
+- The library went first, so that BluTrain's pointer never names a commit missing on GitHub.
+- **Consequence:** git does not know these are the same changes as on `dist_side_merge`. A later merge of
+  `dist_side_merge` into BLUCCL sees identical code; a conflict is possible only if one of these files changes
+  again before that merge.
+
+### 30.3 Checks before committing
+
+**`dist_side_merge` itself** (so the source of the port is right):
+- all 36 files of our 6 commits match the GitHub commit diffs line for line;
+- every change is still in the tip (one comment line was reworded on purpose by `23ae1e5`);
+- every real change has its explanation comment. The 26 spots without a nearby comment were each reviewed: `#include`
+  lines, braces, formatting-only rewraps (mse / mae / bce), or explained further up in the same function. The
+  "templating spaghetti" comment in `mae_loss_forward_cuda` is older than our commits and was left as it was.
+
+**Library commit:** the 15 staged files equal `dist_side_merge`; their files are unchanged; the total against their
+branch is +1536 / −216, exactly the patch.
+
+**BluTrain commit:**
+- in the 6 files, 0 of our added lines and 0 of theirs are missing, with no duplicates;
+- `[MEM]` = 1, `[ALLOC]` = 1, their `B = 2` kept; `ZeroNonFiniteGradError` = 16, the same as `dist_side_merge`;
+- the pointer is `b975be5`;
+- their API rename (`ProcessGroupNCCL` → `dist::comm::ProcessGroupBase`, `min` / `max` → `op_min` / `op_max`) touches
+  none of our lines;
+- their newer BluBLAS pointer (`ea666ab`, PR #3, ahead of our `35e51a0`) is kept.
+
+### 30.4 H200 test (before any push)
+
+On `dry-door-shines-fin-02` (CUDA 13.0, BluBLAS), from an rsync of the local clone:
+- **Build:** clean. Libraries, `dist` (including their `processGroupBluCCL.o`) and the trainer all built; the F2 symbol
+  and both prints are in the binaries.
+- **5-step run of their trainer as-is:** B = 2, global_batch 524,288, so grad_accum = 64 at W = 1.
+  - `exit=0`, 5 steps, finite losses (11.280 at step 0), ~41.2–41.6K tok/s;
+  - `[MEM]` active 70,598 / reserved 73,328 MiB; `[ALLOC]` printed;
+  - fused calls **50,083 = 157 × 319** (5 × 64 − 1 micro-steps).
+- Their branch has **157** bf16 weights, not 156: its output head is bf16. G0 is 1,588,101,120 against our
+  1,472,200,704, and the difference 115,900,416 = 50,304 × 2,304.
+- **Not tested:** multi-GPU, the BluCCL comm paths, F1 actually firing (no NaN occurred).
+
+**Colleague must:** `git pull`, `git submodule update --init`, then rebuild. Behaviour changes: F1 stops on a NaN/Inf
+gradient with exit 4; the GPU integer mean returns Float64; complex `as_type` converts, and complex ↔ real throws.
+
+**Files:** `profiling_reports/bluccl_port_2026_09_29/` (`ti_ours.patch`, `bt_ours.patch`, `build_bluccl.log`,
+`bluccl_run/`).
 
 ---
 

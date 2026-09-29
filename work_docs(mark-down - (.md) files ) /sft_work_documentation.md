@@ -19,6 +19,13 @@ to `dist_side_merge`:
 They are documented in `loss_kernel_dtype_bugs.md` §17.3 and §22–§25. The SFT tasks 1–7 and every other pending
 item are listed in that file's §26.
 
+**Status 2026-09-28/29:** still no SFT code. Two more library fixes, tested and pushed to `dist_side_merge`:
+- F2, fused gradient accumulation: bit-identical, +0.52% tok/s at W=1 (2 runs per arm);
+- LinearBackward: a 3-D input gave the weight no gradient.
+
+They are in `loss_kernel_dtype_bugs.md` §27–§29. On 09-29 everything was also ported to the colleague's
+`dist_side_merge_BLUCCL` branch (§30). The SFT tasks 1–7 are still in its §26.
+
 ---
 
 ## Table of contents

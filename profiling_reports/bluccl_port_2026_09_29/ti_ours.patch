@@ -1,0 +1,2282 @@
+diff --git a/Tests/kernel_tests/test_fused_grad_accum.cu b/Tests/kernel_tests/test_fused_grad_accum.cu
+new file mode 100644
+index 0000000..9597d6b
+--- /dev/null
++++ b/Tests/kernel_tests/test_fused_grad_accum.cu
+@@ -0,0 +1,357 @@
++// =============================================================================
++// test_fused_grad_accum.cu
++//
++// OLD : acc += upd.as_type(Float32)                 (AutogradMeta.cpp:173 before)
++// NEW : cuda_accumulate_lowp_into_fp32(acc, upd)    (one fused kernel)
++//
++// PREDICTIONS -- written before the first run:
++//   P1  NEW == OLD bit for bit after 4 accumulation steps, for bf16 and fp16
++//       updates and every size (1 .. 32M+5, incl. sizes that are not a multiple
++//       of 8 and one large enough to take the sm90 flat add in OLD), with
++//       +-0, subnormals, +-inf, NaN, fp32/bf16/fp16 max and overflow planted.
++//   P2  the misaligned path (views offset by one element -> scalar kernel) gives
++//       the same bits as the aligned path (vector kernel) on the same data.
++//   P3  NEW returns false and leaves acc untouched for: fp32 update, bf16 acc,
++//       shape mismatch, non-contiguous update, CPU tensors.
++//   P4  CONTROL: NEW with one of the 4 updates skipped differs from OLD (gate for n > 32).
++//       If P4 "passes" as equal, P1 proves nothing. For n <= 32 it is printed as INFO: with so few
++//       elements a skipped update can be absorbed by fp32 rounding on both paths (first run, bf16 n=1).
++//   P5  WIRING: two backward passes of autograd::matmul(x, W) on a bf16 W with
++//       no zero_grad in between. Pass 2 goes through AutogradMeta.cpp:173, so
++//       the fused call counter must rise -- unless BLUTRAIN_NO_FUSED_GRAD_ACC=1,
++//       then it must stay flat. The grad is fp32 and equals exactly 2x the
++//       one-pass grad in both cases (x + x is exact in fp32).
++//   P6  speed (report, not a gate): NEW faster than OLD on large tensors.
++//       Memory-bound estimate: 10 B vs 18 B per element -> up to ~1.8x.
++//
++// Build + run (from Tensor-Implementations/, after the lib is built):
++//   make run-cuda FILE=Tests/kernel_tests/test_fused_grad_accum.cu
++//   BLUTRAIN_NO_FUSED_GRAD_ACC=1 make run-cuda FILE=Tests/kernel_tests/test_fused_grad_accum.cu
++// =============================================================================
++
++#include <cuda_runtime.h>
++#include <cuda_fp16.h>
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <random>
++#include <string>
++#include <vector>
++
++#include "core/Tensor.h"
++#include "device/Device.h"
++#include "device/DeviceCore.h"
++#include "ops/TensorOps.h"
++#include "ops/TensorOps.cuh"
++#include "autograd/operations/MatrixOps.h"
++
++using OwnTensor::Device;
++using OwnTensor::DeviceIndex;
++using OwnTensor::Dtype;
++using OwnTensor::Shape;
++using OwnTensor::Tensor;
++using OwnTensor::TensorOptions;
++
++#define CUDA_CHECK(x)                                                          \
++  do {                                                                         \
++    cudaError_t e_ = (x);                                                      \
++    if (e_ != cudaSuccess) {                                                   \
++      std::fprintf(stderr, "CUDA error %s at %s:%d\n", cudaGetErrorString(e_), \
++                   __FILE__, __LINE__);                                        \
++      std::exit(2);                                                            \
++    }                                                                          \
++  } while (0)
++
++static int g_fail = 0;
++static void verdict(const char* id, bool ok, const std::string& detail) {
++  std::printf("%s %s  %s\n", ok ? "PASS" : "FAIL", id, detail.c_str());
++  if (!ok) g_fail++;
++}
++
++static const DeviceIndex kCuda(Device::CUDA, 0);
++static const DeviceIndex kCpu(Device::CPU, 0);
++
++static Tensor make(const Shape& s, Dtype d, DeviceIndex dev = kCuda) {
++  return Tensor::empty(s, TensorOptions().with_dtype(d).with_device(dev));
++}
++template <typename T> static void upload(Tensor& t, const std::vector<T>& h) {
++  CUDA_CHECK(cudaMemcpy(t.data(), h.data(), h.size() * sizeof(T), cudaMemcpyHostToDevice));
++}
++template <typename T> static std::vector<T> download(const Tensor& t, size_t n) {
++  std::vector<T> h(n);
++  CUDA_CHECK(cudaDeviceSynchronize());
++  CUDA_CHECK(cudaMemcpy(h.data(), t.data(), n * sizeof(T), cudaMemcpyDeviceToHost));
++  return h;
++}
++
++// ---- host bit helpers ------------------------------------------------------
++static uint32_t f2u(float f) { uint32_t u; std::memcpy(&u, &f, 4); return u; }
++static float u2f(uint32_t u) { float f; std::memcpy(&f, &u, 4); return f; }
++static uint16_t f32_to_bf16_rne(float f) {
++  uint32_t u = f2u(f);
++  if ((u & 0x7F800000u) == 0x7F800000u && (u & 0x007FFFFFu)) return 0x7FC0;  // NaN
++  u += 0x7FFFu + ((u >> 16) & 1u);
++  return static_cast<uint16_t>(u >> 16);
++}
++static uint16_t f32_to_fp16_rn(float f) {
++  __half h = __float2half_rn(f);
++  uint16_t b; std::memcpy(&b, &h, 2); return b;
++}
++
++// Random value spread over many exponents (so rounding and cancellation happen).
++static float rnd(std::mt19937& g, int emin, int emax) {
++  std::uniform_int_distribution<int> e(emin, emax);
++  std::uniform_real_distribution<float> m(1.0f, 2.0f);
++  std::bernoulli_distribution s(0.5);
++  float v = std::ldexp(m(g), e(g));
++  return s(g) ? -v : v;
++}
++
++// Special (acc, update) pairs planted at the start of every case.
++struct Special { float acc; float upd; };
++static std::vector<Special> specials(bool bf16) {
++  const float inf = INFINITY, nan = NAN;
++  const float lowp_max = bf16 ? u2f(0x7F7F0000u) : 65504.0f;
++  const float sub = bf16 ? u2f(0x00010000u) : 5.9604645e-08f;   // smallest bf16/fp16 subnormal
++  return {
++    {0.0f, 0.0f}, {0.0f, -0.0f}, {-0.0f, 0.0f}, {-0.0f, -0.0f},
++    {1.0f, sub}, {0.0f, sub}, {u2f(0x00000001u), 0.0f},           // fp32 subnormal acc
++    {3.0e38f, bf16 ? 3.0e38f : 65504.0f},                          // overflow (bf16) / big add
++    {1.0f, inf}, {1.0f, -inf}, {inf, -inf}, {1.0f, nan},
++    {2.5f, -2.5f}, {lowp_max, lowp_max}, {-lowp_max, lowp_max}, {1e-30f, -1e-30f},
++  };
++}
++
++// ---- P1 / P4 ---------------------------------------------------------------
++static void case_equal(bool bf16, size_t n, uint32_t seed) {
++  const Dtype ud = bf16 ? Dtype::Bfloat16 : Dtype::Float16;
++  std::mt19937 g(seed);
++  const int emin = bf16 ? -30 : -14, emax = bf16 ? 30 : 14;
++
++  std::vector<float> acc0(n);
++  for (auto& v : acc0) v = rnd(g, emin, emax);
++  std::vector<std::vector<uint16_t>> upd(4, std::vector<uint16_t>(n));
++  for (int k = 0; k < 4; k++)
++    for (size_t i = 0; i < n; i++) {
++      const float f = rnd(g, emin, emax);
++      upd[k][i] = bf16 ? f32_to_bf16_rne(f) : f32_to_fp16_rn(f);
++    }
++  const auto sp = specials(bf16);
++  for (size_t i = 0; i < sp.size() && i < n; i++) {
++    acc0[i] = sp[i].acc;
++    upd[0][i] = bf16 ? f32_to_bf16_rne(sp[i].upd) : f32_to_fp16_rn(sp[i].upd);
++  }
++
++  Tensor A = make(Shape{{(int64_t)n}}, Dtype::Float32), B = make(Shape{{(int64_t)n}}, Dtype::Float32),
++         C = make(Shape{{(int64_t)n}}, Dtype::Float32);
++  upload(A, acc0); upload(B, acc0); upload(C, acc0);
++  Tensor U = make(Shape{{(int64_t)n}}, ud);
++  const cudaStream_t st = OwnTensor::cuda::getCurrentStream();
++
++  bool all_true = true;
++  for (int k = 0; k < 4; k++) {
++    upload(U, upd[k]);
++    A += U.as_type(Dtype::Float32);                                         // OLD
++    all_true &= OwnTensor::cuda_accumulate_lowp_into_fp32(B, U, st);        // NEW
++    if (k != 3) all_true &= OwnTensor::cuda_accumulate_lowp_into_fp32(C, U, st);  // NEW, skip one
++    CUDA_CHECK(cudaDeviceSynchronize());
++  }
++  const auto a = download<uint32_t>(A, n), b = download<uint32_t>(B, n), c = download<uint32_t>(C, n);
++
++  size_t mism = 0, changed = 0, ctrl_diff = 0, first = n;
++  for (size_t i = 0; i < n; i++) {
++    if (a[i] != b[i]) { mism++; if (first == n) first = i; }
++    if (b[i] != f2u(acc0[i])) changed++;
++    if (a[i] != c[i]) ctrl_diff++;
++  }
++  char buf[256];
++  std::snprintf(buf, sizeof buf, "%s n=%zu mismatches=%zu changed=%zu/%zu", bf16 ? "bf16" : "fp16",
++                n, mism, changed, n);
++  std::string d = buf;
++  if (mism) {
++    std::snprintf(buf, sizeof buf, "  first@%zu old=0x%08x new=0x%08x", first, a[first], b[first]);
++    d += buf;
++  }
++  // changed-ness sanity only for sizes past the planted specials (tiny n are mostly specials)
++  const bool sane = (n <= 32) || (changed * 10 >= n * 9);
++  verdict("P1", all_true && mism == 0 && sane, d + (sane ? "" : "  (too few elements changed)"));
++  // P4 is a gate only above 32 elements. With very few elements every skipped update can legitimately
++  // change nothing: fp32 keeps ~2^-24 relative, so an update 1e-13 x the running sum is absorbed on both
++  // paths (seen at bf16 n=1: 55808 + -4.6e-9 == 55808). With many elements some skipped update is always
++  // visible, so a zero there would mean the comparison cannot fail.
++  std::snprintf(buf, sizeof buf, "%s n=%zu control_diffs=%zu (must be > 0)", bf16 ? "bf16" : "fp16", n,
++                ctrl_diff);
++  if (n > 32) verdict("P4", ctrl_diff > 0, buf);
++  else        std::printf("INFO P4  %s  (not a gate for n <= 32)\n", buf);
++}
++
++// ---- P2 --------------------------------------------------------------------
++static void case_misaligned(bool bf16, size_t n) {
++  const Dtype ud = bf16 ? Dtype::Bfloat16 : Dtype::Float16;
++  std::mt19937 g(1234 + (bf16 ? 1 : 0));
++  std::vector<float> acc0(n + 1);
++  std::vector<uint16_t> up(n + 1);
++  for (auto& v : acc0) v = rnd(g, -20, 20);
++  for (auto& v : up) { float f = rnd(g, -14, 14); v = bf16 ? f32_to_bf16_rne(f) : f32_to_fp16_rn(f); }
++
++  // aligned reference: elements 1..n in their own buffers
++  Tensor Ar = make(Shape{{(int64_t)n}}, Dtype::Float32), Ur = make(Shape{{(int64_t)n}}, ud);
++  upload(Ar, std::vector<float>(acc0.begin() + 1, acc0.end()));
++  upload(Ur, std::vector<uint16_t>(up.begin() + 1, up.end()));
++  // misaligned: views starting at element 1 of an (n+1) buffer
++  Tensor Abig = make(Shape{{(int64_t)n + 1}}, Dtype::Float32), Ubig = make(Shape{{(int64_t)n + 1}}, ud);
++  upload(Abig, acc0); upload(Ubig, up);
++  Tensor Am = Abig.slice_inplace(1, n), Um = Ubig.slice_inplace(1, n);
++
++  const bool mis = (reinterpret_cast<uintptr_t>(Am.data()) % 16 != 0) &&
++                   (reinterpret_cast<uintptr_t>(Um.data()) % 16 != 0);
++  const cudaStream_t st = OwnTensor::cuda::getCurrentStream();
++  bool ok1 = OwnTensor::cuda_accumulate_lowp_into_fp32(Ar, Ur, st);
++  bool ok2 = OwnTensor::cuda_accumulate_lowp_into_fp32(Am, Um, st);
++  const auto r = download<uint32_t>(Ar, n);
++  const auto m = download<uint32_t>(Abig, n + 1);
++  size_t mism = 0;
++  for (size_t i = 0; i < n; i++) if (r[i] != m[i + 1]) mism++;
++  const bool untouched0 = (m[0] == f2u(acc0[0]));   // element 0 is outside the view
++  char buf[200];
++  std::snprintf(buf, sizeof buf, "%s n=%zu views_misaligned=%d mismatches=%zu elem0_untouched=%d",
++                bf16 ? "bf16" : "fp16", n, (int)mis, mism, (int)untouched0);
++  verdict("P2", ok1 && ok2 && mis && mism == 0 && untouched0, buf);
++}
++
++// ---- P3 --------------------------------------------------------------------
++static void case_fallbacks() {
++  const cudaStream_t st = OwnTensor::cuda::getCurrentStream();
++  auto check = [&](const char* what, Tensor acc, const Tensor& upd) {
++    const size_t n = acc.numel();
++    const size_t esz = Tensor::dtype_size(acc.dtype());
++    std::vector<uint8_t> before(n * esz), after(n * esz);
++    const bool cuda = acc.device().is_cuda();
++    if (cuda) { CUDA_CHECK(cudaDeviceSynchronize()); CUDA_CHECK(cudaMemcpy(before.data(), acc.data(), n * esz, cudaMemcpyDeviceToHost)); }
++    else std::memcpy(before.data(), acc.data(), n * esz);
++    const bool r = OwnTensor::cuda_accumulate_lowp_into_fp32(acc, upd, st);
++    if (cuda) { CUDA_CHECK(cudaDeviceSynchronize()); CUDA_CHECK(cudaMemcpy(after.data(), acc.data(), n * esz, cudaMemcpyDeviceToHost)); }
++    else std::memcpy(after.data(), acc.data(), n * esz);
++    verdict("P3", !r && before == after, std::string(what) + (r ? "  returned true" : "  returned false, acc untouched"));
++  };
++  auto filled = [](const Shape& s, Dtype d, DeviceIndex dev) {
++    Tensor t = make(s, d, dev);
++    const size_t bytes = t.numel() * Tensor::dtype_size(d);
++    std::vector<uint8_t> h(bytes);
++    for (size_t i = 0; i < bytes; i++) h[i] = (uint8_t)(i * 37 + 11);
++    if (dev.is_cuda()) CUDA_CHECK(cudaMemcpy(t.data(), h.data(), bytes, cudaMemcpyHostToDevice));
++    else std::memcpy(t.data(), h.data(), bytes);
++    return t;
++  };
++  check("fp32 update", filled(Shape{{64}}, Dtype::Float32, kCuda), filled(Shape{{64}}, Dtype::Float32, kCuda));
++  check("bf16 acc", filled(Shape{{64}}, Dtype::Bfloat16, kCuda), filled(Shape{{64}}, Dtype::Bfloat16, kCuda));
++  check("shape mismatch [8,4] vs [4,8]", filled(Shape{{8, 4}}, Dtype::Float32, kCuda),
++        filled(Shape{{4, 8}}, Dtype::Bfloat16, kCuda));
++  {
++    Tensor base = filled(Shape{{4, 8}}, Dtype::Bfloat16, kCuda);
++    Tensor tr = base.t();   // [8,4] view, not contiguous
++    if (tr.is_contiguous()) verdict("P3", false, "setup: t() returned a contiguous tensor");
++    else check("non-contiguous update", filled(Shape{{8, 4}}, Dtype::Float32, kCuda), tr);
++  }
++  check("CPU tensors", filled(Shape{{64}}, Dtype::Float32, kCpu), filled(Shape{{64}}, Dtype::Bfloat16, kCpu));
++}
++
++// ---- P5 --------------------------------------------------------------------
++static void case_wiring() {
++  const char* env = std::getenv("BLUTRAIN_NO_FUSED_GRAD_ACC");
++  const bool disabled = env && (std::strcmp(env, "1") == 0);
++  const int64_t Bn = 2, T = 8, C = 64, F = 48;
++  std::mt19937 g(77);
++  auto bf = [&](size_t n, int emin, int emax) {
++    std::vector<uint16_t> h(n);
++    for (auto& v : h) v = f32_to_bf16_rne(rnd(g, emin, emax));
++    return h;
++  };
++  const auto hw = bf(C * F, -6, 0), hx = bf(Bn * T * C, -6, 0), hg = bf(Bn * T * F, -6, 0);
++
++  auto run = [&](int passes, uint64_t* delta_last) {
++    Tensor W(Shape{{C, F}}, Dtype::Bfloat16, kCuda, /*requires_grad=*/true);
++    Tensor X = make(Shape{{Bn, T, C}}, Dtype::Bfloat16), G = make(Shape{{Bn, T, F}}, Dtype::Bfloat16);
++    upload(W, hw); upload(X, hx); upload(G, hg);
++    for (int p = 0; p < passes; p++) {
++      Tensor Y = OwnTensor::autograd::matmul(X, W);
++      const uint64_t c0 = OwnTensor::fused_grad_accum_call_count();
++      Y.backward(&G);
++      CUDA_CHECK(cudaDeviceSynchronize());
++      *delta_last = OwnTensor::fused_grad_accum_call_count() - c0;
++    }
++    Tensor gv = W.grad_view();
++    return std::make_pair(gv.dtype(), download<uint32_t>(gv, (size_t)(C * F)));
++  };
++  uint64_t d1 = 0, d2 = 0;
++  auto one = run(1, &d1);
++  auto two = run(2, &d2);
++  size_t bad = 0;
++  for (size_t i = 0; i < one.second.size(); i++)
++    if (two.second[i] != f2u(2.0f * u2f(one.second[i]))) bad++;
++  const bool fp32 = (one.first == Dtype::Float32 && two.first == Dtype::Float32);
++  const bool counter_ok = disabled ? (d2 == 0) : (d2 >= 1);
++  char buf[240];
++  std::snprintf(buf, sizeof buf,
++                "fused_switch=%s pass1_delta=%llu pass2_delta=%llu grad_fp32=%d grad(2 passes)!=2*grad(1): %zu",
++                disabled ? "OFF(BLUTRAIN_NO_FUSED_GRAD_ACC=1)" : "ON", (unsigned long long)d1,
++                (unsigned long long)d2, (int)fp32, bad);
++  verdict("P5", fp32 && counter_ok && d1 == 0 && bad == 0, buf);
++}
++
++// ---- P6 --------------------------------------------------------------------
++static void case_speed(size_t n) {
++  Tensor A = make(Shape{{(int64_t)n}}, Dtype::Float32), U = make(Shape{{(int64_t)n}}, Dtype::Bfloat16);
++  CUDA_CHECK(cudaMemset(A.data(), 0, n * 4));
++  CUDA_CHECK(cudaMemset(U.data(), 0x3C, n * 2));   // small positive bf16 values
++  const cudaStream_t st = OwnTensor::cuda::getCurrentStream();
++  cudaEvent_t e0, e1;
++  CUDA_CHECK(cudaEventCreate(&e0)); CUDA_CHECK(cudaEventCreate(&e1));
++  const int reps = 20, rounds = 12;
++  auto time_old = [&] {
++    CUDA_CHECK(cudaDeviceSynchronize()); CUDA_CHECK(cudaEventRecord(e0, st));
++    for (int r = 0; r < reps; r++) A += U.as_type(Dtype::Float32);
++    CUDA_CHECK(cudaEventRecord(e1, st)); CUDA_CHECK(cudaEventSynchronize(e1));
++    float ms; CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1)); return ms / reps;
++  };
++  auto time_new = [&] {
++    CUDA_CHECK(cudaDeviceSynchronize()); CUDA_CHECK(cudaEventRecord(e0, st));
++    for (int r = 0; r < reps; r++) OwnTensor::cuda_accumulate_lowp_into_fp32(A, U, st);
++    CUDA_CHECK(cudaEventRecord(e1, st)); CUDA_CHECK(cudaEventSynchronize(e1));
++    float ms; CUDA_CHECK(cudaEventElapsedTime(&ms, e0, e1)); return ms / reps;
++  };
++  time_old(); time_new();   // warm-up (allocator, occupancy caches)
++  std::vector<float> o, w;
++  for (int r = 0; r < rounds; r++) {          // A-B-B-A order
++    if (r % 2 == 0) { o.push_back(time_old()); w.push_back(time_new()); }
++    else            { w.push_back(time_new()); o.push_back(time_old()); }
++  }
++  std::sort(o.begin(), o.end()); std::sort(w.begin(), w.end());
++  const float mo = 0.5f * (o[5] + o[6]), mw = 0.5f * (w[5] + w[6]);
++  std::printf("P6   n=%-10zu old %.4f ms (%.0f GB/s at 18 B/elem)  new %.4f ms (%.0f GB/s at 10 B/elem)  speedup %.2fx\n",
++              n, mo, 18.0 * n / (mo * 1e6), mw, 10.0 * n / (mw * 1e6), mo / mw);
++  CUDA_CHECK(cudaEventDestroy(e0)); CUDA_CHECK(cudaEventDestroy(e1));
++}
++
++int main() {
++  int dev = 0; cudaDeviceProp p{};
++  CUDA_CHECK(cudaGetDevice(&dev)); CUDA_CHECK(cudaGetDeviceProperties(&p, dev));
++  std::printf("device %d: %s (sm_%d%d)\n", dev, p.name, p.major, p.minor);
++
++  const size_t sizes[] = {1, 2, 7, 8, 9, 15, 16, 17, 31, 1023, 1024, 1025, 65539,
++                          2304 * 2304, 2048 * 5632, 2304 * 6144, 33554437};
++  for (bool bf16 : {true, false})
++    for (size_t n : sizes) case_equal(bf16, n, (uint32_t)(n * 2654435761u + (bf16 ? 1 : 2)));
++  for (bool bf16 : {true, false}) { case_misaligned(bf16, 1025); case_misaligned(bf16, 2048 * 5632 + 3); }
++  case_fallbacks();
++  case_wiring();
++  for (size_t n : {(size_t)2304 * 2304, (size_t)2048 * 5632, (size_t)2304 * 6144, (size_t)33554437}) case_speed(n);
++
++  std::printf("\nRESULT %s  (%d failed checks)  fused calls in this process: %llu\n",
++              g_fail ? "FAIL" : "PASS", g_fail,
++              (unsigned long long)OwnTensor::fused_grad_accum_call_count());
++  return g_fail ? 1 : 0;
++}
+diff --git a/Tests/kernel_tests/test_linear_backward_3d.cu b/Tests/kernel_tests/test_linear_backward_3d.cu
+new file mode 100644
+index 0000000..e80ef58
+--- /dev/null
++++ b/Tests/kernel_tests/test_linear_backward_3d.cu
+@@ -0,0 +1,195 @@
++// =============================================================================
++// test_linear_backward_3d.cu
++//
++// LinearBackward.cpp "Case 2" (input [B,T,C], weight [C,F]) declared a local
++// `Tensor grad_weight` that shadowed the outer one, so the outer stayed empty and
++// autograd::linear gave the weight NO gradient. The trainer never calls
++// autograd::linear (nn::Linear uses autograd::matmul / addmm), which is why
++// training was unaffected.
++//
++// Both LinearBackward and MatmulBackward call cuda_matmul_backward on the same
++// flattened shapes, so after the fix their gradients must be bit-identical.
++//
++// PREDICTIONS -- written before the first run:
++//   L1  3-D input, no bias: weight has a gradient.
++//       BEFORE the fix this is expected to FAIL (the bug); AFTER it must pass.
++//   L2  3-D input: weight grad from autograd::linear == from autograd::matmul, bit for bit
++//       (fp32 and bf16 weights).
++//   L3  CONTROL: input grad linear == matmul, bit for bit (never affected by the bug;
++//       passes both BEFORE and AFTER -- if it fails, the comparison itself is broken).
++//   L4  2-D input (Case 1, never affected): weight and input grads linear == matmul.
++//   L5  3-D input with bias: weight grad == matmul path bit for bit, and the bias grad
++//       matches column sums of the upstream grad (host double reference; tolerance
++//       1e-5 relative for fp32, 1e-2 for bf16 because the bias grad is produced in bf16).
++//
++// Build + run (from Tensor-Implementations/):
++//   make run-cuda FILE=Tests/kernel_tests/test_linear_backward_3d.cu
++// =============================================================================
++
++#include <cuda_runtime.h>
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <random>
++#include <string>
++#include <vector>
++
++#include "core/Tensor.h"
++#include "device/Device.h"
++#include "autograd/operations/MatrixOps.h"
++
++using OwnTensor::Device;
++using OwnTensor::DeviceIndex;
++using OwnTensor::Dtype;
++using OwnTensor::Shape;
++using OwnTensor::Tensor;
++using OwnTensor::TensorOptions;
++
++#define CUDA_CHECK(x)                                                          \
++  do {                                                                         \
++    cudaError_t e_ = (x);                                                      \
++    if (e_ != cudaSuccess) {                                                   \
++      std::fprintf(stderr, "CUDA error %s at %s:%d\n", cudaGetErrorString(e_), \
++                   __FILE__, __LINE__);                                        \
++      std::exit(2);                                                            \
++    }                                                                          \
++  } while (0)
++
++static int g_fail = 0;
++static void verdict(const char* id, bool ok, const std::string& d) {
++  std::printf("%s %s  %s\n", ok ? "PASS" : "FAIL", id, d.c_str());
++  if (!ok) g_fail++;
++}
++static const DeviceIndex kCuda(Device::CUDA, 0);
++
++static uint32_t f2u(float f) { uint32_t u; std::memcpy(&u, &f, 4); return u; }
++static float u2f(uint32_t u) { float f; std::memcpy(&f, &u, 4); return f; }
++static uint16_t f32_to_bf16_rne(float f) {
++  uint32_t u = f2u(f);
++  u += 0x7FFFu + ((u >> 16) & 1u);
++  return static_cast<uint16_t>(u >> 16);
++}
++static float bf16_to_f32(uint16_t b) { return u2f(static_cast<uint32_t>(b) << 16); }
++
++// Host data stored as the exact values the device will see.
++struct HostT {
++  std::vector<float> v;        // exact values
++  std::vector<uint8_t> raw;    // bytes to upload in the tensor's dtype
++};
++static HostT host_rand(size_t n, bool bf16, std::mt19937& g) {
++  std::normal_distribution<float> nd(0.0f, 1.0f);
++  HostT h; h.v.resize(n); h.raw.resize(n * (bf16 ? 2 : 4));
++  for (size_t i = 0; i < n; i++) {
++    float f = nd(g);
++    if (bf16) {
++      uint16_t b = f32_to_bf16_rne(f); f = bf16_to_f32(b);
++      std::memcpy(&h.raw[2 * i], &b, 2);
++    } else {
++      std::memcpy(&h.raw[4 * i], &f, 4);
++    }
++    h.v[i] = f;
++  }
++  return h;
++}
++static Tensor dev_tensor(const Shape& s, Dtype d, const HostT& h, bool req_grad) {
++  Tensor t(s, d, kCuda, req_grad);
++  CUDA_CHECK(cudaMemcpy(t.data(), h.raw.data(), h.raw.size(), cudaMemcpyHostToDevice));
++  return t;
++}
++static std::vector<uint32_t> grad_bits(const Tensor& t, size_t n) {
++  Tensor g = t.grad_view();
++  if (g.dtype() != Dtype::Float32) { std::printf("  (grad dtype is not fp32)\n"); return {}; }
++  std::vector<uint32_t> h(n);
++  CUDA_CHECK(cudaDeviceSynchronize());
++  CUDA_CHECK(cudaMemcpy(h.data(), g.data(), n * 4, cudaMemcpyDeviceToHost));
++  return h;
++}
++static size_t diff(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
++  if (a.size() != b.size() || a.empty()) return (size_t)-1;
++  size_t d = 0;
++  for (size_t i = 0; i < a.size(); i++) d += (a[i] != b[i]);
++  return d;
++}
++
++// One comparison: autograd::linear vs autograd::matmul on identical copies.
++static void run_case(bool bf16, bool three_d, bool with_bias) {
++  const Dtype dt = bf16 ? Dtype::Bfloat16 : Dtype::Float32;
++  const int64_t Bn = 2, T = 32, C = 64, F = 96;
++  const int64_t rows = three_d ? Bn * T : 48;
++  std::mt19937 g(1000 + (bf16 ? 1 : 0) + (three_d ? 10 : 0) + (with_bias ? 100 : 0));
++  const Shape xs = three_d ? Shape{{Bn, T, C}} : Shape{{rows, C}};
++  const Shape gs = three_d ? Shape{{Bn, T, F}} : Shape{{rows, F}};
++  const HostT hx = host_rand(rows * C, bf16, g), hw = host_rand(C * F, bf16, g),
++              hg = host_rand(rows * F, bf16, g), hb = host_rand(F, bf16, g);
++
++  // linear path
++  Tensor x1 = dev_tensor(xs, dt, hx, true), w1 = dev_tensor(Shape{{C, F}}, dt, hw, true);
++  Tensor b1 = with_bias ? dev_tensor(Shape{{F}}, dt, hb, true) : Tensor();
++  Tensor g1 = dev_tensor(gs, dt, hg, false);
++  Tensor y1 = OwnTensor::autograd::linear(x1, w1, b1);
++  y1.backward(&g1);
++  CUDA_CHECK(cudaDeviceSynchronize());
++
++  // matmul path (reference): no bias -- the weight/input grads do not depend on it
++  Tensor x2 = dev_tensor(xs, dt, hx, true), w2 = dev_tensor(Shape{{C, F}}, dt, hw, true);
++  Tensor g2 = dev_tensor(gs, dt, hg, false);
++  Tensor y2 = OwnTensor::autograd::matmul(x2, w2);
++  y2.backward(&g2);
++  CUDA_CHECK(cudaDeviceSynchronize());
++
++  char tag[64];
++  std::snprintf(tag, sizeof tag, "%s %s%s", bf16 ? "bf16" : "fp32", three_d ? "3-D" : "2-D",
++                with_bias ? " +bias" : "");
++  const std::string T0 = tag;
++
++  const bool has_w = w1.has_grad();
++  if (three_d && !with_bias)
++    verdict("L1", has_w, T0 + (has_w ? "  weight has a gradient" : "  weight has NO gradient (the bug)"));
++
++  const auto gw1 = has_w ? grad_bits(w1, C * F) : std::vector<uint32_t>{};
++  const auto gw2 = grad_bits(w2, C * F);
++  const auto gx1 = grad_bits(x1, rows * C), gx2 = grad_bits(x2, rows * C);
++  const size_t dw = has_w ? diff(gw1, gw2) : (size_t)-1, dx = diff(gx1, gx2);
++  char buf[160];
++  std::snprintf(buf, sizeof buf, "  weight-grad mismatches linear vs matmul: %s",
++                has_w ? std::to_string(dw).c_str() : "n/a (no grad)");
++  const char* wid = three_d ? (with_bias ? "L5" : "L2") : "L4";
++  verdict(wid, has_w && dw == 0, T0 + buf);
++  std::snprintf(buf, sizeof buf, "  input-grad mismatches linear vs matmul: %zu", dx);
++  verdict(three_d ? "L3" : "L4", dx == 0, T0 + buf);
++
++  if (with_bias) {
++    bool ok = b1.has_grad();
++    double worst = 0.0;
++    if (ok) {
++      const auto gb = grad_bits(b1, F);
++      ok = !gb.empty();
++      for (int64_t f = 0; ok && f < F; f++) {
++        double ref = 0.0;
++        for (int64_t r = 0; r < rows; r++) ref += (double)hg.v[r * F + f];
++        const double got = (double)u2f(gb[f]);
++        const double rel = std::fabs(got - ref) / std::max(1.0, std::fabs(ref));
++        worst = std::max(worst, rel);
++      }
++      ok = ok && worst <= (bf16 ? 1e-2 : 1e-5);
++    }
++    std::snprintf(buf, sizeof buf, "  bias grad vs column sums: worst rel err %.3g", worst);
++    verdict("L5", ok, T0 + (b1.has_grad() ? buf : "  bias has NO gradient"));
++  }
++}
++
++int main() {
++  int dev = 0; cudaDeviceProp p{};
++  CUDA_CHECK(cudaGetDevice(&dev)); CUDA_CHECK(cudaGetDeviceProperties(&p, dev));
++  std::printf("device %d: %s (sm_%d%d)\n", dev, p.name, p.major, p.minor);
++  for (bool bf16 : {false, true}) {
++    run_case(bf16, /*three_d=*/true,  /*bias=*/false);
++    run_case(bf16, /*three_d=*/false, /*bias=*/false);
++    run_case(bf16, /*three_d=*/true,  /*bias=*/true);
++  }
++  std::printf("\nRESULT %s  (%d failed checks)\n", g_fail ? "FAIL" : "PASS", g_fail);
++  return g_fail ? 1 : 0;
++}
+diff --git a/include/dtype/Types.h b/include/dtype/Types.h
+index 7abc762..1a96ab6 100644
+--- a/include/dtype/Types.h
++++ b/include/dtype/Types.h
+@@ -6,6 +6,18 @@
+ #include <cstring>
+ #include <type_traits>
+ #include <complex>
++// nvcc only: the GPU paths of the conversions below call NVIDIA's intrinsics
++// (__float2bfloat16_rn, __float2half_rn, __half2float, __double2bfloat16, ...).
++// A plain host compiler (g++) never sees these headers and uses the manual code.
++#ifdef __CUDACC__
++#include <cuda_fp16.h>
++#include <cuda_bf16.h>
++#endif
++// CPU builds with -mf16c (the library's CPU flags): the fp16 <-> fp32 conversions below
++// use the x86 F16C instructions (_cvtss_sh / _cvtsh_ss).
++#if defined(__F16C__) && !defined(__CUDA_ARCH__)
++#include <immintrin.h>
++#endif
+ // ==================================================================================
+ // CUDA COMPATIBILITY MACROS
+ // ==================================================================================
+@@ -29,83 +41,113 @@ namespace OwnTensor {
+ 
+ namespace detail {
+ 
+-// ---- BFloat16 Conversions (Google Brain Float) ----
+-// __device__ __host__ inline float bfloat16_to_float(uint16_t b) {
+-//     // BFloat16: Sign(1) + Exp(8) + Mantissa(7) -> Just shift left 16 bits
+-//     uint32_t u = static_cast<uint32_t>(b) << 16;
+-//     float f;
+-//     ::std::memcpy(&f, &u, sizeof(f));
+-//     return f;
++// ==================================================================================
++// bf16 / fp16  <->  fp32 / fp64 / integer conversions
++// ----------------------------------------------------------------------------------
++// Every conversion here rounds to nearest, ties to even (the IEEE 754 default for
++// binary formats), and rounds only ONCE.
++//
++// GPU (nvcc device pass, __CUDA_ARCH__ defined): NVIDIA's intrinsics. Each intrinsic
++//   picks the instruction for the target GPU at compile time (NV_IF_ELSE_TARGET inside
++//   cuda_bf16.hpp / cuda_fp16.hpp). Example: __float2bfloat16_rn is one F2FP.BF16
++//   instruction on sm_80 and newer (F2FP.BF16.PACK_AB on sm_80/86,
++//   F2FP.BF16.F32.PACK_AB from sm_89), and NVIDIA's own round-to-nearest-even software
++//   on older GPUs.
++// CPU (nvcc host pass, or a plain host compiler): fp16 <-> fp32 use the x86 F16C
++//   instructions when the file is compiled with -mf16c (the library's CPU flags), and
++//   the manual code below otherwise. Every other CPU conversion is the manual code; it
++//   uses integer operations for every step that rounds, so it does not depend on the
++//   FPU rounding mode or on flush-to-zero. The exception is double (and 32/64-bit
++//   integer) input: it is rounded to odd into float with the hardware conversion and
++//   then rounded once into bf16/fp16, NVIDIA's host method; that needs flush-to-zero
++//   off (true for the library's CPU code, which is not built with fast-math).
++//
++// NaN: the CPU code returns the canonical NaN 0x7FFF for both bf16 and fp16, the same
++// value CUDA's own software conversion returns. The sign and payload of a NaN are not
++// kept (IEEE 754 does not require it).
++//
++// Modified 2026-09-26 (this block):
++//   - float_to_bfloat16: an `exponent > 0x8E` clamp sent every |x| >= 65,536 to Inf.
++//     0x8E = 127 + 15 is the fp16 exponent limit, not the bf16 one. Removed.
++//   - float_to_float16: rewritten; the old code was wrong for 100,815,872 of the 2^32
++//     fp32 inputs (details at the function).
++//   - bfloat16_to_float: three branches that all computed the same shift -> one shift.
++//   - double_to_bfloat16, double_to_float16, int64_to_float_rto,
++//     arithmetic_to_bfloat16, arithmetic_to_float16: new. The struct constructors used
++//     to send double and integer inputs through float first, which rounds twice (bf16:
++//     double and integers above 2^24; fp16: double).
++//   - GPU paths now call the intrinsics instead of the manual code. Compiled for
++//     sm_90a (H100/H200), one fp32 -> bf16 conversion went from 17 instructions with
++//     a branch to 1.
++//   - CPU method choices were measured old vs new (Intel i7-14700K, 1 thread, ns per
++//     value, 4M values, 12 alternating rounds, 2026-09-26); the numbers and the rejected
++//     alternatives are noted at each function. Summary: fp32 -> bf16 2.5x faster, bf16 ->
++//     fp32 1.6x, the fp16 paths 1.5-21x (F16C), bf16 / fp16 operators 1.4-4x. Slower,
++//     because the old code was wrong there: int32 -> bf16 (0.35 -> 0.46), int64 -> bf16
++//     above 2^24 (0.69 -> 2.1), double -> fp16 on normal values (0.96 -> 1.11), and the
++//     AVX2 bf16 store in Vectorized.h (0.11 -> 0.14, it now rounds instead of truncating).
++// Checked on the CPU, bit for bit for every non-NaN input (a NaN input must give a NaN;
++// the libraries differ in which NaN bits they return): all 2^32 fp32 inputs and all 2^16
++// bf16/fp16 inputs against PyTorch (c10), Eigen and the FP16 library (the versions
++// TensorFlow pins), NumPy, x86 F16C hardware, GCC _Float16 / __bf16 and CUDA's host code.
++// ==================================================================================
+ 
++// ---- bf16 -> fp32 ----
++// bf16 is exactly the top 16 bits of an fp32, so widening is a 16-bit shift. It is
++// exact for all 65,536 inputs, NaN payloads included.
++// Modified: the old body had three branches (Inf / NaN / everything else) that all
++// produced this same shift. The shift is kept on the GPU as well: it compiles to one
++// SHF.L.U32 on every GPU (checked sm_80 to sm_120), and the PTX ISA documents
++// cvt.f32.bf16 (what __bfloat162float uses from sm_90) as giving an "unspecified NaN"
++// for a NaN input, while the shift keeps the bits.
+ __device__ __host__ inline float bfloat16_to_float(uint16_t b) {
+-    uint32_t sign = (b & 0x8000u) << 16;      // Sign bit to float position
+-    uint32_t exp = (b & 0x7F80u) >> 7;        // Extract exponent (8 bits)
+-    uint32_t frac = (b & 0x007Fu);             // Extract mantissa (7 bits)
+-    uint32_t u;
+-
+-    if (exp == 0xFF) {
+-        // Inf or NaN
+-        if (frac == 0) {
+-            // Infinity
+-            u = sign | 0x7F800000u; // float infinity pattern
+-        } else {
+-            // NaN - set quiet NaN with some mantissa bits preserved
+-            u = sign | 0x7F800000u | (frac << 16);
+-        }
+-    } else {
+-        // Normal or subnormal number: shift bfloat16 bits to float position
+-        u = (static_cast<uint32_t>(b)) << 16;
+-    }
+-
++    const uint32_t u = static_cast<uint32_t>(b) << 16;
+     float f;
+     ::std::memcpy(&f, &u, sizeof(f));
+     return f;
+ }
+ 
+-
++// ---- fp32 -> bf16 ----
+ __device__ __host__ inline uint16_t float_to_bfloat16(float f) {
++#if defined(__CUDA_ARCH__)
++    // Modified: the GPU calls the intrinsic instead of the manual code below.
++    return __bfloat16_as_ushort(__float2bfloat16_rn(f));
++#else
+     uint32_t u;
+-    std::memcpy(&u, &f, sizeof(u));
+-    uint32_t sign = u & 0x80000000u;
+-    uint32_t exponent = (u >> 23) & 0xFF;
+-    uint32_t mantissa = u & 0x7FFFFFu;
+-
+-    // Handle NaN and Infinity explicitly
+-    if (exponent == 0xFF) {
+-        if (mantissa == 0) {
+-            // Infinity
+-            return static_cast<uint16_t>((sign >> 16) | 0x7F80u);
+-        } else {
+-            // NaN: keep quiet NaN pattern
+-            return static_cast<uint16_t>((sign >> 16) | 0x7FC1u);
+-        }
+-    }
+-
+-    // Overflow, clamp to Infinity
+-    if (exponent > 0x8E) {  // exponent > 142 decimal (127+15)
+-        return static_cast<uint16_t>((sign >> 16) | 0x7F80u);
+-    }
+-
+-    // Normal rounding and truncation
+-    uint32_t lsb = (u >> 16) & 1u;
+-    uint32_t rounding_bias = 0x7FFFu;
+-    if (lsb) rounding_bias = 0x8000u;
+-    u += rounding_bias;
+-
++    ::std::memcpy(&u, &f, sizeof(u));
++    // Modified: NaN used to come out as sign | 0x7FC1.
++    if ((u & 0x7FFFFFFFu) > 0x7F800000u) {
++        return 0x7FFFu;
++    }
++    // Round to nearest even on the 16 dropped bits: add 0x7FFF plus the lowest kept
++    // bit. A carry runs into the exponent by itself. A value at or above the bf16 maximum
++    // plus half a step (fp32 bits 0x7F7F8000) lands exactly on Inf (0x7F80); anything
++    // below that rounds to at most the maximum 0x7F7F. +-Inf stays +-Inf.
++    // Modified: an `if (exponent > 0x8E) return +-Inf;` clamp used to sit here.
++    // 0x8E = 127 + 15 is the fp16 exponent limit; bf16 has the fp32 exponent range and
++    // needs no clamp. The clamp turned every finite |x| >= 65,536 into Inf:
++    // 1,878,982,656 of the 2^32 fp32 inputs were wrong, 0 are now.
++    u += 0x7FFFu + ((u >> 16) & 1u);
+     return static_cast<uint16_t>(u >> 16);
++#endif
+ }
+ 
+-//     uint32_t u;
+-//     ::std::memcpy(&u, &f, sizeof(u));
+-//     // Round-to-nearest-even (RNE) logic
+-//     uint32_t lsb = (u >> 16) & 1u;
+-//     uint32_t rounding_bias = 0x7FFFu + lsb;
+-//     u += rounding_bias;
+-//     return static_cast<uint16_t>(u >> 16);
+-// }
+-
+-// ---- Float16 Conversions (IEEE 754 Half-Precision) ----
++// ---- fp16 -> fp32 ----
++// Always exact: every fp16 value is also an fp32 value.
+ __device__ __host__ inline float float16_to_float(uint16_t h) {
++#if defined(__CUDA_ARCH__)
++    // Modified: the GPU calls the intrinsic (one HADD2.F32 on every GPU from sm_75)
++    // instead of the branching manual code below.
++    return __half2float(__ushort_as_half(h));
++#elif defined(__F16C__)
++    // Modified: a CPU build with F16C (the library's uses -mf16c) does one VCVTPH2PS,
++    // which is exact. Measured 0.25 ns per value for every input; the manual code below
++    // takes 0.65 ns, and 5.0 ns for subnormal inputs (float-division branch).
++    return _cvtsh_ss(h);
++#else
++    // Unchanged, and correct for all 65,536 inputs. The subnormal branch uses float
++    // math, but frac / 1024 and ldexp(., -14) are exact and give normal fp32 results,
++    // so the rounding mode and flush-to-zero cannot change the answer.
+     uint32_t sign = (h & 0x8000u) << 16;
+     uint32_t exp  = (h & 0x7C00u) >> 10;
+     uint32_t frac = (h & 0x03FFu);
+@@ -118,11 +160,7 @@ __device__ __host__ inline float float16_to_float(uint16_t h) {
+         } else {
+             // Denormal number
+             float f = static_cast<float>(frac) / 1024.0f;
+-            #ifdef __CUDA_ARCH__
+-            f = ldexpf(f, -14);
+-            #else
+             f = ::std::ldexp(f, -14);
+-            #endif
+             if (sign) f = -f;
+             ::std::memcpy(&u, &f, sizeof(f));
+         }
+@@ -134,48 +172,261 @@ __device__ __host__ inline float float16_to_float(uint16_t h) {
+         uint32_t exp32 = exp + (127 - 15);
+         u = sign | (exp32 << 23) | (frac << 13);
+     }
+-    
++
+     float f;
+-    std::memcpy(&f, &u, sizeof(f));
++    ::std::memcpy(&f, &u, sizeof(f));
+     return f;
++#endif
+ }
+ 
++// ---- fp32 -> fp16 ----
+ __device__ __host__ inline uint16_t float_to_float16(float f) {
++#if defined(__CUDA_ARCH__)
++    // Modified: the GPU calls the intrinsic (one F2F / F2FP instruction on every GPU
++    // from sm_75) instead of the manual code below.
++    return __half_as_ushort(__float2half_rn(f));
++#elif defined(__F16C__)
++    // Modified: a CPU build with F16C (the library's uses -mf16c) does one VCVTPS2PH:
++    // round to nearest even with correct subnormals, the same bits as the manual code
++    // below for every non-NaN input (checked over all 2^32). NaN is mapped to 0x7FFF
++    // first, so the CPU returns the same NaN bits as the GPU and as the manual code.
++    // Measured 0.38 ns per value; the manual code below takes 0.67 ns, and 4.0 ns when
++    // the result is an fp16 subnormal.
+     uint32_t x;
+-    std::memcpy(&x, &f, sizeof(x));
+-    
+-    uint32_t sign = (x >> 16) & 0x8000u;
+-    uint32_t exp_32 = (x >> 23) & 0xFF;
+-    uint32_t mant_32 = x & 0x007FFFFFu;
+-
+-    // 1. Handle NaN and Infinity
+-    if (exp_32 == 0xFF) {
+-        if (mant_32 == 0) {
+-            // Infinity
+-            return static_cast<uint16_t>(sign | 0x7C00u);
++    ::std::memcpy(&x, &f, sizeof(x));
++    if ((x & 0x7FFFFFFFu) > 0x7F800000u) {
++        return 0x7FFFu;
++    }
++    return static_cast<uint16_t>(_cvtss_sh(f, _MM_FROUND_TO_NEAREST_INT));
++#else
++    // Used when F16C is not available (e.g. the nvcc host pass, which is not given -mf16c).
++    // Modified: rewritten. The old code was wrong for 100,815,872 of the 2^32 fp32
++    // inputs, in three ways:
++    //   1. results in the fp16 subnormal range were cut off instead of rounded
++    //      (100,662,272 inputs; e.g. 2.98023259e-08 gave 0 instead of 2^-24);
++    //   2. exact ties were rounded up instead of to the even neighbour (30,720);
++    //   3. a rounding carry was joined to the exponent with `|` instead of `+`, so when
++    //      the exponent was odd the carry was lost and the value HALVED (122,880;
++    //      e.g. 0.00012204051 gave 0.000061035).
++    // The normal-range step is the one Eigen uses (float_to_half_rtne); the subnormal
++    // step rounds by value like NumPy (npy_floatbits_to_halfbits), with integers only.
++    uint32_t x;
++    ::std::memcpy(&x, &f, sizeof(x));
++    const uint32_t sign = (x >> 16) & 0x8000u;
++    const uint32_t ax   = x & 0x7FFFFFFFu;
++    if (ax > 0x7F800000u) {
++        return 0x7FFFu;                                    // NaN
++    }
++    if (ax >= 0x477FF000u) {
++        return static_cast<uint16_t>(sign | 0x7C00u);      // >= 65520 (max + half a step), or Inf -> Inf
++    }
++    if (ax >= 0x38800000u) {                               // normal fp16 result (>= 2^-14)
++        uint32_t r = ax - 0x38000000u;                     // exponent bias 127 -> 15
++        r += 0x0FFFu + ((r >> 13) & 1u);                   // RNE on the 13 dropped bits; a carry ADDS into the exponent
++        return static_cast<uint16_t>(sign | (r >> 13));
++    }
++    if (ax <= 0x33000000u) {
++        return static_cast<uint16_t>(sign);                // <= 2^-25 (half the smallest subnormal) -> +-0
++    }
++    // Subnormal fp16 result: count in steps of 2^-24 and round by value.
++    const uint32_t e     = ax >> 23;                       // 102..112
++    const uint32_t m     = (ax & 0x007FFFFFu) | 0x00800000u;
++    const uint32_t shift = 126u - e;                       // 14..24 bits dropped
++    uint32_t q = m >> shift;
++    const uint32_t rem  = m & ((1u << shift) - 1u);
++    const uint32_t half = 1u << (shift - 1u);
++    if (rem > half || (rem == half && (q & 1u))) {
++        ++q;                                               // q may become 0x400 = smallest normal; still correct
++    }
++    return static_cast<uint16_t>(sign | q);
++#endif
++}
++
++// ---- fp64 -> bf16 (new) ----
++// One rounding, straight from the double. Going through float first with round-to-nearest
++// rounds twice and can be one step off: 1 + 2^-8 + 2^-30 must give 0x3F81, but float rounds
++// it onto the tie 1 + 2^-8, and the tie then goes to even, 0x3F80.
++__device__ __host__ inline uint16_t double_to_bfloat16(double d) {
++#if defined(__CUDA_ARCH__)
++    // One cvt.rn.bf16.f64 (F2F.BF16.F64) from sm_90; NVIDIA's round-to-odd software
++    // (still one correct rounding) on older GPUs.
++    return __bfloat16_as_ushort(__double2bfloat16(d));
++#else
++    // Round to odd into float, then round to nearest even into bf16. Float keeps 16 more
++    // bits than bf16 (at least 2 are needed), so the two steps give exactly one correct
++    // rounding (Boldo & Melquiond, IEEE Trans. Computers 57(4), 2008). It is the method of
++    // NVIDIA's own host code for __double2bfloat16 (cuda_bf16.hpp), and it has no branches.
++    // The result does not depend on the FPU rounding mode (the step below always lands on
++    // the truncated neighbour); it needs flush-to-zero off for results in the subnormal
++    // range, which holds for the library's CPU code (not built with fast-math).
++    // Measured 0.52 ns per value for every kind of input. Rejected: rounding directly
++    // from the double bits with integers (0.7-3.9 ns, its branches stop vectorization).
++    // The old two-rounding code took 0.50 ns.
++    const float f = static_cast<float>(d);                 // one of the two float neighbours of d
++    uint32_t u;
++    ::std::memcpy(&u, &f, sizeof(u));
++    const double back = static_cast<double>(f);
++    u -= (::std::fabs(back) > ::std::fabs(d)) ? 1u : 0u;   // rounded away from zero: step to the truncated neighbour
++    u |= (back != d) ? 1u : 0u;                            // inexact (or NaN): force the last bit to 1
++    float g;
++    ::std::memcpy(&g, &u, sizeof(g));
++    return float_to_bfloat16(g);                           // NaN stays NaN -> 0x7FFF; +-Inf stays +-Inf
++#endif
++}
++
++// ---- fp64 -> fp16 (new) ----
++// One rounding, straight from the double (same reason as above:
++// 1 + 2^-11 + 2^-40 must give 0x3C01, going through float gives 0x3C00).
++__device__ __host__ inline uint16_t double_to_float16(double d) {
++#if defined(__CUDA_ARCH__)
++    // One cvt.rn.f16.f64 on every GPU.
++    return __half_as_ushort(__double2half(d));
++#else
++    // Same round-to-odd method as double_to_bfloat16: float keeps 13 more bits than fp16.
++    // Measured 1.1 ns per value for every kind of input (old two-rounding code: 0.96 ns on
++    // normal values, 1.4-4.5 ns on large, tiny and random ones).
++    const float f = static_cast<float>(d);
++    uint32_t u;
++    ::std::memcpy(&u, &f, sizeof(u));
++    const double back = static_cast<double>(f);
++    u -= (::std::fabs(back) > ::std::fabs(d)) ? 1u : 0u;
++    u |= (back != d) ? 1u : 0u;
++    float g;
++    ::std::memcpy(&g, &u, sizeof(g));
++    return float_to_float16(g);
++#endif
++}
++
++// ---- 64-bit integer -> float, rounded to odd at 24 bits (new, CPU path) ----
++// Keeps the top 24 significant bits of |v| and forces the last kept bit to 1 if any lower
++// bit was 1 (round to odd). Every float step here is exact: the kept value is below 2^24
++// and the scale is a power of two, so the result does not depend on the FPU rounding mode
++// or on flush-to-zero. Rounding to odd with at least 2 extra bits, then to nearest even,
++// equals one direct round to nearest even (Boldo & Melquiond, IEEE Trans. Computers 57(4),
++// 2008); float keeps 24 bits and bf16 needs 8, so float_to_bfloat16 of this value is one
++// correct rounding of v. |v| <= 2^24 comes out exact (nothing is cut off).
++// Chosen over rounding to odd through double (measured on the CPU, see arithmetic_to_bfloat16).
++template <typename I>
++__device__ __host__ inline float int64_to_float_rto(I v) {
++    static_assert(::std::is_integral_v<I> && sizeof(I) == 8, "int64_to_float_rto: 64-bit integers");
++    // No data-dependent branch anywhere (a sign test mispredicts on mixed-sign data).
++    uint64_t a = static_cast<uint64_t>(v);
++    uint32_t sign = 0;
++    if constexpr (::std::is_signed_v<I>) {
++        const uint64_t m = static_cast<uint64_t>(static_cast<int64_t>(v) >> 63);   // all ones when v < 0
++        a = (a ^ m) - m;                                   // |v|, correct for INT64_MIN too
++        sign = static_cast<uint32_t>(m) & 0x80000000u;
++    }
++#if defined(__CUDA_ARCH__)
++    const int bits = 64 - __clzll(static_cast<long long>(a | 1u));
++#else
++    const int bits = 64 - __builtin_clzll(a | 1u);         // significant bits (1 for a == 0)
++#endif
++    const int s = bits > 24 ? bits - 24 : 0;               // bits below the top 24 (0..40)
++    const uint32_t sticky = (a & ((1ull << s) - 1u)) != 0u ? 1u : 0u;
++    const uint32_t kept = static_cast<uint32_t>(a >> s) | sticky;   // < 2^24: exact in float
++    const uint32_t scale_bits = (127u + static_cast<uint32_t>(s)) << 23;
++    float scale;
++    ::std::memcpy(&scale, &scale_bits, sizeof(scale));     // 2^s, exact
++    const float f = static_cast<float>(kept) * scale;      // exact: at most 24 bits times a power of two
++    uint32_t fb;
++    ::std::memcpy(&fb, &f, sizeof(fb));
++    fb |= sign;                                            // |f| never has the sign bit set
++    float out;
++    ::std::memcpy(&out, &fb, sizeof(out));
++    return out;
++}
++
++// ---- any arithmetic type -> bf16 / fp16 with ONE rounding (new) ----
++// Used by the templated constructors and operator= of bfloat16_t and float16_t
++// (float itself has its own overload and does not come here).
++// GPU: NVIDIA's intrinsics per type (one cvt from sm_90 for bf16 and on every GPU for
++// fp16; NVIDIA's round-to-odd software for bf16 before sm_90).
++// CPU: floating inputs go through double (exact for float and double). bf16: 8/16-bit
++// integers go through float (exact); 32-bit ones through double (exact) and round to odd;
++// 64-bit ones through int64_to_float_rto (exact integer round to odd into float). fp16: every integer
++// goes through float (see arithmetic_to_float16). long double is first rounded to double;
++// that is the one case with two roundings left (host only, not used by the library).
++template <typename U>
++__device__ __host__ inline uint16_t arithmetic_to_bfloat16(U v) {
++    if constexpr (::std::is_floating_point_v<U>) {
++        return double_to_bfloat16(static_cast<double>(v));
++    } else {
++        static_assert(::std::is_integral_v<U> && sizeof(U) <= 8, "arithmetic_to_bfloat16: integers up to 64 bits");
++#if defined(__CUDA_ARCH__)
++        if constexpr (sizeof(U) <= 4) {
++            if constexpr (::std::is_signed_v<U>) {
++                return __bfloat16_as_ushort(__int2bfloat16_rn(static_cast<int>(v)));
++            } else {
++                return __bfloat16_as_ushort(__uint2bfloat16_rn(static_cast<unsigned int>(v)));
++            }
++        } else {
++            if constexpr (::std::is_signed_v<U>) {
++                return __bfloat16_as_ushort(__ll2bfloat16_rn(static_cast<long long>(v)));
++            } else {
++                return __bfloat16_as_ushort(__ull2bfloat16_rn(static_cast<unsigned long long>(v)));
++            }
++        }
++#else
++        if constexpr (sizeof(U) <= 2) {
++            return float_to_bfloat16(static_cast<float>(v));        // exact in float: one rounding
++        } else if constexpr (sizeof(U) == 4) {
++            // Exact in double, then round to odd into float (branch-free, so loops vectorize).
++            // Measured 0.46 ns per value. Rejected: a |v| <= 2^24 float fast path (0.58 ns
++            // small, 1.30 ns large: the branch stops vectorization). Old code: 0.35 ns, wrong
++            // for every |v| >= 65,536.
++            return double_to_bfloat16(static_cast<double>(v));
+         } else {
+-            // NaN
+-            uint32_t qnan_mant = mant_32 >> 13;
+-            if (qnan_mant == 0) qnan_mant = 1;
+-            return static_cast<uint16_t>(sign | 0x7C00u | qnan_mant);
++            // 64-bit. |v| <= 2^24 (typical data: indices, counts) is exact in float, so a plain
++            // conversion is one rounding and the fastest; the test is one unsigned compare,
++            // and it predicts well on real data. Larger values take the exact integer round to
++            // odd into float. Both steps end in one rounding into bf16.
++            // Measured 0.82 ns per value for |v| < 256 and 2.1 ns above 2^24. Rejected: round
++            // to odd through double (3.6-4.4 ns); the same round to odd without this fast path
++            // (2.1 ns for every value); a sign branch instead of the bit trick in
++            // int64_to_float_rto (3.7 ns, it mispredicts on mixed signs). Old code: 0.69-0.97
++            // ns, wrong for every |v| >= 65,536.
++            bool fits24;
++            if constexpr (::std::is_signed_v<U>) {
++                fits24 = static_cast<uint64_t>(v) + (1ull << 24) <= (1ull << 25);   // -2^24 <= v <= 2^24
++            } else {
++                fits24 = v <= (1ull << 24);
++            }
++            return float_to_bfloat16(fits24 ? static_cast<float>(v) : int64_to_float_rto(v));
+         }
++#endif
+     }
++}
+ 
+-    int32_t exp_16 = static_cast<int32_t>(exp_32) - 127 + 15;
+-
+-    if (exp_16 <= 0) {
+-        if (exp_16 < -10) return static_cast<uint16_t>(sign);
+-        mant_32 |= 0x00800000u;
+-        uint32_t shift = static_cast<uint32_t>(1 - exp_16);
+-        uint32_t half_mant = mant_32 >> (shift + 13);
+-        return static_cast<uint16_t>(sign | half_mant);
+-    } else if (exp_16 >= 31) {
+-        // Overflow to infinity
+-        return static_cast<uint16_t>(sign | 0x7C00u);
++template <typename U>
++__device__ __host__ inline uint16_t arithmetic_to_float16(U v) {
++    if constexpr (::std::is_floating_point_v<U>) {
++        return double_to_float16(static_cast<double>(v));
+     } else {
+-        uint16_t half_exp = static_cast<uint16_t>(exp_16);
+-        uint32_t half_mant = mant_32 + 0x00001000u;
+-        return static_cast<uint16_t>(sign | (half_exp << 10) | (half_mant >> 13));
++        static_assert(::std::is_integral_v<U> && sizeof(U) <= 8, "arithmetic_to_float16: integers up to 64 bits");
++#if defined(__CUDA_ARCH__)
++        if constexpr (sizeof(U) <= 4) {
++            if constexpr (::std::is_signed_v<U>) {
++                return __half_as_ushort(__int2half_rn(static_cast<int>(v)));
++            } else {
++                return __half_as_ushort(__uint2half_rn(static_cast<unsigned int>(v)));
++            }
++        } else {
++            if constexpr (::std::is_signed_v<U>) {
++                return __half_as_ushort(__ll2half_rn(static_cast<long long>(v)));
++            } else {
++                return __half_as_ushort(__ull2half_rn(static_cast<unsigned long long>(v)));
++            }
++        }
++#else
++        // Every integer can go through float for fp16: |v| < 2^24 is exact in float, and any
++        // |v| >= 65520 gives +-Inf both directly and through float (float rounding is
++        // monotonic and float(v) >= 65520 there), so this is always one rounding. NVIDIA's
++        // host code for __int2half_rn / __ll2half_rn makes the same argument.
++        // Measured 0.45 ns per value (int32); going through double took 1.24 ns; old code
++        // 0.68-0.93 ns.
++        return float_to_float16(static_cast<float>(v));
++#endif
+     }
+ }
+ 
+@@ -202,8 +453,13 @@ struct bfloat16_t {
+     template <typename U, typename = ::std::enable_if_t<
+         ::std::is_arithmetic_v<U> && !::std::is_same_v<std::decay_t<U>, float>
+     >>    
++    // Modified: double and integer inputs now convert with one rounding. They used to
++    // go through static_cast<float> first, which rounds twice (1 + 2^-8 + 2^-30 gave
++    // 0x3F80 instead of 0x3F81; the integer 2^24 + 2^16 + 1 gave 0x4B80 instead of 0x4B81).
++    // Together with the old clamp in float_to_bfloat16, every int32 with |x| >= 65,536
++    // came out as Inf (4,294,836,225 of the 2^32 int32 values were wrong; 0 are now).
+     __device__ __host__ explicit bfloat16_t(U val) {
+-        raw_bits = detail::float_to_bfloat16(static_cast<float>(val));
++        raw_bits = detail::arithmetic_to_bfloat16(val);
+     }
+ 
+     __device__ __host__ operator float() const { return detail::bfloat16_to_float(raw_bits); }
+@@ -222,8 +478,9 @@ struct bfloat16_t {
+     template <typename U, typename = ::std::enable_if_t<
+         ::std::is_arithmetic_v<U> && !::std::is_same_v<std::decay_t<U>, float>
+     >>
++    // Modified: one rounding for double and integer inputs (see the constructor above).
+     __device__ __host__ bfloat16_t& operator=(U val) {
+-        raw_bits = detail::float_to_bfloat16(static_cast<float>(val));
++        raw_bits = detail::arithmetic_to_bfloat16(val);
+         return *this;
+     }
+ 
+@@ -303,8 +560,14 @@ struct float16_t {
+     template <typename U, typename = ::std::enable_if_t<
+         ::std::is_arithmetic_v<U> && !::std::is_same_v<std::decay_t<U>, float>
+     >>
++    // Modified: double inputs now convert with one rounding. They used to go through
++    // static_cast<float> first, which rounds twice (1 + 2^-11 + 2^-40 gave 0x3C00 instead
++    // of 0x3C01). For integers, going through float was already a single rounding (every
++    // integer below the fp16 overflow point is exact in float); they were wrong only
++    // through the old float_to_float16 rounding bug (5,140 of the 2^32 int32 values, the
++    // first being 2049). On the GPU they now take NVIDIA's integer intrinsics.
+     __device__ __host__ explicit float16_t(U val) {
+-        raw_bits = detail::float_to_float16(static_cast<float>(val));
++        raw_bits = detail::arithmetic_to_float16(val);
+     }
+ 
+     __device__ __host__ operator float() const { return detail::float16_to_float(raw_bits); }
+@@ -323,8 +586,9 @@ struct float16_t {
+     template <typename U, typename = ::std::enable_if_t<
+         ::std::is_arithmetic_v<U> && !::std::is_same_v<std::decay_t<U>, float>
+     >>
++    // Modified: one rounding for double inputs (see the constructor above).
+     __device__ __host__ float16_t& operator=(U val) {
+-        raw_bits = detail::float_to_float16(static_cast<float>(val));
++        raw_bits = detail::arithmetic_to_float16(val);
+         return *this;
+     }
+ 
+@@ -485,6 +749,21 @@ namespace OwnTensor {
+     // COMPLEX TYPES
+     // ==================================================================================
+ 
++    namespace detail {
++    // New (2026-09-26): scalar -> float16_t for complex32_t with one rounding.
++    // Arithmetic types (double, int, ...) use float16_t's templated constructor, which
++    // rounds once. Other types that convert to float (e.g. bfloat16_t) are exact in
++    // float, so going through float is still one rounding.
++    template <typename T>
++    __device__ __host__ inline float16_t scalar_to_float16(const T& v) {
++        if constexpr (::std::is_arithmetic_v<T>) {
++            return float16_t(v);
++        } else {
++            return float16_t(static_cast<float>(v));
++        }
++    }
++    } // namespace detail
++
+     /**
+      * @brief Complex32 (Half-Precision Complex Number)
+      * Components: real(float16_t) + imag(float16_t)
+@@ -514,9 +793,11 @@ namespace OwnTensor {
+             : real_(float16_t(c.real())), imag_(float16_t(c.imag())) {}
+ 
+         // Constructor from std::complex<double> for convenience
+-        __host__ explicit complex32_t(const std::complex<double>& c) 
+-            : real_(float16_t(static_cast<float>(c.real()))), 
+-              imag_(float16_t(static_cast<float>(c.imag()))) {}
++        // Modified: the double parts convert with one rounding (they went through
++        // static_cast<float> first, which rounds twice).
++        __host__ explicit complex32_t(const std::complex<double>& c)
++            : real_(float16_t(c.real())),
++              imag_(float16_t(c.imag())) {}
+     
+         // Conversion from other custom complex types (defined out-of-line after complex64_t/complex128_t)
+         __device__ __host__ explicit complex32_t(const struct complex64_t& c);
+@@ -525,11 +806,13 @@ namespace OwnTensor {
+         // Generic scalar constructors for any type convertible to float (resolves ambiguity)
+         template <typename T, typename = std::enable_if_t<std::is_convertible_v<T, float> && !std::is_same_v<std::decay_t<T>, float16_t> && !std::is_same_v<std::decay_t<T>, complex32_t>>>
+         __device__ __host__ explicit complex32_t(T r)
+-            : real_(float16_t(static_cast<float>(r))), imag_(float16_t(0.0f)) {}
++            // Modified: one rounding for double/integer r (was static_cast<float> first).
++            : real_(detail::scalar_to_float16(r)), imag_(float16_t(0.0f)) {}
+ 
+         template <typename T, typename U, typename = std::enable_if_t<std::is_convertible_v<T, float> && std::is_convertible_v<U, float> && !(std::is_same_v<std::decay_t<T>, float16_t> && std::is_same_v<std::decay_t<U>, float16_t>)>>
+         __device__ __host__ explicit complex32_t(T r, U i)
+-            : real_(float16_t(static_cast<float>(r))), imag_(float16_t(static_cast<float>(i))) {}
++            // Modified: one rounding for double/integer r and i (was static_cast<float> first).
++            : real_(detail::scalar_to_float16(r)), imag_(detail::scalar_to_float16(i)) {}
+ 
+         // ---- Accessor Methods ----
+         __device__ __host__ float16_t real() const { return real_; }
+@@ -895,8 +1178,10 @@ inline complex128_t polar(double rho, double theta) {
+ inline __device__ __host__ complex32_t::complex32_t(const complex64_t& c)
+     : real_(float16_t(c.real())), imag_(float16_t(c.imag())) {}
+ 
++// Modified: the double parts convert with one rounding (they went through
++// static_cast<float> first, which rounds twice).
+ inline __device__ __host__ complex32_t::complex32_t(const complex128_t& c)
+-    : real_(float16_t(static_cast<float>(c.real()))), imag_(float16_t(static_cast<float>(c.imag()))) {}
++    : real_(float16_t(c.real())), imag_(float16_t(c.imag())) {}
+ 
+ inline __device__ __host__ complex64_t::complex64_t(const complex128_t& c)
+     : real_(static_cast<float>(c.real())), imag_(static_cast<float>(c.imag())) {}
+diff --git a/include/ops/TensorOps.cuh b/include/ops/TensorOps.cuh
+index e2097fa..7bc8145 100644
+--- a/include/ops/TensorOps.cuh
++++ b/include/ops/TensorOps.cuh
+@@ -16,6 +16,14 @@ void cuda_div_tensor(const Tensor& A, const Tensor& B, Tensor& output, cudaStrea
+ 
+ //void cuda_add_tensor_inplace( Tensor& A, const Tensor& B);
+ void cuda_add_tensor_inplace( Tensor& A, const Tensor& B, cudaStream_t stream = 0);
++
++// acc += float(update) in one kernel, for an fp32 acc and a bf16/fp16 update that
++// are both contiguous CUDA tensors of the same shape. Returns false and touches
++// nothing when those conditions do not hold, so the caller can fall back.
++bool cuda_accumulate_lowp_into_fp32(Tensor& acc, const Tensor& update, cudaStream_t stream = 0);
++// Successful cuda_accumulate_lowp_into_fp32 calls in this process (for tests and
++// for BLUTRAIN_REPORT_FUSED_GRAD_ACC=1, which prints it at exit).
++uint64_t fused_grad_accum_call_count();
+ void cuda_sub_tensor_inplace( Tensor& A, const Tensor& B, cudaStream_t stream = 0);
+ void cuda_mul_tensor_inplace( Tensor& A, const Tensor& B, cudaStream_t stream = 0);
+ void cuda_div_tensor_inplace( Tensor& A, const Tensor& B, cudaStream_t stream = 0);
+diff --git a/include/ops/helpers/KernelPolicy.h b/include/ops/helpers/KernelPolicy.h
+index e71f718..2d2e59b 100644
+--- a/include/ops/helpers/KernelPolicy.h
++++ b/include/ops/helpers/KernelPolicy.h
+@@ -101,5 +101,14 @@ inline bool disable_sm90_add_flat() {
+     return v;
+ }
+ 
++// Fused bf16/fp16 -> fp32 gradient accumulation — cuda_accumulate_lowp_into_fp32,
++// called from AutogradMeta::accumulate_grad. BLUTRAIN_NO_FUSED_GRAD_ACC=1 restores
++// `grad += update.as_type(Float32)`. Both give the same bits, so the switch exists
++// for A/B timing only. Not an sm_90 kernel, so BLUTRAIN_NO_SM90 does not affect it.
++inline bool disable_fused_grad_accum() {
++    static const bool v = detail::env_flag_enabled("BLUTRAIN_NO_FUSED_GRAD_ACC");
++    return v;
++}
++
+ }  // namespace cuda
+ }  // namespace OwnTensor
+diff --git a/include/ops/helpers/ReductionImpl.h b/include/ops/helpers/ReductionImpl.h
+index 37a078a..68ae81d 100644
+--- a/include/ops/helpers/ReductionImpl.h
++++ b/include/ops/helpers/ReductionImpl.h
+@@ -199,6 +199,26 @@ acc_t row_sum(const acc_t* __restrict__ in_data, const int64_t stride, const int
+     return partials[0];
+ }
+ 
++// Modified: new helper, CPU only. A middle-axis reduction (kept dims both before AND after the
++// reduced axes, e.g. axis 1 of [7, 300, 5]) is tagged OuterContiguous by compute_reduction_layout,
++// with input_outer_stride = reduced * inner. The CPU OuterContiguous consumers (scalar and SIMD)
++// all treat the output as ONE contiguous column block of inner_count values, which is right only
++// when outer == 1 (a leading-axis reduction, where input_outer_stride == input_row_stride == inner).
++// For outer > 1 they read the wrong elements: measured on 2026-09-26, sum fp32 [7, 300, 5] axis 1
++// 30 of 35 outputs wrong, sum fp32 [4, 64, 128] axis 1 384 of 512, mean bf16 [3, 1000, 7] 8 of 21,
++// max fp32 [2, 3, 4, 5] axes {1, 2} 5 of 10, mean int32 [6, 50, 9] 44 of 54.
++// This demotes that case to the Generic carry-add path, which walks the real strides and is
++// already correct for non-consecutive axes and transposed views (same test: 0 wrong). A
++// leading-axis reduction keeps the vectorised OuterContiguous path. The GPU keeps OuterContiguous
++// for the middle axis too: its kernel maps each output to its slab (ReduceOp::outer_stride).
++// Cost: the middle-axis CPU case loses the SIMD path (correct first; a per-slab SIMD loop can
++// come later if a CPU middle-axis reduction ever matters for speed).
++inline void cpu_demote_middle_to_generic(ReductionLayout& layout) {
++    if (layout.path == ReductionLayout::Path::OuterContiguous &&
++        layout.input_outer_stride != layout.input_row_stride)
++        layout.path = ReductionLayout::Path::Generic;
++}
++
+ // =================================================================
+ // CASCADE SUM KERNEL — floating-point sum with cascade accumulation
+ //
+@@ -239,6 +259,7 @@ Tensor cascade_sum_kernel(
+         if (reduced_bitmap[d]) reduced_dims.push_back(input_dims[d]);
+ 
+     ReductionLayout layout = compute_reduction_layout(input, normalized_axes);
++    cpu_demote_middle_to_generic(layout);   // Modified: see cpu_demote_middle_to_generic
+     const int64_t k = static_cast<int64_t>(normalized_axes.size());
+     int64_t red_input_strides[MAX_DIMS];
+     for (int64_t d = 0; d < k; ++d)
+@@ -1031,6 +1052,7 @@ Tensor reduce_kernel_index(
+         if (reduced_bitmap[d]) reduced_dims.push_back(input_dims[d]);
+ 
+     ReductionLayout layout = compute_reduction_layout(input, normalized_axes);
++    cpu_demote_middle_to_generic(layout);   // Modified: see cpu_demote_middle_to_generic
+     const int64_t k = static_cast<int64_t>(normalized_axes.size());
+     int64_t red_input_strides[MAX_DIMS];
+     for (int64_t d = 0; d < k; ++d)
+@@ -1180,6 +1202,7 @@ Tensor reduce_kernel(
+     }
+     // Layout dispatch — computed once, replaces per-element coordinate math
+     ReductionLayout layout = compute_reduction_layout(input, normalized_axes);
++    cpu_demote_middle_to_generic(layout);   // Modified: see cpu_demote_middle_to_generic
+     // Precompute input strides for reduced axes (used by generic carry-add path)
+     const int64_t k = static_cast<int64_t>(normalized_axes.size());
+     int64_t red_input_strides[MAX_DIMS];
+@@ -2530,6 +2553,7 @@ Tensor reduce_kernel_mean(const Tensor& input, const std::vector<int64_t>& norma
+         const int64_t num_elements = output.numel();
+ 
+         ReductionLayout layout = compute_reduction_layout(input, normalized_axes);
++        cpu_demote_middle_to_generic(layout);   // Modified: see cpu_demote_middle_to_generic
+         const int64_t k = static_cast<int64_t>(normalized_axes.size());
+         int64_t red_strides[MAX_DIMS];
+         for (int64_t d = 0; d < k; ++d)
+@@ -2738,10 +2762,10 @@ Tensor reduce_kernel_mean(const Tensor& input, const std::vector<int64_t>& norma
+                 auto [s, c] = fused_sum_count_one(o);
+                 if (c > 0.0) {
+                     double mv = s / c;
+-                    if constexpr (std::is_same_v<T, float16_t> || std::is_same_v<T, bfloat16_t>)
+-                        out_data[o] = static_cast<T>(static_cast<float>(mv));
+-                    else
+-                        out_data[o] = static_cast<T>(mv);
++                    // Modified 2026-09-26: one rounding for bf16/fp16 as well. This used to be
++                    // static_cast<T>(static_cast<float>(...)), i.e. double -> float -> 16 bit, which rounds
++                    // twice; the bf16/fp16 constructors now take the double directly and round once.
++                    out_data[o] = static_cast<T>(mv);
+                 } else {
+                     if constexpr (std::is_floating_point_v<T>)
+                         out_data[o] = std::numeric_limits<T>::quiet_NaN();
+@@ -2857,10 +2881,10 @@ Tensor reduce_kernel_mean(const Tensor& input, const std::vector<int64_t>& norma
+             }
+             if (total_count > 0.0) {
+                 double mv = total_sum / total_count;
+-                if constexpr (std::is_same_v<T, float16_t> || std::is_same_v<T, bfloat16_t>)
+-                    out_data[0] = static_cast<T>(static_cast<float>(mv));
+-                else
+-                    out_data[0] = static_cast<T>(mv);
++                // Modified 2026-09-26: one rounding for bf16/fp16 as well. This used to be
++                // static_cast<T>(static_cast<float>(...)), i.e. double -> float -> 16 bit, which rounds
++                // twice; the bf16/fp16 constructors now take the double directly and round once.
++                out_data[0] = static_cast<T>(mv);
+             } else {
+                 if constexpr (std::is_floating_point_v<T>)
+                     out_data[0] = std::numeric_limits<T>::quiet_NaN();
+@@ -2960,7 +2984,10 @@ Tensor reduce_kernel_mean(const Tensor& input, const std::vector<int64_t>& norma
+                     }
+                     for (int64_t o = vec_end; o < num_elements; ++o) {
+                         auto [s, c] = fused_sum_count_one(o);
+-                        out_data[o] = c > 0.0 ? static_cast<T>(static_cast<float>(s / c)) : static_cast<T>(std::nanf(""));
++                        // Modified 2026-09-26: one rounding for bf16/fp16 as well. This used to be
++                        // static_cast<T>(static_cast<float>(...)), i.e. double -> float -> 16 bit, which rounds
++                        // twice; the bf16/fp16 constructors now take the double directly and round once.
++                        out_data[o] = c > 0.0 ? static_cast<T>(s / c) : static_cast<T>(std::nanf(""));
+                     }
+                     handled = true;
+                 }
+@@ -2974,10 +3001,10 @@ Tensor reduce_kernel_mean(const Tensor& input, const std::vector<int64_t>& norma
+                 auto [s, c] = fused_sum_count_one(o);
+                 if (c > 0.0) {
+                     double mv = s / c;
+-                    if constexpr (std::is_same_v<T, float16_t> || std::is_same_v<T, bfloat16_t>)
+-                        out_data[o] = static_cast<T>(static_cast<float>(mv));
+-                    else
+-                        out_data[o] = static_cast<T>(mv);
++                    // Modified 2026-09-26: one rounding for bf16/fp16 as well. This used to be
++                    // static_cast<T>(static_cast<float>(...)), i.e. double -> float -> 16 bit, which rounds
++                    // twice; the bf16/fp16 constructors now take the double directly and round once.
++                    out_data[o] = static_cast<T>(mv);
+                 } else {
+                     if constexpr (std::is_floating_point_v<T>)
+                         out_data[o] = std::numeric_limits<T>::quiet_NaN();
+@@ -3037,6 +3064,7 @@ Tensor reduce_kernel_mean(const Tensor& input, const std::vector<int64_t>& norma
+         const int64_t num_elements = output.numel();
+ 
+         ReductionLayout layout = compute_reduction_layout(input, normalized_axes);
++        cpu_demote_middle_to_generic(layout);   // Modified: see cpu_demote_middle_to_generic
+         const double recip = 1.0 / static_cast<double>(reduced_count);
+ 
+         // Helper: sum one output + reciprocal multiply
+@@ -3167,7 +3195,9 @@ Tensor reduce_kernel_mean(const Tensor& input, const std::vector<int64_t>& norma
+             // (multiply: ~5 cycles vs division: ~25 cycles per element)
+             double mean_val = sum * recip;
+             if constexpr (std::is_same_v<T, float16_t> || std::is_same_v<T, bfloat16_t>)
+-                out_data[o] = static_cast<T>(static_cast<float>(mean_val));
++                // Modified 2026-09-26: one rounding (was static_cast<float> first, which
++                // rounds twice; the bf16/fp16 constructors now take the double directly).
++                out_data[o] = static_cast<T>(mean_val);
+             else if constexpr (std::is_same_v<T, complex32_t> || std::is_same_v<T, complex64_t> || std::is_same_v<T, complex128_t>) {
+                 // Complex: need both real and imag
+                 AccumulatorType<T> csum{};
+@@ -3178,7 +3208,10 @@ Tensor reduce_kernel_mean(const Tensor& input, const std::vector<int64_t>& norma
+                     for (int64_t r = 0; r < layout.reduced_count; ++r)
+                         csum = csum + static_cast<AccumulatorType<T>>(*(input_data + o + r * layout.input_row_stride));
+                 }
+-                out_data[o] = T((float)(csum.real() / (double)reduced_count), (float)(csum.imag() / (double)reduced_count));
++                // Modified 2026-09-26: the double parts go straight to T. The (float) casts made
++                // complex32 round twice (double -> float -> fp16) and cut complex128 down to
++                // float precision. complex64 still rounds once to float, as before.
++                out_data[o] = T(csum.real() / (double)reduced_count, csum.imag() / (double)reduced_count);
+             } else
+                 out_data[o] = static_cast<T>(mean_val);
+         };
+@@ -3243,10 +3276,10 @@ Tensor reduce_kernel_mean(const Tensor& input, const std::vector<int64_t>& norma
+             double total = 0.0;
+             for (int t = 0; t < actual_threads; ++t) total += thread_sums[t];
+             double mv = total * recip;
+-            if constexpr (std::is_same_v<T, float16_t> || std::is_same_v<T, bfloat16_t>)
+-                out_data[0] = static_cast<T>(static_cast<float>(mv));
+-            else
+-                out_data[0] = static_cast<T>(mv);
++            // Modified 2026-09-26: one rounding for bf16/fp16 as well. This used to be
++            // static_cast<T>(static_cast<float>(...)), i.e. double -> float -> 16 bit, which rounds
++            // twice; the bf16/fp16 constructors now take the double directly and round once.
++            out_data[0] = static_cast<T>(mv);
+         } else {
+             int actual_threads = std::min(max_threads, static_cast<int>(num_elements));
+             #pragma omp parallel for num_threads(actual_threads)
+@@ -3397,6 +3430,7 @@ Tensor dispatch_variance_kernel(const Tensor& input,
+ 
+     // Layout dispatch: replaces per-element unravel/ravel in inner loop
+     ReductionLayout layout_var = compute_reduction_layout(input, normalized_axes);
++    cpu_demote_middle_to_generic(layout_var);   // Modified: see cpu_demote_middle_to_generic
+     const int64_t k_var = static_cast<int64_t>(normalized_axes.size());
+     int64_t red_input_strides_var[MAX_DIMS];
+     for (int64_t d = 0; d < k_var; ++d)
+diff --git a/include/ops/helpers/ReductionKernels.cuh b/include/ops/helpers/ReductionKernels.cuh
+index 2cd8ee9..e2b89b8 100644
+--- a/include/ops/helpers/ReductionKernels.cuh
++++ b/include/ops/helpers/ReductionKernels.cuh
+@@ -144,10 +144,14 @@ GpuReduceConfig build_reduce_config(const ReductionLayout& layout, int num_mp, i
+     int num_outputs       = static_cast<int>(layout.num_outputs);
+     int inputs_per_output = static_cast<int>(layout.reduced_count);
+ 
+-    // OuterContiguous: inner_count is the "fast" dimension (outputs),
+-    // num_outputs is how many rows we reduce over.
++    // Modified: OuterContiguous keeps num_outputs = layout.num_outputs (= outer * inner). It was
++    // reset to inner_count, which is right only for a leading-axis reduction (outer == 1). For a
++    // middle-axis reduction (outer > 1, e.g. axis 1 of [7, 300, 5]) only the first `inner` outputs
++    // got a thread, so every later slab of the output was never written (measured on the H200:
++    // 30 of 35 outputs wrong, sum fp32 and mean bf16). The kernel now maps each output index to its
++    // slab (ReduceOp::outer_stride). For outer == 1 both values are equal, so nothing changes there.
+     if (layout.path == ReductionLayout::Path::OuterContiguous) {
+-        num_outputs       = static_cast<int>(layout.inner_count);
++        num_outputs       = static_cast<int>(layout.num_outputs);
+         inputs_per_output = static_cast<int>(layout.reduced_count);
+     } else if (layout.path == ReductionLayout::Path::Generic) {
+         if (num_outputs       == 0) num_outputs       = 1;
+@@ -236,6 +240,11 @@ struct ReduceOp {
+     const scalar_t*  __restrict__ src;
+     out_scalar_t*    __restrict__ dst;
+     int64_t step_stride;
++    // Modified: OuterContiguous only -- element stride between outer slabs (reduced * inner), so a
++    // middle-axis output (o_outer, o_inner) reads the column starting at
++    // src + o_outer * outer_stride + o_inner. For a leading-axis reduction every output_idx < inner,
++    // so o_outer == 0 and the address is src + output_idx exactly as before.
++    int64_t outer_stride = 0;
+     // Multi-CTA staging (populated only when config.should_global_reduce()).
+     // cta_buf: num_outputs * ctas_per_output * sizeof(arg_t), uninitialised.
+     // semaphores: num_outputs ints, zero-initialised by host before launch.
+@@ -255,26 +264,51 @@ namespace cuda {
+ // Uses warp shuffles first (register), then shared memory for cross-warp.
+ template<typename arg_t, typename ops_t>
+ __device__ arg_t block_x_reduce(arg_t value, const ops_t& ops, char* shared_memory) {
+-    int lane = threadIdx.x % 32;
+-    int wid  = threadIdx.x / 32;
+-
+-    // Warp-level shuffle reduction
+-    #pragma unroll
+-    for (int offset = 16; offset > 0; offset /= 2)
+-        value = ops.combine(value, ops.warp_shfl_down(value, offset));
+-
+-    // Write warp leader to shared memory
++    // Modified: rewritten for the 2-D block. Same algorithm as PyTorch's block_x_reduce
++    // (aten/src/ATen/native/cuda/Reduce.cuh, checked against the source at 5f76830b728,
++    // 2025-12-05), including the decreasing shuffle offsets PyTorch uses on CUDA. threadIdx.x walks the reduced dim; threadIdx.y indexes INDEPENDENT
++    // outputs, so the reduction must stay inside one threadIdx.y row.
++    // The old body treated the block as 1-D, which is wrong whenever block_height > 1:
++    //   - it wrote the warp partials to smem[threadIdx.x / 32], ignoring threadIdx.y, so every
++    //     row wrote the same slots and the rows overwrote each other;
++    //   - it always shuffled over the full 32 lanes, so with block_width < 32 (several rows in
++    //     one warp) it added neighbouring rows' values together;
++    //   - its second stage read only blockDim.x / 32 slots, i.e. whichever row wrote last.
++    // Measured before this fix on the H200 (outputs wrong by more than 1 ulp):
++    //   last axis [512, 4096] (block 32 x 16): mean fp32 480 / 512, sum fp32 479 / 512,
++    //     max fp32 476 / 512, mean fp64 480 / 512;
++    //   block_width 16 / 8 (two / four rows per warp): sum [4096, 16] and max [4096, 8]
++    //     4096 / 4096 each;
++    //   block_width > 32: sum [2, 65536] 2 / 2; multi-CTA sum [8, 1 << 20] 8 / 8.
++    // Reductions without block_x_reduce (axis 0 and full reductions, block_y only) were right.
++    // Shared memory: only when a row spans more than one warp, indexed by the full 2-D thread
++    // id, num_threads slots -- exactly config.shared_memory_size(), which is 0 when
++    // block_width <= 32 and block_y is off (then no shared memory is touched here).
++    // block_width is a power of two (set_block_dimension uses last_pow2), so the halving loop
++    // below covers every lane.
++    int dim_x = blockDim.x;
+     arg_t* smem = reinterpret_cast<arg_t*>(shared_memory);
+-    if (lane == 0) smem[wid] = value;
+-    __syncthreads();
+ 
+-    // First warp reduces across all warp results
+-    if (wid == 0) {
+-        value = (threadIdx.x < blockDim.x / 32) ? smem[lane] : ops.identity();
+-        #pragma unroll
+-        for (int offset = 16; offset > 0; offset /= 2)
+-            value = ops.combine(value, ops.warp_shfl_down(value, offset));
++    // Cross-warp stage -- only when a row spans more than one warp.
++    if (dim_x > 32) {
++        int addr = threadIdx.x + threadIdx.y * blockDim.x;
++        smem[addr] = value;
++        for (int offset = dim_x / 2; offset >= 32; offset >>= 1) {
++            __syncthreads();
++            if (threadIdx.x < offset && threadIdx.x + offset < blockDim.x) {
++                value = ops.combine(value, smem[addr + offset]);
++                smem[addr] = value;
++            }
++        }
++        dim_x = 32;
+     }
++
++    __syncthreads();
++    // Intra-warp shuffle bounded by the row width: with block_width < 32 one warp holds several
++    // rows, so the offsets stay below dim_x and no row adds in its neighbour. The result lands
++    // in threadIdx.x == 0 of each row, which is the is_leader thread the caller writes from.
++    for (int offset = dim_x >> 1; offset > 0; offset >>= 1)
++        value = ops.combine(value, ops.warp_shfl_down(value, offset));
+     return value;
+ }
+ 
+@@ -390,8 +424,12 @@ __global__ void unified_reduce_kernel(detail::ReduceOp<scalar_t, out_scalar_t, o
+     else if constexpr (PATH == detail::ReductionLayout::Path::OuterContiguous) {
+         // TIER 2: Single-stride – output dimension is innermost, reduced dim is outer.
+         // Covers ~25% of DL workloads (e.g. sum(axis=0) on NCHW → C).
+-        const scalar_t* __restrict__ base_ptr = op.src + output_idx;
++        // Modified: map the flat output index to its slab. Outputs are ordered (o_outer, o_inner)
++        // with inner_count == step_stride. It was src + output_idx, right only when outer == 1.
+         const index_t row_stride = (index_t)op.step_stride;
++        const index_t o_outer    = output_idx / row_stride;
++        const index_t o_inner    = output_idx - o_outer * row_stride;
++        const scalar_t* __restrict__ base_ptr = op.src + o_outer * (index_t)op.outer_stride + o_inner;
+ 
+         // ILP main loop: VT0 independent accumulators, strided access
+         while (idx + (VT0 - 1) * stride < end) {
+@@ -520,8 +558,19 @@ __global__ void unified_reduce_kernel(detail::ReduceOp<scalar_t, out_scalar_t, o
+         // (4) Final block-level reductions over the y (and possibly x) dim so
+         //     only the is_leader thread holds the full sum for its output_idx.
+         value = block_y_reduce(value, op.ops, shared_memory);
+-        if (config.should_block_x_reduce())
++        if (config.should_block_x_reduce()) {
++            // Modified: barrier between the two stages. block_y_reduce ends with the threadIdx.y == 0
++            // row still reading the other rows' slots, while block_x_reduce starts by writing
++            // smem[threadIdx.x + threadIdx.y * blockDim.x] -- those same slots. The value written is
++            // the one the row stored in block_y_reduce, so the result was right, but it is an
++            // unsynchronised write/read pair (a data race): compute-sanitizer racecheck on the H200
++            // reported 11,521 RAW hazards here (sum fp32 [8, 1 << 20] axis 1: write thread (0,1),
++            // read thread (0,0), same shared slot). Runs only in the last CTA of each output tile, so
++            // it costs one barrier per tile. The main path calls the two in the other order
++            // (block_x_reduce ends with its own barrier), so it needs none.
++            __syncthreads();
+             value = block_x_reduce(value, op.ops, shared_memory);
++        }
+ 
+         // (5) Same write rule as the single-CTA path.
+         if (is_leader && output_idx < (index_t)config.num_outputs) {
+@@ -562,10 +611,12 @@ inline void launch_reduce_kernel(
+     detail::ReductionLayout::Path path,
+     int64_t step_stride,
+     int smem,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    int64_t outer_stride = 0)   // Modified: OuterContiguous slab stride, see ReduceOp::outer_stride
+ {
+     // Pack into single struct for minimal launch parameter overhead
+     detail::ReduceOp<scalar_t, out_scalar_t, ops_t, index_t> op;
++    op.outer_stride = outer_stride;
+     op.ops = ops;
+     op.config = config;
+     op.input_calc = input_calc;
+diff --git a/include/ops/helpers/ReductionOps.h b/include/ops/helpers/ReductionOps.h
+index 6619cc0..178e9a4 100644
+--- a/include/ops/helpers/ReductionOps.h
++++ b/include/ops/helpers/ReductionOps.h
+@@ -1377,9 +1377,18 @@ struct WelfordOps {
+ template <typename T>
+ struct MeanOps {
+     using AccT = AccumulatorType<T>;
+-    AccT factor;  // = 1.0 / reduced_count (pre-computed on host)
+-
+-    DEVICE_HOST MeanOps(AccT f = AccT(1.0f)) : factor(f) {}
++    // Modified: the factor type is separate from the accumulator. For an integer accumulator
++    // (int8..int64, uint8..uint64, bool -> int64_t / uint64_t) the factor 1/n cannot be stored in
++    // AccT: static_cast<int64_t>(1.0 / n) is 0 for n >= 2, so project() returned sum * 0 and every
++    // integer mean on the GPU was 0. The sum stays EXACT in int64 / uint64; only the factor and
++    // the result are double, and the kernel's output write converts that double once to the
++    // output type (static_cast<out_scalar_t>). This is the same arithmetic as the CPU integer
++    // mean (ReductionImpl.h reduce_kernel_mean: static_cast<double>(sum) * (1.0 / n)). For
++    // float / half / complex accumulators FactorT == AccT, so those means are bit-identical.
++    using FactorT = std::conditional_t<std::is_integral_v<AccT>, double, AccT>;
++    FactorT factor;  // = 1.0 / reduced_count (pre-computed on host)
++
++    DEVICE_HOST MeanOps(FactorT f = FactorT(1.0f)) : factor(f) {}
+ 
+     DEVICE_HOST AccT identity() const { return AccT(0.0f); }
+ 
+@@ -1400,12 +1409,18 @@ struct MeanOps {
+     }
+ 
+     // Project: multiply by 1/count to get mean
+-    DEVICE_HOST AccT project(const AccT& a) const {
++    // Modified: integer accumulators return double (see FactorT); every other type is unchanged.
++    // The callers take the result with `auto final_val = op.ops.project(value)`.
++    DEVICE_HOST auto project(const AccT& a) const {
++        if constexpr (std::is_integral_v<AccT>) {
++            return static_cast<double>(a) * factor;
++        } else {
+         #ifdef __CUDA_ARCH__
+-        return gpu_mul(a, factor);
++            return gpu_mul(a, factor);
+         #else
+-        return a * factor;
++            return a * factor;
+         #endif
++        }
+     }
+ 
+ #ifdef __CUDACC__
+diff --git a/include/ops/helpers/Vectorized.h b/include/ops/helpers/Vectorized.h
+index 649490c..4b9ca7f 100644
+--- a/include/ops/helpers/Vectorized.h
++++ b/include/ops/helpers/Vectorized.h
+@@ -568,7 +568,8 @@ struct Vectorized<uint64_t> {
+ //   Convert float → fp16/bf16 → store
+ //
+ // Uses F16C hardware instructions (_mm256_cvtph_ps / _mm256_cvtps_ph)
+-// for fp16, and bit-shift for bf16.
++// for fp16. bf16 loads are a bit-shift (exact); bf16 stores round to nearest even
++// (store_float_as_bf16 below; modified 2026-09-26, it used to truncate).
+ // =================================================================
+ 
+ // Load 8 x fp16 → 8 x float (F16C hardware instruction)
+@@ -596,16 +597,33 @@ inline Vectorized<float> load_bf16_as_float(const void* ptr) {
+     return Vectorized<float>(_mm256_castsi256_ps(int32_vals));
+ }
+ 
+-// Store 8 x float → 8 x bf16 (truncate lower 16 bits)
++// Store 8 x float → 8 x bf16, round to nearest even (IEEE 754 default).
++// Modified 2026-09-26: this used to cut the low 16 bits off (round toward zero). That
++// made results up to one bf16 step too small in magnitude, and turned NaNs whose
++// payload sat only in the low 16 bits into Inf (0x7F800001 -> 0x7F80). It now does
++// what the scalar OwnTensor::detail::float_to_bfloat16 does, lane by lane: add
++// 0x7FFF plus the lowest kept bit, shift right by 16 (a carry runs into the exponent,
++// overflow lands on Inf), and NaN lanes become 0x7FFF. The NaN test is an integer
++// compare, so it cannot be optimised away by fast-math flags. The rounding is the same
++// as PyTorch's AVX2 cvtfp32_bf16 (aten/src/ATen/cpu/vec/vec256/vec256_16bit_float.h);
++// the NaN handling differs (PyTorch uses a float compare and writes 0xFFFF; here an
++// integer compare writes 0x7FFF, the same value as the scalar function).
++// Checked bit-identical to the scalar function for all 2^32 fp32 inputs.
++// Cost, measured (i7-14700K, 1 thread): 0.14 ns per value vs 0.11 ns for the old
++// truncating store; the extra instructions are the rounding and the NaN test themselves.
+ inline void store_float_as_bf16(void* ptr, const Vectorized<float>& v) {
+-    // Reinterpret float as int32
+-    __m256i int32_vals = _mm256_castps_si256(v.values);
+-    // Shift right by 16 to get bf16 bits
+-    int32_vals = _mm256_srli_epi32(int32_vals, 16);
+-    // Pack 32-bit to 16-bit (truncate)
+-    // Extract 128-bit halves, pack with signed saturation (values are positive small)
+-    __m128i lo = _mm256_castsi256_si128(int32_vals);
+-    __m128i hi = _mm256_extracti128_si256(int32_vals, 1);
++    const __m256i bits = _mm256_castps_si256(v.values);
++    const __m256i lsb  = _mm256_and_si256(_mm256_srli_epi32(bits, 16), _mm256_set1_epi32(1));
++    __m256i rounded = _mm256_add_epi32(bits, _mm256_add_epi32(lsb, _mm256_set1_epi32(0x7FFF)));
++    rounded = _mm256_srli_epi32(rounded, 16);
++    // NaN lanes: |bits| > 0x7F800000. After the mask both sides are non-negative, so the
++    // signed 32-bit compare is exact.
++    const __m256i abs_bits = _mm256_and_si256(bits, _mm256_set1_epi32(0x7FFFFFFF));
++    const __m256i is_nan   = _mm256_cmpgt_epi32(abs_bits, _mm256_set1_epi32(0x7F800000));
++    rounded = _mm256_blendv_epi8(rounded, _mm256_set1_epi32(0x7FFF), is_nan);
++    // Every lane now holds a value <= 0xFFFF, so the unsigned-saturating pack keeps it.
++    __m128i lo = _mm256_castsi256_si128(rounded);
++    __m128i hi = _mm256_extracti128_si256(rounded, 1);
+     __m128i packed = _mm_packus_epi32(lo, hi);
+     _mm_storeu_si128(reinterpret_cast<__m128i*>(ptr), packed);
+ }
+diff --git a/src/Kernels/cuda/misc/ConversionKernels.cu b/src/Kernels/cuda/misc/ConversionKernels.cu
+index d2bcf3a..0b614f4 100644
+--- a/src/Kernels/cuda/misc/ConversionKernels.cu
++++ b/src/Kernels/cuda/misc/ConversionKernels.cu
+@@ -127,29 +127,46 @@ template<typename Src, typename Dst>
+ __global__ void convert_type_kernel(const Src* __restrict__ input,
+                                   Dst* __restrict__ output,
+                                   int64_t n) {
+-    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
++    // Modified: 64-bit index. It was blockIdx.x * blockDim.x (a 32-bit product), which wraps for
++    // tensors above 2^32 elements.
++    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+     if (idx < n) {
+-        float val;
+-        if constexpr (std::is_same_v<Src, float16_t>) {
+-            __half h;
+-            *reinterpret_cast<uint16_t*>(&h) = input[idx].raw_bits;
+-            val = __half2float(h);
+-        } else if constexpr (std::is_same_v<Src, bfloat16_t>) {
+-            __nv_bfloat16 b;
+-            *reinterpret_cast<uint16_t*>(&b) = input[idx].raw_bits;
+-            val = __bfloat162float(b);
+-        } else {
+-            val = static_cast<float>(input[idx]);
+-        }
+-
+-        if constexpr (std::is_same_v<Dst, float16_t>) {
+-            __half h = __float2half(val);
+-            output[idx].raw_bits = *reinterpret_cast<uint16_t*>(&h);
+-        } else if constexpr (std::is_same_v<Dst, bfloat16_t>) {
+-            __nv_bfloat16 b = __float2bfloat16(val);
+-            output[idx].raw_bits = *reinterpret_cast<uint16_t*>(&b);
++        // Modified: the float temporary is now used ONLY for bf16/fp16 sources. It used to carry
++        // every conversion, and float holds 24 bits, so every wider value lost digits on the way:
++        // int32 above 2^24, int64, uint32/64 and double (e.g. int32 16,777,217 -> int64 16,777,216;
++        // int64 or double 10,000,000,001 -> 10,000,000,000), and double -> bf16/fp16 was rounded
++        // twice (double -> float -> bf16). The CPU as_type (AsTypeTensor.cpp) converts directly;
++        // this now does the same, so GPU and CPU give the same result.
++        if constexpr (std::is_same_v<Src, float16_t> || std::is_same_v<Src, bfloat16_t>) {
++            // 16-bit source: unchanged. Every bf16/fp16 value is exact in float, so nothing is lost.
++            float val;
++            if constexpr (std::is_same_v<Src, float16_t>) {
++                __half h;
++                *reinterpret_cast<uint16_t*>(&h) = input[idx].raw_bits;
++                val = __half2float(h);
++            } else {
++                __nv_bfloat16 b;
++                *reinterpret_cast<uint16_t*>(&b) = input[idx].raw_bits;
++                val = __bfloat162float(b);
++            }
++            if constexpr (std::is_same_v<Dst, float16_t>) {
++                __half h = __float2half(val);
++                output[idx].raw_bits = *reinterpret_cast<uint16_t*>(&h);
++            } else if constexpr (std::is_same_v<Dst, bfloat16_t>) {
++                __nv_bfloat16 b = __float2bfloat16(val);
++                output[idx].raw_bits = *reinterpret_cast<uint16_t*>(&b);
++            } else {
++                output[idx] = static_cast<Dst>(val);
++            }
++        } else if constexpr (std::is_same_v<Dst, float16_t> || std::is_same_v<Dst, bfloat16_t>) {
++            // Wide source -> bf16/fp16: the Types.h constructors, which round ONCE and use the GPU
++            // intrinsics on the device (float: __float2bfloat16_rn / __float2half_rn, the same
++            // instruction as before, so fp32 -> bf16/fp16 is bit-identical; double:
++            // __double2bfloat16 / __double2half; integers: __ll2bfloat16_rn etc.).
++            output[idx] = Dst(input[idx]);
+         } else {
+-            output[idx] = static_cast<Dst>(val);
++            // Wide source -> wide destination: direct, as the CPU does (no float in between).
++            output[idx] = static_cast<Dst>(input[idx]);
+         }
+     }
+ }
+@@ -248,6 +265,32 @@ namespace {
+     template<> struct is_complex_t<complex128_t> : std::true_type {};
+ }
+ 
++// Modified: new kernel. complex -> complex on the GPU used to be SKIPPED (see
++// convert_type_cuda_generic below). Converts component by component, exactly as the CPU as_type
++// does (AsTypeTensor.cpp: DstType(static_cast<R>(src.real()), static_cast<R>(src.imag()))), so a
++// complex32 component gets the Types.h one-rounding fp16 conversion.
++template<typename Src, typename Dst>
++__global__ void convert_complex_kernel(const Src* __restrict__ input,
++                                       Dst* __restrict__ output,
++                                       int64_t n) {
++    int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
++    if (idx < n) {
++        using R = decltype(output[idx].real());
++        output[idx] = Dst(static_cast<R>(input[idx].real()), static_cast<R>(input[idx].imag()));
++    }
++}
++
++template<typename Src, typename Dst>
++static void convert_complex_cuda(const Src* input, Dst* output, int64_t n, cudaStream_t stream) {
++    if (n == 0) return;
++    const int threads = 256;
++    const int64_t blocks = (n + threads - 1) / threads;
++    convert_complex_kernel<Src, Dst><<<static_cast<unsigned int>(blocks), threads, 0, stream>>>(input, output, n);
++    cudaError_t err = cudaGetLastError();
++    if (err != cudaSuccess)
++        throw std::runtime_error(std::string("convert_complex_cuda kernel launch failed: ") + cudaGetErrorString(err));
++}
++
+ void convert_type_cuda_generic(const void* input, Dtype src_dtype, void* output, Dtype dst_dtype, int64_t n, cudaStream_t stream) {
+     CUDA_KERNEL_SCOPE("convert_type_cuda_generic", stream);
+     if (n == 0) return;
+@@ -258,8 +301,20 @@ void convert_type_cuda_generic(const void* input, Dtype src_dtype, void* output,
+         dispatch_by_dtype(dst_dtype, [&](auto dst_type_placeholder) {
+             using DstType = decltype(dst_type_placeholder);
+ 
+-            if constexpr (is_complex_t<SrcType>::value || is_complex_t<DstType>::value) {
+-                // Skip complex types for now on GPU
++            if constexpr (is_complex_t<SrcType>::value && is_complex_t<DstType>::value) {
++                // Modified: complex -> complex is converted. It was skipped here ("Skip complex
++                // types for now on GPU"): the output was left uninitialised and no error was raised.
++                convert_complex_cuda<SrcType, DstType>(
++                    reinterpret_cast<const SrcType*>(input),
++                    reinterpret_cast<DstType*>(output),
++                    n, stream);
++            } else if constexpr (is_complex_t<SrcType>::value || is_complex_t<DstType>::value) {
++                // Modified: complex <-> real is refused, as Tensor::as_type already refuses it
++                // (AsTypeTensor.cpp). It was silently skipped, leaving the output uninitialised.
++                throw std::runtime_error(
++                    "convert_type_cuda_generic: cannot convert between complex and non-complex types "
++                    "(dtype " + std::to_string(static_cast<int>(src_dtype)) + " -> " +
++                    std::to_string(static_cast<int>(dst_dtype)) + ")");
+             } else {
+                 convert_type_cuda<SrcType, DstType>(
+                     reinterpret_cast<const SrcType*>(input), 
+diff --git a/src/TensorOps/cuda/TensorOpsAdd.cu b/src/TensorOps/cuda/TensorOpsAdd.cu
+index 6a9866e..d3320c6 100644
+--- a/src/TensorOps/cuda/TensorOpsAdd.cu
++++ b/src/TensorOps/cuda/TensorOpsAdd.cu
+@@ -12,6 +12,11 @@
+ #include <algorithm>
+ #include "ops/helpers/Vectorization.cuh"
+ #include "profiler/RecordFunction.h"
++#include <atomic>
++#include <cstdint>
++#include <cstdlib>
++#include <stdexcept>
++#include <string>
+ 
+ 
+ namespace OwnTensor
+@@ -760,4 +765,167 @@ namespace OwnTensor
+         });
+     }
+ 
++    /*########################################################
++        FUSED LOW-PRECISION GRADIENT ACCUMULATION
++    ##########################################################*/
++
++    // F2 -- acc_fp32[i] += float(update[i]) for a bf16 or fp16 update, in one pass.
++    //
++    // What:   one kernel reads the low-precision update (16 B = 8 values) and the fp32
++    //         accumulator (2 x 16 B), widens in registers, adds, and writes the fp32 back.
++    // Was:    AutogradMeta::accumulate_grad did `acc += update.as_type(Float32)`, which wrote
++    //         the widened update to a full-size fp32 temporary and read it back: 18 B of DRAM
++    //         traffic per element and two launches, against 10 B and one launch here.
++    // Why:    widening bf16/fp16 to fp32 is exact (bf16 is the top half of an fp32; every fp16
++    //         value is an fp32 value), and the add below is the same single fp32 add as
++    //         add_inplace_kernel_sm90<float> in this file -- same TU, same flags, FADD.FTZ in
++    //         the SASS of both -- so the result is bit-identical to the old path.
++    // Proven: Tests/kernel_tests/test_fused_grad_accum.cu on H200 (sm_90): 0 mismatches against
++    //         the old path after 4 accumulation steps, bf16 and fp16, sizes 1 to 33,554,437
++    //         (vector, tail and misaligned-scalar paths), with +-0, subnormals, +-inf, NaN and
++    //         overflow planted; 1.41-1.97x faster per call at 5-34M elements.
++    namespace grad_accum {
++
++    template <bool IS_BF16>
++    __device__ __forceinline__ float widen(uint32_t bits16) {
++        if constexpr (IS_BF16) {
++            return __uint_as_float(bits16 << 16);                  // bf16 = top half of an fp32
++        } else {
++            return __half2float(__ushort_as_half(static_cast<unsigned short>(bits16)));
++        }
++    }
++
++    // 8 low-precision values (one int4) into 8 floats (two float4). Element 2k is
++    // the low half of 32-bit word k (little-endian).
++    template <bool IS_BF16>
++    __device__ __forceinline__ void add8(float4& lo, float4& hi, const int4 u) {
++        const uint32_t w0 = static_cast<uint32_t>(u.x), w1 = static_cast<uint32_t>(u.y);
++        const uint32_t w2 = static_cast<uint32_t>(u.z), w3 = static_cast<uint32_t>(u.w);
++        lo.x = lo.x + widen<IS_BF16>(w0 & 0xFFFFu);  lo.y = lo.y + widen<IS_BF16>(w0 >> 16);
++        lo.z = lo.z + widen<IS_BF16>(w1 & 0xFFFFu);  lo.w = lo.w + widen<IS_BF16>(w1 >> 16);
++        hi.x = hi.x + widen<IS_BF16>(w2 & 0xFFFFu);  hi.y = hi.y + widen<IS_BF16>(w2 >> 16);
++        hi.z = hi.z + widen<IS_BF16>(w3 & 0xFFFFu);  hi.w = hi.w + widen<IS_BF16>(w3 >> 16);
++    }
++
++    // Both pointers 16-B aligned. Grid-stride, 2x unrolled, the same shape as
++    // add_inplace_kernel_sm90.
++    template <bool IS_BF16, int UNROLL = 2>
++    __global__ __launch_bounds__(256)
++    void accum_lowp_fp32_vec_kernel(float* __restrict__ acc,
++                                    const uint16_t* __restrict__ upd,
++                                    size_t n)
++    {
++        const size_t n_vec  = n / 8;
++        const size_t tid    = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
++        const size_t stride = (size_t)blockDim.x * gridDim.x;
++
++        float4*     __restrict__ a_v = reinterpret_cast<float4*>(acc);
++        const int4* __restrict__ u_v = reinterpret_cast<const int4*>(upd);
++
++        size_t i = tid;
++        for (; i + (UNROLL - 1) * stride < n_vec; i += UNROLL * stride) {
++            int4 u[UNROLL];
++            float4 lo[UNROLL], hi[UNROLL];
++            #pragma unroll
++            for (int k = 0; k < UNROLL; k++) {
++                const size_t j = i + k * stride;
++                u[k] = u_v[j]; lo[k] = a_v[2 * j]; hi[k] = a_v[2 * j + 1];
++            }
++            #pragma unroll
++            for (int k = 0; k < UNROLL; k++) {
++                const size_t j = i + k * stride;
++                add8<IS_BF16>(lo[k], hi[k], u[k]);
++                a_v[2 * j] = lo[k]; a_v[2 * j + 1] = hi[k];
++            }
++        }
++        for (; i < n_vec; i += stride) {
++            float4 lo = a_v[2 * i], hi = a_v[2 * i + 1];
++            add8<IS_BF16>(lo, hi, u_v[i]);
++            a_v[2 * i] = lo; a_v[2 * i + 1] = hi;
++        }
++
++        // Ragged tail (n % 8, at most 7 elements), first threads of the grid.
++        const size_t tail_base  = n_vec * 8;
++        const size_t tail_count = n - tail_base;
++        if (tid < tail_count) {
++            acc[tail_base + tid] = acc[tail_base + tid] + widen<IS_BF16>(upd[tail_base + tid]);
++        }
++    }
++
++    // Either pointer not 16-B aligned (a view with an element offset). Same
++    // arithmetic, one element per iteration.
++    template <bool IS_BF16>
++    __global__ __launch_bounds__(256)
++    void accum_lowp_fp32_scalar_kernel(float* __restrict__ acc,
++                                       const uint16_t* __restrict__ upd,
++                                       size_t n)
++    {
++        const size_t tid    = blockIdx.x * (size_t)blockDim.x + threadIdx.x;
++        const size_t stride = (size_t)blockDim.x * gridDim.x;
++        for (size_t i = tid; i < n; i += stride) {
++            acc[i] = acc[i] + widen<IS_BF16>(upd[i]);
++        }
++    }
++
++    std::atomic<uint64_t> calls{0};
++
++    void report_at_exit() {
++        std::fprintf(stderr, "[grad-accum] fused bf16/fp16 -> fp32 accumulations: %llu\n",
++                     static_cast<unsigned long long>(calls.load()));
++    }
++
++    template <bool IS_BF16>
++    void launch(float* a, const uint16_t* u, size_t n, bool aligned, cudaStream_t stream) {
++        const int block = 256;
++        if (aligned) {
++            size_t grid = get_optimal_grid_size(accum_lowp_fp32_vec_kernel<IS_BF16, 2>, block, n / 8);
++            accum_lowp_fp32_vec_kernel<IS_BF16, 2><<<grid, block, 0, stream>>>(a, u, n);
++        } else {
++            size_t grid = get_optimal_grid_size(accum_lowp_fp32_scalar_kernel<IS_BF16>, block, n);
++            accum_lowp_fp32_scalar_kernel<IS_BF16><<<grid, block, 0, stream>>>(a, u, n);
++        }
++    }
++
++    }  // namespace grad_accum
++
++    uint64_t fused_grad_accum_call_count() { return grad_accum::calls.load(); }
++
++    bool cuda_accumulate_lowp_into_fp32(Tensor& acc, const Tensor& update, cudaStream_t stream)
++    {
++        const Dtype ud = update.dtype();
++        if (acc.dtype() != Dtype::Float32) return false;
++        if (ud != Dtype::Bfloat16 && ud != Dtype::Float16) return false;
++        if (!acc.device().is_cuda() || !update.device().is_cuda()) return false;
++        if (acc.device().index != update.device().index) return false;
++        if (!acc.is_contiguous() || !update.is_contiguous()) return false;
++        if (acc.shape().dims != update.shape().dims) return false;
++
++        static const bool report = [] {
++            const bool on = cuda::detail::env_flag_enabled("BLUTRAIN_REPORT_FUSED_GRAD_ACC");
++            if (on) std::atexit(grad_accum::report_at_exit);
++            return on;
++        }();
++        (void)report;
++
++        const size_t n = acc.numel();
++        if (n == 0) return true;
++
++        CUDA_KERNEL_SCOPE("cuda_accumulate_lowp_into_fp32", stream);
++        float* a = static_cast<float*>(acc.data());
++        const uint16_t* u = static_cast<const uint16_t*>(update.data());
++        const bool aligned = (reinterpret_cast<uintptr_t>(a) % 16 == 0) &&
++                             (reinterpret_cast<uintptr_t>(u) % 16 == 0);
++        if (ud == Dtype::Bfloat16) grad_accum::launch<true >(a, u, n, aligned, stream);
++        else                       grad_accum::launch<false>(a, u, n, aligned, stream);
++
++        // A failed launch would silently drop a gradient; fail loudly instead.
++        const cudaError_t err = cudaPeekAtLastError();
++        if (err != cudaSuccess) {
++            throw std::runtime_error(std::string("cuda_accumulate_lowp_into_fp32: launch failed: ") +
++                                     cudaGetErrorString(err));
++        }
++        grad_accum::calls.fetch_add(1, std::memory_order_relaxed);
++        return true;
++    }
++
+ }
+\ No newline at end of file
+diff --git a/src/UnaryOps/cpu/Activations.cpp b/src/UnaryOps/cpu/Activations.cpp
+index 849a1dc..99bbb87 100644
+--- a/src/UnaryOps/cpu/Activations.cpp
++++ b/src/UnaryOps/cpu/Activations.cpp
+@@ -222,8 +222,10 @@ Tensor gelu_forward(const Tensor& input) {
+                     uint16_t out = _cvtss_sh(result, _MM_FROUND_TO_NEAREST_INT);
+                     std::memcpy(dst + i * elem_bytes, &out, 2);
+                 } else {
+-                    uint32_t bits; std::memcpy(&bits, &result, 4);
+-                    uint16_t out = static_cast<uint16_t>(bits >> 16);
++                    // Modified 2026-09-26: round to nearest even through the shared scalar
++                    // converter. This used to be a truncating `bits >> 16`, unlike the fp16
++                    // branch above (which rounds) and the GPU kernels (which round).
++                    uint16_t out = ::OwnTensor::detail::float_to_bfloat16(result);
+                     std::memcpy(dst + i * elem_bytes, &out, 2);
+                 }
+             }
+@@ -612,8 +614,10 @@ Tensor fused_bias_gelu_forward(const Tensor& input, const Tensor& bias) {
+                     uint16_t out = _cvtss_sh(result, _MM_FROUND_TO_NEAREST_INT);
+                     std::memcpy(dst + j * elem_bytes, &out, 2);
+                 } else {
+-                    uint32_t bits; std::memcpy(&bits, &result, 4);
+-                    uint16_t out = static_cast<uint16_t>(bits >> 16);
++                    // Modified 2026-09-26: round to nearest even through the shared scalar
++                    // converter. This used to be a truncating `bits >> 16`, unlike the fp16
++                    // branch above (which rounds) and the GPU kernels (which round).
++                    uint16_t out = ::OwnTensor::detail::float_to_bfloat16(result);
+                     std::memcpy(dst + j * elem_bytes, &out, 2);
+                 }
+             }
+@@ -977,8 +981,10 @@ Tensor gelu_backward(const Tensor& grad_output, const Tensor& input) {
+                     uint16_t out = _cvtss_sh(result, _MM_FROUND_TO_NEAREST_INT);
+                     std::memcpy(op + i * 2, &out, 2);
+                 } else {
+-                    uint32_t bits; std::memcpy(&bits, &result, 4);
+-                    uint16_t out = (uint16_t)(bits >> 16);
++                    // Modified 2026-09-26: round to nearest even through the shared scalar
++                    // converter. This used to be a truncating `bits >> 16`, unlike the fp16
++                    // branch above (which rounds) and the GPU kernels (which round).
++                    uint16_t out = ::OwnTensor::detail::float_to_bfloat16(result);
+                     std::memcpy(op + i * 2, &out, 2);
+                 }
+             }
+diff --git a/src/UnaryOps/cuda/ReductionImplGPU.cu b/src/UnaryOps/cuda/ReductionImplGPU.cu
+index 48bcc22..6c64f47 100644
+--- a/src/UnaryOps/cuda/ReductionImplGPU.cu
++++ b/src/UnaryOps/cuda/ReductionImplGPU.cu
+@@ -49,6 +49,49 @@ static void get_device_props(int& num_mp, int& max_tpm) {
+     num_mp = cached_num_mp; max_tpm = cached_max_tpm;
+ }
+ 
++// Modified: new helper. Generic layouts (reduced axes that are not consecutive, e.g. {0, 2}, or a
++// non-contiguous input such as a transposed view) arrive from compute_reduction_layout with only
++// path = Generic: num_outputs = reduced_count = 0 and no offset information. The dispatchers used
++// to launch them with EMPTY offset calculators, and build_reduce_config clamps both counts to 1, so
++// the kernel computed a single output from src[0 .. ] -- wrong for every such reduction.
++// This fills in the counts and builds the two calculators the Generic kernel path already uses
++// (out_base = output_calc.get(output_idx), in_off = input_calc.get(i), value = src[out_base + in_off]):
++//   output_calc walks the NON-reduced dims in order -> the output tensor's C order;
++//   input_calc  walks the REDUCED dims             -> one reduction step each.
++// Both use the input's real strides, so any view is addressed correctly. No-op for Tier 1/2.
++// OffsetCalculator holds at most MAX_DIMS dims per side and silently ignores the rest, so more
++// dims than that is refused here instead of computed wrongly.
++static void setup_generic_path(detail::ReductionLayout& layout, const Tensor& input,
++                               const std::vector<int64_t>& axes,
++                               detail::OffsetCalculator<1, uint32_t>& input_calc,
++                               detail::OffsetCalculator<1, uint32_t>& output_calc) {
++    if (layout.path != detail::ReductionLayout::Path::Generic) return;
++    const auto& dims    = input.shape().dims;
++    const auto& strides = input.stride().strides;
++    const int nd = static_cast<int>(dims.size());
++    bool is_reduced[64] = {false};
++    for (int64_t a : axes) is_reduced[a] = true;
++
++    std::vector<int64_t> r_sz, r_st, o_sz, o_st;
++    int64_t reduced = 1, outputs = 1;
++    for (int d = 0; d < nd; ++d) {
++        if (is_reduced[d]) { r_sz.push_back(dims[d]); r_st.push_back(strides[d]); reduced *= dims[d]; }
++        else               { o_sz.push_back(dims[d]); o_st.push_back(strides[d]); outputs *= dims[d]; }
++    }
++    constexpr int kMaxDims = detail::OffsetCalculator<1, uint32_t>::MAX_DIMS;
++    if (static_cast<int>(r_sz.size()) > kMaxDims || static_cast<int>(o_sz.size()) > kMaxDims)
++        throw std::runtime_error("GPU reduction: a Generic-path reduction supports at most " +
++                                 std::to_string(kMaxDims) + " reduced and " + std::to_string(kMaxDims) +
++                                 " kept dims (got " + std::to_string(r_sz.size()) + " and " +
++                                 std::to_string(o_sz.size()) + ")");
++    layout.num_outputs   = outputs;
++    layout.reduced_count = reduced;
++    const int64_t* rsp = r_st.data();
++    const int64_t* osp = o_st.data();
++    input_calc  = detail::OffsetCalculator<1, uint32_t>(static_cast<int>(r_sz.size()), r_sz.data(), &rsp);
++    output_calc = detail::OffsetCalculator<1, uint32_t>(static_cast<int>(o_sz.size()), o_sz.data(), &osp);
++}
++
+ // ═══════════════════════════════════════════════════════════
+ // GPU VALUE REDUCTION DISPATCHER
+ // All 10 scalar ops: sum, product, min, max, nansum, nanproduct,
+@@ -93,10 +136,12 @@ Tensor dispatch_reduction_gpu(const Tensor& input,
+ 
+     // ── 4. Config solver ──
+     int num_mp, max_tpm; get_device_props(num_mp, max_tpm);
+-    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+-
+-    // ── 5. OffsetCalculator (empty: Tier 1/2 use direct pointer math) ──
++    // ── 5. OffsetCalculator (empty for Tier 1/2; built for Generic) ──
++    // Modified: built BEFORE the config, because setup_generic_path also sets the Generic
++    // layout's num_outputs / reduced_count, which the config is sized from.
+     detail::OffsetCalculator<1, uint32_t> input_calc{}, output_calc{};
++    setup_generic_path(layout, input, normalized_axes, input_calc, output_calc);
++    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+     int64_t step_stride = (layout.path == detail::ReductionLayout::Path::OuterContiguous)
+                           ? layout.inner_count : 1;
+ 
+@@ -108,7 +153,8 @@ Tensor dispatch_reduction_gpu(const Tensor& input,
+     const CudaT*   src = reinterpret_cast<const CudaT*>(input.data<T>());
+     OutputCudaT*   dst = reinterpret_cast<OutputCudaT*>(output.data<OutputCppT>());
+     cuda::launch_reduce_kernel<CudaT, OutputCudaT, ops_t>(
+-        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream);
++        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream,
++        (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.input_outer_stride : 0);
+ 
+     cudaError_t err = cudaGetLastError();
+     if (err != cudaSuccess)
+@@ -143,8 +189,10 @@ Tensor dispatch_index_reduction_gpu(const Tensor& input,
+     using arg_t = decltype(ops.identity()); // = ValueIndex<CudaT>
+ 
+     int num_mp, max_tpm; get_device_props(num_mp, max_tpm);
+-    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
++    // Modified: calculators built before the config (setup_generic_path sets the Generic counts).
+     detail::OffsetCalculator<1, uint32_t> input_calc{}, output_calc{};
++    setup_generic_path(layout, input, normalized_axes, input_calc, output_calc);
++    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+     int64_t step_stride = (layout.path == detail::ReductionLayout::Path::OuterContiguous)
+                           ? layout.inner_count : 1;
+     int smem = std::max(config.shared_memory_size(),
+@@ -153,7 +201,8 @@ Tensor dispatch_index_reduction_gpu(const Tensor& input,
+     const CudaT* src = reinterpret_cast<const CudaT*>(input.data<T>());
+     int64_t*     dst = output.data<int64_t>();
+     cuda::launch_reduce_kernel<CudaT, int64_t, ops_t>(
+-        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream);
++        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream,
++        (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.input_outer_stride : 0);
+ 
+     cudaError_t err = cudaGetLastError();
+     if (err != cudaSuccess)
+@@ -175,35 +224,67 @@ Tensor dispatch_mean_gpu(const Tensor& input,
+     auto layout = compute_reduction_layout(input, normalized_axes);
+     Shape output_shape = calculate_output_shape(input.shape().dims, normalized_axes, keepdim);
+ 
+-    // Mean output is always float32 for integer inputs, or same as input for float
+-    Dtype output_dtype = (std::is_integral_v<T>) ? Dtype::Float32 : input.dtype();
++    // Modified: integer and bool input now return Float64 (it was Float32), the same dtype as
++    // the CPU mean (ReductionImpl.h reduce_kernel_mean: "returning fp64") and as NumPy
++    // (_methods.py _mean: int -> float64). With the MeanOps fix below the values are also the
++    // CPU's, bit for bit: exact int64 sum, then double(sum) * (1.0 / n), stored with no second
++    // rounding. Only the final store changes (8 bytes per output instead of 4); reading and
++    // summing the input are the same. Float input keeps its own dtype, as before.
++    Dtype output_dtype = (std::is_integral_v<T>) ? Dtype::Float64 : input.dtype();
+     Tensor output({output_shape}, TensorOptions()
+         .with_dtype(output_dtype).with_device(input.device()).with_req_grad(input.requires_grad()));
+ 
+     using CudaT = CudaNativeType<T>;
+-    using OutT  = std::conditional_t<std::is_integral_v<T>, float, T>;
++    using OutT  = std::conditional_t<std::is_integral_v<T>, double, T>;
+     using OutCudaT = CudaNativeType<OutT>;
+-    using AccT  = detail::AccumulatorType<CudaT>;
++    using ops_t = detail::MeanOps<CudaT>;
++    // Modified: the 1/n factor now has MeanOps' own FactorT, which is double for an integer
++    // accumulator (int / uint / bool input) and AccT otherwise. It was declared as AccT, and for
++    // integer input AccT is int64_t / uint64_t, so static_cast<AccT>(1.0 / n) was 0 for every
++    // n >= 2 and every integer mean on the GPU came out 0. Measured before the fix on the H200:
++    // mean int32 [512, 4096] over axis 1 -> all 512 outputs wrong by the whole mean (worst error
++    // ~4.6 on true means of ~4.5). Float, half and complex means are unchanged (FactorT == AccT).
++    using FactorT = typename ops_t::FactorT;
+     double inv_count = 1.0 / static_cast<double>(calculate_reduced_count(input.shape().dims, normalized_axes));
+-    AccT factor;
++    FactorT factor;
+     if constexpr (std::is_same_v<CudaT, complex32_t> || std::is_same_v<CudaT, complex64_t> || std::is_same_v<CudaT, complex128_t>) {
+-        factor = AccT(inv_count, 0.0);
++        factor = FactorT(inv_count, 0.0);
+     } else {
+-        factor = static_cast<AccT>(inv_count);
++        factor = static_cast<FactorT>(inv_count);
+     }
+-    using ops_t = detail::MeanOps<CudaT>;
+     ops_t ops{factor};
+ 
++    // Modified: the config and the shared memory are now sized with the ACCUMULATOR type
++    // arg_t = decltype(ops.identity()), exactly as the value, index and variance dispatchers
++    // in this file already do. They were sized with the INPUT type CudaT:
++    //   - build_reduce_config<T> sets element_size_bytes = sizeof(T), and
++    //     shared_memory_size() = element_size_bytes * num_threads;
++    //   - but block_x_reduce / block_y_reduce store arg_t values (one per thread).
++    // For bf16/fp16 input arg_t is float (4 bytes) and CudaT is 2 bytes, so the kernel wrote
++    // twice the shared memory it was given. compute-sanitizer on the H200: "Invalid __shared__
++    // write of size 4 bytes" in unified_reduce_kernel<__nv_bfloat16, __nv_bfloat16,
++    // MeanOps<__nv_bfloat16>, unsigned int, Path 1, 512, 4>, then "illegal memory access".
++    // Every bf16/fp16 mean over axis 0 or over all axes crashed, and some last-axis shapes.
++    // Integer inputs had the same mismatch (their accumulator is int64). fp32/fp64 were not
++    // affected (arg_t == CudaT). Block shape is unchanged: MaxThreads is 512 for every type,
++    // so only the shared-memory size changes. PyTorch sizes it the same way:
++    // ReduceConfig(sizeof(arg_t), num_outputs, inputs_per_output) (aten/src/ATen/native/cuda/
++    // Reduce.cuh, setReduceConfig).
++    using arg_t = decltype(ops.identity());
++
+     int num_mp, max_tpm; get_device_props(num_mp, max_tpm);
+-    auto config = detail::build_reduce_config<CudaT>(layout, num_mp, max_tpm);
++    // Modified: calculators built before the config (setup_generic_path sets the Generic counts).
+     detail::OffsetCalculator<1, uint32_t> input_calc{}, output_calc{};
++    setup_generic_path(layout, input, normalized_axes, input_calc, output_calc);
++    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+     int64_t step_stride = (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.inner_count : 1;
+-    int smem = std::max(config.shared_memory_size(), (config.block_width * config.block_height / 32 + 1) * (int)sizeof(CudaT));
++    int smem = std::max(config.shared_memory_size(), (config.block_width * config.block_height / 32 + 1) * (int)sizeof(arg_t));
+ 
+     const CudaT* src = reinterpret_cast<const CudaT*>(input.data<T>());
+     OutCudaT*    dst = reinterpret_cast<OutCudaT*>(output.data<OutT>());
+     cuda::launch_reduce_kernel<CudaT, OutCudaT, ops_t>(
+-        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream);
++        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream,
++        (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.input_outer_stride : 0);
+ 
+     cudaError_t err = cudaGetLastError();
+     if (err != cudaSuccess)
+@@ -248,8 +329,10 @@ Tensor dispatch_variance_gpu(const Tensor& input,
+     using arg_t = decltype(ops.identity()); // = WelfordData<AccScalar>
+ 
+     int num_mp, max_tpm; get_device_props(num_mp, max_tpm);
+-    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
++    // Modified: calculators built before the config (setup_generic_path sets the Generic counts).
+     detail::OffsetCalculator<1, uint32_t> input_calc{}, output_calc{};
++    setup_generic_path(layout, input, normalized_axes, input_calc, output_calc);
++    auto config = detail::build_reduce_config<arg_t>(layout, num_mp, max_tpm);
+     int64_t step_stride = (layout.path == detail::ReductionLayout::Path::OuterContiguous)
+                           ? layout.inner_count : 1;
+     int smem = std::max(config.shared_memory_size(),
+@@ -258,7 +341,8 @@ Tensor dispatch_variance_gpu(const Tensor& input,
+     const CudaT*  src = reinterpret_cast<const CudaT*>(input.data<T>());
+     OutputCudaT*  dst = reinterpret_cast<OutputCudaT*>(output.data<OutputCppT>());
+     cuda::launch_reduce_kernel<CudaT, OutputCudaT, ops_t>(
+-        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream);
++        ops, config, input_calc, output_calc, src, dst, layout.path, step_stride, smem, stream,
++        (layout.path == detail::ReductionLayout::Path::OuterContiguous) ? layout.input_outer_stride : 0);
+ 
+     cudaError_t err = cudaGetLastError();
+     if (err != cudaSuccess)
+diff --git a/src/autograd/backward/LinearBackward.cpp b/src/autograd/backward/LinearBackward.cpp
+index e3f8c9f..bbe6780 100644
+--- a/src/autograd/backward/LinearBackward.cpp
++++ b/src/autograd/backward/LinearBackward.cpp
+@@ -54,7 +54,18 @@ std::vector<Tensor> LinearBackward::apply(std::vector<Tensor>&& grads) {
+             Tensor g_flat = grad_output.reshape(Shape{{-1, output_dim}});
+             
+             Tensor grad_input_flat = Tensor(a_flat.shape(), a_flat.opts().with_device(grad_output.device()));
+-            Tensor grad_weight = Tensor(saved_weight_.shape(), saved_weight_.opts().with_device(grad_output.device()));
++            // What:   assign the OUTER grad_weight (declared at the top of apply()).
++            // Was:    `Tensor grad_weight = ...` declared a new local here, so the outer one stayed
++            //         empty and "2. Gradient for Weight" below returned it: autograd::linear with a
++            //         3-D input gave the weight NO gradient. The engine skips empty gradients, so
++            //         nothing reported it. In since 4a62424 (2026-03-10).
++            // Why:    Case 1 above already assigns the outer variable; this makes Case 2 match.
++            //         The trainer never reached it (nn::Linear uses autograd::matmul / addmm), but
++            //         DTensor::Linear (dist/Tensor-Parallelism) calls autograd::linear.
++            // Proven: Tests/kernel_tests/test_linear_backward_3d.cu on H200: before, L1/L2/L5 FAIL
++            //         (no weight gradient); after, 16/16 PASS, and the weight gradient equals the
++            //         autograd::matmul path bit for bit (fp32 and bf16, with and without bias).
++            grad_weight = Tensor(saved_weight_.shape(), saved_weight_.opts().with_device(grad_output.device()));
+             
+             cuda_matmul_backward(g_flat, a_flat, saved_weight_, grad_input_flat, grad_weight, stream);
+             
+diff --git a/src/core/AutogradMeta.cpp b/src/core/AutogradMeta.cpp
+index bcc3e73..ecf1c92 100644
+--- a/src/core/AutogradMeta.cpp
++++ b/src/core/AutogradMeta.cpp
+@@ -3,6 +3,11 @@
+ #include "core/TensorImpl.h"
+ #include "autograd/Hooks.h"
+ #include "ops/TensorOps.h" // Needed for operator+
++#ifdef WITH_CUDA
++#include "ops/TensorOps.cuh"          // cuda_accumulate_lowp_into_fp32
++#include "ops/helpers/KernelPolicy.h" // cuda::disable_fused_grad_accum
++#include "device/DeviceCore.h"        // cuda::getCurrentStream
++#endif
+ #include <stdexcept>
+ #include "profiler/RecordFunction.h"
+ 
+@@ -170,6 +175,25 @@ void AutogradMeta::accumulate_grad(Tensor&& update) {
+         // grad_ is fp32 for low-precision params; upcast the incoming update to
+         // match so the accumulation stays in fp32.
+         if (update.dtype() != grad_->dtype()) {
++#ifdef WITH_CUDA
++            // F2 -- fused gradient accumulation.
++            // What:   cuda_accumulate_lowp_into_fp32 (TensorOpsAdd.cu) widens the bf16/fp16
++            //         update to fp32 in registers and adds it straight into grad_, one kernel.
++            // Was:    only the `*grad_ += update.as_type(...)` line below: a new full-size fp32
++            //         temporary per bf16 weight per micro-step, 2 kernels, 18 B/element of DRAM
++            //         traffic. Now 10 B/element, 1 kernel, no temporary.
++            // Why:    bf16/fp16 -> fp32 is exact and the add is the same FADD.FTZ, so the bits
++            //         cannot change; the temporary only carried the widened value between kernels.
++            // Proven: Tests/kernel_tests/test_fused_grad_accum.cu on H200: 0 mismatches against
++            //         the old line after 4 accumulation steps, bf16 and fp16, 1 to 33.5M elements,
++            //         with +-0, subnormals, +-inf, NaN and overflow; 1.41-1.97x faster per call.
++            // Falls through (returns false) for CPU, non-contiguous or shape-mismatched updates.
++            // BLUTRAIN_NO_FUSED_GRAD_ACC=1 forces the old line (A/B runs).
++            if (!cuda::disable_fused_grad_accum() &&
++                cuda_accumulate_lowp_into_fp32(*grad_, update, cuda::getCurrentStream())) {
++                return;
++            }
++#endif
+             *grad_ += update.as_type(grad_->dtype());
+         } else {
+             *grad_ += update;

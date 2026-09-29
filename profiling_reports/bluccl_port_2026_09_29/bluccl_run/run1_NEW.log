@@ -1,0 +1,99 @@
+[launch] launcher=mpi world_size=1 mpi_world_spans_job=yes
+[precision] bf16 logits ON — frees ~3 GiB ([B,T,vocab] fp32 activation + gradient). Gradients are unaffected (fp32 softmax stats, exact 1.0 backward seed), but the REPORTED loss is bf16 and quantizes to ~0.06 steps: compare tokens/s and grad-norm across an A/B, not the loss digits.
+[bench] BLU_MAX_STEPS=5 (warmup=1 stable=2)
+================ Configuration ================
+  d_model         : 2304
+  n_layers        : 26
+  q_heads/kv_heads: 18 / 6  (G=3)
+  head_dim        : 128
+  ffn_hidden      : 6144  (SwiGLU)
+  context_length  : 4096
+  rope_theta      : 500000  (interleaved=NeoX)
+  vocab_size      : 50304
+  weight_tying    : OFF
+  precision       : resid float32 | logits bfloat16 | embed float32
+                    (matmuls bf16, QK-norm+RoPE fp32, optimizer masters fp32 — all fixed)
+  B x T           : 2 x 4096
+  world_size      : 1
+  global_batch    : 524288  (grad_accum=64)
+  max_lr / min_lr : 0.0012 / 0.00012
+  warmup / steps  : 1 / 5
+  WSD stable_steps: 2  (decay tail=2)
+===============================================
+Initializing model on CUDA device 0...
+Number of parameters: 1704130304
+==================== MFU accounting ====================
+  device            : NVIDIA H200 x 1
+  peak BF16 (dense) : 989.400 TFLOP/s per GPU
+  cluster peak      : 0.989 PFLOP/s
+  fwd FLOPs/token   : 3.667 GFLOP  (causal)
+  fwd+bwd /token    : 11.001 GFLOP  (causal, x3) <-- headline
+  fwd+bwd /token    : 12.473 GFLOP  (PaLM convention)
+  6*N cross-check   : 10.225 GFLOP  (weight matmuls only; excludes the T-dependent attention core)
+  model FLOPs/step  : 5.768 PFLOP  over 524288 tokens
+  100% MFU would be : 5829.383 ms/step
+  note              : no activation checkpointing in this loop, so HFU == MFU
+========================================================
+[ZeRO-1] overlap: reduce=off (monolithic, after backward) | refresh=off (synchronous publish in step)
+[ZeRO-1] variant: v1 reduce/broadcast | symmetric memory: off  (BLU_ZERO_V2=0 BLU_SYMMETRIC=0)
+[ZeRO-1] params=1588101120 padded=1588101120 W=1 shard=1588101120 | optimizer state/GPU: 18174.375 MB (vs 18174.375 MB unsharded)
+[ZeRO-1] params=116029184 padded=116029440 W=1 shard=116029440 | optimizer state/GPU: 1327.852 MB (vs 1327.849 MB unsharded)
+[optimizer] AdamW  (BLU_OPTIMIZER=adamw)
+  G0 adamw:bfloat16/1588M : zero1-v1 reduce/broadcast | lr 0.001 -> 0.000
+  G1 adamw:float32/116M : zero1-v1 reduce/broadcast | lr 0.001 -> 0.000
+[ZeRO-1] grad_clip=1.000 APPLIES TO 1704130304 / 1704130304 params (100.00%)
+decayed params: 1704001536, non-decayed: 128768 | ZeRO-1 optimizer groups: 2 | world_size: 1
+
+=== Data mixture: preset c0 (static) ===
+  [c0-static ] from step      0 :  commoncrawl=0.700  code=0.200  math=0.100
+=================================================
+[MixedLoader] domain 'commoncrawl': 3 shards, weight=0.700 (/root/gautam_k/mix/commoncrawl)
+[MixedLoader] domain 'code': 3 shards, weight=0.200 (/root/gautam_k/mix/code)
+[MixedLoader] domain 'math': 3 shards, weight=0.100 (/root/gautam_k/mix/math)
+found 1 shards for split val
+[data/val] shard 0/1 flux_val_000000.bin: 100000000 tokens, 12207 global batch(es) of 8192
+found 1 shards for split val
+[data/val] shard 0/1 flux_val_000000.bin: 100000000 tokens, 12207 global batch(es) of 8192
+found 1 shards for split val
+[data/val] shard 0/1 flux_val_000000.bin: 100000000 tokens, 12207 global batch(es) of 8192
+
+Starting training...
+
+
+[mix] step 0 entering phase 'c0-static'
+[MixedLoader] weights -> {commoncrawl=0.700, code=0.200, math=0.100}  (phase 'c0-static')  [selection accounting rebased]
+[data/val] shard 0/1 flux_val_000000.bin: 100000000 tokens, 12207 global batch(es) of 8192
+[data/val] shard 0/1 flux_val_000000.bin: 100000000 tokens, 12207 global batch(es) of 8192
+[data/val] shard 0/1 flux_val_000000.bin: 100000000 tokens, 12207 global batch(es) of 8192
+  [val] step 0 | val_loss 11.286123 | commoncrawl 11.286123 | code 11.286123 | math 11.286123
+step      0 | train 11.280431 | val 11.286123 | tok/s 41160.83 | norm 18.8520 | dt 12737.55 ms | mfu 45.77% | TF/gpu 452.8 | lr 1.2000e-03 | G0(adamw:bfloat16/1588M) 18.7750 | G1(adamw:float32/116M) 1.7023
+step      1 | train 12.067251 | val 11.286123 | tok/s 41586.76 | norm 471.3283 | dt 12607.09 ms | mfu 46.24% | TF/gpu 457.5 | lr 1.2000e-03 | G0(adamw:bfloat16/1588M) 471.3107 | G1(adamw:float32/116M) 4.0772
+step      2 | train 13.806380 | val 11.286123 | tok/s 41312.62 | norm 9.9865 | dt 12690.75 ms | mfu 45.93% | TF/gpu 454.5 | lr 1.2000e-03 | G0(adamw:bfloat16/1588M) 9.9826 | G1(adamw:float32/116M) 0.2781
+step      3 | train 10.794600 | val 11.286123 | tok/s 41188.01 | norm 24.6343 | dt 12729.14 ms | mfu 45.80% | TF/gpu 453.1 | lr 1.2000e-03 | G0(adamw:bfloat16/1588M) 24.6290 | G1(adamw:float32/116M) 0.5142
+[data/val] shard 0/1 flux_val_000000.bin: 100000000 tokens, 12207 global batch(es) of 8192
+[data/val] shard 0/1 flux_val_000000.bin: 100000000 tokens, 12207 global batch(es) of 8192
+[data/val] shard 0/1 flux_val_000000.bin: 100000000 tokens, 12207 global batch(es) of 8192
+  [val] step 4 | val_loss 13.351709 | commoncrawl 13.351709 | code 13.351709 | math 13.351709
+step      4 | train 13.235500 | val 13.351709 | tok/s 41243.11 | norm 24.7253 | dt 12712.14 ms | mfu 45.86% | TF/gpu 453.7 | lr 1.2000e-04 | G0(adamw:bfloat16/1588M) 24.7190 | G1(adamw:float32/116M) 0.5574
+
+==================== MFU summary ====================
+  steady-state MFU  : 0.00%   (0 steps, first 5 excluded)
+  best-step MFU     : 0.00%
+  model TFLOP/s/gpu : 0.00  of 989.40 peak
+  cluster PFLOP/s   : 0.00
+  steady tok/s      : 0
+  total model FLOPs : 0.000 EFLOP over 0.000 min
+=====================================================
+
+=== Domain Mixture Stats ===
+  domain        target    phase     run       samples     shard     epochs
+  commoncrawl   0.7000    0.6997    0.6997    226         0/3       0
+  code          0.2000    0.2012    0.2012    65          0/3       0
+  math          0.1000    0.0991    0.0991    32          0/3       0
+  samples this phase=323  whole run=323
+============================
+
+=== Training complete ===
+[MEM] active_peak 70598 MiB | allocated_peak 70598 MiB | reserved_peak 73328 MiB | cached_free 23539 MiB
+[ALLOC] allocs 661794 | frees 661215 | cache_hits 660959 | cache_misses 835 | cuda_mallocs 835 | splits 245172 | merges 244856
+[grad-accum] fused bf16/fp16 -> fp32 accumulations: 50083
