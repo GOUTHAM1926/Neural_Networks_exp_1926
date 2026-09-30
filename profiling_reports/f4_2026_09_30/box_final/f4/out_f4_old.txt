@@ -1,0 +1,34 @@
+CASE|v1|bf16|norm_exact|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|v1|bf16|sees_exact|FAIL|start states identical; after one step with g vs bf16(g): states IDENTICAL (optimizer saw bf16(g)) | norms 1.65444779 vs 1.65444779
+CASE|v1|bf16|autograd2|FAIL|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997)
+CASE|v1|bf16|nograd|FAIL|no-grad vs zero-grad state identical | grad_norm 1.28253186 vs fp64 1.2837843 (rel err 0.000975588317)
+CASE|v1|bf16|flag_bf16|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|v1|fp32|norm_exact|PASS|grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08) | fp64 norm of bf16(g) 1.65444767 (rel err 0.000976549325)
+CASE|v1|fp32|sees_exact|PASS|start states identical; after one step with g vs bf16(g): states DIFFER (optimizer saw g) | norms 1.65606332 vs 1.65444779
+CASE|v1|fp32|autograd2|PASS|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08)
+CASE|v1|fp32|nograd|PASS|no-grad vs zero-grad state identical | grad_norm 1.28378427 vs fp64 1.2837843 (rel err 2.50592966e-08)
+CASE|v1|fp32|flag_bf16|PASS|refused as expected: [ZeRO] config: reduce_dtype=bfloat16 is not supported in v1 for a model whose compute dtype is float32 (gradients reduce in the compute dtype only); use ZeRO-1 v2 (BLU_ZERO_V2=1) or ShardedMuon instead
+CASE|v2|bf16|norm_exact|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|v2|bf16|sees_exact|FAIL|start states identical; after one step with g vs bf16(g): states IDENTICAL (optimizer saw bf16(g)) | norms 1.65444779 vs 1.65444779
+CASE|v2|bf16|autograd2|FAIL|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997)
+CASE|v2|bf16|nograd|FAIL|no-grad vs zero-grad state identical | grad_norm 1.28253186 vs fp64 1.2837843 (rel err 0.000975588317)
+CASE|v2|bf16|flag_bf16|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|v2|fp32|norm_exact|PASS|grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08) | fp64 norm of bf16(g) 1.65444767 (rel err 0.000976549325)
+CASE|v2|fp32|sees_exact|PASS|start states identical; after one step with g vs bf16(g): states DIFFER (optimizer saw g) | norms 1.65606332 vs 1.65444779
+CASE|v2|fp32|autograd2|PASS|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08)
+CASE|v2|fp32|nograd|PASS|no-grad vs zero-grad state identical | grad_norm 1.28378427 vs fp64 1.2837843 (rel err 2.50592966e-08)
+CASE|v2|fp32|flag_bf16|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|mu|bf16|norm_exact|FAIL|grad_norm 1.65444767 | fp64 norm of g 1.65606334 (rel err 0.000975605981) | fp64 norm of bf16(g) 1.65444767 (rel err 3.77905083e-09)
+CASE|mu|bf16|sees_exact|FAIL|start states identical; after one step with g vs bf16(g): states IDENTICAL (optimizer saw bf16(g)) | norms 1.65444767 vs 1.65444767
+CASE|mu|bf16|autograd2|FAIL|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65444767 | fp64 norm of g 1.65606334 (rel err 0.000975605981)
+CASE|mu|bf16|nograd|FAIL|no-grad vs zero-grad state identical | grad_norm 1.28253186 vs fp64 1.2837843 (rel err 0.000975588317)
+CASE|mu|bf16|flag_bf16|FAIL|grad_norm 1.65444767 | fp64 norm of g 1.65606334 (rel err 0.000975605981) | fp64 norm of bf16(g) 1.65444767 (rel err 3.77905083e-09)
+CASE|mu|fp32|norm_exact|PASS|grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08) | fp64 norm of bf16(g) 1.65444767 (rel err 0.000976549325)
+CASE|mu|fp32|sees_exact|PASS|start states identical; after one step with g vs bf16(g): states DIFFER (optimizer saw g) | norms 1.65606332 vs 1.65444767
+CASE|mu|fp32|autograd2|PASS|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08)
+CASE|mu|fp32|nograd|PASS|no-grad vs zero-grad state identical | grad_norm 1.28378439 vs fp64 1.2837843 (rel err 6.77984282e-08)
+CASE|mu|fp32|flag_bf16|FAIL|grad_norm 1.65444767 | fp64 norm of g 1.65606334 (rel err 0.000975605981) | fp64 norm of bf16(g) 1.65444767 (rel err 3.77905083e-09)
+
+==================== SUMMARY ====================
+cases: 30, PASS 13, FAIL 17
+RESULT: FAIL

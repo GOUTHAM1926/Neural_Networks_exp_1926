@@ -1,0 +1,6 @@
+Point Tensor-Implementations back to b975be5
+
+a3aba3e moved the submodule pointer from b975be5 back to 38d0332, which drops
+the 09-29 library port (F2 fused grad accumulation, LinearBackward fix,
+reduction fixes, GPU as_type fixes, Bug D). The TI branch head is still
+b975be5; this restores the pointer to it.

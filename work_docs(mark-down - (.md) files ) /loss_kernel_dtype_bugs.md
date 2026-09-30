@@ -2427,7 +2427,35 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
 
 ---
 
-## 26. Future tasks: every pending item (updated 2026-09-29)
+## 26. Future tasks: every pending item (updated 2026-09-30)
+
+**TOMORROW, 2026-10-01 — open items from 2026-09-30** (all of today's findings and explanations are in
+`embedding_optimizer_zero_1_parallelism.md`; the F4 record is §31):
+1. [ ] Send Navin the message (that file, §13): TI pointer (fixed by `3298e74`), the intermittent `test_muon_rsag`
+       failure since `a3aba3e`, his stale test scripts, the 2 committed symlinks, and the `rope_theta` question.
+2. [ ] Navin's intermittent ShardedMuon result at W = 1 (his bug): `e6eaeba` 6/6 pass, `a3aba3e` 6/6 have a failure, always
+       7,077/82,120 numbers; unchanged by F4. Lead, not verified: the dropped per-tensor `sync_compute()` in his new
+       `accumulate_owned_grad_norm` vs the shared static pinned descriptor buffer of `multi_tensor_*`.
+3. [ ] **SFT risk:** his `bluscript_zero_ckpt.cpp` now has `rope_theta = 10000`; ours (`dist_side_merge`) 500000. Ask which
+       value his step-8000 checkpoint used before any SFT run (a wrong value is not caught at load).
+4. [ ] Optional: the 1-GPU trainer A/B for F4 (fused trainer on the flux shards, old vs new, + one repeat of old as the
+       noise floor, 8 steps each; `run_trainer_ab.sh` in `profiling_reports/f4_2026_09_30/`). Needs a new box, a clone and a
+       ~9 min build. Also check there that the "no effect at W=1" line prints on rank 0.
+5. [ ] Fetch `dist_side_merge_BLUCCL` locally (token URL form; plain `git fetch origin` fails "Repository not found").
+6. [ ] F4 on `dist_side_merge`: decide whether to port `149249d` there (separately; user's decision).
+7. [ ] The embedding ablation, re-scoped (the FIRST TASK entry below): with the BLUCCL fused kernel, repetition no
+       longer matters; measure D1-end, D2 and D3 for the bf16 table, and the `atomicAdd` D1 on `dist_side_merge`. Then
+       decide idea B (keep the D2 sum in fp32, option 2 = one 2-input kernel, −464 MB per micro-step estimated).
+8. [ ] SFT's embedding backward on `dist_side_merge`: port `EmbeddingBwdFused`, use an fp32 table, or keep the `atomicAdd`
+       kernel. The fused hook ignores N (`embedding_fused.cu:1300`, `(void)N`): handle it before SFT with variable
+       token counts per micro-batch.
+9. [ ] Multi-GPU send dtype research: `BLU_BF16_REDUCE` / `BLU_FP32_REDUCE` consequences, how NCCL adds bf16 on
+       `dist_side_merge` (not checked), BluCCL's multi-node `BLU_IB_RS` path (not checked).
+10. [ ] Commit today's docs and records (command in the session reply); rotate the GitHub token (pasted again today).
+
+**Done 2026-09-30:**
+- [x] **F4 — the 1-GPU bf16 gradient round trip**, fixed in all 3 ZeRO optimizers on `dist_side_merge_BLUCCL`
+      (`149249d`), and the TI pointer restored to `b975be5` (`3298e74`). Tested on 1 × H200; details in §31.
 
 **Done 2026-09-28/29:**
 - [x] **F2 — fused gradient accumulation** (§27): bit-identical, +0.52% / +0.60% tok/s at W=1, −156 kernels and
@@ -2486,6 +2514,8 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
 
 **SFT (the assignment):**
 1. [ ] Weights-only checkpoint loader for `navingv/curriculum_8btokens` `blumodel_step_8000` (Muon, 4-GPU DCP).
+   **2026-09-29:** checkpoint checked (262 weights = our model; run with `BLU_ALL_BF16=1`), `BLU_INIT_FROM`
+   written and applied in the local clone; the H200 test is next (SFT doc §35).
 2. [ ] Pick the dataset.
 3. [ ] Preprocessing script. Must also (SFT doc §34.2): check that the tokenized prompt is an exact prefix of the
    full tokenization; put exactly one EOT at the end; drop over-long examples instead of truncating.
@@ -2517,6 +2547,38 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
     embedding weights. The fp32 arm loads a bf16 `wte` into an fp32 one, which needs the 1-line conversion in
     `ZeroDcpModule::sync_back_to_model()` (today `Tensor::copy_` refuses different dtypes).
   - Decision it feeds: keep `BLU_ALL_BF16=1` for SFT, or train with an fp32 `wte`.
+  - **Re-scoped 2026-09-30** (`embedding_optimizer_zero_1_parallelism.md` §6-§7): on `dist_side_merge_BLUCCL` the fused
+    trainer's `EmbeddingBwdFused` adds every occurrence in fp32 and rounds once, so repetition no longer matters there;
+    what is left for a bf16 table is 1 rounding each at D1-end and D2 per micro-step, and D3 per step. Navin's own
+    production launcher (`run_bluscript.sh`) runs `bluscript_zero_ckpt.cpp`, which still uses the `atomicAdd` kernel.
+
+**[DONE on `dist_side_merge_BLUCCL` 2026-09-30, `149249d`, §31; NOT on `dist_side_merge`] The ZeRO-1 bf16 gradient round trip on 1 GPU (F4 at W = 1).** With the default send
+dtype (`ReduceDtype::SAME_AS_PARAM`, `ZeroConfig.h:92-100`), all 3 optimizers round the fp32 gradient to bf16 and widen
+it back even when nothing is sent:
+- v1 `ShardedOptimizer`: `gather_grads_into_flat` (fp32 → bf16) → `reduce_scatter_grads` (copy at W = 1, `:982-986`) →
+  `cast_shard_grad_to_fp32` (bf16 → fp32). No switch: v1 refuses any other send dtype (`:186-195`).
+- v2 `SymmetricShardedOptimizer`: `stage_grad_into_flat` (`:707-724`) → copy at W = 1 (`:834-839`) → `cast_shard_grad_to_fp32`
+  (`:853-862`). `BLU_FP32_REDUCE=1` avoids it (plain fp32 copy), at the cost of 2× bigger send buffers.
+- Muon `ShardedMuon` (default reduce-scatter mode): `stage_grad_into_flat` (`:922-944`), then per-tensor fp32
+  materialisation (`:1055-1092`). `BLU_FP32_REDUCE=1` avoids it too.
+- Plan: a W = 1 bypass that copies each fp32 gradient straight into the fp32 buffer the update reads (no bf16, no copy,
+  and v1's `shard_grad_` (2.94 GB) becomes unused at W = 1). Numbers change by design (no rounding), so the tests are:
+  the update's gradient equals the fp32 gradient bit for bit, a control showing the old path differs by the bf16
+  rounding, W = 2 unchanged, trainer loss within noise. Research the multi-GPU send dtype separately.
+- v1's header (`ShardedOptimizer.h:22-24`) claims W = 1 is bit-identical to plain AdamW; false for bf16 groups today.
+
+**Future (user, 2026-09-30): reuse the tied lm_head's bf16 transposed copy within an optimizer step.** The forward
+(`bluscript_zero_ckpt.cpp:786-788`) rebuilds `to_dtype(wte.weight, bf16)` (fp32 `wte` only) and
+`contiguous(transpose(...))` (both dtypes) in every micro-step, although `wte` changes only at the update: 63 of 64
+rebuilds are identical at GRAD_ACCUM = 64. Build it once after each update and reuse it; needs a custom backward node so
+the gradient still reaches `wte`. Related TODOs: the GEMM has no trans_b entry (`:775-777`, F4(c)) and
+`TiedLMHeadBackward` (`Engine.cpp:330-339`). Estimated ~1.2 GB of forward traffic per micro-step (not measured): measure
+with nsys first. The comment at `:769-771` gives wte as 294.8 MiB; for d_model 2304 it is 442 MiB.
+
+**Reminder (user, 2026-09-30): Muon leftover temporary.** `ShardedMuon::launch_reduce` (`dist/zero/src/ShardedMuon.cpp:811-816`) still does `send = send.as_type(reduce_dtype_)` for every matrix, every
+step, when the gradient's dtype differs from the send dtype (only in the `BLU_MUON_RB=1` mode; the default RS/AG
+mode converts directly): the same `as_type` temporary pattern that #2 removed
+from v1 (§19.8). Not fixed, cost not measured. Do it after the current work.
 
 **Immediate, right after task 7 (decided 2026-09-29, SFT doc §33):**
 - [ ] Remove the redundant lm_head matmul on ignored rows (TRL's default `chunked_nll`): lm_head is 6.3% of
@@ -2832,6 +2894,32 @@ gradient with exit 4; the GPU integer mean returns Float64; complex `as_type` co
 `bluccl_run/`).
 
 ---
+
+
+## 31. F4 fixed on `dist_side_merge_BLUCCL` (2026-09-30)
+
+Full explanation from zero, the code lines and the test numbers: `embedding_optimizer_zero_1_parallelism.md` §12-§13.
+
+**The bug.** At W = 1 nothing is sent, yet all 3 ZeRO optimizers took every gradient through the send buffer:
+fp32 → bf16 → fp32 before the norm and the update read it, so each bf16 weight's gradient was rounded to bf16 once per
+step for nothing (v2 `SymmetricShardedOptimizer.cpp:857` + `:995`; Muon `ShardedMuon.cpp:1175` + `:1322`; v1
+`ShardedOptimizer.cpp:950` + `:982` + `:994`, all at `a3aba3e`). Navin's `a3aba3e` had already removed the plain copy in
+between for v2/Muon at W = 1 (in-place collectives), not the rounding.
+
+**The fix (`149249d`, 6 files, +160/−5, every change behind `W_ == 1`):** v1 and v2 `stage_grads_direct_fp32()` copy
+each fp32 gradient straight into `shard_grad_fp32_` and skip the cast; Muon `prepare_direct_grads()` lets the norm and
+`owned_grad_fp32` read each weight's own gradient (both Muon modes); a forced send dtype at W = 1 prints a "no effect"
+line (v2, Muon; verbose only). W > 1, Navin's in-place code and the gradient-view code are untouched. Applied with
+`patch_f4.py` (md5-guarded, 15 anchors, each matched once).
+
+**Tests (1 × H200, `a3aba3e` + TI `b975be5`):** new `test_f4_w1_exact_grad` 17 FAIL → 30/30 PASS (bf16 norm error
+9.76e-4 = 2⁻¹⁰ → 1.3e-8; g vs bf16(g) byte-identical state → different); F1 36/36 before and after; Navin's
+`test_zero` PASS before and after; Navin's `test_muon_rsag` fails at random before and after with the same signature
+(his bug from `a3aba3e`, see the TOMORROW list in §26). Not run: W > 1; the trainer A/B (optional).
+
+**Pushed** (user, from the box): `a3aba3e..3298e74` on BluTrain `dist_side_merge_BLUCCL`: `149249d` (F4) and `3298e74`
+(TI pointer back to `b975be5`, which `a3aba3e` had moved to `38d0332`). Author Goutham Kumar, no co-author lines;
+`ls-remote` confirmed both heads. Records: `profiling_reports/f4_2026_09_30/`.
 
 ## Appendix A — `gpu_hour.sh` (the one-hour session, md5 `e5d5c998409fd84026f4fe8c4044581c`)
 

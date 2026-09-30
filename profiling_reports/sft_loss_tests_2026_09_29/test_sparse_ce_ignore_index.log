@@ -1,0 +1,159 @@
+--- BLAS backend : cublas ---
+--- Compiling [CUDA] (sm_86): Tests/kernel_tests/test_sparse_ce_ignore_index.cu ---
+/usr/local/cuda-13.0/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda-13.0/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -arch=sm_86 -o run_cuda_runner Tests/kernel_tests/test_sparse_ce_ignore_index.cu \
+        -L/usr/local/cuda-13.0/lib64 -L/usr/local/cuda-13.0/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -ltensor -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -lcuda
+\n--- Running Tests/kernel_tests/test_sparse_ce_ignore_index.cu ---
+
+===== sparse cross-entropy : SFT ignore_index masking =====
+device: NVIDIA GeForce RTX 3060  sm_86   11.6 GB
+arms: A fp64 reference | B dtype-T noise floor | C kernel
+pass: err_kernel <= 2*err_noisefloor + floor, AND every exactness/separation assertion holds
+
+grp case                               dt    idx           B      V  err_kernel err_noisefl    ratio verd  detail
+----------------------------------------------------------------------------------------------------------------------
+A   off_baseline/fwd_vec               f32   u16          64  50304   5.406e-08   2.919e-08     1.85 PASS  ignore=-1 mask=0/64 (control)
+A   off_baseline/fwd_stats             f32   u16          64  50304   5.406e-08   2.919e-08     1.85 PASS  ignore=-1 mask=0/64 badsent=0 badstats=0
+A   off_baseline/fwd_vec               f32   i32          64  50304   5.406e-08   2.919e-08     1.85 PASS  ignore=-1 mask=0/64 (control)
+A   off_baseline/fwd_stats             f32   i32          64  50304   5.406e-08   2.919e-08     1.85 PASS  ignore=-1 mask=0/64 badsent=0 badstats=0
+A   off_baseline/fwd_vec               f32   i64          64  50304   5.406e-08   2.919e-08     1.85 PASS  ignore=-1 mask=0/64 (control)
+A   off_baseline/fwd_stats             f32   i64          64  50304   5.406e-08   2.919e-08     1.85 PASS  ignore=-1 mask=0/64 badsent=0 badstats=0
+A   off_baseline/fwd_vec               f16   u16          64  50304   3.038e-07   2.007e-04     0.00 PASS  ignore=-1 mask=0/64 (control)
+A   off_baseline/fwd_stats             f16   u16          64  50304   3.038e-07   2.007e-04     0.00 PASS  ignore=-1 mask=0/64 badsent=0 badstats=0
+A   off_baseline/fwd_vec               f16   i32          64  50304   3.038e-07   2.007e-04     0.00 PASS  ignore=-1 mask=0/64 (control)
+A   off_baseline/fwd_stats             f16   i32          64  50304   3.038e-07   2.007e-04     0.00 PASS  ignore=-1 mask=0/64 badsent=0 badstats=0
+A   off_baseline/fwd_vec               f16   i64          64  50304   3.038e-07   2.007e-04     0.00 PASS  ignore=-1 mask=0/64 (control)
+A   off_baseline/fwd_stats             f16   i64          64  50304   3.038e-07   2.007e-04     0.00 PASS  ignore=-1 mask=0/64 badsent=0 badstats=0
+A   off_baseline/fwd_vec               bf16  u16          64  50304   1.127e-05   1.565e-03     0.01 PASS  ignore=-1 mask=0/64 (control)
+A   off_baseline/fwd_stats             bf16  u16          64  50304   1.127e-05   1.565e-03     0.01 PASS  ignore=-1 mask=0/64 badsent=0 badstats=0
+A   off_baseline/fwd_vec               bf16  i32          64  50304   1.127e-05   1.565e-03     0.01 PASS  ignore=-1 mask=0/64 (control)
+A   off_baseline/fwd_stats             bf16  i32          64  50304   1.127e-05   1.565e-03     0.01 PASS  ignore=-1 mask=0/64 badsent=0 badstats=0
+A   off_baseline/fwd_vec               bf16  i64          64  50304   1.127e-05   1.565e-03     0.01 PASS  ignore=-1 mask=0/64 (control)
+A   off_baseline/fwd_stats             bf16  i64          64  50304   1.127e-05   1.565e-03     0.01 PASS  ignore=-1 mask=0/64 badsent=0 badstats=0
+A   off_no_target_matches/fwd_vec      f32   u16          64  50304   5.406e-08   2.919e-08     1.85 PASS  ignore=65535, no row has it mask=0/64 (control)
+A   off_no_target_matches/fwd_stats    f32   u16          64  50304   5.406e-08   2.919e-08     1.85 PASS  ignore=65535, no row has it mask=0/64 badsent=0 badstats=0
+B   mask_every_other/fwd_vec           f32   u16          64  50304   9.193e-08   7.682e-09    11.97 PASS   mask=32/64 removed=369.1512/369.1512
+B   mask_every_other/fwd_stats         f32   u16          64  50304   9.193e-08   7.682e-09    11.97 PASS   mask=32/64 badsent=0 badstats=0
+B   mask_first_row/fwd_vec             f32   u16          64  50304   2.857e-08   5.731e-08     0.50 PASS   mask=2/64 removed=21.7665/21.7665
+B   mask_first_row/fwd_stats           f32   u16          64  50304   2.857e-08   5.731e-08     0.50 PASS   mask=2/64 badsent=0 badstats=0
+B   mask_last_row/fwd_vec              f32   u16          64  50304   1.075e-07   6.158e-08     1.75 PASS   mask=1/64 removed=11.1593/11.1593
+B   mask_last_row/fwd_stats            f32   u16          64  50304   1.075e-07   6.158e-08     1.75 PASS   mask=1/64 badsent=0 badstats=0
+B   mask_one_middle/fwd_vec            f32   u16          64  50304   4.846e-08   3.724e-08     1.30 PASS   mask=2/64 removed=24.3534/24.3534
+B   mask_one_middle/fwd_stats          f32   u16          64  50304   4.846e-08   3.724e-08     1.30 PASS   mask=2/64 badsent=0 badstats=0
+B   mask_random_half/fwd_vec           f32   u16          64  50304   2.632e-09   7.875e-08     0.03 PASS   mask=31/64 removed=353.4725/353.4725
+B   mask_random_half/fwd_stats         f32   u16          64  50304   2.632e-09   7.875e-08     0.03 PASS   mask=31/64 badsent=0 badstats=0
+B   mask_all_rows/fwd_vec              f32   u16          64  50304   0.000e+00   0.000e+00        - PASS   mask=64/64 removed=731.0714/731.0714
+B   mask_all_rows/fwd_stats            f32   u16          64  50304   0.000e+00   0.000e+00        - PASS   mask=64/64 badsent=0 badstats=0
+B   mask_dtypes/fwd_vec                f32   i32          64  50304   9.193e-08   7.682e-09    11.97 PASS   mask=32/64 removed=369.1512/369.1512
+B   mask_dtypes/fwd_stats              f32   i32          64  50304   9.193e-08   7.682e-09    11.97 PASS   mask=32/64 badsent=0 badstats=0
+B   mask_dtypes/fwd_vec                f32   i64          64  50304   9.193e-08   7.682e-09    11.97 PASS   mask=32/64 removed=369.1512/369.1512
+B   mask_dtypes/fwd_stats              f32   i64          64  50304   9.193e-08   7.682e-09    11.97 PASS   mask=32/64 badsent=0 badstats=0
+B   mask_dtypes/fwd_vec                f16   u16          64  50304   2.099e-06   4.995e-05     0.04 PASS   mask=32/64 removed=369.1510/369.1512
+B   mask_dtypes/fwd_stats              f16   u16          64  50304   2.099e-06   4.995e-05     0.04 PASS   mask=32/64 badsent=0 badstats=0
+B   mask_dtypes/fwd_vec                f16   i32          64  50304   2.099e-06   4.995e-05     0.04 PASS   mask=32/64 removed=369.1510/369.1512
+B   mask_dtypes/fwd_stats              f16   i32          64  50304   2.099e-06   4.995e-05     0.04 PASS   mask=32/64 badsent=0 badstats=0
+B   mask_dtypes/fwd_vec                f16   i64          64  50304   2.099e-06   4.995e-05     0.04 PASS   mask=32/64 removed=369.1510/369.1512
+B   mask_dtypes/fwd_stats              f16   i64          64  50304   2.099e-06   4.995e-05     0.04 PASS   mask=32/64 badsent=0 badstats=0
+B   mask_dtypes/fwd_vec                bf16  u16          64  50304   1.197e-05   6.402e-04     0.02 PASS   mask=32/64 removed=369.1480/369.1512
+B   mask_dtypes/fwd_stats              bf16  u16          64  50304   1.197e-05   6.402e-04     0.02 PASS   mask=32/64 badsent=0 badstats=0
+B   mask_dtypes/fwd_vec                bf16  i32          64  50304   1.197e-05   6.402e-04     0.02 PASS   mask=32/64 removed=369.1480/369.1512
+B   mask_dtypes/fwd_stats              bf16  i32          64  50304   1.197e-05   6.402e-04     0.02 PASS   mask=32/64 badsent=0 badstats=0
+B   mask_dtypes/fwd_vec                bf16  i64          64  50304   1.197e-05   6.402e-04     0.02 PASS   mask=32/64 removed=369.1480/369.1512
+B   mask_dtypes/fwd_stats              bf16  i64          64  50304   1.197e-05   6.402e-04     0.02 PASS   mask=32/64 badsent=0 badstats=0
+D   batch_1/fwd_vec                    f32   u16           1  50304   9.197e-08   9.197e-08     1.00 PASS   mask=0/1 (control)
+D   batch_1/fwd_stats                  f32   u16           1  50304   9.197e-08   9.197e-08     1.00 PASS   mask=0/1 badsent=0 badstats=0
+D   batch_2_one_masked/fwd_vec         f32   u16           2  50304   9.197e-08   9.197e-08     1.00 PASS   mask=1/2 removed=12.0860/12.0860
+D   batch_2_one_masked/fwd_stats       f32   u16           2  50304   9.197e-08   9.197e-08     1.00 PASS   mask=1/2 badsent=0 badstats=0
+D   batch_256_1stage/fwd_vec           f32   u16         256  50304   8.983e-08   7.823e-08     1.15 PASS   mask=128/256 removed=1458.0151/1458.0152
+D   batch_256_1stage/fwd_stats         f32   u16         256  50304   8.983e-08   7.823e-08     1.15 PASS   mask=128/256 badsent=0 badstats=0
+D   batch_257_2stage/fwd_vec           f32   u16         257  50304   8.983e-08   7.823e-08     1.15 PASS   mask=129/257 removed=1468.0686/1468.0686
+D   batch_257_2stage/fwd_stats         f32   u16         257  50304   8.983e-08   7.823e-08     1.15 PASS   mask=129/257 badsent=0 badstats=0
+D   batch_1024/fwd_vec                 f32   u16        1024  50304   1.911e-08   1.911e-08     1.00 PASS   mask=512/1024 removed=5806.1660/5806.1666
+D   batch_1024/fwd_stats               f32   u16        1024  50304   1.911e-08   1.911e-08     1.00 PASS   mask=512/1024 badsent=0 badstats=0
+D   vocab_4/fwd_vec                    f32   u16          64      4   3.661e-08   3.661e-08     1.00 PASS   mask=44/64 removed=68.2946/68.2946
+D   vocab_4/fwd_stats                  f32   u16          64      4   3.661e-08   3.661e-08     1.00 PASS   mask=44/64 badsent=0 badstats=0
+D   vocab_128_bigB/fwd_vec             f32   u16        4096    128   3.642e-08   3.642e-08     1.00 PASS   mask=2071/4096 removed=11071.9199/11071.9218
+D   vocab_128_bigB/fwd_stats           f32   u16        4096    128   3.642e-08   3.642e-08     1.00 PASS   mask=2071/4096 badsent=0 badstats=0
+D   vocab_512/fwd_vec                  f32   u16          64    512   7.990e-08   7.365e-09    10.85 PASS   mask=32/64 removed=215.8153/215.8154
+D   vocab_512/fwd_stats                f32   u16          64    512   7.990e-08   7.365e-09    10.85 PASS   mask=32/64 badsent=0 badstats=0
+E   logits_wide_pm30/fwd_vec           f32   u16          64  50304   2.709e-08   3.435e-08     0.79 PASS   mask=32/64 removed=1400.2916/1400.2914
+E   logits_wide_pm30/fwd_stats         f32   u16          64  50304   2.709e-08   3.435e-08     0.79 PASS   mask=32/64 badsent=0 badstats=0
+E   logits_all_equal/fwd_vec           f32   u16          64  50304   1.114e-08   1.114e-08     1.00 PASS   mask=32/64 removed=346.4269/346.4269
+E   logits_all_equal/fwd_stats         f32   u16          64  50304   1.114e-08   1.114e-08     1.00 PASS   mask=32/64 badsent=0 badstats=0
+E   logits_one_huge/fwd_vec            f32   u16          64  50304   8.408e-10   8.408e-10     1.00 PASS   mask=32/64 removed=1920.6731/1920.6731
+E   logits_one_huge/fwd_stats          f32   u16          64  50304   8.408e-10   8.408e-10     1.00 PASS   mask=32/64 badsent=0 badstats=0 [sum==1 coincidence]
+E   logits_very_neg/fwd_vec            f32   u16          64  50304   3.699e-08   3.699e-08     1.00 PASS   mask=32/64 removed=369.1511/369.1512
+E   logits_very_neg/fwd_stats          f32   u16          64  50304   3.699e-08   3.699e-08     1.00 PASS   mask=32/64 badsent=0 badstats=0
+E   logits_tiny/fwd_vec                f32   u16          64  50304   2.072e-08   2.879e-05     0.00 PASS   mask=32/64 removed=346.4275/346.4275
+E   logits_tiny/fwd_stats              f32   u16          64  50304   2.072e-08   2.879e-05     0.00 PASS   mask=32/64 badsent=0 badstats=0
+E   bf16_wide/fwd_vec                  bf16  u16          64  50304   6.534e-05   1.551e-03     0.04 PASS   mask=32/64 removed=1398.8927/1400.2914
+E   bf16_wide/fwd_stats                bf16  u16          64  50304   6.534e-05   1.551e-03     0.04 PASS   mask=32/64 badsent=0 badstats=0
+F   sent_65535_u16/fwd_vec             f32   u16          64  50304   9.193e-08   7.682e-09    11.97 PASS  expect MASKS mask=32/64 control SKIPPED (target 65535 outside [0,V)); no fault => guard precedes the indexed read
+F   sent_65535_u16/fwd_stats           f32   u16          64  50304   9.193e-08   7.682e-09    11.97 PASS  expect MASKS mask=32/64 badsent=0 badstats=0
+F   sent_m100_u16_noop/fwd_vec         f32   u16           8  65536   1.409e-09   1.409e-09     1.00 PASS  expect NO-OP (uint16 wrap) mask=0/8 (control)
+F   sent_m100_u16_noop/fwd_stats       f32   u16           8  65536   1.409e-09   1.409e-09     1.00 PASS  expect NO-OP (uint16 wrap) mask=0/8 badsent=0 badstats=0
+F   sent_m100_i32/fwd_vec              f32   i32          64  50304   9.193e-08   7.682e-09    11.97 PASS  expect MASKS mask=32/64 control SKIPPED (target -100 outside [0,V)); no fault => guard precedes the indexed read
+F   sent_m100_i32/fwd_stats            f32   i32          64  50304   9.193e-08   7.682e-09    11.97 PASS  expect MASKS mask=32/64 badsent=0 badstats=0
+F   sent_m100_i64/fwd_vec              f32   i64          64  50304   9.193e-08   7.682e-09    11.97 PASS  expect MASKS mask=32/64 control SKIPPED (target -100 outside [0,V)); no fault => guard precedes the indexed read
+F   sent_m100_i64/fwd_stats            f32   i64          64  50304   9.193e-08   7.682e-09    11.97 PASS  expect MASKS mask=32/64 badsent=0 badstats=0
+F   sent_0_collides/fwd_vec            f32   u16          64  50304   1.855e-08   1.855e-08     1.00 PASS  collides with real id 0 mask=33/64 removed=369.8901/369.8901
+F   sent_0_collides/fwd_stats          f32   u16          64  50304   1.855e-08   1.855e-08     1.00 PASS  collides with real id 0 mask=33/64 badsent=0 badstats=0
+F   sent_mid_vocab/fwd_vec             f32   u16          64  50304   9.193e-08   7.682e-09    11.97 PASS  collides with real id 25000 mask=32/64 removed=360.5021/360.5021
+F   sent_mid_vocab/fwd_stats           f32   u16          64  50304   9.193e-08   7.682e-09    11.97 PASS  collides with real id 25000 mask=32/64 badsent=0 badstats=0
+F   default_m1_u16/fwd_vec             f32   u16          64  50304   8.831e-09   7.462e-08     0.12 PASS  expect NO-OP (default) mask=0/64 (control)
+F   default_m1_u16/fwd_stats           f32   u16          64  50304   8.831e-09   7.462e-08     0.12 PASS  expect NO-OP (default) mask=0/64 badsent=0 badstats=0
+F   default_m1_i64/fwd_vec             f32   i64          64  50304   8.831e-09   7.462e-08     0.12 PASS  expect NO-OP (default) mask=0/64 (control)
+F   default_m1_i64/fwd_stats           f32   i64          64  50304   8.831e-09   7.462e-08     0.12 PASS  expect NO-OP (default) mask=0/64 badsent=0 badstats=0
+C   bwd_every_other/bwd_stats          f32   u16         128  50304   1.737e-08   2.834e-08     0.61 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_every_other/bwd_vec            f32   u16         128  50304   1.737e-08   2.834e-08     0.61 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_first_row/bwd_stats            f32   u16         128  50304   1.623e-08   2.767e-08     0.59 PASS   mask=2/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_first_row/bwd_vec              f32   u16         128  50304   1.622e-08   2.767e-08     0.59 PASS   mask=2/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_last_row/bwd_stats             f32   u16         128  50304   1.620e-08   2.758e-08     0.59 PASS   mask=1/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_last_row/bwd_vec               f32   u16         128  50304   1.619e-08   2.758e-08     0.59 PASS   mask=1/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_all_masked/bwd_stats           f32   u16         128  50304   0.000e+00   0.000e+00        - PASS   mask=128/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_all_masked/bwd_vec             f32   u16         128  50304   0.000e+00   0.000e+00        - PASS   mask=128/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_random_half/bwd_stats          f32   u16         128  50304   1.577e-08   2.812e-08     0.56 PASS   mask=62/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_random_half/bwd_vec            f32   u16         128  50304   1.577e-08   2.812e-08     0.56 PASS   mask=62/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_gradout_2p5/bwd_stats          f32   u16         128  50304   2.993e-08   3.738e-08     0.80 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_gradout_2p5/bwd_vec            f32   u16         128  50304   2.993e-08   3.738e-08     0.80 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_scale_one/bwd_stats            f32   u16         128  50304   1.737e-08   2.834e-08     0.61 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_scale_one/bwd_vec              f32   u16         128  50304   1.737e-08   2.834e-08     0.61 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_i32/bwd_stats                  f32   i32         128  50304   1.737e-08   2.834e-08     0.61 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_i64/bwd_stats                  f32   i64         128  50304   1.737e-08   2.834e-08     0.61 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_wide/bwd_stats                 f32   u16         128  50304   4.369e-08   9.001e-07     0.05 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_wide/bwd_vec                   f32   u16         128  50304   5.515e-08   9.001e-07     0.06 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_oneHuge/bwd_stats              f32   u16         128  50304   2.866e-30   1.557e-30     1.84 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_oneHuge/bwd_vec                f32   u16         128  50304   2.866e-30   1.557e-30     1.84 PASS   mask=64/128 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_batch_2/bwd_stats              f32   u16           2  50304   1.115e-08   1.210e-08     0.92 PASS   mask=1/2 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_batch_2/bwd_vec                f32   u16           2  50304   1.123e-08   1.210e-08     0.93 PASS   mask=1/2 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_vocab_128/bwd_stats            f32   u16        1024    128   2.077e-08   3.020e-08     0.69 PASS   mask=518/1024 dirty=0 nonfin=0 drift=0.00e+00
+C   bwd_vocab_128/bwd_vec              f32   u16        1024    128   2.089e-08   3.020e-08     0.69 PASS   mask=518/1024 dirty=0 nonfin=0 drift=0.00e+00
+G   denom_null_nomask/cuda             f32   u16          64  50304   1.093e-08   0.000e+00        - PASS  cuda mask=0/64 nvalid=64 denom=64.0 got=11.490888 expect=11.490888
+G   denom_null_masked/cuda             f32   u16          64  50304   4.010e-08   0.000e+00        - PASS  cuda mask=32/64 nvalid=32 denom=32.0 got=11.539849 expect=11.539850
+G   denom_tensor_32/cuda               f32   u16          64  50304   4.010e-08   0.000e+00        - PASS  cuda mask=32/64 nvalid=32 denom=32.0 got=11.539849 expect=11.539850
+G   denom_tensor_1/cuda                f32   u16          64  50304   4.010e-08   0.000e+00        - PASS  cuda mask=32/64 nvalid=32 denom=1.0 got=369.275177 expect=369.275192
+G   denom_null_masked/cpu              f32   u16          16  50304   1.074e-08   0.000e+00        - PASS  cpu  mask=8/16 nvalid=8 denom=8.0 got=11.625334 expect=11.625334
+G   cpu_cuda_masked/parity             f32   u16          16  50304   0.000e+00   0.000e+00        - PASS  mask=8/16 cpu=11.365391 cuda=11.365391
+G   cpu_cuda_unmasked/parity           f32   u16          16  50304   8.050e-08   0.000e+00        - PASS  mask=0/16 cpu=11.847531 cuda=11.847530
+G   cpu_cuda_all_masked/parity         f32   u16          16  50304   0.000e+00   0.000e+00        - PASS  mask=16/16 cpu=0.000000 cuda=0.000000
+W   bwd_ignore_index_reaches_autograd/cuda f32   u16          64  50304   0.000e+00   0.000e+00        - PASS  masked=32/64 dirty=0 worst=0.000e+00 
+W   bwd_ignore_index_reaches_autograd/cpu f32   u16          16  50304   0.000e+00   0.000e+00        - PASS  masked=8/16 dirty=0 worst=0.000e+00 
+X   vocab_50303_mod4/fwd_vec           f32   u16          64  50303   2.337e-08   2.337e-08     1.00 PASS  PRE-EXISTING mod-4 path mask=32/64 removed=359.2936/359.2936
+X   vocab_50303_mod4/fwd_stats         f32   u16          64  50303   2.337e-08   2.337e-08     1.00 PASS  PRE-EXISTING mod-4 path mask=32/64 badsent=0 badstats=0
+X   batch_65536_last_good/fwd_vec      f32   u16       65536      8   1.062e-08   1.062e-08     1.00 PASS  must be EXACT mask=36946/65536 removed=91908.5938/91908.5942
+X   batch_65536_last_good/fwd_stats    f32   u16       65536      8   1.062e-08   1.062e-08     1.00 PASS  must be EXACT mask=36946/65536 badsent=0 badstats=0
+X   batch_65537_boundary/fwd_vec       f32   u16       65537      8   1.062e-08   1.062e-08     1.00 PASS  boundary marker, drops 1 row mask=36947/65537 removed=91908.5938/91909.8848
+X   batch_65537_boundary/fwd_stats     f32   u16       65537      8   1.062e-08   1.062e-08     1.00 PASS  boundary marker, drops 1 row mask=36947/65537 badsent=0 badstats=0
+X   batch_131072_half_dropped/fwd_vec  f32   u16      131072      8   5.008e-01   4.604e-08 10876192.02 XFAIL PRE-EXISTING reduction cap, drops 50% mask=73778/131072 removed=91908.5938/183582.2231 SEPARATION-FAIL
+X   batch_131072_half_dropped/fwd_stats f32   u16      131072      8   5.008e-01   4.604e-08 10876192.02 XFAIL PRE-EXISTING reduction cap, drops 50% mask=73778/131072 badsent=0 badstats=0
+X   vocab_7_mod4/fwd_vec               f32   u16          64      7   7.774e-09   7.774e-09     1.00 PASS  PRE-EXISTING mod-4 path mask=38/64 removed=89.5021/89.5021
+X   vocab_7_mod4/fwd_stats             f32   u16          64      7   7.774e-09   7.774e-09     1.00 PASS  PRE-EXISTING mod-4 path mask=38/64 badsent=0 badstats=0
+
+======================================================================================================================
+SUMMARY
+======================================================================================================================
+  cases run              : 136
+  SFT failures           : 0   <- these are ours, they gate the exit code
+  diagnostic XFAILs      : 2   <- pre-existing paths / known unfinished wiring
+
+ALL PASS  (0 SFT failures, 2 diagnostic)
+\n--- Removed run_cuda_runner (exit 0) ---

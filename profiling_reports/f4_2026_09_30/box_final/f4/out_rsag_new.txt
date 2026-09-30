@@ -1,0 +1,25 @@
+=== ShardedMuon reduce-scatter/all-gather equivalence (W=1, 22 params) ===
+
+-- scenario: sync publish --
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[sync publish] PASS bit-identical across 82120 elements
+[sync publish] grad_norm agrees: 165.624054
+
+-- scenario: staged refresh --
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 (worst tensor 15 elem 7659: 0.33138907 vs 0.331362277)
+[staged refresh]   W=1 admits no reduction reordering, so any difference at all is a layout or publish bug.
+[staged refresh] grad_norm agrees: 165.624054
+
+=== FAILURES PRESENT ===
+--------------------------------------------------------------------------
+Primary job  terminated normally, but 1 process returned
+a non-zero exit code. Per user-direction, the job has been aborted.
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------
+mpirun detected that one or more processes exited with non-zero status, thus causing
+the job to be terminated. The first process to do so was:
+
+  Process name: [[43396,1],0]
+  Exit code:    1
+--------------------------------------------------------------------------

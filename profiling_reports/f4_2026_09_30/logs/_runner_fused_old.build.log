@@ -1,0 +1,10 @@
+=== build bluscript_zero_ckpt_bluccl_fused.cpp -> /root/gautam_k/f4/_runner_fused_old  2026-09-30 16:16:41  BluTrain a3aba3e  TI b975be5
+ M Tensor-Implementations
+18d9acf2d354493167e9cf37a705f646  dist/zero/src/ShardedOptimizer.cpp
+313a52100c0d9b0ef2d312e9b33916d0  dist/zero/src/SymmetricShardedOptimizer.cpp
+4601d379cd54c192ba2e470861a2c83e  dist/zero/src/ShardedMuon.cpp
+c02bc544d42e208267210ce46ce80f78  bluscript_zero_ckpt_bluccl_fused.cpp
+--- compile (CPU): /usr/bin/mpic++ -std=c++2a -fPIC -O3 -g -DWITH_CUDA -fopenmp -DUSE_FUSED_RMS_ROPE=1 -ITensor-Implementations/include -IProfiler/include -I/usr/local/cuda/include -Idist -Idist/FSDP -Idist/Tensor-Parallelism -Idist/Tensor-Parallelism/tensor -Idist/Tensor-Parallelism/dnn -Idist/Tensor-Parallelism/bridge -Idist/Tensor-Parallelism/memory -Idist/Data-Parallel/include -Idist/communication/include -Idist/zero/include -Idist/Distributed_Checkpointing/include -I/opt/nvidia/nsight-compute/2025.4.1/host/target-linux-x64/nvtx/include -o /root/gautam_k/f4/_runner_fused_old bluscript_zero_ckpt_bluccl_fused.cpp dist/FSDP/fsdp_init.cpp dist/FSDP/fsdp_comm.cpp dist/FSDP/fsdp_ddp.cpp dist/zero/src/ShardedOptimizer.cpp dist/zero/src/SymmetricShardedOptimizer.cpp dist/zero/src/ShardedMuon.cpp -LTensor-Implementations/lib -LProfiler/lib -Ldist/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/root/gautam_k/BluTrain/Tensor-Implementations/lib -Wl,-rpath,/root/gautam_k/BluTrain/Profiler/lib -Wl,-rpath,/root/gautam_k/BluTrain/dist/lib -Wl,-rpath,/usr/lib/x86_64-linux-gnu -ldist -ltensor -lprofiler  -lcuda -lcudart -lcublas -lcurand -lnccl -lmpi -lgomp -lpthread -ldl -lz
+--- OK in 38 s
+-rwxr-xr-x 1 root root 12472320 Sep 30 16:17 /root/gautam_k/f4/_runner_fused_old
+802f8c24a2452caaedc56f7546fb1743  /root/gautam_k/f4/_runner_fused_old

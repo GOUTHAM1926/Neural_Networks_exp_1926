@@ -1,0 +1,86 @@
+=== F4 suite (old)  2026-09-30 16:10:28  host round-earth-echoes-fin-03  BluTrain a3aba3e  TI b975be5
+ M Tensor-Implementations
+18d9acf2d354493167e9cf37a705f646  dist/zero/src/ShardedOptimizer.cpp
+313a52100c0d9b0ef2d312e9b33916d0  dist/zero/src/SymmetricShardedOptimizer.cpp
+4601d379cd54c192ba2e470861a2c83e  dist/zero/src/ShardedMuon.cpp
+0, NVIDIA H200, 0 MiB
+
+################ 3. test_zero (Navin, v1, W=1: null process group, no mpirun)
+--- compile (CPU): /usr/bin/mpic++ -std=c++2a -fPIC -O3 -g -DWITH_CUDA -fopenmp -DUSE_FUSED_RMS_ROPE=1 -ITensor-Implementations/include -IProfiler/include -I/usr/local/cuda/include -Idist -Idist/FSDP -Idist/Tensor-Parallelism -Idist/Tensor-Parallelism/tensor -Idist/Tensor-Parallelism/dnn -Idist/Tensor-Parallelism/bridge -Idist/Tensor-Parallelism/memory -Idist/Data-Parallel/include -Idist/communication/include -Idist/zero/include -Idist/Distributed_Checkpointing/include -I/opt/nvidia/nsight-compute/2025.4.1/host/target-linux-x64/nvtx/include -o /root/gautam_k/f4/test_zero_old /root/gautam_k/BluTrain/dist/zero/tests/test_zero.cpp dist/FSDP/fsdp_init.cpp dist/FSDP/fsdp_comm.cpp dist/FSDP/fsdp_ddp.cpp dist/zero/src/ShardedOptimizer.cpp dist/zero/src/SymmetricShardedOptimizer.cpp dist/zero/src/ShardedMuon.cpp -LTensor-Implementations/lib -LProfiler/lib -Ldist/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/root/gautam_k/BluTrain/Tensor-Implementations/lib -Wl,-rpath,/root/gautam_k/BluTrain/Profiler/lib -Wl,-rpath,/root/gautam_k/BluTrain/dist/lib -Wl,-rpath,/usr/lib/x86_64-linux-gnu -ldist -ltensor -lprofiler  -lcuda -lcudart -lcublas -lcurand -lnccl -lmpi -lgomp -lpthread -ldl -lz
+==== ZeRO-1 tests (single GPU, W=1) ====
+[test_parity dtype=fp32 wd=0.000]
+  max|Δparam| over 6 steps = 0.000e+00
+  [ok]   ZeRO-1 weights match single-process AdamW
+[test_parity dtype=fp32 wd=0.100]
+  max|Δparam| over 6 steps = 0.000e+00
+  [ok]   ZeRO-1 weights match single-process AdamW
+[test_parity dtype=bf16 wd=0.100]
+  max|Δparam| over 6 steps = 1.953e-03
+  [ok]   ZeRO-1 weights match single-process AdamW
+[test_clip]
+  max|Δparam| = 0.000e+00  (last grad_norm=4.0211)
+  [ok]   ZeRO-1 internal clip matches hand-clipped reference
+[test_checkpoint]
+  max|Δparam| after resume = 0.000e+00
+  [ok]   resume-from-checkpoint reproduces the uninterrupted run
+[test_overflow_skip]
+  [ok]   overflow step was skipped
+  [ok]   skipped step did NOT advance the Adam timestep
+  [ok]   params unchanged after a skipped step
+  [ok]   first finite step runs with timestep t=1 (bias correction correct)
+[test_ckpt_layout_guard]
+  [ok]   load_state rejects a checkpoint with different param grouping
+==== ALL PASSED ====
+
+################ 4. test_muon_rsag (Navin, W=1, launched as his script does: mpirun -np 1)
+--- compile (CPU): /usr/bin/mpic++ -std=c++2a -fPIC -O3 -g -DWITH_CUDA -fopenmp -DUSE_FUSED_RMS_ROPE=1 -ITensor-Implementations/include -IProfiler/include -I/usr/local/cuda/include -Idist -Idist/FSDP -Idist/Tensor-Parallelism -Idist/Tensor-Parallelism/tensor -Idist/Tensor-Parallelism/dnn -Idist/Tensor-Parallelism/bridge -Idist/Tensor-Parallelism/memory -Idist/Data-Parallel/include -Idist/communication/include -Idist/zero/include -Idist/Distributed_Checkpointing/include -I/opt/nvidia/nsight-compute/2025.4.1/host/target-linux-x64/nvtx/include -o /root/gautam_k/f4/test_muon_rsag_old /root/gautam_k/BluTrain/dist/zero/tests/test_muon_rsag.cpp dist/FSDP/fsdp_init.cpp dist/FSDP/fsdp_comm.cpp dist/FSDP/fsdp_ddp.cpp dist/zero/src/ShardedOptimizer.cpp dist/zero/src/SymmetricShardedOptimizer.cpp dist/zero/src/ShardedMuon.cpp -LTensor-Implementations/lib -LProfiler/lib -Ldist/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/root/gautam_k/BluTrain/Tensor-Implementations/lib -Wl,-rpath,/root/gautam_k/BluTrain/Profiler/lib -Wl,-rpath,/root/gautam_k/BluTrain/dist/lib -Wl,-rpath,/usr/lib/x86_64-linux-gnu -ldist -ltensor -lprofiler  -lcuda -lcudart -lcublas -lcurand -lnccl -lmpi -lgomp -lpthread -ldl -lz
+=== ShardedMuon reduce-scatter/all-gather equivalence (W=1, 22 params) ===
+
+-- scenario: sync publish --
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[sync publish] PASS bit-identical across 82120 elements
+[sync publish] grad_norm agrees: 165.624054
+
+-- scenario: staged refresh --
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 (worst tensor 15 elem 7659: 0.33138907 vs 0.331362277)
+[staged refresh]   W=1 admits no reduction reordering, so any difference at all is a layout or publish bug.
+[staged refresh] grad_norm agrees: 165.624054
+
+=== FAILURES PRESENT ===
+--------------------------------------------------------------------------
+Primary job  terminated normally, but 1 process returned
+a non-zero exit code. Per user-direction, the job has been aborted.
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------
+mpirun detected that one or more processes exited with non-zero status, thus causing
+the job to be terminated. The first process to do so was:
+
+  Process name: [[396,1],0]
+  Exit code:    1
+--------------------------------------------------------------------------
+
+==================== SUMMARY (old) ====================
+F4 test      exit=not run   cases: 30, PASS 13, FAIL 17
+F1 test      exit=not run   cases: 36, PASS 36, FAIL 0
+test_zero    exit=0   ==== ALL PASSED ==== 
+muon_rsag    exit=1   === FAILURES PRESENT === 
+F4 FAIL lines:
+   v1|bf16|norm_exact|FAIL
+   v1|bf16|sees_exact|FAIL
+   v1|bf16|autograd2|FAIL
+   v1|bf16|nograd|FAIL
+   v1|bf16|flag_bf16|FAIL
+   v2|bf16|norm_exact|FAIL
+   v2|bf16|sees_exact|FAIL
+   v2|bf16|autograd2|FAIL
+   v2|bf16|nograd|FAIL
+   v2|bf16|flag_bf16|FAIL
+   v2|fp32|flag_bf16|FAIL
+   mu|bf16|norm_exact|FAIL
+   mu|bf16|sees_exact|FAIL
+   mu|bf16|autograd2|FAIL
+   mu|bf16|nograd|FAIL
+   mu|bf16|flag_bf16|FAIL
+   mu|fp32|flag_bf16|FAIL
+F1 FAIL lines:

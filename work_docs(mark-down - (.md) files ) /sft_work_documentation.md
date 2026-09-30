@@ -2825,3 +2825,65 @@ items 1–5; they fit into tasks 3 and 5 and v2, with no extra stage.
 [HF: fixing gradient accumulation](https://www.huggingface.co/blog/gradient_accumulation) ·
 [transformers PR #34191](https://github.com/huggingface/transformers/pull/34191) ·
 [Apple Cut Cross-Entropy](https://github.com/apple/ml-cross-entropy)
+
+---
+
+## 35. SFT task 1: load only the weights of Navin's checkpoint (2026-09-29, code applied locally, not tested)
+
+**Where the work happens:** on `dist_side_merge` itself, in the local clone `~/Downloads/BluTrain_sft` (BluTrain
+`909ab75`, library `d96b991`). `sft_gautam` was compared file by file first: its 7 loss files are identical to
+`dist_side_merge`; its 2 loss tests were copied into the local clone only (hidden with `info/exclude`) and pass there,
+136/136 and 0 predictions violated (`profiling_reports/sft_loss_tests_2026_09_29/`); its reduction notes are comments
+only and were not copied. `sft_gautam` was then deleted on GitHub and kept as the tag `archive/sft_gautam` (`1ed2ac3`).
+
+**The checkpoint:** `navingv/curriculum_8btokens` (public), folder `blumodel_step_8000`: step 8000 (8.4B tokens),
+loss 2.009818, `last_val_loss` 1.866113, saved by a 4-GPU run with Muon.
+- `dump_ckpt_meta.cpp` (uses the library's own `CheckpointMetadata::deserialize`, and reads the 129,127-byte
+  `metadata.bin` to the last byte) lists **262 weights, 1,588,229,888 numbers**: exactly our model (d_model 2304,
+  26 layers, 18/6 heads, ffn 6144, tied embedding). Order: 26 layers × 10 tensors (q-norm, k-norm, norm, wQ, wK, wV,
+  wO, norm, gate_up, down), then `wte`, then `norm_f`, the same as our model's registration order.
+- 54 weights are **bf16** (the embedding + 53 RMSNorm scales): Navin trained with `BLU_ALL_BF16=1`. **Decision: SFT
+  runs with `BLU_ALL_BF16=1` too**, so every dtype matches and no conversion is needed.
+- **All 262 weights are in `data_rank_0.bin`**: its 6,469,008,896 bytes = the weights (3,176,473,088) + the same
+  optimizer share every other rank file has (3,292,535,808). Loading the weights needs only `metadata.bin` +
+  `data_rank_0.bin` (6.5 GB), not all 16.35 GB.
+
+**The code (`profiling_reports/sft_task1_2026_09_29/patch_init_from.py`, applied: `bluscript_zero_ckpt.cpp` +80 −1,
+md5 `ad7c5f6803dd64f252bf7fd9ef6dd690`, diff in `bluscript_init_from.diff`):**
+- `BLU_INIT_FROM=<checkpoint dir>`: DCP `load()` with no optimizer, placed right after the model is built and **before
+  the optimizers are built**. All 3 ZeRO optimizers copy the model weights into their fp32 masters in their constructor
+  (`init_master_from_params`), so the masters start from the loaded weights. The step, epoch, data position and the
+  checkpoint's optimizer state are not loaded. A later resume of the run's own checkpoint overwrites everything
+  (torchtitan's `initial_load_path` + `initial_load_model_only`).
+- No pre-flight compatibility check (the user's decision): DCP already stops on a missing weight or a different shape
+  (`[Architecture Mismatch]`, `LoadPlanning.cpp:33-41`), and `sync_back_to_model()` stops on a different dtype
+  (`Tensor::copy_`). The requirement is written as a comment.
+- `BLU_INIT_VERIFY=1` (test switch): compares every loaded weight in GPU memory with the CRC32 the checkpoint stored.
+- The checkpoint block reuses the single-rank process group created for the load at W = 1.
+
+**Next (not done): the H200 test.**
+1. Download `metadata.bin` + `data_rank_0.bin` on the box.
+2. rsync the clone **without** the laptop's sm_86 build outputs (`Tensor-Implementations/lib/`, `Profiler/lib/`,
+   `dist/lib/`, `dist/build/`, `_runner_`); apply the box-only B = 4 harness diff; build with `WITH_BLUBLAS=1`.
+3. Run 4 steps with `BLU_INIT_FROM=... BLU_INIT_VERIFY=1 BLU_ALL_BF16=1 BLU_CKPT=0`.
+4. Expect `262/262 weights match the checkpoint's CRC32`, and a **step-0 validation loss of about 1.87**, not ~11.
+
+---
+
+## 36. Notes for SFT from 2026-09-30 (full explanations in `embedding_optimizer_zero_1_parallelism.md`)
+
+1. **`rope_theta` must match Navin's checkpoint.** His commit `a3aba3e` (on `dist_side_merge_BLUCCL`) sets
+   `rope_theta = 10000` in `bluscript_zero_ckpt.cpp`; our `dist_side_merge` trainer uses 500000. The DCP checkpoint stores
+   only weights, so a wrong value loads without any error; only the step-0 validation loss (expected ~1.87, task 1 above)
+   would show it. Ask Navin which value his `blumodel_step_8000` run used, before the task 1 test.
+2. **Which embedding backward SFT would use.** SFT runs `BLU_ALL_BF16=1` (a bf16 `wte`, to match the checkpoint). On
+   `dist_side_merge` a bf16 `wte` uses the old `atomicAdd` kernel: every occurrence of a token in a micro-batch rounds the
+   running total to bf16, in a random order. SFT data repeats template tokens and EOT in every example, so repetition is
+   high. The colleague's `EmbeddingBwdFused` (only on BLUCCL, only in the fused trainer with `BLUCCL_FUSED_EMB=1`) adds
+   every occurrence in fp32 and rounds once. Decide: port it, use an fp32 `wte` (needs a bf16 → fp32 widening when
+   loading the checkpoint), or keep; the re-scoped ablation measures it.
+3. **If the fused kernel is ported:** its hook ignores the token count it is given (`embedding_fused.cu:1300`,
+   `(void)N`) and always uses the B × T fixed at install. With variable-length SFT micro-batches that would read the wrong
+   number of ids, silently. It must take the real count first.
+4. **F4 is fixed on BLUCCL only** (`149249d`): at 1 GPU the ZeRO optimizers no longer round the gradient to bf16 and back.
+   `dist_side_merge` (our SFT branch) still has the round trip at W = 1 until `149249d` is ported.

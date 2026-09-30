@@ -1,0 +1,24 @@
+==== ZeRO-1 tests (single GPU, W=1) ====
+[test_parity dtype=fp32 wd=0.000]
+  max|Δparam| over 6 steps = 0.000e+00
+  [ok]   ZeRO-1 weights match single-process AdamW
+[test_parity dtype=fp32 wd=0.100]
+  max|Δparam| over 6 steps = 0.000e+00
+  [ok]   ZeRO-1 weights match single-process AdamW
+[test_parity dtype=bf16 wd=0.100]
+  max|Δparam| over 6 steps = 1.953e-03
+  [ok]   ZeRO-1 weights match single-process AdamW
+[test_clip]
+  max|Δparam| = 0.000e+00  (last grad_norm=4.0211)
+  [ok]   ZeRO-1 internal clip matches hand-clipped reference
+[test_checkpoint]
+  max|Δparam| after resume = 0.000e+00
+  [ok]   resume-from-checkpoint reproduces the uninterrupted run
+[test_overflow_skip]
+  [ok]   overflow step was skipped
+  [ok]   skipped step did NOT advance the Adam timestep
+  [ok]   params unchanged after a skipped step
+  [ok]   first finite step runs with timestep t=1 (bias correction correct)
+[test_ckpt_layout_guard]
+  [ok]   load_state rejects a checkpoint with different param grouping
+==== ALL PASSED ====

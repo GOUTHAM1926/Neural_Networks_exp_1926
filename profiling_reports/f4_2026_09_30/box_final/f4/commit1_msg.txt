@@ -1,0 +1,22 @@
+zero: at W == 1 the gradient no longer goes through the wire buffer (F4)
+
+At one GPU nothing is sent, yet ShardedOptimizer, SymmetricShardedOptimizer and
+ShardedMuon turned every gradient into the wire dtype (bf16 on a bf16 model) and
+back to fp32 before the norm and the update read it: one pointless rounding of
+the whole gradient every step.
+
+At W == 1 now:
+- v1/v2: stage_grads_direct_fp32() copies each fp32 gradient straight into
+  shard_grad_fp32_ (one pass instead of two/three, no bf16).
+- Muon: prepare_direct_grads(); the norm and owned_grad_fp32() read each
+  parameter's own gradient in its own dtype. Both collective modes take this
+  path, so they still agree at W == 1.
+- v2/Muon print one line if BLU_BF16_REDUCE / BLU_FP32_REDUCE is set at W == 1,
+  because nothing is sent there and the flag has no effect.
+W > 1 is unchanged: every change is behind W_ == 1.
+
+Tested on 1x H200 (a3aba3e + TI b975be5), test_f4_w1_exact_grad (30 cases):
+- before: 17 FAIL. bf16 grad norm = norm of bf16(g), rel err 9.76e-4 (2^-10);
+  g and bf16(g) gave byte-identical optimizer state.
+- after: 30/30 PASS, rel err 1.3e-8.
+F1 test 36/36 and test_zero pass before and after.

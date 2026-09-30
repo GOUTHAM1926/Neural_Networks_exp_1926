@@ -1,0 +1,129 @@
+=== F4 suite (old)  2026-09-30 16:07:32  host round-earth-echoes-fin-03  BluTrain a3aba3e  TI b975be5
+ M Tensor-Implementations
+18d9acf2d354493167e9cf37a705f646  dist/zero/src/ShardedOptimizer.cpp
+313a52100c0d9b0ef2d312e9b33916d0  dist/zero/src/SymmetricShardedOptimizer.cpp
+4601d379cd54c192ba2e470861a2c83e  dist/zero/src/ShardedMuon.cpp
+0, NVIDIA H200, 0 MiB
+
+################ 1. test_f4_w1_exact_grad
+--- compile (CPU): /usr/bin/mpic++ -std=c++2a -fPIC -O3 -g -DWITH_CUDA -fopenmp -DUSE_FUSED_RMS_ROPE=1 -ITensor-Implementations/include -IProfiler/include -I/usr/local/cuda/include -Idist -Idist/FSDP -Idist/Tensor-Parallelism -Idist/Tensor-Parallelism/tensor -Idist/Tensor-Parallelism/dnn -Idist/Tensor-Parallelism/bridge -Idist/Tensor-Parallelism/memory -Idist/Data-Parallel/include -Idist/communication/include -Idist/zero/include -Idist/Distributed_Checkpointing/include -I/opt/nvidia/nsight-compute/2025.4.1/host/target-linux-x64/nvtx/include -o /root/gautam_k/f4/test_f4_old /root/gautam_k/f4/test_f4_w1_exact_grad.cpp dist/FSDP/fsdp_init.cpp dist/FSDP/fsdp_comm.cpp dist/FSDP/fsdp_ddp.cpp dist/zero/src/ShardedOptimizer.cpp dist/zero/src/SymmetricShardedOptimizer.cpp dist/zero/src/ShardedMuon.cpp -LTensor-Implementations/lib -LProfiler/lib -Ldist/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/root/gautam_k/BluTrain/Tensor-Implementations/lib -Wl,-rpath,/root/gautam_k/BluTrain/Profiler/lib -Wl,-rpath,/root/gautam_k/BluTrain/dist/lib -Wl,-rpath,/usr/lib/x86_64-linux-gnu -ldist -ltensor -lprofiler  -lcuda -lcudart -lcublas -lcurand -lnccl -lmpi -lgomp -lpthread -ldl -lz
+CASE|v1|bf16|norm_exact|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|v1|bf16|sees_exact|FAIL|start states identical; after one step with g vs bf16(g): states IDENTICAL (optimizer saw bf16(g)) | norms 1.65444779 vs 1.65444779
+CASE|v1|bf16|autograd2|FAIL|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997)
+CASE|v1|bf16|nograd|FAIL|no-grad vs zero-grad state identical | grad_norm 1.28253186 vs fp64 1.2837843 (rel err 0.000975588317)
+CASE|v1|bf16|flag_bf16|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|v1|fp32|norm_exact|PASS|grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08) | fp64 norm of bf16(g) 1.65444767 (rel err 0.000976549325)
+CASE|v1|fp32|sees_exact|PASS|start states identical; after one step with g vs bf16(g): states DIFFER (optimizer saw g) | norms 1.65606332 vs 1.65444779
+CASE|v1|fp32|autograd2|PASS|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08)
+CASE|v1|fp32|nograd|PASS|no-grad vs zero-grad state identical | grad_norm 1.28378427 vs fp64 1.2837843 (rel err 2.50592966e-08)
+CASE|v1|fp32|flag_bf16|PASS|refused as expected: [ZeRO] config: reduce_dtype=bfloat16 is not supported in v1 for a model whose compute dtype is float32 (gradients reduce in the compute dtype only); use ZeRO-1 v2 (BLU_ZERO_V2=1) or ShardedMuon instead
+CASE|v2|bf16|norm_exact|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|v2|bf16|sees_exact|FAIL|start states identical; after one step with g vs bf16(g): states IDENTICAL (optimizer saw bf16(g)) | norms 1.65444779 vs 1.65444779
+CASE|v2|bf16|autograd2|FAIL|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997)
+CASE|v2|bf16|nograd|FAIL|no-grad vs zero-grad state identical | grad_norm 1.28253186 vs fp64 1.2837843 (rel err 0.000975588317)
+CASE|v2|bf16|flag_bf16|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|v2|fp32|norm_exact|PASS|grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08) | fp64 norm of bf16(g) 1.65444767 (rel err 0.000976549325)
+CASE|v2|fp32|sees_exact|PASS|start states identical; after one step with g vs bf16(g): states DIFFER (optimizer saw g) | norms 1.65606332 vs 1.65444779
+CASE|v2|fp32|autograd2|PASS|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08)
+CASE|v2|fp32|nograd|PASS|no-grad vs zero-grad state identical | grad_norm 1.28378427 vs fp64 1.2837843 (rel err 2.50592966e-08)
+CASE|v2|fp32|flag_bf16|FAIL|grad_norm 1.65444779 | fp64 norm of g 1.65606334 (rel err 0.000975533997) | fp64 norm of bf16(g) 1.65444767 (rel err 7.58328799e-08)
+CASE|mu|bf16|norm_exact|FAIL|grad_norm 1.65444767 | fp64 norm of g 1.65606334 (rel err 0.000975605981) | fp64 norm of bf16(g) 1.65444767 (rel err 3.77905083e-09)
+CASE|mu|bf16|sees_exact|FAIL|start states identical; after one step with g vs bf16(g): states IDENTICAL (optimizer saw bf16(g)) | norms 1.65444767 vs 1.65444767
+CASE|mu|bf16|autograd2|FAIL|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65444767 | fp64 norm of g 1.65606334 (rel err 0.000975605981)
+CASE|mu|bf16|nograd|FAIL|no-grad vs zero-grad state identical | grad_norm 1.28253186 vs fp64 1.2837843 (rel err 0.000975588317)
+CASE|mu|bf16|flag_bf16|FAIL|grad_norm 1.65444767 | fp64 norm of g 1.65606334 (rel err 0.000975605981) | fp64 norm of bf16(g) 1.65444767 (rel err 3.77905083e-09)
+CASE|mu|fp32|norm_exact|PASS|grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08) | fp64 norm of bf16(g) 1.65444767 (rel err 0.000976549325)
+CASE|mu|fp32|sees_exact|PASS|start states identical; after one step with g vs bf16(g): states DIFFER (optimizer saw g) | norms 1.65606332 vs 1.65444767
+CASE|mu|fp32|autograd2|PASS|grad buffer dtypes [float32,float32,float32] | grad_norm 1.65606332 | fp64 norm of g 1.65606334 (rel err 1.31623002e-08)
+CASE|mu|fp32|nograd|PASS|no-grad vs zero-grad state identical | grad_norm 1.28378439 vs fp64 1.2837843 (rel err 6.77984282e-08)
+CASE|mu|fp32|flag_bf16|FAIL|grad_norm 1.65444767 | fp64 norm of g 1.65606334 (rel err 0.000975605981) | fp64 norm of bf16(g) 1.65444767 (rel err 3.77905083e-09)
+
+==================== SUMMARY ====================
+cases: 30, PASS 13, FAIL 17
+RESULT: FAIL
+
+################ 2. test_f1_nonfinite
+--- compile (CPU): /usr/bin/mpic++ -std=c++2a -fPIC -O3 -g -DWITH_CUDA -fopenmp -DUSE_FUSED_RMS_ROPE=1 -ITensor-Implementations/include -IProfiler/include -I/usr/local/cuda/include -Idist -Idist/FSDP -Idist/Tensor-Parallelism -Idist/Tensor-Parallelism/tensor -Idist/Tensor-Parallelism/dnn -Idist/Tensor-Parallelism/bridge -Idist/Tensor-Parallelism/memory -Idist/Data-Parallel/include -Idist/communication/include -Idist/zero/include -Idist/Distributed_Checkpointing/include -I/opt/nvidia/nsight-compute/2025.4.1/host/target-linux-x64/nvtx/include -o /root/gautam_k/f4/test_f1_old /root/gautam_k/f4/test_f1_nonfinite.cpp dist/FSDP/fsdp_init.cpp dist/FSDP/fsdp_comm.cpp dist/FSDP/fsdp_ddp.cpp dist/zero/src/ShardedOptimizer.cpp dist/zero/src/SymmetricShardedOptimizer.cpp dist/zero/src/ShardedMuon.cpp -LTensor-Implementations/lib -LProfiler/lib -Ldist/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/root/gautam_k/BluTrain/Tensor-Implementations/lib -Wl,-rpath,/root/gautam_k/BluTrain/Profiler/lib -Wl,-rpath,/root/gautam_k/BluTrain/dist/lib -Wl,-rpath,/usr/lib/x86_64-linux-gnu -ldist -ltensor -lprofiler  -lcuda -lcudart -lcublas -lcurand -lnccl -lmpi -lgomp -lpthread -ldl -lz
+CASE|v1|bf16|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0, grad_norm 1.654424
+CASE|v1|bf16|nan_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|bf16|nan_vector|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|bf16|inf_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = inf in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|bf16|nan_globalclip|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; reduce_and_measure=-1.000000; [ZeRO] non-finite gradient: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|bf16|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|v1|fp32|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0, grad_norm 1.654400
+CASE|v1|fp32|nan_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|fp32|nan_vector|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|fp32|inf_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: grad norm^2 = inf in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|fp32|nan_globalclip|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; reduce_and_measure=-1.000000; [ZeRO] non-finite gradient: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v1|fp32|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|v2|bf16|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0, grad_norm 1.654424
+CASE|v2|bf16|nan_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: SymmetricShardedOptimizer: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v2|bf16|nan_vector|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: SymmetricShardedOptimizer: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v2|bf16|inf_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: SymmetricShardedOptimizer: grad norm^2 = inf in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v2|bf16|nan_globalclip|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; reduce_and_measure=-1.000000; [ZeRO] non-finite gradient: SymmetricShardedOptimizer: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v2|bf16|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|v2|fp32|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0, grad_norm 1.654400
+CASE|v2|fp32|nan_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: SymmetricShardedOptimizer: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v2|fp32|nan_vector|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: SymmetricShardedOptimizer: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v2|fp32|inf_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: SymmetricShardedOptimizer: grad norm^2 = inf in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v2|fp32|nan_globalclip|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; reduce_and_measure=-1.000000; [ZeRO] non-finite gradient: SymmetricShardedOptimizer: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|v2|fp32|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|mu|bf16|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0; step-1 NS updates rejected 0; NEXT finite step: NS updates rejected 0, non-finite m/v 0, grad_norm 1.654424
+CASE|mu|bf16|nan_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: ShardedMuon: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|mu|bf16|nan_vector|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: ShardedMuon: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|mu|bf16|inf_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: ShardedMuon: grad norm^2 = inf in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|mu|bf16|nan_globalclip|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; reduce_and_measure=-1.000000; [ZeRO] non-finite gradient: ShardedMuon: grad norm^2 = nan in the bf16 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|mu|bf16|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+CASE|mu|fp32|finite|PASS|step_count 0->1, params CHANGED, state CHANGED, non-finite params 0, non-finite m/v 0; step-1 NS updates rejected 0; NEXT finite step: NS updates rejected 0, non-finite m/v 0, grad_norm 1.654400
+CASE|mu|fp32|nan_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: ShardedMuon: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|mu|fp32|nan_vector|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: ShardedMuon: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|mu|fp32|inf_matrix|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; [ZeRO] non-finite gradient: ShardedMuon: grad norm^2 = inf in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|mu|fp32|nan_globalclip|PASS|threw ZeroNonFiniteGradError, step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0; reduce_and_measure=-1.000000; [ZeRO] non-finite gradient: ShardedMuon: grad norm^2 = nan in the fp32 group (82112 params), rank 0, optimizer step 1; no LossScaler installed, so the step cannot be skipped -- raised BEFORE any update
+CASE|mu|fp32|nan_scaler|PASS|step_count 0->0, params unchanged, state unchanged, non-finite params 0, non-finite m/v 0, skipped yes
+
+==================== SUMMARY ====================
+cases: 36, PASS 36, FAIL 0
+RESULT: PASS
+
+################ 3. test_zero (Navin, v1, W=1)
+== compiling ShardedOptimizer.cpp ==
+In file included from /root/gautam_k/BluTrain/dist/zero/include/ShardedOptimizer.h:49,
+                 from /root/gautam_k/BluTrain/dist/zero/src/ShardedOptimizer.cpp:6:
+/root/gautam_k/BluTrain/dist/zero/include/ZeroOptimizerBase.h:31:10: fatal error: OptimShardSpec.h: No such file or directory
+   31 | #include "OptimShardSpec.h"   // OwnTensor::dcp::ShardedOptimizerState
+      |          ^~~~~~~~~~~~~~~~~~
+compilation terminated.
+
+################ 4. test_muon_rsag (Navin, W=1)
+== compiling ShardedMuon.cpp ==
+In file included from /root/gautam_k/BluTrain/dist/zero/include/ShardedMuon.h:98,
+                 from /root/gautam_k/BluTrain/dist/zero/src/ShardedMuon.cpp:6:
+/root/gautam_k/BluTrain/dist/zero/include/ZeroOptimizerBase.h:31:10: fatal error: OptimShardSpec.h: No such file or directory
+   31 | #include "OptimShardSpec.h"   // OwnTensor::dcp::ShardedOptimizerState
+      |          ^~~~~~~~~~~~~~~~~~
+compilation terminated.
+
+==================== SUMMARY (old) ====================
+F4 test      exit=1   cases: 30, PASS 13, FAIL 17
+F1 test      exit=0   cases: 36, PASS 36, FAIL 0
+test_zero    exit=1
+muon_rsag    exit=1
+F4 FAIL lines:
+   v1|bf16|norm_exact|FAIL
+   v1|bf16|sees_exact|FAIL
+   v1|bf16|autograd2|FAIL
+   v1|bf16|nograd|FAIL
+   v1|bf16|flag_bf16|FAIL
+   v2|bf16|norm_exact|FAIL
+   v2|bf16|sees_exact|FAIL
+   v2|bf16|autograd2|FAIL
+   v2|bf16|nograd|FAIL
+   v2|bf16|flag_bf16|FAIL
+   v2|fp32|flag_bf16|FAIL
+   mu|bf16|norm_exact|FAIL
+   mu|bf16|sees_exact|FAIL
+   mu|bf16|autograd2|FAIL
+   mu|bf16|nograd|FAIL
+   mu|bf16|flag_bf16|FAIL
+   mu|fp32|flag_bf16|FAIL
+F1 FAIL lines:

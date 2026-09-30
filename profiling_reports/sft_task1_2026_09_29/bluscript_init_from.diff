@@ -1,0 +1,106 @@
+diff --git a/bluscript_zero_ckpt.cpp b/bluscript_zero_ckpt.cpp
+index 61b45a3..9690c0c 100644
+--- a/bluscript_zero_ckpt.cpp
++++ b/bluscript_zero_ckpt.cpp
+@@ -76,6 +76,8 @@
+ #include "checkpointing/GradMode.h"
+ #include "DistributedCheckpointing.h"   // DistCheckpoint::save / load / is_valid
+ #include "ZeroDcpBridge.h"              // ZeroDcpModule, ZeroDcpOptimizer
++#include "Metadata.h"                   // CheckpointMetadata (BLU_INIT_VERIFY)
++#include "Checksums.h"                  // CRC32 check of the weights BLU_INIT_FROM loaded
+ #include "device/CachingCudaAllocator.h"
+ #include "device/DeviceCore.h"                  // OwnTensor::cuda::getCurrentStream()
+ 
+@@ -1025,6 +1027,81 @@ int main(int argc, char** argv) {
+     for (auto& p : params) num_params += p.numel();
+     if (is_master) std::cout << "Number of parameters: " << num_params << std::endl;
+ 
++    // ---- SFT: initialise the weights from another run's checkpoint (weights only) ----
++    // What:   BLU_INIT_FROM=<checkpoint dir> loads ONLY the model weights of that DCP checkpoint
++    //         (e.g. blumodel_step_8000 of a 4-GPU Muon pretraining run) into this model. Its
++    //         optimizer state, step, epoch and data position are NOT loaded: this run starts at
++    //         step 0 with a fresh optimizer. If this run later resumes its OWN checkpoint
++    //         (cfg.ckpt_dir, below), that load overwrites these weights together with the
++    //         optimizer state, so a restarted SFT run continues where it stopped. Same contract
++    //         as torchtitan's initial_load_path + initial_load_model_only=True.
++    // Why here, before the optimizers: every ZeRO optimizer (ShardedOptimizer,
++    //         SymmetricShardedOptimizer, ShardedMuon) copies the model weights into its fp32
++    //         masters inside its constructor (init_master_from_params). Loaded after that, the
++    //         masters would still hold the random init and the first step would write it back.
++    // Needs:  weights are saved by position (param_NNNNNN), so the checkpoint must hold this
++    //         model's weights with the same shape and dtype at every index. The dtypes follow the
++    //         precision flags: a checkpoint saved with BLU_ALL_BF16=1 (bf16 embedding and norms)
++    //         must be loaded with the same flag. A mismatch is not silent: DCP stops on a missing
++    //         weight or a different shape ("[Architecture Mismatch]", LoadPlanning.cpp), and
++    //         sync_back_to_model() stops on a different dtype (Tensor::copy_ refuses it).
++    // Verify: BLU_INIT_VERIFY=1 also compares every loaded weight in GPU memory with the CRC32
++    //         the checkpoint stored for it (a test switch; it copies every weight to the host).
++    std::shared_ptr<ProcessGroupNCCL> init_pg;   // single-rank DCP group at W == 1, reused below
++    if (const char* init_from = std::getenv("BLU_INIT_FROM"); init_from && *init_from) {
++        const std::string init_dir = init_from;
++        auto pname = [](size_t i) {
++            char nm[32];
++            std::snprintf(nm, sizeof nm, "param_%06zu", i);
++            return std::string(nm);
++        };
++        std::shared_ptr<ProcessGroupNCCL> load_pg = pg;
++        if (!load_pg) {
++            init_pg = init_process_group(1, 0, /*stream=*/0, /*group_name=*/"dcp",
++                                         dist::comm::MemoryMode::Standard);
++            load_pg = init_pg;
++        }
++        std::map<std::string, Tensor*> init_named;
++        for (size_t i = 0; i < params.size(); ++i) init_named[pname(i)] = &params[i];
++        owt::zero::ZeroDcpModule init_module(init_named);
++        int   ck_epoch = 0, ck_step = 0;
++        float ck_loss  = 0.0f;
++        OwnTensor::DistCheckpoint::load(init_module, init_dir, load_pg, /*optimizer=*/nullptr,
++                                        &ck_epoch, &ck_step, &ck_loss);
++        init_module.sync_back_to_model();   // a no-op when the dtypes match
++
++        if (getenv_int("BLU_INIT_VERIFY", 0) != 0) {
++            OwnTensor::CheckpointMetadata init_meta;
++            {
++                std::ifstream mis(init_dir + "/metadata.bin", std::ios::binary);
++                init_meta = OwnTensor::CheckpointMetadata::deserialize(mis);
++            }
++            size_t n_crc_ok = 0;
++            std::vector<std::string> crc_bad;
++            for (size_t i = 0; i < params.size(); ++i) {
++                const auto& tm = init_meta.tensors.at(pname(i));
++                Tensor host = params[i].to_cpu();
++                if (tm.shards.size() == 1 && tm.shards[0].checksum_kind != 0 &&
++                    OwnTensor::dcp::Checksum::verify(
++                        static_cast<OwnTensor::dcp::Checksum::Kind>(tm.shards[0].checksum_kind),
++                        host.data(), host.nbytes(), tm.shards[0].checksum_value))
++                    ++n_crc_ok;
++                else
++                    crc_bad.push_back(pname(i));
++            }
++            if (is_master)
++                std::cout << "[init] BLU_INIT_VERIFY: " << n_crc_ok << "/" << params.size()
++                          << " weights match the checkpoint's CRC32"
++                          << (crc_bad.empty() ? "" : "; first mismatch " + crc_bad[0]) << std::endl;
++            if (!crc_bad.empty())
++                throw std::runtime_error("BLU_INIT_FROM: loaded weights do not match the checkpoint");
++        }
++        if (is_master)
++            std::cout << "[init] weights only from " << init_dir << " (its step " << ck_step << ", loss "
++                      << std::fixed << std::setprecision(6) << ck_loss << "). Optimizer state, step "
++                         "and data position start fresh." << std::endl;
++    }
++
+     // ---- MFU meter ----
+     // Built here rather than at first use so its banner lands next to the
+     // parameter count it cross-checks itself against (6*N), and so a bogus
+@@ -1930,7 +2007,9 @@ int main(int argc, char** argv) {
+     // process-group setup above leaves it NULL at world_size == 1 (ZeRO-1 needs
+     // no collectives there). Give the checkpointer its own single-rank group so
+     // one-GPU runs can still save and resume instead of faulting in save().
+-    std::shared_ptr<ProcessGroupNCCL> ckpt_pg = pg;
++    // At W == 1, reuse the single-rank group BLU_INIT_FROM created above (if any) instead of
++    // creating a second group with the same name.
++    std::shared_ptr<ProcessGroupNCCL> ckpt_pg = pg ? pg : init_pg;
+     bool ckpt_enabled = getenv_int("BLU_CKPT", cfg.checkpointing ? 1 : 0) != 0;
+     if (ckpt_enabled && !ckpt_pg) {
+         try {

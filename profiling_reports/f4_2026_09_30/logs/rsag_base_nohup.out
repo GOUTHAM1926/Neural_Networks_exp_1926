@@ -1,0 +1,22 @@
+=== test_muon_rsag against dist/zero of e6eaeba  2026-09-30 16:16:41  clone HEAD a3aba3e  TI b975be5
+66337aa1e032b1a2d82942926a70f36c  /root/gautam_k/f4/base_e6eaeba/dist/zero/src/ShardedMuon.cpp
+7123a801f60bf0ce4a158c23fae3fe8e  /root/gautam_k/f4/base_e6eaeba/dist/zero/include/ShardedMuon.h
+000f62bf16bece481ba7ed8ed2617ad0  /root/gautam_k/f4/base_e6eaeba/dist/zero/tests/test_muon_rsag.cpp
+000f62bf16bece481ba7ed8ed2617ad0  dist/zero/tests/test_muon_rsag.cpp
+--- compile (CPU): /usr/bin/mpic++ -std=c++2a -fPIC -O3 -g -DWITH_CUDA -fopenmp -DUSE_FUSED_RMS_ROPE=1 -ITensor-Implementations/include -IProfiler/include -I/usr/local/cuda/include -Idist -Idist/FSDP -Idist/Tensor-Parallelism -Idist/Tensor-Parallelism/tensor -Idist/Tensor-Parallelism/dnn -Idist/Tensor-Parallelism/bridge -Idist/Tensor-Parallelism/memory -Idist/Data-Parallel/include -Idist/communication/include -I/root/gautam_k/f4/base_e6eaeba/dist/zero/include -Idist/Distributed_Checkpointing/include -I/opt/nvidia/nsight-compute/2025.4.1/host/target-linux-x64/nvtx/include -o /root/gautam_k/f4/test_muon_rsag_base_e6eaeba /root/gautam_k/f4/base_e6eaeba/dist/zero/tests/test_muon_rsag.cpp dist/FSDP/fsdp_init.cpp dist/FSDP/fsdp_comm.cpp dist/FSDP/fsdp_ddp.cpp /root/gautam_k/f4/base_e6eaeba/dist/zero/src/ShardedOptimizer.cpp /root/gautam_k/f4/base_e6eaeba/dist/zero/src/SymmetricShardedOptimizer.cpp /root/gautam_k/f4/base_e6eaeba/dist/zero/src/ShardedMuon.cpp -LTensor-Implementations/lib -LProfiler/lib -Ldist/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/root/gautam_k/BluTrain/Tensor-Implementations/lib -Wl,-rpath,/root/gautam_k/BluTrain/Profiler/lib -Wl,-rpath,/root/gautam_k/BluTrain/dist/lib -Wl,-rpath,/usr/lib/x86_64-linux-gnu -ldist -ltensor -lprofiler  -lcuda -lcudart -lcublas -lcurand -lnccl -lmpi -lgomp -lpthread -ldl -lz
+--- run: mpirun -np 1
+=== ShardedMuon reduce-scatter/all-gather equivalence (W=1, 22 params) ===
+
+-- scenario: sync publish --
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[sync publish] PASS bit-identical across 82120 elements
+[sync publish] grad_norm agrees: 165.624054
+
+-- scenario: staged refresh --
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[staged refresh] PASS bit-identical across 82120 elements
+[staged refresh] grad_norm agrees: 165.624054
+
+=== ALL TESTS PASSED ===
+--- exit code 0
+log: /root/gautam_k/f4/rsag_base_e6eaeba.log

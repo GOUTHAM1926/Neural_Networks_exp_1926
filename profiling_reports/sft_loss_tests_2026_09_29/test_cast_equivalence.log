@@ -1,0 +1,29 @@
+--- BLAS backend : cublas ---
+--- Compiling [CUDA] (sm_86): Tests/kernel_tests/test_cast_equivalence.cu ---
+/usr/local/cuda-13.0/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda-13.0/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -arch=sm_86 -o run_cuda_runner Tests/kernel_tests/test_cast_equivalence.cu \
+        -L/usr/local/cuda-13.0/lib64 -L/usr/local/cuda-13.0/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -ltensor -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -lcuda
+\n--- Running Tests/kernel_tests/test_cast_equivalence.cu ---
+
+==================== init-like   (sigma 0.5)  B=2048 V=50304 ====================
+C0 widen bf16->fp32 exact          : 0 / 103022592 mismatches   (predict 0)
+C5 CONTROL B vs B (determinism)    : 0 differing values        (predict 0)
+   anti-vacuity: unwritten A=0 B=0 | zero grads B=0 | wrong-sign B=0
+C1 saved_max A vs B                : 0 / 2048 mismatches     (predict 0)
+C2 saved_sum A vs B                : 1101 / 2048 bit-identical, worst rel 1.814e-07  (predict <= ~1e-6)
+C3 loss  A=22476.214843750  B=22476.214843750  rel 0.000e+00  (predict <= ~1e-6)
+C4 grad A vs B (bf16, into matmul) : identical 103021821 (99.9993%) | 1-ulp 771 | >1-ulp 0 | max|diff| 3.638e-12
+   (predict: mostly identical, rest 1 ulp, NONE > 1 ulp)
+
+==================== trained-like (sigma 3, target +8)  B=2048 V=50304 ====================
+C0 widen bf16->fp32 exact          : 0 / 103022592 mismatches   (predict 0)
+C5 CONTROL B vs B (determinism)    : 0 differing values        (predict 0)
+   anti-vacuity: unwritten A=0 B=0 | zero grads B=0 | wrong-sign B=0
+C1 saved_max A vs B                : 0 / 2048 mismatches     (predict 0)
+C2 saved_sum A vs B                : 1033 / 2048 bit-identical, worst rel 4.263e-07  (predict <= ~1e-6)
+C3 loss  A=15316.664062500  B=15316.664062500  rel 0.000e+00  (predict <= ~1e-6)
+C4 grad A vs B (bf16, into matmul) : identical 103021468 (99.9989%) | 1-ulp 1124 | >1-ulp 0 | max|diff| 7.276e-12
+   (predict: mostly identical, rest 1 ulp, NONE > 1 ulp)
+
+==================== SUMMARY ====================
+predictions violated: 0
+\n--- Removed run_cuda_runner (exit 0) ---

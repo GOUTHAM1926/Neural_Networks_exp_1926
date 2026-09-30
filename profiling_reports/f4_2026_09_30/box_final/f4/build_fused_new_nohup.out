@@ -1,0 +1,16 @@
+=== build bluscript_zero_ckpt_bluccl_fused.cpp -> /root/gautam_k/f4/_runner_fused_new  2026-09-30 16:21:54  BluTrain a3aba3e  TI b975be5
+ M Tensor-Implementations
+ M dist/zero/include/ShardedMuon.h
+ M dist/zero/include/ShardedOptimizer.h
+ M dist/zero/include/SymmetricShardedOptimizer.h
+ M dist/zero/src/ShardedMuon.cpp
+ M dist/zero/src/ShardedOptimizer.cpp
+ M dist/zero/src/SymmetricShardedOptimizer.cpp
+7d2e0d5496cb842a00acd8a5390a6ad1  dist/zero/src/ShardedOptimizer.cpp
+1453b02875beb1d654ab053b6e04737b  dist/zero/src/SymmetricShardedOptimizer.cpp
+e7ddc348e076854a84166b9f9834b75a  dist/zero/src/ShardedMuon.cpp
+c02bc544d42e208267210ce46ce80f78  bluscript_zero_ckpt_bluccl_fused.cpp
+--- compile (CPU): /usr/bin/mpic++ -std=c++2a -fPIC -O3 -g -DWITH_CUDA -fopenmp -DUSE_FUSED_RMS_ROPE=1 -ITensor-Implementations/include -IProfiler/include -I/usr/local/cuda/include -Idist -Idist/FSDP -Idist/Tensor-Parallelism -Idist/Tensor-Parallelism/tensor -Idist/Tensor-Parallelism/dnn -Idist/Tensor-Parallelism/bridge -Idist/Tensor-Parallelism/memory -Idist/Data-Parallel/include -Idist/communication/include -Idist/zero/include -Idist/Distributed_Checkpointing/include -I/opt/nvidia/nsight-compute/2025.4.1/host/target-linux-x64/nvtx/include -o /root/gautam_k/f4/_runner_fused_new bluscript_zero_ckpt_bluccl_fused.cpp dist/FSDP/fsdp_init.cpp dist/FSDP/fsdp_comm.cpp dist/FSDP/fsdp_ddp.cpp dist/zero/src/ShardedOptimizer.cpp dist/zero/src/SymmetricShardedOptimizer.cpp dist/zero/src/ShardedMuon.cpp -LTensor-Implementations/lib -LProfiler/lib -Ldist/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/root/gautam_k/BluTrain/Tensor-Implementations/lib -Wl,-rpath,/root/gautam_k/BluTrain/Profiler/lib -Wl,-rpath,/root/gautam_k/BluTrain/dist/lib -Wl,-rpath,/usr/lib/x86_64-linux-gnu -ldist -ltensor -lprofiler  -lcuda -lcudart -lcublas -lcurand -lnccl -lmpi -lgomp -lpthread -ldl -lz
+--- OK in 38 s
+-rwxr-xr-x 1 root root 12505568 Sep 30 16:22 /root/gautam_k/f4/_runner_fused_new
+95fab54b1df2e4dc0fdb0cc4d468195b  /root/gautam_k/f4/_runner_fused_new

@@ -1,0 +1,292 @@
+--- a/dist/zero/include/ShardedOptimizer.h
++++ b/dist/zero/include/ShardedOptimizer.h
+@@ -196,6 +196,7 @@
+     void gather_grads_into_flat();               // model grads -> flat_stage_
+     void reduce_scatter_grads();                 // flat_stage_ -> shard_grad_ (avg)
+     void cast_shard_grad_to_fp32();              // shard_grad_ -> shard_grad_fp32_
++    void stage_grads_direct_fp32();              // W == 1 only (F4): grads -> shard_grad_fp32_
+     std::string nonfinite_grad_msg(float nsq) const;   // F1: text for ZeroNonFiniteGradError
+     bool unscale_and_check_overflow();           // returns true if overflow (skip step)
+     void clip_gradients();                       // global-norm clip on shard_grad_fp32_
+--- a/dist/zero/include/SymmetricShardedOptimizer.h
++++ b/dist/zero/include/SymmetricShardedOptimizer.h
+@@ -288,6 +288,7 @@
+     void gather_grads_into_flat();          // reference (non-overlap) path
+     void reduce_scatter_grads();            // reference (non-overlap) path
+     void cast_shard_grad_to_fp32();
++    void stage_grads_direct_fp32();         // W == 1 only (F4): grads -> shard_grad_fp32_
+     // ONE elementwise pass that applies 1/W (undoing op=sum), the loss-scaler
+     // inverse and the clip coefficient together. Returns false if the step must
+     // be skipped (non-finite gradient under a loss scaler).
+--- a/dist/zero/include/ShardedMuon.h
++++ b/dist/zero/include/ShardedMuon.h
+@@ -523,6 +523,7 @@
+     void stage_grad_into_flat(size_t ridx, const Tensor& grad);
+     void on_grad_ready_rsag(size_t ridx, const Tensor& grad);
+     void stage_all_grads_reference();      // non-overlap path
++    void prepare_direct_grads();           // W == 1 only (F4): readers use the model grads
+     void issue_bucket_rs(size_t bidx);
+     void finalize_reduce_scatter();        // mop-up + wait + comm->compute edge
+ 
+@@ -735,6 +736,9 @@
+     // the parameter's own gradient tensor when it is already contiguous and in
+     // the wire dtype (no copy), or the cast/contiguous temporary otherwise.
+     std::vector<Tensor> reduce_keepalive_;
++    // W == 1 only (F4): each owned slot's gradient, contiguous, where autograd left it.
++    // Read by accumulate_owned_grad_norm() and owned_grad_fp32(); invalid = no gradient.
++    std::vector<Tensor> direct_grads_;
+ 
+     // Cross-group clipping state (see ZeroOptimizerBase::reduce_and_measure).
+     float cached_nsq_         = -1.0f;
+--- a/dist/zero/src/ShardedOptimizer.cpp
++++ b/dist/zero/src/ShardedOptimizer.cpp
+@@ -1013,6 +1013,42 @@
+     }
+ }
+ 
++// F4: at W == 1 nothing is sent, so the gradient does not go through the wire buffer.
++// What: copy each parameter's gradient straight into shard_grad_fp32_, the buffer the unscale,
++//       the norm, the clip and Adam read. Autograd keeps the gradient of a bf16/fp16 parameter
++//       in fp32, so this is an fp32 -> fp32 copy (a lower-precision gradient is widened, which is
++//       exact). At W == 1 the shard is the whole flat space (shard_begin_ == 0, S_ ==
++//       padded_numel_), so a parameter's flat offset is also its shard offset.
++// Was:  gather_grads_into_flat() (fp32 -> compute dtype into flat_stage_), a plain W == 1 copy
++//       into shard_grad_ (reduce_scatter_grads), then cast_shard_grad_to_fp32() (back to fp32).
++//       On a bf16 group that rounded the whole gradient to bf16 once per step although nothing
++//       was sent.
++// Why:  the optimizer sees the exact accumulated gradient, and in one pass instead of three.
++void ShardedOptimizer::stage_grads_direct_fp32() {
++    float* base = shard_grad_fp32_.data<float>();
++    for (const auto& rec : records_) {
++        float* dst = base + rec.offset;
++        if (rec.param.has_grad()) {
++            Tensor g = rec.param.grad_view();
++            if (!g.is_contiguous()) g = g.contiguous();
++            if (g.dtype() == Dtype::Float32) {
++                d2d(dst, g.data(), rec.numel * sizeof(float), device_);
++            } else {
++                OwnTensor::convert_type_cuda_generic(g.data(), g.dtype(), dst, Dtype::Float32,
++                                                     static_cast<int64_t>(rec.numel),
++                                                     ocuda::getCurrentStream());
++            }
++        } else {
++            // param requires grad but produced none this step (unused): gradient 0,
++            // exactly as gather_grads_into_flat() treats it.
++            zero_async(dst, rec.numel * sizeof(float));
++        }
++    }
++    if (padded_numel_ > total_numel_) {
++        zero_async(base + total_numel_, (padded_numel_ - total_numel_) * sizeof(float));
++    }
++}
++
+ void ShardedOptimizer::local_adam_step() {
+     const float bc1 = 1.0f - std::pow(cfg_.beta1, static_cast<float>(step_count_));
+     const float bc2 = 1.0f - std::pow(cfg_.beta2, static_cast<float>(step_count_));
+@@ -1093,13 +1129,17 @@
+         // holds this rank's averaged gradient shard exactly as the monolithic
+         // gather + reduce_scatter would have produced it.
+         finalize_overlap_reduce();
++    } else if (W_ == 1) {
++        // F4: at W == 1 nothing is sent, so the gradients skip the wire buffer and go
++        // straight into shard_grad_fp32_ (see stage_grads_direct_fp32). Nothing to cast.
++        stage_grads_direct_fp32();
+     } else {
+         // Reference path: either overlap is off, or the caller did not arm this
+         // pass — the (inert) hooks left grads untouched, so gather them normally.
+         gather_grads_into_flat();
+         reduce_scatter_grads();
+     }
+-    cast_shard_grad_to_fp32();
++    if (W_ > 1) cast_shard_grad_to_fp32();   // W == 1 wrote fp32 directly (F4)
+ 
+     // Loss-scaler unscale (grad *= 1/scale) belongs here, not after: the norm this
+     // reduction feeds must be the norm of the TRUE gradient.
+--- a/dist/zero/src/SymmetricShardedOptimizer.cpp
++++ b/dist/zero/src/SymmetricShardedOptimizer.cpp
+@@ -216,6 +216,11 @@
+                       << "): " << (flat_extra + shard_delta) << " MB/GPU extra"
+                       << "  [separate " << flat_extra << " MB grad staging buffer"
+                       << ", shard_grad_ " << shard_delta << " MB]" << std::endl;
++            // F4: at W == 1 stage_grads_direct_fp32() never touches the wire buffer, so the
++            // forced dtype changes nothing. Say so, rather than let the flag look active.
++            if (W_ == 1)
++                std::cout << "[ZeRO-1 v2] that wire dtype has no effect at W=1: nothing is "
++                             "sent, Adam reads the fp32 gradients directly (F4)" << std::endl;
+         }
+         if (W_ > 1 && !symmetric_active_) {
+             std::cout << "[ZeRO-1 v2] NOTE: symmetric memory is NOT active — "
+@@ -1023,6 +1028,41 @@
+     sync_compute();
+ }
+ 
++// F4: at W == 1 nothing is sent, so the gradient does not go through the wire buffer.
++// What: copy each parameter's gradient straight into shard_grad_fp32_, the buffer the norm, the
++//       scale pass and Adam read. Autograd keeps the gradient of a bf16/fp16 parameter in fp32,
++//       so this is an fp32 -> fp32 copy (a lower-precision gradient is widened, which is exact).
++//       At W == 1 the shard is the whole flat space (S_ == padded_numel_, and build_buckets()
++//       gives every bucket shard_offset == begin), so a flat offset is also a shard offset.
++// Was:  gather_grads_into_flat() (fp32 -> wire dtype into flat_grad_), then
++//       cast_shard_grad_to_fp32() (wire dtype -> fp32). On a bf16 group that rounded the whole
++//       gradient to bf16 once per step although nothing was sent -- and a forced wire dtype
++//       (BLU_BF16_REDUCE) did the same to an fp32 group.
++// Why:  the optimizer sees the exact accumulated gradient, and in one pass instead of two.
++void SymmetricShardedOptimizer::stage_grads_direct_fp32() {
++    float* base = shard_grad_fp32_.data<float>();
++    for (const auto& rec : records_) {
++        float* dst = base + rec.offset;
++        if (rec.param.has_grad()) {
++            Tensor g = rec.param.grad_view();
++            if (!g.is_contiguous()) g = g.contiguous();
++            if (g.dtype() == Dtype::Float32) {
++                d2d(dst, g.data(), rec.numel * sizeof(float), device_);
++            } else {
++                OwnTensor::convert_type_cuda_generic(g.data(), g.dtype(), dst, Dtype::Float32,
++                                                     static_cast<int64_t>(rec.numel),
++                                                     ocuda::getCurrentStream());
++            }
++        } else {
++            zero_async(dst, rec.numel * sizeof(float));   // unused this step: gradient 0
++        }
++    }
++    if (padded_numel_ > total_numel_) {
++        zero_async(base + total_numel_, (padded_numel_ - total_numel_) * sizeof(float));
++    }
++    sync_compute();
++}
++
+ // ======================================================================
+ // One combined scale pass: 1/W (undo op=sum) * loss-scale inverse * clip coef
+ // ======================================================================
+@@ -1044,11 +1084,15 @@
+ void SymmetricShardedOptimizer::reduce_grads_now() {
+     if (overlap_active_ && armed_) {
+         finalize_overlap_reduce();
++    } else if (W_ == 1) {
++        // F4: at W == 1 nothing is sent, so the gradients skip the wire buffer and go
++        // straight into shard_grad_fp32_ (see stage_grads_direct_fp32). Nothing to cast.
++        stage_grads_direct_fp32();
+     } else {
+         gather_grads_into_flat();
+         reduce_scatter_grads();
+     }
+-    cast_shard_grad_to_fp32();
++    if (W_ > 1) cast_shard_grad_to_fp32();   // W == 1 wrote fp32 directly (F4)
+     grads_reduced_ = true;
+ }
+ 
+--- a/dist/zero/src/ShardedMuon.cpp
++++ b/dist/zero/src/ShardedMuon.cpp
+@@ -300,6 +300,12 @@
+         }
+     }
+     reduce_dtype_ = resolve_reduce_dtype(cfg_.reduce_dtype, compute_dtype_);
++    // F4: at W == 1 nothing is sent (see prepare_direct_grads), so a forced wire dtype
++    // (BLU_BF16_REDUCE / BLU_FP32_REDUCE) changes nothing. Say so, rather than let it look active.
++    if (W_ == 1 && reduce_dtype_ != compute_dtype_ && cfg_.verbose && rank_ == 0)
++        std::cout << "[ZeRO-1/Muon] reduce dtype " << OwnTensor::get_dtype_name(reduce_dtype_)
++                  << " has no effect at W=1: nothing is sent, the gradients are read in their "
++                     "own dtype (F4)" << std::endl;
+ 
+     total_numel_ = 0;
+     max_numel_   = 0;
+@@ -1222,6 +1228,27 @@
+                                           /*op=*/sum, /*sync=*/false, b.rs_work);
+ }
+ 
++// F4: at W == 1 nothing is sent, so the gradients do not go through the wire buffers.
++// What: keep a contiguous handle on each owned parameter's gradient, where autograd left it
++//       (fp32 for a bf16/fp16 parameter: autograd keeps those gradients in fp32).
++//       accumulate_owned_grad_norm() and owned_grad_fp32() read it from there, in its own
++//       dtype. An invalid handle means "no gradient this step" and reads as zero.
++// Was:  stage_all_grads_reference() / reduce_all_grads_reference() converted every gradient to
++//       the wire dtype (flat_grad_ / flat_owned_grad_) and the readers widened it back: on a
++//       bf16 model the whole gradient was rounded to bf16 once per step although nothing was
++//       sent. Both collective modes (RS/AG and reduce/broadcast) take this path at W == 1, so
++//       they still agree bit for bit (test_muon_rsag).
++// Why:  the norm and the update see the exact accumulated gradient, with no staging pass.
++void ShardedMuon::prepare_direct_grads() {
++    direct_grads_.assign(owned_.size(), Tensor());
++    for (size_t s = 0; s < owned_.size(); ++s) {
++        const auto& rec = records_[owned_[s]];
++        if (!rec.param.has_grad()) continue;
++        Tensor g = rec.param.grad_view();
++        direct_grads_[s] = g.is_contiguous() ? g : g.contiguous();
++    }
++}
++
+ void ShardedMuon::stage_all_grads_reference() {
+     reduce_keepalive_.clear();
+     for (auto& b : buckets_) { b.pending = b.pending_init; b.launched = false; }
+@@ -1314,7 +1341,19 @@
+                      owned_grad_offset_[slot] * rsz;
+ 
+     Tensor dst = grad_scratch_.slice_inplace(0, rec.numel).view(rec.param.shape());
+-    const kernels::ElemKind kind = elem_kind(reduce_dtype_);
++    // F4: at W == 1 the gradient is read where autograd left it (prepare_direct_grads), in its
++    // own dtype -- fp32 for a bf16/fp16 parameter -- instead of from the wire buffer.
++    Dtype src_dtype = reduce_dtype_;
++    if (W_ == 1) {
++        const Tensor& g = direct_grads_.at(slot);
++        if (!g.is_valid()) {   // no gradient this step: it is zero
++            cudaMemsetAsync(dst.data(), 0, rec.numel * sizeof(float), ocuda::getCurrentStream());
++            return dst;
++        }
++        src       = g.data();
++        src_dtype = g.dtype();
++    }
++    const kernels::ElemKind kind = elem_kind(src_dtype);
+     if (kind != kernels::ElemKind::UNSUPPORTED) {
+         // Up-cast and prescale in ONE pass. Bit-identical to the cast followed by
+         // muon_scale_inplace_cuda that this replaces (see ZeroKernels.h), minus
+@@ -1324,7 +1363,7 @@
+                                     ocuda::getCurrentStream());
+     } else {
+         OwnTensor::convert_type_cuda_generic(
+-            src, reduce_dtype_, dst.data<float>(), Dtype::Float32,
++            src, src_dtype, dst.data<float>(), Dtype::Float32,
+             static_cast<int64_t>(rec.numel), ocuda::getCurrentStream());
+         // muon_scale_inplace_cuda, not multi_tensor_scale_cuda: both compute
+         // `x[i] *= s` with the same rounding, but the multi-tensor entry point
+@@ -1367,6 +1406,28 @@
+     // back to back while reduce/broadcast pads each slot, so the two collective
+     // modes would stop agreeing bit for bit (test_muon_rsag relies on that at
+     // W=1, where the clip coefficient reaches the AdamW-path tensors).
++    if (W_ == 1) {
++        // F4: read each owned gradient where autograd left it (prepare_direct_grads), in its own
++        // dtype. One launch per owned tensor in slot order, as below, so it stays deterministic.
++        for (size_t s = 0; s < owned_.size(); ++s) {
++            const Tensor& g = direct_grads_.at(s);
++            if (!g.is_valid()) continue;   // no gradient this step: adds 0
++            const int64_t n = static_cast<int64_t>(records_[owned_[s]].numel);
++            const kernels::ElemKind gk = elem_kind(g.dtype());
++            if (gk == kernels::ElemKind::UNSUPPORTED) {
++                // Generic fallback; the sync protects multi_tensor_*'s static descriptor buffer.
++                Tensor f = owned_grad_fp32(s, /*apply_clip=*/false);
++                std::vector<ocuda::TensorInfo> gi{ ocuda::TensorInfo{ f.data<float>(), n } };
++                ocuda::multi_tensor_grad_norm_cuda(gi, d_out);
++                sync_compute();
++                continue;
++            }
++            kernels::sumsq_accumulate(g.data(), gk, n, grad_prescale_, d_out, d_sumsq_partials_,
++                                      ocuda::getCurrentStream());
++        }
++        return;
++    }
++
+     const kernels::ElemKind kind = elem_kind(reduce_dtype_);
+     if (kind == kernels::ElemKind::UNSUPPORTED) {
+         // Generic fallback for a wire dtype the kernel does not cover. The sync
+@@ -2133,7 +2194,11 @@
+ // gone: the reduced gradients are consumed straight out of the wire buffer, one
+ // tensor at a time, by owned_grad_fp32().
+ void ShardedMuon::reduce_grads_now() {
+-    if (rsag()) {
++    if (W_ == 1) {
++        // F4: at W == 1 nothing is sent -- nothing is staged into the wire buffers; the norm
++        // and the update read each parameter's own gradient (see prepare_direct_grads).
++        prepare_direct_grads();
++    } else if (rsag()) {
+         if (overlap_active_ && armed_) {
+             finalize_reduce_scatter();   // mop-up + wait; staged during backward
+         } else {
