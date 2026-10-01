@@ -1,0 +1,361 @@
+grad,s_target,s_actual,table,group,quantity,rows,median,max
+iid,0.01,0.009023,fp32 table,top64(K high),combined,64,0.00166129,0.00173014
+iid,0.01,0.009023,fp32 table,top64(K high),lookup only,64,8.39416e-10,5.47589e-09
+iid,0.01,0.009023,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,0.01,0.009023,fp32 table,top64(K high),lookup kept,64,1.63527e-06,3.41422e-06
+iid,0.01,0.009023,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+iid,0.01,0.009023,fp32 table,top64(K high),floor(bf16),64,0.00165713,0.00175827
+iid,0.01,0.009023,fp32 table,random present,combined,128,0.00164699,0.00172907
+iid,0.01,0.009023,fp32 table,random present,lookup only,128,0,1.66834e-09
+iid,0.01,0.009023,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,0.01,0.009023,fp32 table,random present,lookup kept,128,1.62704e-07,8.26672e-07
+iid,0.01,0.009023,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+iid,0.01,0.009023,fp32 table,random present,floor(bf16),128,0.00165775,0.00173538
+iid,0.01,0.009023,fp32 table,absent,combined,64,0.0016577,0.00173489
+iid,0.01,0.009023,fp32 table,absent,lookup only,0,nan,nan
+iid,0.01,0.009023,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,0.01,0.009023,fp32 table,absent,lookup kept,0,nan,nan
+iid,0.01,0.009023,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,0.01,0.009023,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+iid,0.01,0.009023,bf16 table,top64(K high),combined,64,0.00234366,0.00246599
+iid,0.01,0.009023,bf16 table,top64(K high),lookup only,64,0.00581009,0.0154387
+iid,0.01,0.009023,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,0.01,0.009023,bf16 table,top64(K high),lookup kept,64,0.212792,0.228362
+iid,0.01,0.009023,bf16 table,top64(K high),lm_head kept,64,0.00234277,0.00246603
+iid,0.01,0.009023,bf16 table,top64(K high),floor(bf16),64,0.00165713,0.00175827
+iid,0.01,0.009023,bf16 table,random present,combined,128,0.00233203,0.00249771
+iid,0.01,0.009023,bf16 table,random present,lookup only,128,0,0.00410953
+iid,0.01,0.009023,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,0.01,0.009023,bf16 table,random present,lookup kept,128,0.210981,0.230501
+iid,0.01,0.009023,bf16 table,random present,lm_head kept,128,0.00233216,0.00249803
+iid,0.01,0.009023,bf16 table,random present,floor(bf16),128,0.00165775,0.00173538
+iid,0.01,0.009023,bf16 table,absent,combined,64,0.0016577,0.00173489
+iid,0.01,0.009023,bf16 table,absent,lookup only,0,nan,nan
+iid,0.01,0.009023,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,0.01,0.009023,bf16 table,absent,lookup kept,0,nan,nan
+iid,0.01,0.009023,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,0.01,0.009023,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489
+iid,0.1,0.07218,fp32 table,top64(K high),combined,64,0.00166016,0.00173065
+iid,0.1,0.07218,fp32 table,top64(K high),lookup only,64,8.39416e-10,5.47589e-09
+iid,0.1,0.07218,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,0.1,0.07218,fp32 table,top64(K high),lookup kept,64,7.62598e-08,2.85636e-07
+iid,0.1,0.07218,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+iid,0.1,0.07218,fp32 table,top64(K high),floor(bf16),64,0.00166117,0.00174886
+iid,0.1,0.07218,fp32 table,random present,combined,128,0.00164497,0.00172476
+iid,0.1,0.07218,fp32 table,random present,lookup only,128,0,1.66834e-09
+iid,0.1,0.07218,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,0.1,0.07218,fp32 table,random present,lookup kept,128,0,4.01914e-08
+iid,0.1,0.07218,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+iid,0.1,0.07218,fp32 table,random present,floor(bf16),128,0.00165433,0.001735
+iid,0.1,0.07218,fp32 table,absent,combined,64,0.0016577,0.00173489
+iid,0.1,0.07218,fp32 table,absent,lookup only,0,nan,nan
+iid,0.1,0.07218,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,0.1,0.07218,fp32 table,absent,lookup kept,0,nan,nan
+iid,0.1,0.07218,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,0.1,0.07218,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+iid,0.1,0.07218,bf16 table,top64(K high),combined,64,0.00238091,0.00258243
+iid,0.1,0.07218,bf16 table,top64(K high),lookup only,64,0.00581009,0.0154294
+iid,0.1,0.07218,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,0.1,0.07218,bf16 table,top64(K high),lookup kept,64,0.0275104,0.0309878
+iid,0.1,0.07218,bf16 table,top64(K high),lm_head kept,64,0.00236352,0.0024672
+iid,0.1,0.07218,bf16 table,top64(K high),floor(bf16),64,0.00166117,0.00174886
+iid,0.1,0.07218,bf16 table,random present,combined,128,0.00233729,0.00248928
+iid,0.1,0.07218,bf16 table,random present,lookup only,128,0,0.00410953
+iid,0.1,0.07218,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,0.1,0.07218,bf16 table,random present,lookup kept,128,0.0267806,0.0287945
+iid,0.1,0.07218,bf16 table,random present,lm_head kept,128,0.00234144,0.00248531
+iid,0.1,0.07218,bf16 table,random present,floor(bf16),128,0.00165433,0.001735
+iid,0.1,0.07218,bf16 table,absent,combined,64,0.0016577,0.00173489
+iid,0.1,0.07218,bf16 table,absent,lookup only,0,nan,nan
+iid,0.1,0.07218,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,0.1,0.07218,bf16 table,absent,lookup kept,0,nan,nan
+iid,0.1,0.07218,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,0.1,0.07218,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489
+iid,1,1.155,fp32 table,top64(K high),combined,64,0.00117403,0.00126191
+iid,1,1.155,fp32 table,top64(K high),lookup only,64,8.39416e-10,5.47589e-09
+iid,1,1.155,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,1,1.155,fp32 table,top64(K high),lookup kept,64,2.37497e-09,9.30242e-09
+iid,1,1.155,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+iid,1,1.155,fp32 table,top64(K high),floor(bf16),64,0.00166309,0.00174137
+iid,1,1.155,fp32 table,random present,combined,128,0.00116422,0.00125462
+iid,1,1.155,fp32 table,random present,lookup only,128,0,1.66834e-09
+iid,1,1.155,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,1,1.155,fp32 table,random present,lookup kept,128,0,1.66834e-09
+iid,1,1.155,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+iid,1,1.155,fp32 table,random present,floor(bf16),128,0.00165732,0.00176308
+iid,1,1.155,fp32 table,absent,combined,64,0.0016577,0.00173489
+iid,1,1.155,fp32 table,absent,lookup only,0,nan,nan
+iid,1,1.155,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,1,1.155,fp32 table,absent,lookup kept,0,nan,nan
+iid,1,1.155,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,1,1.155,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+iid,1,1.155,bf16 table,top64(K high),combined,64,0.00470903,0.0110831
+iid,1,1.155,bf16 table,top64(K high),lookup only,64,0.00581009,0.0155039
+iid,1,1.155,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,1,1.155,bf16 table,top64(K high),lookup kept,64,0.00641317,0.0156055
+iid,1,1.155,bf16 table,top64(K high),lm_head kept,64,0.00311511,0.00817582
+iid,1,1.155,bf16 table,top64(K high),floor(bf16),64,0.00166309,0.00174137
+iid,1,1.155,bf16 table,random present,combined,128,0.00216619,0.0036078
+iid,1,1.155,bf16 table,random present,lookup only,128,0,0.00410953
+iid,1,1.155,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,1,1.155,bf16 table,random present,lookup kept,128,0.00258404,0.00485788
+iid,1,1.155,bf16 table,random present,lm_head kept,128,0.00302777,0.00345751
+iid,1,1.155,bf16 table,random present,floor(bf16),128,0.00165732,0.00176308
+iid,1,1.155,bf16 table,absent,combined,64,0.0016577,0.00173489
+iid,1,1.155,bf16 table,absent,lookup only,0,nan,nan
+iid,1,1.155,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,1,1.155,bf16 table,absent,lookup kept,0,nan,nan
+iid,1,1.155,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,1,1.155,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489
+iid,10,9.24,fp32 table,top64(K high),combined,64,0.000206393,0.000221124
+iid,10,9.24,fp32 table,top64(K high),lookup only,64,8.39416e-10,5.47589e-09
+iid,10,9.24,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,10,9.24,fp32 table,top64(K high),lookup kept,64,9.43673e-10,5.78586e-09
+iid,10,9.24,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+iid,10,9.24,fp32 table,top64(K high),floor(bf16),64,0.00165424,0.00172436
+iid,10,9.24,fp32 table,random present,combined,128,0.000204677,0.000222519
+iid,10,9.24,fp32 table,random present,lookup only,128,0,1.66834e-09
+iid,10,9.24,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,10,9.24,fp32 table,random present,lookup kept,128,0,2.4677e-09
+iid,10,9.24,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+iid,10,9.24,fp32 table,random present,floor(bf16),128,0.00165519,0.00173988
+iid,10,9.24,fp32 table,absent,combined,64,0.0016577,0.00173489
+iid,10,9.24,fp32 table,absent,lookup only,0,nan,nan
+iid,10,9.24,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,10,9.24,fp32 table,absent,lookup kept,0,nan,nan
+iid,10,9.24,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,10,9.24,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+iid,10,9.24,bf16 table,top64(K high),combined,64,0.00606098,0.0154357
+iid,10,9.24,bf16 table,top64(K high),lookup only,64,0.00581009,0.0154317
+iid,10,9.24,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,10,9.24,bf16 table,top64(K high),lookup kept,64,0.00608501,0.015546
+iid,10,9.24,bf16 table,top64(K high),lm_head kept,64,0.0139768,0.0586947
+iid,10,9.24,bf16 table,top64(K high),floor(bf16),64,0.00165424,0.00172436
+iid,10,9.24,bf16 table,random present,combined,128,0.0017108,0.00446392
+iid,10,9.24,bf16 table,random present,lookup only,128,0,0.00410953
+iid,10,9.24,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,10,9.24,bf16 table,random present,lookup kept,128,0.00171263,0.00448926
+iid,10,9.24,bf16 table,random present,lm_head kept,128,0.0136196,0.0182686
+iid,10,9.24,bf16 table,random present,floor(bf16),128,0.00165519,0.00173988
+iid,10,9.24,bf16 table,absent,combined,64,0.0016577,0.00173489
+iid,10,9.24,bf16 table,absent,lookup only,0,nan,nan
+iid,10,9.24,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,10,9.24,bf16 table,absent,lookup kept,0,nan,nan
+iid,10,9.24,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,10,9.24,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489
+iid,100,73.92,fp32 table,top64(K high),combined,64,2.6037e-05,2.79381e-05
+iid,100,73.92,fp32 table,top64(K high),lookup only,64,8.39416e-10,5.47589e-09
+iid,100,73.92,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,100,73.92,fp32 table,top64(K high),lookup kept,64,1.44298e-09,5.47589e-09
+iid,100,73.92,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+iid,100,73.92,fp32 table,top64(K high),floor(bf16),64,0.00166806,0.00171581
+iid,100,73.92,fp32 table,random present,combined,128,2.57881e-05,2.79598e-05
+iid,100,73.92,fp32 table,random present,lookup only,128,0,1.66834e-09
+iid,100,73.92,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,100,73.92,fp32 table,random present,lookup kept,128,0,2.90825e-09
+iid,100,73.92,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+iid,100,73.92,fp32 table,random present,floor(bf16),128,0.00165489,0.00174204
+iid,100,73.92,fp32 table,absent,combined,64,0.0016577,0.00173489
+iid,100,73.92,fp32 table,absent,lookup only,0,nan,nan
+iid,100,73.92,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,100,73.92,fp32 table,absent,lookup kept,0,nan,nan
+iid,100,73.92,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,100,73.92,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+iid,100,73.92,bf16 table,top64(K high),combined,64,0.00606849,0.0155391
+iid,100,73.92,bf16 table,top64(K high),lookup only,64,0.00581009,0.0153643
+iid,100,73.92,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+iid,100,73.92,bf16 table,top64(K high),lookup kept,64,0.0060639,0.0155394
+iid,100,73.92,bf16 table,top64(K high),lm_head kept,64,0.108904,0.476007
+iid,100,73.92,bf16 table,top64(K high),floor(bf16),64,0.00166806,0.00171581
+iid,100,73.92,bf16 table,random present,combined,128,0.00168365,0.00441582
+iid,100,73.92,bf16 table,random present,lookup only,128,0,0.00410953
+iid,100,73.92,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+iid,100,73.92,bf16 table,random present,lookup kept,128,0.00168363,0.00441563
+iid,100,73.92,bf16 table,random present,lm_head kept,128,0.105879,0.149451
+iid,100,73.92,bf16 table,random present,floor(bf16),128,0.00165489,0.00174204
+iid,100,73.92,bf16 table,absent,combined,64,0.0016577,0.00173489
+iid,100,73.92,bf16 table,absent,lookup only,0,nan,nan
+iid,100,73.92,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+iid,100,73.92,bf16 table,absent,lookup kept,0,nan,nan
+iid,100,73.92,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+iid,100,73.92,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,0.01,0.007516,fp32 table,top64(K high),combined,64,0.00166185,0.00172954
+aligned0.9,0.01,0.007516,fp32 table,top64(K high),lookup only,64,5.65327e-10,3.97809e-09
+aligned0.9,0.01,0.007516,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,0.01,0.007516,fp32 table,top64(K high),lookup kept,64,5.0525e-06,6.23158e-06
+aligned0.9,0.01,0.007516,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+aligned0.9,0.01,0.007516,fp32 table,top64(K high),floor(bf16),64,0.00166252,0.00170562
+aligned0.9,0.01,0.007516,fp32 table,random present,combined,128,0.0016469,0.00172921
+aligned0.9,0.01,0.007516,fp32 table,random present,lookup only,128,0,0
+aligned0.9,0.01,0.007516,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,0.01,0.007516,fp32 table,random present,lookup kept,128,4.06684e-06,6.69021e-06
+aligned0.9,0.01,0.007516,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+aligned0.9,0.01,0.007516,fp32 table,random present,floor(bf16),128,0.00164753,0.0017514
+aligned0.9,0.01,0.007516,fp32 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,0.01,0.007516,fp32 table,absent,lookup only,0,nan,nan
+aligned0.9,0.01,0.007516,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,0.01,0.007516,fp32 table,absent,lookup kept,0,nan,nan
+aligned0.9,0.01,0.007516,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,0.01,0.007516,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,0.01,0.007516,bf16 table,top64(K high),combined,64,0.0022886,0.00250022
+aligned0.9,0.01,0.007516,bf16 table,top64(K high),lookup only,64,0.00472026,0.0148467
+aligned0.9,0.01,0.007516,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,0.01,0.007516,bf16 table,top64(K high),lookup kept,64,0.389819,0.52433
+aligned0.9,0.01,0.007516,bf16 table,top64(K high),lm_head kept,64,0.00228841,0.002498
+aligned0.9,0.01,0.007516,bf16 table,top64(K high),floor(bf16),64,0.00166252,0.00170562
+aligned0.9,0.01,0.007516,bf16 table,random present,combined,128,0.00184244,0.0021704
+aligned0.9,0.01,0.007516,bf16 table,random present,lookup only,128,0,0.00328701
+aligned0.9,0.01,0.007516,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,0.01,0.007516,bf16 table,random present,lookup kept,128,0.798077,0.830805
+aligned0.9,0.01,0.007516,bf16 table,random present,lm_head kept,128,0.00184243,0.00217045
+aligned0.9,0.01,0.007516,bf16 table,random present,floor(bf16),128,0.00164753,0.0017514
+aligned0.9,0.01,0.007516,bf16 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,0.01,0.007516,bf16 table,absent,lookup only,0,nan,nan
+aligned0.9,0.01,0.007516,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,0.01,0.007516,bf16 table,absent,lookup kept,0,nan,nan
+aligned0.9,0.01,0.007516,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,0.01,0.007516,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,0.1,0.1203,fp32 table,top64(K high),combined,64,0.00165988,0.00172583
+aligned0.9,0.1,0.1203,fp32 table,top64(K high),lookup only,64,5.65327e-10,3.97809e-09
+aligned0.9,0.1,0.1203,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,0.1,0.1203,fp32 table,top64(K high),lookup kept,64,1.31131e-07,1.59951e-07
+aligned0.9,0.1,0.1203,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+aligned0.9,0.1,0.1203,fp32 table,top64(K high),floor(bf16),64,0.00166072,0.00171912
+aligned0.9,0.1,0.1203,fp32 table,random present,combined,128,0.00164673,0.00172761
+aligned0.9,0.1,0.1203,fp32 table,random present,lookup only,128,0,0
+aligned0.9,0.1,0.1203,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,0.1,0.1203,fp32 table,random present,lookup kept,128,3.44839e-08,1.6763e-07
+aligned0.9,0.1,0.1203,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+aligned0.9,0.1,0.1203,fp32 table,random present,floor(bf16),128,0.00166283,0.00175852
+aligned0.9,0.1,0.1203,fp32 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,0.1,0.1203,fp32 table,absent,lookup only,0,nan,nan
+aligned0.9,0.1,0.1203,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,0.1,0.1203,fp32 table,absent,lookup kept,0,nan,nan
+aligned0.9,0.1,0.1203,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,0.1,0.1203,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,0.1,0.1203,bf16 table,top64(K high),combined,64,0.00239855,0.00348638
+aligned0.9,0.1,0.1203,bf16 table,top64(K high),lookup only,64,0.00472026,0.0148484
+aligned0.9,0.1,0.1203,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,0.1,0.1203,bf16 table,top64(K high),lookup kept,64,0.0259809,0.0389191
+aligned0.9,0.1,0.1203,bf16 table,top64(K high),lm_head kept,64,0.00237576,0.00253614
+aligned0.9,0.1,0.1203,bf16 table,top64(K high),floor(bf16),64,0.00166072,0.00171912
+aligned0.9,0.1,0.1203,bf16 table,random present,combined,128,0.00233774,0.00247662
+aligned0.9,0.1,0.1203,bf16 table,random present,lookup only,128,0,0.00328701
+aligned0.9,0.1,0.1203,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,0.1,0.1203,bf16 table,random present,lookup kept,128,0.104021,0.112201
+aligned0.9,0.1,0.1203,bf16 table,random present,lm_head kept,128,0.00233822,0.00247663
+aligned0.9,0.1,0.1203,bf16 table,random present,floor(bf16),128,0.00166283,0.00175852
+aligned0.9,0.1,0.1203,bf16 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,0.1,0.1203,bf16 table,absent,lookup only,0,nan,nan
+aligned0.9,0.1,0.1203,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,0.1,0.1203,bf16 table,absent,lookup kept,0,nan,nan
+aligned0.9,0.1,0.1203,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,0.1,0.1203,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,1,0.9621,fp32 table,top64(K high),combined,64,0.00147492,0.00161797
+aligned0.9,1,0.9621,fp32 table,top64(K high),lookup only,64,5.65327e-10,3.97809e-09
+aligned0.9,1,0.9621,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,1,0.9621,fp32 table,top64(K high),lookup kept,64,5.96189e-09,1.13958e-08
+aligned0.9,1,0.9621,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+aligned0.9,1,0.9621,fp32 table,top64(K high),floor(bf16),64,0.00166381,0.00171535
+aligned0.9,1,0.9621,fp32 table,random present,combined,128,0.00162731,0.0017073
+aligned0.9,1,0.9621,fp32 table,random present,lookup only,128,0,0
+aligned0.9,1,0.9621,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,1,0.9621,fp32 table,random present,lookup kept,128,0,1.5146e-08
+aligned0.9,1,0.9621,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+aligned0.9,1,0.9621,fp32 table,random present,floor(bf16),128,0.00165855,0.00172285
+aligned0.9,1,0.9621,fp32 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,1,0.9621,fp32 table,absent,lookup only,0,nan,nan
+aligned0.9,1,0.9621,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,1,0.9621,fp32 table,absent,lookup kept,0,nan,nan
+aligned0.9,1,0.9621,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,1,0.9621,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,1,0.9621,bf16 table,top64(K high),combined,64,0.00311037,0.0123855
+aligned0.9,1,0.9621,bf16 table,top64(K high),lookup only,64,0.00472026,0.0147514
+aligned0.9,1,0.9621,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,1,0.9621,bf16 table,top64(K high),lookup kept,64,0.00617841,0.0150609
+aligned0.9,1,0.9621,bf16 table,top64(K high),lm_head kept,64,0.00261481,0.00465218
+aligned0.9,1,0.9621,bf16 table,top64(K high),floor(bf16),64,0.00166381,0.00171535
+aligned0.9,1,0.9621,bf16 table,random present,combined,128,0.00235895,0.00256086
+aligned0.9,1,0.9621,bf16 table,random present,lookup only,128,0,0.00328701
+aligned0.9,1,0.9621,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,1,0.9621,bf16 table,random present,lookup kept,128,0.0133005,0.0144111
+aligned0.9,1,0.9621,bf16 table,random present,lm_head kept,128,0.00237049,0.00252242
+aligned0.9,1,0.9621,bf16 table,random present,floor(bf16),128,0.00165855,0.00172285
+aligned0.9,1,0.9621,bf16 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,1,0.9621,bf16 table,absent,lookup only,0,nan,nan
+aligned0.9,1,0.9621,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,1,0.9621,bf16 table,absent,lookup kept,0,nan,nan
+aligned0.9,1,0.9621,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,1,0.9621,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,10,7.696,fp32 table,top64(K high),combined,64,0.000392137,0.0005778
+aligned0.9,10,7.696,fp32 table,top64(K high),lookup only,64,5.65327e-10,3.97809e-09
+aligned0.9,10,7.696,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,10,7.696,fp32 table,top64(K high),lookup kept,64,7.56574e-10,4.84976e-09
+aligned0.9,10,7.696,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+aligned0.9,10,7.696,fp32 table,top64(K high),floor(bf16),64,0.00166031,0.00171018
+aligned0.9,10,7.696,fp32 table,random present,combined,128,0.00113988,0.00123552
+aligned0.9,10,7.696,fp32 table,random present,lookup only,128,0,0
+aligned0.9,10,7.696,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,10,7.696,fp32 table,random present,lookup kept,128,0,1.89704e-09
+aligned0.9,10,7.696,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+aligned0.9,10,7.696,fp32 table,random present,floor(bf16),128,0.00165494,0.00176333
+aligned0.9,10,7.696,fp32 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,10,7.696,fp32 table,absent,lookup only,0,nan,nan
+aligned0.9,10,7.696,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,10,7.696,fp32 table,absent,lookup kept,0,nan,nan
+aligned0.9,10,7.696,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,10,7.696,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,10,7.696,bf16 table,top64(K high),combined,64,0.00484825,0.0148356
+aligned0.9,10,7.696,bf16 table,top64(K high),lookup only,64,0.00472026,0.0148117
+aligned0.9,10,7.696,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,10,7.696,bf16 table,top64(K high),lookup kept,64,0.00496552,0.0148691
+aligned0.9,10,7.696,bf16 table,top64(K high),lm_head kept,64,0.00816382,0.031607
+aligned0.9,10,7.696,bf16 table,top64(K high),floor(bf16),64,0.00166031,0.00171018
+aligned0.9,10,7.696,bf16 table,random present,combined,128,0.00216505,0.00360939
+aligned0.9,10,7.696,bf16 table,random present,lookup only,128,0,0.00328701
+aligned0.9,10,7.696,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,10,7.696,bf16 table,random present,lookup kept,128,0.00259492,0.0038097
+aligned0.9,10,7.696,bf16 table,random present,lm_head kept,128,0.00307402,0.00563601
+aligned0.9,10,7.696,bf16 table,random present,floor(bf16),128,0.00165494,0.00176333
+aligned0.9,10,7.696,bf16 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,10,7.696,bf16 table,absent,lookup only,0,nan,nan
+aligned0.9,10,7.696,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,10,7.696,bf16 table,absent,lookup kept,0,nan,nan
+aligned0.9,10,7.696,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,10,7.696,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,100,123.1,fp32 table,top64(K high),combined,64,2.51123e-05,3.827e-05
+aligned0.9,100,123.1,fp32 table,top64(K high),lookup only,64,5.65327e-10,3.97809e-09
+aligned0.9,100,123.1,fp32 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,100,123.1,fp32 table,top64(K high),lookup kept,64,8.3488e-10,4.15136e-09
+aligned0.9,100,123.1,fp32 table,top64(K high),lm_head kept,64,0.00166185,0.00172967
+aligned0.9,100,123.1,fp32 table,top64(K high),floor(bf16),64,0.00166341,0.0017415
+aligned0.9,100,123.1,fp32 table,random present,combined,128,0.000100155,0.0001119
+aligned0.9,100,123.1,fp32 table,random present,lookup only,128,0,0
+aligned0.9,100,123.1,fp32 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,100,123.1,fp32 table,random present,lookup kept,128,0,2.57107e-09
+aligned0.9,100,123.1,fp32 table,random present,lm_head kept,128,0.00164684,0.00172927
+aligned0.9,100,123.1,fp32 table,random present,floor(bf16),128,0.0016615,0.0017356
+aligned0.9,100,123.1,fp32 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,100,123.1,fp32 table,absent,lookup only,0,nan,nan
+aligned0.9,100,123.1,fp32 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,100,123.1,fp32 table,absent,lookup kept,0,nan,nan
+aligned0.9,100,123.1,fp32 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,100,123.1,fp32 table,absent,floor(bf16),64,0.00165769,0.00173489
+aligned0.9,100,123.1,bf16 table,top64(K high),combined,64,0.00501834,0.0149558
+aligned0.9,100,123.1,bf16 table,top64(K high),lookup only,64,0.00472026,0.0148559
+aligned0.9,100,123.1,bf16 table,top64(K high),lm_head only,64,0.00166185,0.00172967
+aligned0.9,100,123.1,bf16 table,top64(K high),lookup kept,64,0.00501478,0.0149544
+aligned0.9,100,123.1,bf16 table,top64(K high),lm_head kept,64,0.125399,0.503724
+aligned0.9,100,123.1,bf16 table,top64(K high),floor(bf16),64,0.00166341,0.0017415
+aligned0.9,100,123.1,bf16 table,random present,combined,128,0.00169579,0.00361752
+aligned0.9,100,123.1,bf16 table,random present,lookup only,128,0,0.00328701
+aligned0.9,100,123.1,bf16 table,random present,lm_head only,128,0.00164684,0.00172927
+aligned0.9,100,123.1,bf16 table,random present,lookup kept,128,0.00169486,0.00361965
+aligned0.9,100,123.1,bf16 table,random present,lm_head kept,128,0.0272857,0.0788532
+aligned0.9,100,123.1,bf16 table,random present,floor(bf16),128,0.0016615,0.0017356
+aligned0.9,100,123.1,bf16 table,absent,combined,64,0.0016577,0.00173489
+aligned0.9,100,123.1,bf16 table,absent,lookup only,0,nan,nan
+aligned0.9,100,123.1,bf16 table,absent,lm_head only,64,0.0016577,0.00173489
+aligned0.9,100,123.1,bf16 table,absent,lookup kept,0,nan,nan
+aligned0.9,100,123.1,bf16 table,absent,lm_head kept,64,0.0016577,0.00173489
+aligned0.9,100,123.1,bf16 table,absent,floor(bf16),64,0.00165769,0.00173489

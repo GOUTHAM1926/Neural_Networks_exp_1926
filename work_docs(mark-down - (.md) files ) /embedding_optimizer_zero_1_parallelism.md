@@ -2,6 +2,7 @@
 
 This file records everything from the 2026-09-30 session: every question asked, every answer, every finding, and
 the F4 fix that was made and pushed. It is written from zero. Every claim points to the code line that proves it.
+Section 17 adds the 2026-10-01 measurement of how much D1, D2 and D3 lose.
 
 **Which code is meant.** Two team branches are involved. They are different, so each fact names its branch.
 - `dist_side_merge`: our SFT branch. Local clone `~/Downloads/BluTrain_sft`, BluTrain `909ab75`, Tensor-Implementations
@@ -39,6 +40,7 @@ Contents:
 14. What happened today, in order
 15. Every question of the day, with its short answer
 16. Open items for 2026-10-01
+17. Measured on 2026-10-01: how much D1, D2 and D3 lose (local test)
 
 ---
 
@@ -378,6 +380,8 @@ The 3 places where the two cases differ are called D1, D2 and D3.
 - **D1**: the lookup backward's sum (section 6).
 - **D2**: the engine's add of the lookup part and the lm_head part.
 - **D3**: the path from the micro-steps to the optimizer (the fp32 gradient buffer, the send, the switch).
+
+How much each one loses was measured on 2026-10-01: section 17.
 
 ### 7.0 The explanation exactly as given in the chat (2026-09-30, 14:22 UTC)
 
@@ -895,6 +899,9 @@ The same list is in the loss doc §26 ("TOMORROW").
 6. F4 on `dist_side_merge`: decide whether to port `149249d` there (separately).
 7. The embedding ablation, re-scoped: measure D1-end, D2 and D3 for the bf16 table (fused setup), and the `atomicAdd`
    D1 on `dist_side_merge`; then decide idea B (option 2) and the SFT setup.
+   **Done locally on 2026-10-01 (section 17)**, with real token ids, the real `dist_side_merge` kernels and made-up
+   gradient numbers. Still open: the same test on real gradients from the trainer (H200), and Kruthik's real kernel
+   (only emulated).
 8. SFT embedding backward on `dist_side_merge`: port `EmbeddingBwdFused`, use an fp32 table, or keep; the fused hook
    ignores N, which must be handled before SFT with variable token counts.
 9. Multi-GPU send dtype research: the flags' consequences, NCCL's bf16 add on `dist_side_merge`, BluCCL's multi-node path.
@@ -902,3 +909,315 @@ The same list is in the loss doc §26 ("TOMORROW").
 11. Reuse the tied lm_head's bf16 transposed copy within an optimizer step.
 12. SFT task 1 H200 test (`BLU_INIT_FROM`, SFT doc §35).
 13. Commit the docs and records; rotate the GitHub token.
+
+---
+
+## 17. Measured on 2026-10-01: how much D1, D2 and D3 lose (local test)
+
+This is item 7 of section 16, done locally on 2026-10-01. Section 7 says *where* `wte`'s gradient is rounded. This
+section measures *how much* each place loses, with the real library code of `dist_side_merge`.
+
+### 17.0 The short answer (as explained in the chat)
+
+- **fp32 table:** almost nothing is lost anywhere. The worst error in all 50 lookup cases is 0.00006% (5.8e-7).
+- **bf16 table (`dist_side_merge`):** frequent tokens lose part of their gradient.
+  - On a real flux micro-batch, `,` `.` ` the` (about 1,000-1,300 repeats each) lose **4%** when their gradient
+    vectors point in random directions.
+  - They lose **47-55%** when the vectors point mostly the same way.
+  - A token that appears once loses 0.
+  - The more often a token appears, the more it loses.
+- **Why:** bf16 keeps about 3 digits. In bf16, 256 + 1 = 256: the 1 is lost.
+  - The bf16 kernel adds the K vectors one by one into a bf16 row (`atomicAdd`, `EmbeddingKernels.cu:148`).
+  - Once the row is large, each new small vector is rounded away.
+  - If the vectors share a direction, the row keeps growing, so more is rounded away. If the directions are random,
+    the values cancel each other, the row stays small, and less is lost.
+- **Not known yet:** how much real training gradients point the same way. The test used made-up gradient numbers, so
+  the real loss for the top tokens is somewhere between ~4% and ~55%. Finding it needs a dump of real gradients from
+  the trainer (H200).
+
+### 17.1 What was real in the test and what was made up
+
+| Part | Real or made up |
+|---|---|
+| Token ids: which token sits at which position, how many times it repeats | **Real**: 4 real flux micro-batches (`flux_train_000001.bin` at token 0, 1,000,000 and 50,000,000; `flux_train_000050.bin` at 7,000,000), 32,768 tokens each. Plus made-up id sets for edge cases (17.2). |
+| The code that adds the vectors | **Real**: the library's own functions, `dist_side_merge` TI `d96b991` (clean tree; `lib/libtensor.so` built 2026-09-29, sm_86, cuBLAS) |
+| The gradient numbers (2,304 per position) | **Made up**: random numbers in 9 styles (17.2). No model ran. |
+| The correct answer | The exact sum, computed on the CPU in fp64 from the same numbers |
+
+Every made-up value is rounded to bf16 first. So the fp32 arm and the bf16 arm add exactly the same numbers, and every
+difference comes from the adding, not from the inputs.
+
+### 17.2 How the test works
+
+**File:** `Tensor-Implementations/Tests/kernel_tests/test_embedding_grad_precision.cu`. It is local-only: it's listed
+in `.git/modules/Tensor-Implementations/info/exclude`, like the 2 loss tests. A copy and all outputs are in
+`profiling_reports/embed_ablation_2026_10_01/`.
+- **Build:** the Makefile's `run-cuda` nvcc line plus `-Xcompiler -fopenmp`.
+- **Run:** `./embed_precision d1,d2,d3` on the RTX 3060. Wall time 1 min 07 s; peak host memory 4.1 GB.
+- The predictions (P1-P7) were written in the file header before the first run.
+
+**D1, the lookup backward alone.** The test calls `cuda::embedding_backward_cuda` directly. Arms:
+- `fp32_cooperative`: the fp32 path. That is the cooperative kernel (`EmbeddingKernels.cu:415-424`), or fp32
+  `atomicAdd` when `BLUTRAIN_EMB_BWD_COOPERATIVE=0` (`:391`). Run 2 times.
+- `bf16_atomic`: the bf16 path, `atomicAdd` into a bf16 table (`:442`, `:148`). Run 5 times, because its order is
+  not fixed.
+- `sorted_fp32_once(emu)`: a **CPU emulation**, not the real kernel. It copies the arithmetic of BLUCCL's
+  `EmbeddingBwdFused` (section 6.2): positions in ascending order; up to 32 summed whole; else chunks of 32 folded in
+  order; all in fp32; one rounding to bf16 at the end.
+- `floor`: the exact sum rounded to bf16 once. No bf16 table can do better than this.
+
+**Token sets** (N = 32,768 unless noted):
+
+| Set | What it is |
+|---|---|
+| `uniform` | random ids |
+| `flux_a`-`flux_d` | the 4 real micro-batches |
+| `zipf1.0`, `zipf1.3` | Zipf-distributed ids |
+| `sft_padded` | rows of 4,096: a stand-in chat template + flux text + EOT; the rest padded with EOT (50256), pad positions get gradient exactly 0 |
+| `sft_packed` | the same samples packed into each row |
+| `repeat_doc` | one 512-token flux document repeated |
+| `one_token` | token 262 at every position |
+| `k_sweep` | 15 tokens with K = 1, 2, 4 … 16,384 |
+| `flux_a_N8192`, `flux_a_N16384` | `flux_a` cut to B = 2 and B = 4 |
+
+The stand-in template ids are not the real SFT template (none is chosen yet). Only the repetition pattern matters.
+
+**Gradient styles:**
+- `iid`: random numbers, σ = 1e-3.
+- `alignedρ`: each vector = ρ × (one vector shared by all positions of that token) + √(1−ρ²) × (its own random vector),
+  with ρ = 0.5, 0.9, 0.99, 1.0. At ρ = 0.9 the shared part is 0.9 and the own part is 0.44.
+- `lognormal1.5`: random sizes, a few big and many small.
+- `big+small`: the first occurrence is 1×, every later one is 0.003× the same vector.
+- `iid_scale1e-8`, `iid_scale1e+2`: to check that the size of the numbers doesn't matter.
+
+**Metrics:**
+- Per row: the relative error ‖result − exact‖ / ‖exact‖. Rows are grouped by K (the number of non-zero
+  occurrences), with the median and the max.
+- "Global": the same formula over all present rows together. Big rows weigh more.
+- Also: the 5 most frequent tokens, and the run-to-run bit differences.
+
+**D2, the engine's add of the two parts, through real autograd.** The ops follow the trainer's order
+(`bluscript_zero_ckpt.cpp:748`, `:786-788`):
+1. `embedding(wte, ids) → to_dtype(bf16) → sum(x · G1)`
+2. `matmul(H, contiguous(transpose(to_dtype(wte, bf16)))) → sum(logits · G2)`
+3. add the two, `backward()`, read `wte.grad_view()`.
+
+Details:
+- `sum` of a bf16 tensor returns bf16 (`ReductionImplGPU.cu:119`), and its backward makes ones in that dtype
+  (`ReductionBackward.cpp:28`). So G1 and G2 arrive exactly, in bf16, as in the trainer.
+- N = 4,096 flux tokens (`flux_train_000004.bin` at token 3,000,000; 1,133 unique; max K 148).
+- H is random bf16 with RMS 1. G2 is a realistic dlogits: softmax(random logits) − one-hot(the next flux token),
+  divided by N.
+- The size of the lookup part is swept against the lm_head part: s = 0.01, 0.1, 1, 10, 100. G1 is scaled by a power
+  of 2, so it stays bf16-exact, and the actual s is printed.
+- Each case runs 3 times: lookup part only (G2 = 0), lm_head part only (G1 = 0), and both.
+- Errors are read on 256 sampled rows (64 most frequent, 128 random present, 64 absent), against fp64 references of
+  both parts.
+- "Lookup kept" = (both − lm_head only) vs the exact lookup part: how much of the lookup part survived the add.
+  "lm_head kept" is the same the other way round.
+
+**D3, the micro-steps and the send.** M = 4 and 32 micro-steps of N = 8,192 flux tokens (`flux_train_000005.bin`,
+consecutive). A token keeps its shared direction across micro-steps. Arms:
+- fp32 table: fp32 kernel + `acc += upd` (`AutogradMeta.cpp`, the fp32 branch).
+- bf16 table: bf16 kernel + F2's `cuda_accumulate_lowp_into_fp32` (`AutogradMeta.cpp:193`).
+- A bf16 running sum (library bf16 `+=`). This is my **assumption** of what `BLU_GRAD_VIEW=1` does; not checked,
+  because BLUCCL isn't fetched locally.
+- Then the send rounding (library `as_type(bf16)`): for the bf16 table (the default `SAME_AS_PARAM`; also at W = 1
+  on `dist_side_merge`, where F4 is not fixed), and for the fp32 table with `BLU_BF16_REDUCE=1`.
+
+**Self-checks.** If one fails, the numbers are not results. All passed: 234 in the full run, 152 in the fp32-atomic
+run.
+
+| Check | What it proves |
+|---|---|
+| SC1 | inputs ±2⁻¹⁰ with every token K = 4: every arm returns the exact sum |
+| SC2 | every K = 1 row of the bf16 kernel equals its one input |
+| SC3 | absent rows, and rows whose sum is exactly 0 (SFT pads), are exactly 0 |
+| SC4 | the fp32 arm's error is < 1e-4 in every case |
+| SC5 | the fp32 cooperative kernel gives the same bits in 2 runs |
+| SC6 | D2: on every deterministic row of the whole table, (both) == round(lookup only + lm_head only), and the lookup part is exactly 0 on absent rows |
+| SC7 | the CPU's bf16 rounding (used for `floor` and the emulation) equals the library's `as_type(bf16)` on 3M normal floats, incl. 1M exact ties |
+| SC8 | F2 took every call (no fallback) |
+| SC9 | D3: every arm is exact on rows seen once in the whole step |
+
+### 17.3 D1 results
+
+**`flux_a`, by K** (median error per row; the max is in the log):
+
+| K | rows | fp32 | bf16, random | bf16, 90% same | emulation (BLUCCL-style) | floor |
+|---|---|---|---|---|---|---|
+| 1 | 2,796 | 0 | 0 | 0 | 0 | 0 |
+| 2-3 | 1,449 | 0 | 0.18% | 0.20% | 0.18% | 0.18% |
+| 4-15 | 1,099 | 0 | 0.32% | 0.28% | 0.17% | 0.17% |
+| 16-63 | 211 | 1e-9 | 0.61% | 0.49% | 0.17% | 0.17% |
+| 64-255 | 31 | 5e-9 | 1.3% | 1.2% | 0.17% | 0.17% |
+| 256-1023 | 10 | 2e-8 | 2.7% | 17.5% | 0.17% | 0.17% |
+| ≥ 1024 | 3 | 3e-8 | 4.2% | 52% | 0.17% | 0.17% |
+
+**The 5 most frequent tokens of `flux_a`:**
+
+| Token id | K | bf16, random | bf16, 90% same |
+|---|---|---|---|
+| 11 (`,`) | 1,290 | 4.2% | 55% |
+| 13 (`.`) | 1,200 | 4.2% | 52% |
+| 262 (` the`) | 1,056 | 3.9% | 47% |
+| 290 | 829 | 3.3% | 37% |
+| 198 | 784 | 3.3% | 34% |
+
+The fp32 kernel's error is ≤ 3e-8 on all 5, and the emulation and the floor are 0.16-0.18% on all 5.
+
+**`k_sweep` (one token per K):**
+
+| K | 1,024 | 2,048 | 4,096 | 8,192 | 16,384 |
+|---|---|---|---|---|---|
+| bf16, random | 3.8% | 5.2% | 7.8% | 10.8% | 14.5% |
+| bf16, 90% same | 45% | 70% | 84% | 91% | 95% |
+
+The fp32 error stays ≤ 2.2e-7 and the floor stays 0.17% at every K.
+
+**Every token set, bf16 kernel, global error:**
+
+| Set | unique ids | max K | random | 90% same | few big, many small |
+|---|---|---|---|---|---|
+| `uniform` | 24,146 | 7 | 0.14% | 0.17% | 0.11% |
+| `flux_a` | 5,599 | 1,290 | 1.9% | 40% | 1.9% |
+| `flux_b` | 6,619 | 1,429 | 1.8% | 46% | 1.9% |
+| `flux_c` | 6,629 | 1,276 | 1.8% | 42% | 1.5% |
+| `flux_d` | 6,465 | 1,305 | 1.9% | 43% | 1.6% |
+| `zipf1.0` | 9,499 | 2,853 | 2.4% | 65% | 2.0% |
+| `zipf1.3` | 3,144 | 8,692 | 6.6% | 87% | 4.9% |
+| `sft_padded` | 1,491 | 176 | 0.69% | 1.3% | 0.74% |
+| `sft_packed` | 5,872 | 1,103 | 1.7% | 36% | 1.5% |
+| `repeat_doc` | 274 | 1,600 | 2.3% | 45% | 1.8% |
+| `one_token` | 1 | 32,768 | 21% | 98% | 11% |
+| `k_sweep` | 16 | 16,384 | 12% | 94% | 7.4% |
+| `flux_a_N8192` | 2,052 | 307 | 0.97% | 2.9% | not run |
+| `flux_a_N16384` | 3,399 | 612 | 1.4% | 13% | not run |
+
+The fp32 error is 0 to 5.8e-7 in every case. The floor is 0.10-0.17% in every case, with one exception:
+`k_sweep` with 100% same direction. There every exact sum is bf16-exact (all vectors equal, K a power of 2), so the
+floor is 0, but the bf16 kernel still loses 97%. The emulation's global error equals the floor's (to 3 digits) in every
+case.
+
+**Other gradient styles on `flux_a`** (bf16, global):
+
+| Style | 50% same | 90% same | 99% same | 100% same | big + small | values 1e-8 | values 1e+2 |
+|---|---|---|---|---|---|---|---|
+| Error | 18% | 40% | 51% | 56% | 10.5% | 1.9% | 1.9% |
+
+The size of the numbers doesn't change the error. The direction does.
+
+**SFT sets:**
+- `sft_padded` loses much less: 0.69% / 1.3%. Its rows are short (one sample each, then padding), so K stays ≤ 176.
+  The pads add exact zeros, which round nothing.
+- `sft_packed` is about the same as pretraining: 1.7% / 36%.
+
+**Run to run:**
+- The bf16 kernel gives different bits every run once K > 1. On `flux_a` (random), 39,857 of 12.9M elements differ.
+- The fp32 cooperative kernel gave the same bits in every case (SC5).
+- fp32 `atomicAdd` (`BLUTRAIN_EMB_BWD_COOPERATIVE=0`) differs in 40 of 50 cases (up to 2,058 elements). Its error is
+  still ≤ 8.7e-7.
+
+### 17.4 D2 results (the engine's add)
+
+Median error on the 64 most frequent rows. N = 4,096 here, so max K is 148 and D1's own loss is small; most of what's
+below comes from the add.
+
+**fp32 table:**
+
+| s (lookup / lm_head) | 0.01 | 0.1 | 1 | 10 | 100 |
+|---|---|---|---|---|---|
+| lookup kept (random) | 1.6e-6 | 7.6e-8 | 2.4e-9 | 9.4e-10 | 1.4e-9 |
+| lm_head kept | 0.17% | 0.17% | 0.17% | 0.17% | 0.17% |
+
+**bf16 table:**
+
+| s (lookup / lm_head) | 0.01 | 0.1 | 1 | 10 | 100 |
+|---|---|---|---|---|---|
+| lookup kept (random) | **21%** | 2.8% | 0.64% | 0.61% | 0.61% |
+| lookup kept (90% same) | **39%** | 2.6% | 0.62% | 0.50% | 0.50% |
+| lm_head kept (random) | 0.23% | 0.24% | 0.31% | 1.4% | **11%** |
+| lm_head kept (90% same) | 0.23% | 0.24% | 0.26% | 0.82% | **12.5%** |
+
+(The actual s values were 0.0075-0.009, 0.07-0.12, 0.96-1.15, 7.7-9.2 and 74-123.)
+
+What this shows:
+- **The fp32 table keeps both parts.** The 0.17% on the lm_head part is the bf16 matmul output. Both tables have it,
+  because the tied lm_head runs in bf16 (`:786-788`).
+- **The bf16 table loses the smaller part.** When one part is 100× smaller, 21-39% of it (the lookup part) or 11-12.5%
+  of it (the lm_head part) is lost in the add (`Engine.cpp:341-343`, `sum += grads[i]` in bf16).
+- Absent rows have only the lm_head part, and both tables give 0.17% there.
+- **A BLUCCL-style lookup kernel would not fix D2.** This add is in the engine, not in the lookup kernel. I checked
+  this on `dist_side_merge` only.
+- SC6 passed, so the result is exactly one rounding of (lookup part + lm_head part), as section 7.2 says.
+
+### 17.5 D3 results (micro-steps, then the send)
+
+Global error (random / 90% same):
+
+| Arm | M = 4 | M = 32 |
+|---|---|---|
+| fp32 table (buffer = what is sent) | 1e-8 / 2e-8 | 3e-8 / 6e-8 |
+| fp32 table + `BLU_BF16_REDUCE=1` | 0.16% / 0.17% | 0.16% / 0.17% |
+| bf16 table, fp32 buffer (before the send) | 0.94% / 2.7% | 0.95% / 2.4% |
+| bf16 table, after the send to bf16 | 0.95% / 2.7% | 0.96% / 2.4% |
+| bf16 running sum (assumed `BLU_GRAD_VIEW`) | 0.96% / 2.7% | 1.1% / 2.4% |
+| floor (round the exact total once) | 0.16% / 0.17% | 0.16% / 0.17% |
+
+What this shows:
+- F2's fp32 buffer adds no error.
+- Almost all of the bf16 table's error is D1, carried from each micro-step.
+- The send rounding adds almost nothing on top, because D1's error is bigger.
+- For the fp32 table, `BLU_BF16_REDUCE` costs one rounding (0.16%).
+- The 8-GPU switch rounding (section 7.3) is not in this test. It needs 8 GPUs.
+
+### 17.6 Predictions vs results
+
+| Prediction (written before the run) | Result |
+|---|---|
+| P1: fp32 ≈ 1e-7 to 1e-5 at every K | held, and better: 0 to 6e-7 |
+| P2: the floor is ~1e-3 at every K, independent of K | held: 0.10-0.17% (0 where every exact sum is bf16-exact) |
+| P3: the BLUCCL-style emulation is within 1.1× of the floor | held: equal in every case |
+| P4: bf16 `atomicAdd` grows with K; random ~2⁻⁹·√K; same-direction loses tens of % once K ≫ 256 | held: 4.2% at K ≈ 1,000 (√K rule gives ~6%); 52% at K ≈ 1,000 with 90% same |
+| P5: bf16 differs run to run, fp32 cooperative never | held |
+| P6: the add costs ≤ 1 rounding of the sum; the smaller part loses most when the parts differ ≫ 256× | held; the loss starts already at 100× (21-39%) |
+| P7: the send adds ~1 floor; `BLU_GRAD_VIEW` adds more with M | partly: the send adds ~1 floor only for the fp32 table; for the bf16 table it adds almost nothing, because D1's error is bigger |
+
+### 17.7 What this does not answer yet
+
+1. **The real gradients.** Two things are unknown: how much a token's real gradient vectors share a direction, and the
+   real size ratio s between the lookup part and the lm_head part. Next: dump the gradient arriving at the embedding
+   output (one micro-step) and both parts of `wte`'s gradient from the trainer on an H200, then run this test on them.
+2. **Kruthik's real kernel.** Only its arithmetic was emulated, on the CPU. The real kernel runs only on BLUCCL.
+3. **`BLU_GRAD_VIEW`.** That arm is my assumption, not the BLUCCL code.
+4. **The 8-GPU switch rounding** (section 7.3, step 5). Not measured.
+5. **D2 and D3 used smaller N** (4,096 and 8,192) than the trainer (32,768). So D1's part inside them is smaller than
+   in real training. D1 at N = 32,768 is in 17.3.
+
+### 17.8 Questions asked about the result, with the answers
+
+- **"In real life the 1,290 vectors have different directions, so no problem?"** No. Random directions were the best
+  case in the test, and `,` still lost 4.2%, while the fp32 table lost 0.0000028%. Real gradients are probably
+  partly the same direction: the embedding of `,` does learn, so its 1,290 vectors must share some direction, or their
+  sum would be noise. That is reasoning, not a measurement (17.7, item 1).
+- **"How many times did `,` `.` ` the` repeat?"** 1,290, 1,200 and 1,056 times in one real flux micro-batch of
+  32,768 tokens (17.3).
+- **"What does 4% error mean?"** The correct row is the sum of the 1,290 vectors. The bf16 table gives a row that is
+  4% away from it.
+- **"Is the 52% real?"** The kernel really does this when the vectors point mostly the same way (90% shared). Whether
+  real training gradients look like that is not known yet.
+- **"What was the '1 million times worse'?"** It is just 4.2% ÷ 0.0000028% ≈ 1.5 million. It only means fp32 loses
+  almost nothing and bf16 loses 4%. The two numbers are what matter.
+- **"Did the test use only text?"** It has 2 inputs. The token ids come from real text (the flux files, already
+  tokenized), plus made-up id sets. The gradient numbers are random numbers, not from text or a model. No model ran.
+  The text gives how many times each token repeats; the numbers are made up.
+- **"Is the test right?"** All 234 + 152 self-checks passed (17.2). For example, with inputs whose exact sum is known
+  (SC1), every arm returns that exact sum.
+
+### 17.9 Files (`profiling_reports/embed_ablation_2026_10_01/`)
+
+- `test_embedding_grad_precision.cu`: a copy of the test.
+- `embed_precision`: the binary (sm_86).
+- `logs/run_1.log`: D1 + D2 + D3, cooperative fp32 path; ends with a SUMMARY block.
+- `logs/run_fp32atomic.log`: D1 with `BLUTRAIN_EMB_BWD_COOPERATIVE=0`.
+- `logs/embed_d1_buckets.csv`, `logs/embed_d1_buckets_fp32atomic.csv`, `logs/embed_d2.csv`, `logs/embed_d3.csv`.

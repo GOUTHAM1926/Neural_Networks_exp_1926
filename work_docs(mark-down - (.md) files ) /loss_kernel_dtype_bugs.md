@@ -2429,29 +2429,34 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
 
 ## 26. Future tasks: every pending item (updated 2026-09-30)
 
-**TOMORROW, 2026-10-01 — open items from 2026-09-30** (all of today's findings and explanations are in
-`embedding_optimizer_zero_1_parallelism.md`; the F4 record is §31):
-1. [ ] Send Navin the message (that file, §13): TI pointer (fixed by `3298e74`), the intermittent `test_muon_rsag`
-       failure since `a3aba3e`, his stale test scripts, the 2 committed symlinks, and the `rope_theta` question.
-2. [ ] Navin's intermittent ShardedMuon result at W = 1 (his bug): `e6eaeba` 6/6 pass, `a3aba3e` 6/6 have a failure, always
-       7,077/82,120 numbers; unchanged by F4. Lead, not verified: the dropped per-tensor `sync_compute()` in his new
-       `accumulate_owned_grad_norm` vs the shared static pinned descriptor buffer of `multi_tensor_*`.
-3. [ ] **SFT risk:** his `bluscript_zero_ckpt.cpp` now has `rope_theta = 10000`; ours (`dist_side_merge`) 500000. Ask which
-       value his step-8000 checkpoint used before any SFT run (a wrong value is not caught at load).
-4. [ ] Optional: the 1-GPU trainer A/B for F4 (fused trainer on the flux shards, old vs new, + one repeat of old as the
-       noise floor, 8 steps each; `run_trainer_ab.sh` in `profiling_reports/f4_2026_09_30/`). Needs a new box, a clone and a
-       ~9 min build. Also check there that the "no effect at W=1" line prints on rank 0.
-5. [ ] Fetch `dist_side_merge_BLUCCL` locally (token URL form; plain `git fetch origin` fails "Repository not found").
-6. [ ] F4 on `dist_side_merge`: decide whether to port `149249d` there (separately; user's decision).
-7. [ ] The embedding ablation, re-scoped (the FIRST TASK entry below): with the BLUCCL fused kernel, repetition no
-       longer matters; measure D1-end, D2 and D3 for the bf16 table, and the `atomicAdd` D1 on `dist_side_merge`. Then
-       decide idea B (keep the D2 sum in fp32, option 2 = one 2-input kernel, −464 MB per micro-step estimated).
-8. [ ] SFT's embedding backward on `dist_side_merge`: port `EmbeddingBwdFused`, use an fp32 table, or keep the `atomicAdd`
-       kernel. The fused hook ignores N (`embedding_fused.cu:1300`, `(void)N`): handle it before SFT with variable
-       token counts per micro-batch.
-9. [ ] Multi-GPU send dtype research: `BLU_BF16_REDUCE` / `BLU_FP32_REDUCE` consequences, how NCCL adds bf16 on
-       `dist_side_merge` (not checked), BluCCL's multi-node `BLU_IB_RS` path (not checked).
-10. [ ] Commit today's docs and records (command in the session reply); rotate the GitHub token (pasted again today).
+**TOMORROW MORNING, 2026-10-01 — immediate tasks, in this order** (user, end of 2026-09-30; from the EOD's
+"other findings" and "tomorrow"; all of today's findings are in `embedding_optimizer_zero_1_parallelism.md`, the F4 record is §31):
+1. [ ] **Share the findings with the team:** send Navin the message (that file, §13): the team's Muon test
+       (`test_muon_rsag`) gives a random result at 1 GPU since `a3aba3e` (fails 6 of 6 runs; `e6eaeba` passes 6 of 6; the
+       same before and after F4, so not from F4), with the evidence; the TI pointer (fixed by `3298e74`); his stale
+       test scripts; the 2 committed symlinks.
+2. [ ] **Confirm the `rope_theta` of Navin's checkpoint** (his trainer now 10000, ours 500000) before the SFT task 1
+       test. A wrong value loads without any error.
+3. [ ] **Measure the real size of the D1, D2, D3 roundings on real data** (the re-scoped ablation, the FIRST TASK entry
+       below): the bf16 table's D1-end / D2 / D3 with Kruthik's sort-based kernel, and the `atomicAdd` D1 on `dist_side_merge`.
+4. [ ] **Decide the embedding setup for SFT:** an fp32 embedding (needs a bf16 → fp32 widening when loading the
+       checkpoint), or port Kruthik's sort-based kernel (`EmbeddingBwdFused`) to our SFT branch (its hook ignores N:
+       `embedding_fused.cu:1300`, fix that first).
+5. [ ] **Run the SFT task 1 test on an H200:** load only the weights from the checkpoint (`BLU_INIT_FROM`, SFT doc §35;
+       expect 262/262 CRC and a step-0 val loss of about 1.87).
+6. [ ] **Continue with the next SFT tasks** (2–7 in the SFT list below).
+
+**Then, open but not urgent:**
+- [ ] Navin's random Muon result: offer the lead (his new `accumulate_owned_grad_norm` dropped the per-tensor
+      `sync_compute()`; `multi_tensor_*` share one static pinned descriptor buffer), not verified.
+- [ ] Optional 1-GPU trainer A/B for F4 (`run_trainer_ab.sh`, needs a new box and a ~9 min build); check there that the
+      "no effect at W=1" line prints.
+- [ ] Fetch `dist_side_merge_BLUCCL` locally (token URL form).
+- [ ] F4 on `dist_side_merge`: port `149249d` or not (user's decision).
+- [ ] Multi-GPU send-dtype research: `BLU_BF16_REDUCE` / `BLU_FP32_REDUCE` consequences, NCCL's bf16 add on
+      `dist_side_merge`, BluCCL's multi-node `BLU_IB_RS` path.
+- [ ] Rotate the GitHub token (pasted in chat again on 2026-09-30).
+- [x] Docs + records of 2026-09-30 committed and pushed (`59719c9`).
 
 **Done 2026-09-30:**
 - [x] **F4 — the 1-GPU bf16 gradient round trip**, fixed in all 3 ZeRO optimizers on `dist_side_merge_BLUCCL`
