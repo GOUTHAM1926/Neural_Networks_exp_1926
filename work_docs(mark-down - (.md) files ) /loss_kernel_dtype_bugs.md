@@ -2525,9 +2525,46 @@ All commits are by `Goutham Kumar <goutham.kumar@blubridge.com>`, on branch `dis
 3. [ ] Preprocessing script. Must also (SFT doc §34.2): check that the tokenized prompt is an exact prefix of the
    full tokenization; put exactly one EOT at the end; drop over-long examples instead of truncating.
 4. [ ] SFT dataloader.
+   **2026-10-05, decided:** it also does the range check that SFT task 6 was meant to add to the kernel. Once
+   per file, when it is opened:
+   - every input id must be below `vocab_size`;
+   - every label must be below `vocab_size` or exactly the ignore_index (65535);
+   - anything else is an error that names the file and the position.
+
+   Use the model's `vocab_size` (`bluscript_zero_ckpt.cpp:137`, 50304), never a literal, so a new tokenizer only
+   changes the config. Only a vocab above 65,535 needs more work: uint16 ids and the 65535 marker stop fitting.
+
+   **Checked the same day:** the trainer's loader is `MixedDataLoaderLite`, not `dist/dataloader_dist.h`. It is
+   in `Tensor-Implementations/include/MixedDataloader.h` and built at `bluscript_zero_ckpt.cpp:1829`; its val
+   loaders come from `create_val_loaders()`. The report's §3.9 names the wrong file.
+
+   It already has a token-id check (`BLU_TOKEN_MAX`, `MixedDataloader.h:580-607`), but:
+   - it is off by default;
+   - it runs on every batch;
+   - it only prints, it doesn't stop;
+   - it checks every id against one maximum.
+
+   Build the SFT check on it: labels may also be 65535, it runs once per file, and it stops the run.
 5. [ ] Trainer changes: `ignore_index = 65535`, the denominator, SFT hyperparameters, weights-only load. Also log
    token accuracy and entropy (SFT doc §34.2). v2 later: no target across packed documents (§34.2 #3).
+   **2026-10-05, the denominator (do right after item 4):**
+   - Before each step, count the non-65535 labels of all its micro-batches and all-reduce (SUM) the count
+     across GPUs.
+   - Pass `ignore_index = 65535` and `&denom` to `sparse_cross_entropy_loss` (`bluscript_zero_ckpt.cpp:2243`).
+   - Seed backward with **W instead of `1/GRAD_ACCUM`** (`:1873-1874`, `:2291`). The global count already does
+     the whole division, and the ZeRO reduce still averages over W ranks (`op=avg`: `ShardedOptimizer.cpp:580`,
+     `:989`; `ShardedMuon.cpp:840`), so seed × 1/(W·N) must equal 1/N.
+
+   It needs the 65535 labels and the per-step count from item 4. Tests:
+   - 4 accumulation steps vs 1, at the loss level, local;
+   - 2 GPUs vs 1 (a multi-GPU box).
 6. [ ] Loss-kernel bounds check.
+   **2026-10-05, decided:** no check in the kernel. Item 4's file check covers every path: both loss calls in
+   the trainer take their labels from a dataloader (train `:2240`, val `:2179`). This follows the rule "one
+   check at the boundary that closes all paths". The kernel only gets a comment that states the requirement
+   (label < `vocab_size` or == ignore_index) and where it is checked. Today, a bad label would read past the row
+   (`LossKernels.cu:318-319`, `row_logits[target_idx]`). PyTorch checks in its kernel instead
+   (`CHECK_INDEX_IN_CLASS`, `Loss.cu:157-162`).
 7. [ ] A sample SFT run on an H200.
 
 **FIRST TASK 2026-09-30 (user's request, 2026-09-29): bf16 vs fp32 embedding ablation (§19.3, §19.3.1).**

@@ -1,0 +1,28 @@
+=== compute-sanitizer on test_muon_rsag_HEAD | 2026-10-05 20:18:04 | GPU 2 | /usr/local/cuda/bin/compute-sanitizer
+--- memcheck
+exit 0
+      1 ========= ERROR SUMMARY: 0 errors
+      1 [staged refresh] PASS bit-identical across 82120 elements
+      1 [sync publish] PASS bit-identical across 82120 elements
+--- initcheck
+exit 0
+      1 ========= ERROR SUMMARY: 18540 errors were not printed. Use --print-limit option to adjust the number of printed errors
+      1 ========= ERROR SUMMARY: 18560 errors
+     20 ========= Uninitialized __global__ memory read of size 4 bytes
+      1 [staged refresh] PASS bit-identical across 82120 elements
+      1 [sync publish] PASS bit-identical across 82120 elements
+--- racecheck
+exit 0
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x7120 [128 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x7120 [256 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x71d0 [128 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x71d0 [256 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x7280 [128 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x7280 [256 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x7330 [128 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x7330 [256 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x73e0 [128 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x73e0 [192 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x74a0 [128 hazards]
+      2 =========     and Read access at void OwnTensor::matmul_bf16_optimized<(int)128, (int)128, (int)32, (int)32, (int)32>(const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int, OwnTensor::MatmulMetadata)+0x74a0 [192 hazards]
+=== done 20:27:56

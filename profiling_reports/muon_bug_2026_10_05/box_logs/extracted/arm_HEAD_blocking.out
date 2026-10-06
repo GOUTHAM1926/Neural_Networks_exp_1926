@@ -1,0 +1,22 @@
+=== arm HEAD + CUDA_LAUNCH_BLOCKING=1 | 2026-10-05 20:01:39 | GPU 2 | binary 9dcb977bfb65
+run  1 exit 0 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] PASS bit-identical across 82120 elements 
+run  2 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] PASS bit-identical across 82120 elements 
+run  3 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  4 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] PASS bit-identical across 82120 elements 
+run  5 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  6 exit 0 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] PASS bit-identical across 82120 elements 
+run  7 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  8 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  9 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 10 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 11 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 12 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 13 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 14 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 15 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 16 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 17 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 18 exit 0 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] PASS bit-identical across 82120 elements 
+run 19 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 20 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] PASS bit-identical across 82120 elements 
+--- arm HEAD+blocking: 17 of 20 runs FAILED

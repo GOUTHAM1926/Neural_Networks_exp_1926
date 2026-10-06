@@ -1,0 +1,14 @@
+In file included from /usr/local/cuda/include/CL/cl.h:20,
+                 from /usr/local/cuda/include/nvtx3/nvToolsExtOpenCL.h:33,
+                 from dist/Data-Parallel/include/profiler.hpp:25,
+                 from dist/Data-Parallel/include/DataParallel.hpp:20,
+                 from dist/FSDP/fsdp_ddp.h:51,
+                 from dist/FSDP/fsdp_ddp.cpp:19:
+/usr/local/cuda/include/CL/cl_version.h:22:104: note: ‘#pragma message: cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)’
+   22 | #pragma message("cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)")
+      |                                                                                                        ^
+/home/operator/gautam_k/muon/dbg3_HEAD/dist/zero/src/ShardedMuon.cpp: In function ‘OwnTensor::Tensor owt::zero::dbg_ns(const OwnTensor::Tensor&, int, float, int, long long int)’:
+/home/operator/gautam_k/muon/dbg3_HEAD/dist/zero/src/ShardedMuon.cpp:1635:90: warning: narrowing conversion of ‘(X.OwnTensor::Tensor::numel() / ((long unsigned int)d0))’ from ‘long unsigned int’ to ‘long int’ [-Wnarrowing]
+ 1635 |     if (X.ndim() != 2) { int64_t d0 = X.shape().dims[0]; X = X.view(Shape{{d0, X.numel() / d0}}); }
+      |                                                                                ~~~~~~~~~~^~~~
+/home/operator/gautam_k/muon/dbg3_HEAD/dist/zero/src/ShardedMuon.cpp:1635:90: warning: narrowing conversion of ‘(X.OwnTensor::Tensor::numel() / ((long unsigned int)d0))’ from ‘long unsigned int’ to ‘long int’ [-Wnarrowing]

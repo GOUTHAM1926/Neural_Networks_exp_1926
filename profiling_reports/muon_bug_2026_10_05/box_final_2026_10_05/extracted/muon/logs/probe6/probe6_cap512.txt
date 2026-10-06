@@ -1,0 +1,66 @@
+=== NVIDIA H200 | 132 SMs | library grid cap = 6 blocks/SM x 132 SMs = 792 | numel-only cap 512
+
+--- 96x96 test tensor 15 | 9216 elements | library blocks 9, numel-only blocks 9 | exact sum 1.2140623 (nearest float 3f9b6665)
+   V0 library today (atomicAdd)      3 different total(s) in 400 calls | 3f9b6664 x113 3f9b6665 x256 3f9b6666 x31 | worst rel error vs exact 1.25e-07 (1.28 ulp of the total)
+   V1 fixed order, 1-block finalize  1 different total(s) in 400 calls | 3f9b6664 x400 | worst rel error vs exact 7.10e-08 (0.72 ulp of the total)
+   V2 fixed order, last block        1 different total(s) in 400 calls | 3f9b6664 x400 | worst rel error vs exact 7.10e-08 (0.72 ulp of the total)
+   V3 fixed order, inside scale      1 different total(s) in 400 calls | 3f9b6664 x400 | worst rel error vs exact 7.10e-08 (0.72 ulp of the total)
+   V3n V3 + blocks from numel only   1 different total(s) in 400 calls | 3f9b6664 x400 | worst rel error vs exact 7.10e-08 (0.72 ulp of the total)
+   V1n V1 + blocks from numel only   1 different total(s) in 400 calls | 3f9b6664 x400 | worst rel error vs exact 7.10e-08 (0.72 ulp of the total)
+   speed, us per call (median of 5 rounds, 2000 calls each):  V0 6.16  V1 6.68  V2 5.71  V3 5.03  V3n 5.03  V1n 6.68
+
+--- 768x768 GPT-2 attn | 589824 elements | library blocks 576, numel-only blocks 512 | exact sum 78.72536288 (nearest float 429d7363)
+   V0 library today (atomicAdd)      20 different total(s) in 400 calls | 429d7359 x1 429d735b x7 429d735c x7 429d735d x5 429d735e x26 429d735f x42 429d7360 x55 429d7361 x53 429d7362 x54 429d7363 x32 429d7364 x29 429d7365 x21 429d7366 x16 429d7367 x14 429d7368 x12 429d7369 x10 429d736a x9 429d736b x4 429d736c x2 429d736d x1 | worst rel error vs exact 9.92e-07 (10.24 ulp of the total)
+   V1 fixed order, 1-block finalize  1 different total(s) in 400 calls | 429d7363 x400 | worst rel error vs exact 2.29e-08 (0.24 ulp of the total)
+   V2 fixed order, last block        1 different total(s) in 400 calls | 429d7363 x400 | worst rel error vs exact 2.29e-08 (0.24 ulp of the total)
+   V3 fixed order, inside scale      1 different total(s) in 400 calls | 429d7363 x400 | worst rel error vs exact 2.29e-08 (0.24 ulp of the total)
+   V3n V3 + blocks from numel only   1 different total(s) in 400 calls | 429d7363 x400 | worst rel error vs exact 2.29e-08 (0.24 ulp of the total)
+   V1n V1 + blocks from numel only   1 different total(s) in 400 calls | 429d7363 x400 | worst rel error vs exact 2.29e-08 (0.24 ulp of the total)
+   speed, us per call (median of 5 rounds, 2000 calls each):  V0 8.07  V1 8.60  V2 7.79  V3 7.35  V3n 7.03  V1n 8.36
+
+--- 768x3072 GPT-2 MLP | 2359296 elements | library blocks 792, numel-only blocks 512 | exact sum 314.6006792 (nearest float 439d4ce3)
+   V0 library today (atomicAdd)      20 different total(s) in 400 calls | 439d4cd3 x1 439d4cd5 x2 439d4cd6 x5 439d4cd7 x3 439d4cd8 x11 439d4cd9 x21 439d4cda x21 439d4cdb x26 439d4cdc x39 439d4cdd x43 439d4cde x48 439d4cdf x39 439d4ce0 x26 439d4ce1 x40 439d4ce2 x20 439d4ce3 x22 439d4ce4 x14 439d4ce5 x11 439d4ce6 x6 439d4ce8 x2 | worst rel error vs exact 1.56e-06 (16.06 ulp of the total)
+   V1 fixed order, 1-block finalize  1 different total(s) in 400 calls | 439d4ce2 x400 | worst rel error vs exact 1.02e-07 (1.06 ulp of the total)
+   V2 fixed order, last block        1 different total(s) in 400 calls | 439d4ce2 x400 | worst rel error vs exact 1.02e-07 (1.06 ulp of the total)
+   V3 fixed order, inside scale      1 different total(s) in 400 calls | 439d4ce2 x400 | worst rel error vs exact 1.02e-07 (1.06 ulp of the total)
+   V3n V3 + blocks from numel only   1 different total(s) in 400 calls | 439d4ce3 x400 | worst rel error vs exact 5.44e-09 (0.06 ulp of the total)
+   V1n V1 + blocks from numel only   1 different total(s) in 400 calls | 439d4ce3 x400 | worst rel error vs exact 5.44e-09 (0.06 ulp of the total)
+   speed, us per call (median of 5 rounds, 500 calls each):  V0 10.78  V1 11.35  V2 10.47  V3 9.77  V3n 9.24  V1n 10.83
+
+--- 2048x2048  | 4194304 elements | library blocks 792, numel-only blocks 512 | exact sum 559.2612941 (nearest float 440bd0b9)
+   V0 library today (atomicAdd)      18 different total(s) in 400 calls | 440bd0af x1 440bd0b0 x1 440bd0b1 x4 440bd0b2 x9 440bd0b3 x7 440bd0b4 x23 440bd0b5 x32 440bd0b6 x57 440bd0b7 x63 440bd0b8 x53 440bd0b9 x47 440bd0ba x39 440bd0bb x24 440bd0bc x18 440bd0bd x13 440bd0be x3 440bd0bf x5 440bd0c0 x1 | worst rel error vs exact 1.10e-06 (10.04 ulp of the total)
+   V1 fixed order, 1-block finalize  1 different total(s) in 400 calls | 440bd0b9 x400 | worst rel error vs exact 4.66e-09 (0.04 ulp of the total)
+   V2 fixed order, last block        1 different total(s) in 400 calls | 440bd0b9 x400 | worst rel error vs exact 4.66e-09 (0.04 ulp of the total)
+   V3 fixed order, inside scale      1 different total(s) in 400 calls | 440bd0b9 x400 | worst rel error vs exact 4.66e-09 (0.04 ulp of the total)
+   V3n V3 + blocks from numel only   1 different total(s) in 400 calls | 440bd0b9 x400 | worst rel error vs exact 4.66e-09 (0.04 ulp of the total)
+   V1n V1 + blocks from numel only   1 different total(s) in 400 calls | 440bd0b9 x400 | worst rel error vs exact 4.66e-09 (0.04 ulp of the total)
+   speed, us per call (median of 5 rounds, 500 calls each):  V0 13.38  V1 14.16  V2 13.31  V3 12.48  V3n 12.21  V1n 13.86
+
+--- 2048x8192  | 16777216 elements | library blocks 792, numel-only blocks 512 | exact sum 2235.942236 (nearest float 450bbf13)
+   V0 library today (atomicAdd)      23 different total(s) in 400 calls | 450bbf04 x1 450bbf07 x1 450bbf08 x1 450bbf09 x12 450bbf0a x7 450bbf0b x10 450bbf0c x25 450bbf0d x29 450bbf0e x34 450bbf0f x51 450bbf10 x41 450bbf11 x44 450bbf12 x35 450bbf13 x30 450bbf14 x23 450bbf15 x13 450bbf16 x21 450bbf17 x10 450bbf18 x6 450bbf19 x3 450bbf1a x1 450bbf1c x1 450bbf1e x1 | worst rel error vs exact 1.68e-06 (15.40 ulp of the total)
+   V1 fixed order, 1-block finalize  1 different total(s) in 400 calls | 450bbf14 x400 | worst rel error vs exact 6.58e-08 (0.60 ulp of the total)
+   V2 fixed order, last block        1 different total(s) in 400 calls | 450bbf14 x400 | worst rel error vs exact 6.58e-08 (0.60 ulp of the total)
+   V3 fixed order, inside scale      1 different total(s) in 400 calls | 450bbf14 x400 | worst rel error vs exact 6.58e-08 (0.60 ulp of the total)
+   V3n V3 + blocks from numel only   1 different total(s) in 400 calls | 450bbf14 x400 | worst rel error vs exact 6.58e-08 (0.60 ulp of the total)
+   V1n V1 + blocks from numel only   1 different total(s) in 400 calls | 450bbf14 x400 | worst rel error vs exact 6.58e-08 (0.60 ulp of the total)
+   speed, us per call (median of 5 rounds, 500 calls each):  V0 55.92  V1 58.74  V2 57.42  V3 56.86  V3n 58.05  V1n 59.93
+
+--- 4096x4096  | 16777216 elements | library blocks 792, numel-only blocks 512 | exact sum 2237.130934 (nearest float 450bd218)
+   V0 library today (atomicAdd)      19 different total(s) in 400 calls | 450bd210 x1 450bd211 x3 450bd212 x4 450bd213 x6 450bd214 x18 450bd215 x24 450bd216 x37 450bd217 x44 450bd218 x50 450bd219 x41 450bd21a x41 450bd21b x41 450bd21c x23 450bd21d x29 450bd21e x17 450bd21f x12 450bd220 x6 450bd221 x1 450bd223 x2 | worst rel error vs exact 1.17e-06 (10.69 ulp of the total)
+   V1 fixed order, 1-block finalize  1 different total(s) in 400 calls | 450bd218 x400 | worst rel error vs exact 3.36e-08 (0.31 ulp of the total)
+   V2 fixed order, last block        1 different total(s) in 400 calls | 450bd218 x400 | worst rel error vs exact 3.36e-08 (0.31 ulp of the total)
+   V3 fixed order, inside scale      1 different total(s) in 400 calls | 450bd218 x400 | worst rel error vs exact 3.36e-08 (0.31 ulp of the total)
+   V3n V3 + blocks from numel only   1 different total(s) in 400 calls | 450bd218 x400 | worst rel error vs exact 3.36e-08 (0.31 ulp of the total)
+   V1n V1 + blocks from numel only   1 different total(s) in 400 calls | 450bd218 x400 | worst rel error vs exact 3.36e-08 (0.31 ulp of the total)
+   speed, us per call (median of 5 rounds, 500 calls each):  V0 55.99  V1 58.77  V2 57.41  V3 56.88  V3n 58.07  V1n 60.00
+
+--- 4096x14336 large MLP | 58720256 elements | library blocks 792, numel-only blocks 512 | exact sum 7829.959181 (nearest float 45f4afac)
+   V0 library today (atomicAdd)      25 different total(s) in 400 calls | 45f4af99 x1 45f4af9c x2 45f4af9d x3 45f4af9e x3 45f4af9f x7 45f4afa0 x9 45f4afa1 x21 45f4afa2 x20 45f4afa3 x26 45f4afa4 x40 45f4afa5 x39 45f4afa6 x44 45f4afa7 x46 45f4afa8 x28 45f4afa9 x23 45f4afaa x27 45f4afab x13 45f4afac x16 45f4afad x12 45f4afae x5 45f4afaf x7 45f4afb0 x3 45f4afb1 x2 45f4afb3 x2 45f4afb4 x1 | worst rel error vs exact 1.21e-06 (19.40 ulp of the total)
+   V1 fixed order, 1-block finalize  1 different total(s) in 400 calls | 45f4afac x400 | worst rel error vs exact 2.51e-08 (0.40 ulp of the total)
+   V2 fixed order, last block        1 different total(s) in 400 calls | 45f4afac x400 | worst rel error vs exact 2.51e-08 (0.40 ulp of the total)
+   V3 fixed order, inside scale      1 different total(s) in 400 calls | 45f4afac x400 | worst rel error vs exact 2.51e-08 (0.40 ulp of the total)
+   V3n V3 + blocks from numel only   1 different total(s) in 400 calls | 45f4afad x400 | worst rel error vs exact 3.72e-08 (0.60 ulp of the total)
+   V1n V1 + blocks from numel only   1 different total(s) in 400 calls | 45f4afad x400 | worst rel error vs exact 3.72e-08 (0.60 ulp of the total)
+   speed, us per call (median of 5 rounds, 100 calls each):  V0 183.06  V1 185.74  V2 184.30  V3 184.01  V3n 184.99  V1n 186.59
+
+=== CUDA status: no error

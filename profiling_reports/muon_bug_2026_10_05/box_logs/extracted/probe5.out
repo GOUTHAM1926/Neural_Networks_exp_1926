@@ -1,0 +1,14 @@
+kernels copied verbatim: 107 lines; partials variant: 1 replacement
+compiled
+=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step4.bin | 96x96 | the library launches muon_sumsq_kernel with 9 blocks for this size
+part 1: the 9 block sums: 4.99930286 5.05442524 5.3774209 5.29176378 5.1028614 5.25180912 4.82695436 5.43447971 5.53353453
+part 1: 3 different totals over all add orders
+   total 46.8725471 (bits 423b7d7d) from  58600 orders -> scaled fingerprint b3f448f1a3cf2a55  <- the RS-mode / standalone value b3f448f1
+   total 46.872551 (bits 423b7d7e) from 274544 orders [block order 0..8] -> scaled fingerprint b3f448f1a3cf2a55  <- the RS-mode / standalone value b3f448f1
+   total 46.8725548 (bits 423b7d7f) from  29736 orders -> scaled fingerprint 309adc60d0b89f1f  <- the RB-mode value 309adc60
+part 2: the real library muon_frobenius_scale_cuda, 200 calls each (fingerprint x times seen)
+   idle GPU                                        b3f448f1a3cf2a55 x200
+   L2 flushed before each call                     309adc60d0b89f1f x16  b3f448f1a3cf2a55 x184
+   all but 4 SMs busy on another stream            b3f448f1a3cf2a55 x200
+   1..132 SMs busy on another stream (varies)      309adc60d0b89f1f x38  b3f448f1a3cf2a55 x162
+=== CUDA status: no error

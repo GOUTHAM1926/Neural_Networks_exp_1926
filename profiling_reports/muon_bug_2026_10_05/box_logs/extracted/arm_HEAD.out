@@ -1,0 +1,32 @@
+=== arm HEAD | clone HEAD b9b567f | TI a60099b | 2026-10-05 19:50:30 | GPU 2
+e7ddc348e076854a84166b9f9834b75a  ~/gautam_k/BluTrain_bluccl/dist/zero/src/ShardedMuon.cpp
+7d2e0d5496cb842a00acd8a5390a6ad1  ~/gautam_k/BluTrain_bluccl/dist/zero/src/ShardedOptimizer.cpp
+1453b02875beb1d654ab053b6e04737b  ~/gautam_k/BluTrain_bluccl/dist/zero/src/SymmetricShardedOptimizer.cpp
+98784af3a3b714ee02d0b35e42a042de  ~/gautam_k/BluTrain_bluccl/dist/zero/src/ZeroKernels.cu
+000f62bf16bece481ba7ed8ed2617ad0  ~/gautam_k/BluTrain_bluccl/dist/zero/tests/test_muon_rsag.cpp
+--- compile (CPU)
+--- 20 runs: mpirun -np 1
+run  1 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  2 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  3 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  4 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  5 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  6 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run  7 exit 0 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] PASS bit-identical across 82120 elements 
+run  8 exit 0 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] PASS bit-identical across 82120 elements 
+run  9 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 10 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] PASS bit-identical across 82120 elements 
+run 11 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 12 exit 0 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] PASS bit-identical across 82120 elements 
+run 13 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 14 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 15 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 16 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 17 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 18 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 19 exit 1 | [sync publish] PASS bit-identical across 82120 elements [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+run 20 exit 1 | [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 
+--- arm HEAD: 17 of 20 runs FAILED
+--- failure signatures:
+     16 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 (worst tensor 15 elem 7659: 0.33138907 vs 0.331362277)
+      9 [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 (worst tensor 15 elem 7659: 0.33138907 vs 0.331362277)

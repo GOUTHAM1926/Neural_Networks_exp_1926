@@ -1,0 +1,91 @@
+=== debug2 | clone HEAD b9b567f | TI a60099b | 2026-10-05 20:38:48 | GPU 2 | 10 runs per arm
+HEAD: debug copy patched (5 edits, each matched once)
+a3aba3e: debug copy patched (5 edits, each matched once)
+e6eaeba: debug copy patched (5 edits, each matched once)
+ns_probe4 compiled
+a3aba3e compiled
+e6eaeba compiled
+HEAD compiled
+--- part A: 10 runs per arm, one arm after the other (never two at once)
+arm HEAD    : 10 of 10 runs FAILED | RB-vs-RS first difference (2 scenarios x 10 runs): {'identical': 3, 'step 4 NSOUT': 17}
+      step 1: NS output fingerprints seen {'3346bd7b59ac22d9': 40}
+      step 2: NS output fingerprints seen {'ee3db3a1f3a96599': 40}
+      step 3: NS output fingerprints seen {'30da315efbfc1009': 40}
+      step 4: NS output fingerprints seen {'57bf40c3114993ed': 23, '0ce46e2b51fb0c33': 17}
+arm a3aba3e : 7 of 10 runs FAILED | RB-vs-RS first difference (2 scenarios x 10 runs): {'step 4 NSOUT': 11, 'identical': 9}
+      step 1: NS output fingerprints seen {'3346bd7b59ac22d9': 40}
+      step 2: NS output fingerprints seen {'ee3db3a1f3a96599': 40}
+      step 3: NS output fingerprints seen {'30da315efbfc1009': 40}
+      step 4: NS output fingerprints seen {'0ce46e2b51fb0c33': 11, '57bf40c3114993ed': 29}
+arm e6eaeba : 0 of 10 runs FAILED | RB-vs-RS first difference (2 scenarios x 10 runs): {'identical': 20}
+      step 1: NS output fingerprints seen {'3346bd7b59ac22d9': 40}
+      step 2: NS output fingerprints seen {'ee3db3a1f3a96599': 40}
+      step 3: NS output fingerprints seen {'30da315efbfc1009': 40}
+      step 4: NS output fingerprints seen {'57bf40c3114993ed': 40}
+NS input (NSIN) fingerprint per step and arm (one value each = same input in every run and mode):
+   step 1: HEAD 29ebab1c8c7d10ad | a3aba3e 29ebab1c8c7d10ad | e6eaeba 29ebab1c8c7d10ad
+   step 2: HEAD 62a4c4469d87394f | a3aba3e 62a4c4469d87394f | e6eaeba 62a4c4469d87394f
+   step 3: HEAD 9e519f119211184e | a3aba3e 9e519f119211184e | e6eaeba 9e519f119211184e
+   step 4: HEAD 6b6023cd51360133 | a3aba3e 6b6023cd51360133 | e6eaeba 6b6023cd51360133
+--- part B: ns_probe4 on the dumped inputs, 200 calls each
+=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step1.bin | 96x96 | input fingerprint 29ebab1c8c7d10ad
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  87f6a87bc657922e x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  3346bd7b59ac22d9 x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  3346bd7b59ac22d9 x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step2.bin | 96x96 | input fingerprint 62a4c4469d87394f
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  9f5e9295da6e0344 x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  ee3db3a1f3a96599 x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  ee3db3a1f3a96599 x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step3.bin | 96x96 | input fingerprint 9e519f119211184e
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  2d12cf53df8b7f45 x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  30da315efbfc1009 x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  30da315efbfc1009 x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step4.bin | 96x96 | input fingerprint 6b6023cd51360133
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  b3f448f1a3cf2a55 x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  57bf40c3114993ed x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  57bf40c3114993ed x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/a3aba3e/nsin_step1.bin | 96x96 | input fingerprint 29ebab1c8c7d10ad
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  87f6a87bc657922e x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  3346bd7b59ac22d9 x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  3346bd7b59ac22d9 x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/a3aba3e/nsin_step2.bin | 96x96 | input fingerprint 62a4c4469d87394f
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  9f5e9295da6e0344 x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  ee3db3a1f3a96599 x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  ee3db3a1f3a96599 x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/a3aba3e/nsin_step3.bin | 96x96 | input fingerprint 9e519f119211184e
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  2d12cf53df8b7f45 x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  30da315efbfc1009 x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  30da315efbfc1009 x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/a3aba3e/nsin_step4.bin | 96x96 | input fingerprint 6b6023cd51360133
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  b3f448f1a3cf2a55 x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  57bf40c3114993ed x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  57bf40c3114993ed x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/e6eaeba/nsin_step1.bin | 96x96 | input fingerprint 29ebab1c8c7d10ad
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  87f6a87bc657922e x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  3346bd7b59ac22d9 x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  3346bd7b59ac22d9 x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/e6eaeba/nsin_step2.bin | 96x96 | input fingerprint 62a4c4469d87394f
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  9f5e9295da6e0344 x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  ee3db3a1f3a96599 x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  ee3db3a1f3a96599 x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/e6eaeba/nsin_step3.bin | 96x96 | input fingerprint 9e519f119211184e
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  2d12cf53df8b7f45 x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  30da315efbfc1009 x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  30da315efbfc1009 x200
+=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/e6eaeba/nsin_step4.bin | 96x96 | input fingerprint 6b6023cd51360133
+  [1] muon_frobenius_scale_cuda (multi-block atomicAdd sum)      1 different result(s) in 200 calls:  b3f448f1a3cf2a55 x200
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  57bf40c3114993ed x200
+  [3] same NS with the sum done in one fixed order               1 different result(s) in 200 calls:  57bf40c3114993ed x200
+=== CUDA status: no error
+=== done 20:48:57

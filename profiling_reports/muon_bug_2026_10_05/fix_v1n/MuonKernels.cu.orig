@@ -1,0 +1,434 @@
+#include "ops/helpers/MuonKernels.h"
+#include <cuda_runtime.h>
+#include "device/DeviceCore.h"
+#include <device_launch_parameters.h>
+#include <algorithm>
+
+namespace OwnTensor {
+namespace cuda {
+
+// =============================================================================
+// 1. FROBENIUS PRE-SCALING  (kills the to_cpu() host round-trip + gram matmul)
+// =============================================================================
+__inline__ __device__ float warpReduceSum(float val) {
+    #pragma unroll
+    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
+        val += __shfl_down_sync(0xffffffff, val, offset);
+    }
+    return val;
+}
+
+// Pass 1: sum of squares reduced into a single device accumulator.
+__global__ void muon_sumsq_kernel(
+    const float* __restrict__ x,
+    float* __restrict__ acc,
+    int64_t numel
+) {
+    // Shared memory for warp leaders (max 32 warps per block)
+    __shared__ float sdata[32];
+    
+    int tid = threadIdx.x;
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t stride = (int64_t)blockDim.x * gridDim.x;
+
+    // float4 (128-bit) vectorized loads + 4 independent accumulators to break
+    // the loop-carried FMA dependency (4-way ILP). Requires the base pointer be
+    // 16B-aligned; cudaMalloc guarantees >=256B and Muon always passes a whole
+    // weight tensor's base pointer, so this holds. The scalar tail covers the
+    // numel % 4 remainder.
+    float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+    const int64_t numel4 = numel / 4;
+    const float4* __restrict__ x4 = reinterpret_cast<const float4*>(x);
+    for (int64_t i = idx; i < numel4; i += stride) {
+        float4 v = x4[i];
+        s0 += v.x * v.x;
+        s1 += v.y * v.y;
+        s2 += v.z * v.z;
+        s3 += v.w * v.w;
+    }
+    for (int64_t i = numel4 * 4 + idx; i < numel; i += stride) {
+        float v = x[i];
+        s0 += v * v;
+    }
+    float thread_sum = (s0 + s1) + (s2 + s3);
+
+    // 1. Intra-warp reduction (no shared memory needed)
+    thread_sum = warpReduceSum(thread_sum);
+
+    // 2. Write warp leaders to shared memory
+    int lane = tid % warpSize;
+    int warpId = tid / warpSize;
+
+    if (lane == 0) {
+        sdata[warpId] = thread_sum;
+    }
+
+    // 3. Wait for all warp leaders to write
+    __syncthreads();
+
+    // 4. First warp reduces the shared memory array
+    int num_warps = (blockDim.x + warpSize - 1) / warpSize;
+    if (warpId == 0) {
+        thread_sum = (tid < num_warps) ? sdata[lane] : 0.0f;
+        thread_sum = warpReduceSum(thread_sum);
+        
+        // Thread 0 writes the final block sum to global memory
+        if (tid == 0) {
+            atomicAdd(acc, thread_sum);
+        }
+    }
+}
+
+// Pass 2: read the accumulated sum-of-squares, derive scale = 1/max(||X||_F,eps),
+// and apply X *= scale in place (vectorized via float4).
+__global__ void muon_scale_by_inv_frob_kernel(
+    float* __restrict__ x,
+    const float* __restrict__ acc,
+    int64_t numel,
+    float eps
+) {
+    // scale = 1/max(sqrt(acc), eps) == rsqrt(max(acc, eps*eps)) for eps >= 0
+    // (sqrt is monotonic). Replaces a SQRT + division with one MUFU.RSQ.
+    const float scale = rsqrtf(fmaxf(*acc, eps * eps));
+
+    const int64_t idx    = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t stride = (int64_t)blockDim.x * gridDim.x;
+    const int64_t numel4 = numel / 4;
+    float4* __restrict__ x4 = reinterpret_cast<float4*>(x);   // hoisted cast
+
+    // 2x ILP widening: two independent float4 loads in flight to overlap DRAM
+    // latency. Coverage is exact (pairs + trailing chunk + scalar tail).
+    int64_t i = idx;
+    for (; i + stride < numel4; i += 2 * stride) {
+        float4 a = x4[i];
+        float4 b = x4[i + stride];
+        a.x *= scale; a.y *= scale; a.z *= scale; a.w *= scale;
+        b.x *= scale; b.y *= scale; b.z *= scale; b.w *= scale;
+        x4[i]          = a;
+        x4[i + stride] = b;
+    }
+    for (; i < numel4; i += stride) {
+        float4 a = x4[i];
+        a.x *= scale; a.y *= scale; a.z *= scale; a.w *= scale;
+        x4[i] = a;
+    }
+    for (int64_t j = numel4 * 4 + idx; j < numel; j += stride) {
+        x[j] *= scale;
+    }
+}
+
+// Persistent single-float scratch for the norm accumulator (one-time alloc).
+static float* s_muon_norm = nullptr;
+
+void muon_frobenius_scale_cuda(float* x, int64_t numel, float eps) {
+    if (numel == 0) return;
+    if (!s_muon_norm) cudaMalloc(&s_muon_norm, sizeof(float));
+
+    cudaStream_t stream = OwnTensor::cuda::getCurrentStream();
+    cudaMemsetAsync(s_muon_norm, 0, sizeof(float), stream);
+
+    const int threads = 256;
+
+    // Occupancy-based grid: fill every SM instead of the old fixed 1024-block
+    // cap. Both kernels are grid-stride, so any block count is correct; sizing
+    // to blocksPerSM * SM_count keeps the (now float4) reduction from being
+    // launch/latency-bound on the many small GPT-2 weight matrices. Capped at
+    // the float4 blocks actually needed so we never over-subscribe.
+    //
+    // dev/sm_count/nbps_red/nbps_sc are invariant for the lifetime of the
+    // process (fixed device via cudaSetDevice at startup, fixed kernel/threads/
+    // shared-mem args here), so the underlying cudaGetDevice / cudaDeviceGetAttribute
+    // / cudaOccupancyMaxActiveBlocksPerMultiprocessor driver queries are computed
+    // once and cached instead of being re-issued on every call (this function
+    // runs once per >=2D parameter per optimizer step, so uncached it was ~144
+    // extra driver round-trips per step at this model's parameter count).
+    static int sm_count = 0;
+    static int nbps_red = 0;
+    static int nbps_sc = 0;
+    static bool occ_cached = false;
+    if (!occ_cached) {
+        int dev = 0;
+        cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, dev);
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nbps_red, muon_sumsq_kernel, threads, 0);
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nbps_sc, muon_scale_by_inv_frob_kernel, threads, 0);
+        occ_cached = true;
+    }
+    const int64_t need4 = (numel / 4 + threads - 1) / threads;
+
+    int red_blocks = (int)std::max<int64_t>(
+        1, std::min<int64_t>((int64_t)nbps_red * sm_count, need4));
+    muon_sumsq_kernel<<<red_blocks, threads, 0, stream>>>(
+        x, s_muon_norm, numel);
+
+    int scale_blocks = (int)std::max<int64_t>(
+        1, std::min<int64_t>((int64_t)nbps_sc * sm_count, need4));
+    // Same stream => the reduction is guaranteed complete before the scale reads acc.
+    muon_scale_by_inv_frob_kernel<<<scale_blocks, threads, 0, stream>>>(
+        x, s_muon_norm, numel, eps);
+}
+
+// =============================================================================
+// 2. FUSED AXPBY  out = alpha*a + beta*b   (Newton-Schulz polynomial combine)
+// =============================================================================
+__global__ void muon_axpby_kernel(
+    const float* __restrict__ a,
+    const float* __restrict__ b,
+    float* __restrict__ out,
+    float alpha, float beta,
+    int64_t numel
+) {
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t stride = (int64_t)blockDim.x * gridDim.x;
+
+    int64_t numel4 = numel / 4;
+    #pragma unroll 4
+    for (int64_t i = idx; i < numel4; i += stride) {
+        float4 av = reinterpret_cast<const float4*>(a)[i];
+        float4 bv = reinterpret_cast<const float4*>(b)[i];
+        float4 ov;
+        ov.x = alpha * av.x + beta * bv.x;
+        ov.y = alpha * av.y + beta * bv.y;
+        ov.z = alpha * av.z + beta * bv.z;
+        ov.w = alpha * av.w + beta * bv.w;
+        reinterpret_cast<float4*>(out)[i] = ov;
+    }
+    for (int64_t i = numel4 * 4 + idx; i < numel; i += stride) {
+        out[i] = alpha * a[i] + beta * b[i];
+    }
+}
+
+void muon_axpby_cuda(const float* a, const float* b, float* out,
+                     float alpha, float beta, int64_t numel) {
+    if (numel == 0) return;
+    const int threads = 256;
+    int blocks = (int)std::min((numel / 4 + threads - 1) / threads, (int64_t)65535);
+    if (blocks == 0) blocks = 1;
+    cudaStream_t stream = OwnTensor::cuda::getCurrentStream();
+    muon_axpby_kernel<<<blocks, threads, 0, stream>>>(a, b, out, alpha, beta, numel);
+}
+
+// =============================================================================
+// 3a. FUSED FIRST-MOMENT EMA + NESTEROV COMBINE
+// =============================================================================
+// True exponential moving average of the gradient (first moment only):
+//   m = momentum*m + (1 - momentum)*grad
+// This keeps the momentum buffer at the same scale as the raw gradient, unlike
+// SGD heavy-ball (m = momentum*m + grad), which inflates it by 1/(1-momentum).
+// Matching the reference Muon recipe means learning rates transfer directly
+// instead of needing a momentum-dependent downscale. Nesterov lookahead uses
+// the EMA-consistent lerp (also at gradient scale):
+//   g_out = (1 - momentum)*grad + momentum*m_new
+//
+// NOTE: intentionally kept scalar (not float4). This kernel does 4x memory
+// traffic per element (read grad + read m + write m + write g_out) and is
+// launched one-thread-per-element, so the scalar form already saturates DRAM
+// bandwidth (~330 GB/s, near the RTX 3060 peak). A float4 + ILP-widened variant
+// was benchmarked and measured 3-10% SLOWER here: with a numel-based grid, 3/4
+// of the launched threads exit immediately, leaving fewer active warps to hide
+// latency, and there is no bandwidth headroom to reclaim. So float4 is a net
+// regression for this kernel and was not adopted. `nesterov` is a uniform
+// kernel argument, so the ternary is a non-divergent runtime branch.
+__global__ void muon_momentum_kernel(
+    float* __restrict__ m,
+    const float* __restrict__ grad,
+    float* __restrict__ g_out,
+    float momentum,
+    bool nesterov,
+    int64_t numel
+) {
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t stride = (int64_t)blockDim.x * gridDim.x;
+    float one_minus = 1.0f - momentum;
+    #pragma unroll 4
+    for (int64_t i = idx; i < numel; i += stride) {
+        float gi = grad[i];
+        float m_new = momentum * m[i] + one_minus * gi;
+        m[i] = m_new;
+        g_out[i] = nesterov ? (one_minus * gi + momentum * m_new) : m_new;
+    }
+}
+
+void muon_momentum_cuda(float* m, const float* grad, float* g_out,
+                        float momentum, bool nesterov, int64_t numel) {
+    if (numel == 0) return;
+    const int threads = 256;
+    int blocks = (int)std::min((numel + threads - 1) / threads, (int64_t)65535);
+    if (blocks == 0) blocks = 1;
+    cudaStream_t stream = OwnTensor::cuda::getCurrentStream();
+    muon_momentum_kernel<<<blocks, threads, 0, stream>>>(
+        m, grad, g_out, momentum, nesterov, numel);
+}
+
+// =============================================================================
+// 3b. SCALED APPLY  work = work - update*coef
+// =============================================================================
+__global__ void muon_apply_kernel(
+    float* __restrict__ work,
+    const float* __restrict__ update,
+    float coef,
+    int64_t numel
+) {
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t stride = (int64_t)blockDim.x * gridDim.x;
+    int64_t numel4 = numel / 4;
+    #pragma unroll 4
+    for (int64_t i = idx; i < numel4; i += stride) {
+        float4 wv = reinterpret_cast<float4*>(work)[i];
+        float4 uv = reinterpret_cast<const float4*>(update)[i];
+        wv.x -= uv.x * coef;
+        wv.y -= uv.y * coef;
+        wv.z -= uv.z * coef;
+        wv.w -= uv.w * coef;
+        reinterpret_cast<float4*>(work)[i] = wv;
+    }
+    for (int64_t i = numel4 * 4 + idx; i < numel; i += stride) {
+        work[i] -= update[i] * coef;
+    }
+}
+
+void muon_apply_cuda(float* work, const float* update, float coef, int64_t numel) {
+    if (numel == 0) return;
+    const int threads = 256;
+    int blocks = (int)std::min((numel / 4 + threads - 1) / threads, (int64_t)65535);
+    if (blocks == 0) blocks = 1;
+    cudaStream_t stream = OwnTensor::cuda::getCurrentStream();
+    muon_apply_kernel<<<blocks, threads, 0, stream>>>(work, update, coef, numel);
+}
+
+// =============================================================================
+// 3c. IN-PLACE SCALAR SCALE  x *= s   (decoupled weight decay)
+// =============================================================================
+__global__ void muon_scale_inplace_kernel(
+    float* __restrict__ x, float s, int64_t numel
+) {
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t stride = (int64_t)blockDim.x * gridDim.x;
+    int64_t numel4 = numel / 4;
+    #pragma unroll 4
+    for (int64_t i = idx; i < numel4; i += stride) {
+        float4* p = reinterpret_cast<float4*>(x) + i;
+        float4 v = *p;
+        v.x *= s; v.y *= s; v.z *= s; v.w *= s;
+        *p = v;
+    }
+    for (int64_t i = numel4 * 4 + idx; i < numel; i += stride) {
+        x[i] *= s;
+    }
+}
+
+void muon_scale_inplace_cuda(float* x, float s, int64_t numel) {
+    if (numel == 0) return;
+    const int threads = 256;
+    int blocks = (int)std::min((numel / 4 + threads - 1) / threads, (int64_t)65535);
+    if (blocks == 0) blocks = 1;
+    cudaStream_t stream = OwnTensor::cuda::getCurrentStream();
+    muon_scale_inplace_kernel<<<blocks, threads, 0, stream>>>(x, s, numel);
+}
+
+// =============================================================================
+// 4. QK-CLIP weight rescale  (MuonClip Algorithm 1, step 2)
+// =============================================================================
+// The fused QKV projection weight is row-major [in_features, out_features] with
+// out_features = 3*n_embd laid out as [Q(n_embd) | K(n_embd) | V(n_embd)]. Per
+// head h, the Q and K column blocks are scaled by sqrt(gamma_h) (and so the
+// resulting QK^T logit is scaled by gamma_h, pulling S^h_max down toward tau).
+// V columns [2*n_embd, 3*n_embd) are left untouched. sqrt_gamma_h is applied
+// uniformly across the whole head_dim of head h, so this is safe even when
+// RoPE is fused into the downstream attention kernel: RoPE only rotates (or
+// passes through) coordinates within a head, and a per-head scalar commutes
+// with any linear map applied within that head, rotation or identity alike.
+// So it makes no difference whether the scale is folded into the weight here
+// (pre-rotation) or applied to Q/K after rotation.
+//
+// sqrt_gamma is a device array [n_heads]; entries are 1.0f for heads that were
+// not clipped (S^h_max <= tau), so those columns are a no-op.
+__global__ void qk_clip_scale_qkv_kernel(
+    float* __restrict__ weight,
+    float* __restrict__ bias,
+    int64_t in_features,
+    int64_t out_features,
+    int64_t n_embd,
+    int head_dim,
+    const float* __restrict__ sqrt_gamma)
+{
+    const int64_t QK = 2 * n_embd;                 // # of Q+K output columns
+    const int64_t total = in_features * QK;
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t stride = (int64_t)blockDim.x * gridDim.x;
+    for (int64_t i = idx; i < total; i += stride) {
+        const int64_t r  = i / QK;
+        const int64_t cc = i - r * QK;             // 0..2*n_embd-1 == weight column
+        const int     h  = (int)((cc % n_embd) / head_dim);
+        const float   f  = sqrt_gamma[h];
+        if (f != 1.0f) {
+            weight[r * out_features + cc] *= f;
+            // One thread (row 0) per column also scales the matching bias entry.
+            if (bias != nullptr && r == 0) bias[cc] *= f;
+        }
+    }
+}
+
+void qk_clip_scale_qkv_cuda(
+    float* weight, float* bias,
+    int64_t in_features, int64_t out_features,
+    int64_t n_embd, int head_dim,
+    const float* sqrt_gamma_dev)
+{
+    const int64_t QK = 2 * n_embd;
+    const int64_t total = in_features * QK;
+    if (total == 0) return;
+    const int threads = 256;
+    int blocks = (int)std::min((total + threads - 1) / threads, (int64_t)65535);
+    if (blocks == 0) blocks = 1;
+    cudaStream_t stream = OwnTensor::cuda::getCurrentStream();
+    qk_clip_scale_qkv_kernel<<<blocks, threads, 0, stream>>>(
+        weight, bias, in_features, out_features, n_embd, head_dim, sqrt_gamma_dev);
+}
+
+// =============================================================================
+// 5. NON-FINITE CHECK (guard for the bf16 Newton-Schulz divergence case)
+// =============================================================================
+// A properly-orthogonalized update has singular values ~1, so entries are
+// bounded by roughly sqrt(max(rows,cols)) -- at most a few hundred for any
+// realistic layer width. The observed divergence produces values in the tens
+// of thousands while still technically finite (isfinite() alone misses it),
+// so this also rejects any magnitude far outside what orthogonalization can
+// legitimately produce, generously capped well above the largest plausible
+// dimension so it never fires on a healthy update.
+__device__ __forceinline__ bool muon_update_elem_is_bad(float v) {
+    return !isfinite(v) || fabsf(v) > 1000.0f;
+}
+
+__global__ void muon_isnonfinite_kernel(
+    const float* __restrict__ x, int64_t numel, int* __restrict__ flag
+) {
+    int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t stride = (int64_t)blockDim.x * gridDim.x;
+    for (int64_t i = idx; i < numel; i += stride) {
+        if (muon_update_elem_is_bad(x[i])) { atomicExch(flag, 1); return; }
+    }
+}
+
+static int* s_muon_nonfinite_flag = nullptr;
+
+bool muon_has_nonfinite_cuda(const float* x, int64_t numel) {
+    if (numel == 0) return false;
+    if (!s_muon_nonfinite_flag) cudaMalloc(&s_muon_nonfinite_flag, sizeof(int));
+
+    cudaStream_t stream = OwnTensor::cuda::getCurrentStream();
+    cudaMemsetAsync(s_muon_nonfinite_flag, 0, sizeof(int), stream);
+
+    const int threads = 256;
+    int blocks = (int)std::min((numel + threads - 1) / threads, (int64_t)65535);
+    if (blocks == 0) blocks = 1;
+    muon_isnonfinite_kernel<<<blocks, threads, 0, stream>>>(x, numel, s_muon_nonfinite_flag);
+
+    int flag = 0;
+    cudaMemcpyAsync(&flag, s_muon_nonfinite_flag, sizeof(int), cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+    return flag != 0;
+}
+
+} // namespace cuda
+} // namespace OwnTensor

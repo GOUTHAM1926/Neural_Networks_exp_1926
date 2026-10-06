@@ -1,0 +1,256 @@
+========= COMPUTE-SANITIZER
+=== ShardedMuon reduce-scatter/all-gather equivalence (W=1, 22 params) ===
+
+-- scenario: sync publish --
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (0,0,0) in block (0,0,0)
+=========     Address 0x4b26600000
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (1,0,0) in block (0,0,0)
+=========     Address 0x4b26600004
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (2,0,0) in block (0,0,0)
+=========     Address 0x4b26600008
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (3,0,0) in block (0,0,0)
+=========     Address 0x4b2660000c
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (4,0,0) in block (0,0,0)
+=========     Address 0x4b26600010
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (5,0,0) in block (0,0,0)
+=========     Address 0x4b26600014
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (6,0,0) in block (0,0,0)
+=========     Address 0x4b26600018
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (7,0,0) in block (0,0,0)
+=========     Address 0x4b2660001c
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (8,0,0) in block (0,0,0)
+=========     Address 0x4b26600020
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (9,0,0) in block (0,0,0)
+=========     Address 0x4b26600024
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (10,0,0) in block (0,0,0)
+=========     Address 0x4b26600028
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (11,0,0) in block (0,0,0)
+=========     Address 0x4b2660002c
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (12,0,0) in block (0,0,0)
+=========     Address 0x4b26600030
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (13,0,0) in block (0,0,0)
+=========     Address 0x4b26600034
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (14,0,0) in block (0,0,0)
+=========     Address 0x4b26600038
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (15,0,0) in block (0,0,0)
+=========     Address 0x4b2660003c
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (16,0,0) in block (0,0,0)
+=========     Address 0x4b26600040
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (17,0,0) in block (0,0,0)
+=========     Address 0x4b26600044
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (18,0,0) in block (0,0,0)
+=========     Address 0x4b26600048
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (19,0,0) in block (0,0,0)
+=========     Address 0x4b2660004c
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: OwnTensor::nn::newton_schulz_orthogonalize(OwnTensor::Tensor const&, int, float, bool) [0x2982a9] in libtensor.so
+=========         Host Frame: owt::zero::ShardedMuon::update_one(unsigned long, dist::comm::ProcessGroupBase::MuonPublishSeg*) in ShardedMuon.cpp:1643 [0x67214] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::update_owned() in ShardedMuon.cpp:1803 [0x6bb50] in test_muon_rsag_HEAD
+=========         Host Frame: owt::zero::ShardedMuon::step() in ShardedMuon.cpp:2310 [0x6d63f] in test_muon_rsag_HEAD
+=========         Host Frame: main in test_muon_rsag.cpp:332 [0x27088] in test_muon_rsag_HEAD
+========= 
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[sync publish] PASS bit-identical across 82120 elements
+[sync publish] grad_norm agrees: 165.624054
+
+-- scenario: staged refresh --
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[staged refresh] PASS bit-identical across 82120 elements
+[staged refresh] grad_norm agrees: 165.624054
+
+=== ALL TESTS PASSED ===
+========= ERROR SUMMARY: 18560 errors
+========= ERROR SUMMARY: 18540 errors were not printed. Use --print-limit option to adjust the number of printed errors

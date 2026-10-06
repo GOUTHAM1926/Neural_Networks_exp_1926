@@ -1,0 +1,20 @@
+Muon: deterministic Frobenius norm in Newton-Schulz
+
+muon_sumsq_kernel combined its per-block sums with atomicAdd, so the
+total depended on the order the blocks finished in. On H200 the same
+input gave 3 different totals for 96x96 and about 20 for >= 768x768
+(400 calls, up to ~19 ulp apart). One ulp of the norm flips bf16
+roundings in Newton-Schulz, so dist/zero test_muon_rsag (bit-exact
+REDUCE_BROADCAST vs REDUCE_SCATTER_ALL_GATHER at W=1) failed
+intermittently.
+
+Each block now writes its own slot, and a 1-block kernel adds the
+slots in a fixed order and writes the total (the memset is gone). The
+reduction's block count depends on numel only (cap 768: one wave on
+H200). Same pattern as dist/zero ZeroKernels.cu sumsq_partial/finalize.
+
+Measured on H200:
+- 1 total in 400 calls under any GPU load (was 3 to 26)
+- worst error vs the exact sum <= ~1 ulp (was up to 18 ulp)
+- +0.3 to +2.8 us per call (one extra tiny kernel)
+- test_muon_rsag, same binary: 19 of 20 runs FAIL -> 0 of 20

@@ -1,0 +1,14 @@
+=== debug fingerprints | clone HEAD b9b567f | 2026-10-05 20:30:27 | GPU 2 | 10 runs
+debug copy patched (5 edits, each matched once)
+compiled
+run  1 | [sync publish] PASS | [staged refresh] FAIL | sync: identical ; staged: FIRST DIFFERENCE at step 4 stage NSOUT
+run  2 | [sync publish] PASS | [staged refresh] FAIL | sync: identical ; staged: FIRST DIFFERENCE at step 4 stage NSOUT
+run  3 | [sync publish] FAIL | [staged refresh] FAIL | sync: FIRST DIFFERENCE at step 4 stage NSOUT ; staged: FIRST DIFFERENCE at step 4 stage NSOUT
+run  4 | [sync publish] FAIL | [staged refresh] FAIL | sync: FIRST DIFFERENCE at step 4 stage NSOUT ; staged: FIRST DIFFERENCE at step 4 stage NSOUT
+run  5 | [sync publish] PASS | [staged refresh] PASS | sync: identical ; staged: identical
+run  6 | [sync publish] FAIL | [staged refresh] FAIL | sync: FIRST DIFFERENCE at step 4 stage NSOUT ; staged: FIRST DIFFERENCE at step 4 stage NSOUT
+run  7 | [sync publish] FAIL | [staged refresh] PASS | sync: FIRST DIFFERENCE at step 4 stage NSOUT ; staged: identical
+run  8 | [sync publish] PASS | [staged refresh] FAIL | sync: identical ; staged: FIRST DIFFERENCE at step 4 stage NSOUT
+run  9 | [sync publish] PASS | [staged refresh] FAIL | sync: identical ; staged: FIRST DIFFERENCE at step 4 stage NSOUT
+run 10 | [sync publish] PASS | [staged refresh] FAIL | sync: identical ; staged: FIRST DIFFERENCE at step 4 stage NSOUT
+=== done 20:34:06

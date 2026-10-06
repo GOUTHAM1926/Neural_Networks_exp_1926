@@ -1,0 +1,9 @@
+In file included from /usr/local/cuda/include/CL/cl.h:20,
+                 from /usr/local/cuda/include/nvtx3/nvToolsExtOpenCL.h:33,
+                 from dist/Data-Parallel/include/profiler.hpp:25,
+                 from dist/Data-Parallel/include/DataParallel.hpp:20,
+                 from dist/FSDP/fsdp_ddp.h:51,
+                 from dist/FSDP/fsdp_ddp.cpp:19:
+/usr/local/cuda/include/CL/cl_version.h:22:104: note: ‘#pragma message: cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)’
+   22 | #pragma message("cl_version.h: CL_TARGET_OPENCL_VERSION is not defined. Defaulting to 300 (OpenCL 3.0)")
+      |                                                                                                        ^

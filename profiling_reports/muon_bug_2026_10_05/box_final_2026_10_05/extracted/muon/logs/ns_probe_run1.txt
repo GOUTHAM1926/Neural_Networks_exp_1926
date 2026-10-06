@@ -1,0 +1,25 @@
+=== part 1: cuda_matmul(Xb, Xb.t(), A) with A pre-filled with a marker (0x4141)
+  shape  96x96  -> X  96x96  A  96x96  | A entries still = marker:      0 of   9216 | max rel err vs CPU 0.00382 ok
+  shape  64x64  -> X  64x64  A  64x64  | A entries still = marker:      0 of   4096 | max rel err vs CPU 0.00383 ok
+  shape  32x32  -> X  32x32  A  32x32  | A entries still = marker:      0 of   1024 | max rel err vs CPU 0.00374 ok
+  shape  48x48  -> X  48x48  A  48x48  | A entries still = marker:      0 of   2304 | max rel err vs CPU 0.00376 ok
+  shape  56x56  -> X  56x56  A  56x56  | A entries still = marker:      0 of   3136 | max rel err vs CPU 0.00384 ok
+  shape  40x40  -> X  40x40  A  40x40  | A entries still = marker:      0 of   1600 | max rel err vs CPU 0.00372 ok
+  shape 128x64  -> X  64x128 A  64x64  | A entries still = marker:      0 of   4096 | max rel err vs CPU 0.00371 ok
+  shape  64x128 -> X  64x128 A  64x64  | A entries still = marker:      0 of   4096 | max rel err vs CPU 0.0038 ok
+  shape  96x48  -> X  48x96  A  48x48  | A entries still = marker:      0 of   2304 | max rel err vs CPU 0.00379 ok
+  shape 100x50  -> X  50x100 A  50x50  | A entries still = marker:      0 of   2500 | max rel err vs CPU 0.0037 ok
+  shape 160x32  -> X  32x160 A  32x32  | A entries still = marker:      0 of   1024 | max rel err vs CPU 0.00379 ok
+=== part 2: newton_schulz_orthogonalize(use_bf16) twice on the same input, freed memory poisoned in between
+  shape  96x96  | NS output elements that differ (clean vs poisoned memory):      0 of   9216 same
+  shape  64x64  | NS output elements that differ (clean vs poisoned memory):   3279 of   4096 <-- DEPENDS ON LEFTOVER MEMORY
+  shape  32x32  | NS output elements that differ (clean vs poisoned memory):      0 of   1024 same
+  shape  48x48  | NS output elements that differ (clean vs poisoned memory):      0 of   2304 same
+  shape  56x56  | NS output elements that differ (clean vs poisoned memory):      0 of   3136 same
+  shape  40x40  | NS output elements that differ (clean vs poisoned memory):      0 of   1600 same
+  shape 128x64  | NS output elements that differ (clean vs poisoned memory):      0 of   8192 same
+  shape  64x128 | NS output elements that differ (clean vs poisoned memory):      0 of   8192 same
+  shape  96x48  | NS output elements that differ (clean vs poisoned memory):      0 of   4608 same
+  shape 100x50  | NS output elements that differ (clean vs poisoned memory):      0 of   5000 same
+  shape 160x32  | NS output elements that differ (clean vs poisoned memory):      0 of   5120 same
+=== CUDA status: no error

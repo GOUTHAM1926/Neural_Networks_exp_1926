@@ -1,0 +1,54 @@
+========= COMPUTE-SANITIZER
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (0,0,0) in block (4,0,0)
+=========     Address 0x4920401000
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: main [0x2a1e] in ns_probe2
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (1,0,0) in block (4,0,0)
+=========     Address 0x4920401004
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: main [0x2a1e] in ns_probe2
+========= 
+========= Uninitialized __global__ memory read of size 4 bytes
+=========     at void OwnTensor::broadcast_scale_kernel<OwnTensor::bfloat16_t>(T1 *, const T1 *, float, long, long, long, long)+0xaa0
+=========     by thread (2,0,0) in block (4,0,0)
+=========     Address 0x4920401008
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: OwnTensor::cuda_addmm(OwnTensor::Tensor const&, OwnTensor::Tensor const&, OwnTensor::Tensor const&, float, float, OwnTensor::Tensor&, CUstream_st*) [0xa31442] in libtensor.so
+=========         Host Frame: main [0x2a1e] in ns_probe2
+========= 
+=== bf16 Newton-Schulz by hand, input 64x64 (k=64)
+  X        [0x4920000000, 0x4920004000)  16384 bytes  shape 64x64
+  Xb       [0x4920200000, 0x4920202000)  8192 bytes  shape 64x64
+  A        [0x4920400000, 0x4920402000)  8192 bytes  shape 64x64
+  B        [0x4920600000, 0x4920602000)  8192 bytes  shape 64x64
+  Xb_new   [0x4920800000, 0x4920802000)  8192 bytes  shape 64x64
+--- iteration 0: A = Xb @ Xb.T
+--- iteration 0: B = b*A + c*(A@A)
+--- iteration 0: Xb_new = a*Xb + B@Xb
+    after swap: Xb=0x4920800000 Xb_new=0x4920200000
+--- iteration 1: A = Xb @ Xb.T
+--- iteration 1: B = b*A + c*(A@A)
+--- iteration 1: Xb_new = a*Xb + B@Xb
+    after swap: Xb=0x4920200000 Xb_new=0x4920800000
+--- iteration 2: A = Xb @ Xb.T
+--- iteration 2: B = b*A + c*(A@A)
+--- iteration 2: Xb_new = a*Xb + B@Xb
+    after swap: Xb=0x4920800000 Xb_new=0x4920200000
+--- iteration 3: A = Xb @ Xb.T
+--- iteration 3: B = b*A + c*(A@A)
+--- iteration 3: Xb_new = a*Xb + B@Xb
+    after swap: Xb=0x4920200000 Xb_new=0x4920800000
+--- iteration 4: A = Xb @ Xb.T
+--- iteration 4: B = b*A + c*(A@A)
+--- iteration 4: Xb_new = a*Xb + B@Xb
+    after swap: Xb=0x4920800000 Xb_new=0x4920200000
+=== CUDA status: no error
+========= ERROR SUMMARY: 10240 errors
+========= ERROR SUMMARY: 10237 errors were not printed. Use --print-limit option to adjust the number of printed errors

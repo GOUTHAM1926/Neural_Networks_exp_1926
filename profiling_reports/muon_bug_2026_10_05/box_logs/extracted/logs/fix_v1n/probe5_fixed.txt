@@ -1,0 +1,6 @@
+part 2: the real library muon_frobenius_scale_cuda, 200 calls each (fingerprint x times seen)
+   idle GPU                                        b3f448f1a3cf2a55 x200
+   L2 flushed before each call                     b3f448f1a3cf2a55 x200
+   all but 4 SMs busy on another stream            b3f448f1a3cf2a55 x200
+   1..132 SMs busy on another stream (varies)      b3f448f1a3cf2a55 x200
+=== CUDA status: no error

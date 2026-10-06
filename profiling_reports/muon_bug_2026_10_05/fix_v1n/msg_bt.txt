@@ -1,0 +1,9 @@
+Point Tensor-Implementations to the deterministic Muon norm fix
+
+Fixes the intermittent test_muon_rsag failure at W=1 (REDUCE_BROADCAST
+vs REDUCE_SCATTER_ALL_GATHER not bit-identical: 7077/82120 elements,
+tensor 15). The cause was atomicAdd ordering in TI MuonKernels.cu, not
+ShardedMuon: every Muon input was bit-identical in both modes.
+
+After pulling: git submodule update, then rebuild libtensor (only
+MuonKernels.cu recompiles).

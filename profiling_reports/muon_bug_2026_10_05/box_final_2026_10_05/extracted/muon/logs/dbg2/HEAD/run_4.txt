@@ -1,0 +1,122 @@
+=== ShardedMuon reduce-scatter/all-gather equivalence (W=1, 22 params) ===
+
+-- scenario: sync publish --
+DBG mode=1 step=1 stage=W0 fp=c63103924324efca
+DBG mode=1 step=1 stage=G fp=812860865f34ed61
+DBG mode=1 step=1 stage=M fp=a47047286666cd5c
+DBG mode=1 step=1 stage=NSIN fp=29ebab1c8c7d10ad
+DBG mode=1 step=1 stage=NSOUT fp=3346bd7b59ac22d9
+DBG mode=1 step=1 stage=W1 fp=3aa8921f069b594d
+DBG mode=1 step=2 stage=W0 fp=3aa8921f069b594d
+DBG mode=1 step=2 stage=G fp=e9c6f35fbbdced01
+DBG mode=1 step=2 stage=M fp=e9b878b686e9f67a
+DBG mode=1 step=2 stage=NSIN fp=62a4c4469d87394f
+DBG mode=1 step=2 stage=NSOUT fp=ee3db3a1f3a96599
+DBG mode=1 step=2 stage=W1 fp=617ab9c1564d929d
+DBG mode=1 step=3 stage=W0 fp=617ab9c1564d929d
+DBG mode=1 step=3 stage=G fp=b49d542eae43a178
+DBG mode=1 step=3 stage=M fp=49911e4cd1df8429
+DBG mode=1 step=3 stage=NSIN fp=9e519f119211184e
+DBG mode=1 step=3 stage=NSOUT fp=30da315efbfc1009
+DBG mode=1 step=3 stage=W1 fp=dbe363d7f660483a
+DBG mode=1 step=4 stage=W0 fp=dbe363d7f660483a
+DBG mode=1 step=4 stage=G fp=aae91c284828ef56
+DBG mode=1 step=4 stage=M fp=3f7b4afac073e3ab
+DBG mode=1 step=4 stage=NSIN fp=6b6023cd51360133
+DBG mode=1 step=4 stage=NSOUT fp=0ce46e2b51fb0c33
+DBG mode=1 step=4 stage=W1 fp=6b765b8c85d24841
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+DBG mode=0 step=1 stage=W0 fp=c63103924324efca
+DBG mode=0 step=1 stage=G fp=812860865f34ed61
+DBG mode=0 step=1 stage=M fp=a47047286666cd5c
+DBG mode=0 step=1 stage=NSIN fp=29ebab1c8c7d10ad
+DBG mode=0 step=1 stage=NSOUT fp=3346bd7b59ac22d9
+DBG mode=0 step=1 stage=W1 fp=3aa8921f069b594d
+DBG mode=0 step=2 stage=W0 fp=3aa8921f069b594d
+DBG mode=0 step=2 stage=G fp=e9c6f35fbbdced01
+DBG mode=0 step=2 stage=M fp=e9b878b686e9f67a
+DBG mode=0 step=2 stage=NSIN fp=62a4c4469d87394f
+DBG mode=0 step=2 stage=NSOUT fp=ee3db3a1f3a96599
+DBG mode=0 step=2 stage=W1 fp=617ab9c1564d929d
+DBG mode=0 step=3 stage=W0 fp=617ab9c1564d929d
+DBG mode=0 step=3 stage=G fp=b49d542eae43a178
+DBG mode=0 step=3 stage=M fp=49911e4cd1df8429
+DBG mode=0 step=3 stage=NSIN fp=9e519f119211184e
+DBG mode=0 step=3 stage=NSOUT fp=30da315efbfc1009
+DBG mode=0 step=3 stage=W1 fp=dbe363d7f660483a
+DBG mode=0 step=4 stage=W0 fp=dbe363d7f660483a
+DBG mode=0 step=4 stage=G fp=aae91c284828ef56
+DBG mode=0 step=4 stage=M fp=3f7b4afac073e3ab
+DBG mode=0 step=4 stage=NSIN fp=6b6023cd51360133
+DBG mode=0 step=4 stage=NSOUT fp=57bf40c3114993ed
+DBG mode=0 step=4 stage=W1 fp=ffc28f21e9f44583
+[sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 (worst tensor 15 elem 7659: 0.33138907 vs 0.331362277)
+[sync publish]   W=1 admits no reduction reordering, so any difference at all is a layout or publish bug.
+[sync publish] grad_norm agrees: 165.624054
+
+-- scenario: staged refresh --
+DBG mode=1 step=1 stage=W0 fp=c63103924324efca
+DBG mode=1 step=1 stage=G fp=812860865f34ed61
+DBG mode=1 step=1 stage=M fp=a47047286666cd5c
+DBG mode=1 step=1 stage=NSIN fp=29ebab1c8c7d10ad
+DBG mode=1 step=1 stage=NSOUT fp=3346bd7b59ac22d9
+DBG mode=1 step=1 stage=W1 fp=3aa8921f069b594d
+DBG mode=1 step=2 stage=W0 fp=3aa8921f069b594d
+DBG mode=1 step=2 stage=G fp=e9c6f35fbbdced01
+DBG mode=1 step=2 stage=M fp=e9b878b686e9f67a
+DBG mode=1 step=2 stage=NSIN fp=62a4c4469d87394f
+DBG mode=1 step=2 stage=NSOUT fp=ee3db3a1f3a96599
+DBG mode=1 step=2 stage=W1 fp=617ab9c1564d929d
+DBG mode=1 step=3 stage=W0 fp=617ab9c1564d929d
+DBG mode=1 step=3 stage=G fp=b49d542eae43a178
+DBG mode=1 step=3 stage=M fp=49911e4cd1df8429
+DBG mode=1 step=3 stage=NSIN fp=9e519f119211184e
+DBG mode=1 step=3 stage=NSOUT fp=30da315efbfc1009
+DBG mode=1 step=3 stage=W1 fp=dbe363d7f660483a
+DBG mode=1 step=4 stage=W0 fp=dbe363d7f660483a
+DBG mode=1 step=4 stage=G fp=aae91c284828ef56
+DBG mode=1 step=4 stage=M fp=3f7b4afac073e3ab
+DBG mode=1 step=4 stage=NSIN fp=6b6023cd51360133
+DBG mode=1 step=4 stage=NSOUT fp=0ce46e2b51fb0c33
+DBG mode=1 step=4 stage=W1 fp=6b765b8c85d24841
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+DBG mode=0 step=1 stage=W0 fp=c63103924324efca
+DBG mode=0 step=1 stage=G fp=812860865f34ed61
+DBG mode=0 step=1 stage=M fp=a47047286666cd5c
+DBG mode=0 step=1 stage=NSIN fp=29ebab1c8c7d10ad
+DBG mode=0 step=1 stage=NSOUT fp=3346bd7b59ac22d9
+DBG mode=0 step=1 stage=W1 fp=3aa8921f069b594d
+DBG mode=0 step=2 stage=W0 fp=3aa8921f069b594d
+DBG mode=0 step=2 stage=G fp=e9c6f35fbbdced01
+DBG mode=0 step=2 stage=M fp=e9b878b686e9f67a
+DBG mode=0 step=2 stage=NSIN fp=62a4c4469d87394f
+DBG mode=0 step=2 stage=NSOUT fp=ee3db3a1f3a96599
+DBG mode=0 step=2 stage=W1 fp=617ab9c1564d929d
+DBG mode=0 step=3 stage=W0 fp=617ab9c1564d929d
+DBG mode=0 step=3 stage=G fp=b49d542eae43a178
+DBG mode=0 step=3 stage=M fp=49911e4cd1df8429
+DBG mode=0 step=3 stage=NSIN fp=9e519f119211184e
+DBG mode=0 step=3 stage=NSOUT fp=30da315efbfc1009
+DBG mode=0 step=3 stage=W1 fp=dbe363d7f660483a
+DBG mode=0 step=4 stage=W0 fp=dbe363d7f660483a
+DBG mode=0 step=4 stage=G fp=aae91c284828ef56
+DBG mode=0 step=4 stage=M fp=3f7b4afac073e3ab
+DBG mode=0 step=4 stage=NSIN fp=6b6023cd51360133
+DBG mode=0 step=4 stage=NSOUT fp=57bf40c3114993ed
+DBG mode=0 step=4 stage=W1 fp=ffc28f21e9f44583
+[staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02 (worst tensor 15 elem 7659: 0.33138907 vs 0.331362277)
+[staged refresh]   W=1 admits no reduction reordering, so any difference at all is a layout or publish bug.
+[staged refresh] grad_norm agrees: 165.624054
+
+=== FAILURES PRESENT ===
+--------------------------------------------------------------------------
+Primary job  terminated normally, but 1 process returned
+a non-zero exit code. Per user-direction, the job has been aborted.
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------
+mpirun detected that one or more processes exited with non-zero status, thus causing
+the job to be terminated. The first process to do so was:
+
+  Process name: [[39852,1],0]
+  Exit code:    1
+--------------------------------------------------------------------------

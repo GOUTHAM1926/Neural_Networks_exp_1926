@@ -1,0 +1,17 @@
+=== variants | clone HEAD b9b567f | TI a60099b | 2026-10-05 20:13:22 | GPU 2 | 10 runs each
+S1: patched (1 match) -> ~/gautam_k/muon/var_S1/dist/zero/src/ShardedMuon.cpp
+S2: patched (1 match) -> ~/gautam_k/muon/var_S2/dist/zero/src/ShardedMuon.cpp
+S3: patched (1 match) -> ~/gautam_k/muon/var_S3/dist/zero/src/ShardedMuon.cpp
+S3 compiled
+S1 compiled
+S2 compiled
+--- running S1 S2 S3 at the same time on GPU 2, 10 runs each
+--- S1: 1 of 10 runs FAILED
+      1 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02
+      1 [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02
+--- S2: 1 of 10 runs FAILED
+      1 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.749e-02
+--- S3: 4 of 10 runs FAILED
+      3 [staged refresh] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02
+      4 [sync publish] FAIL 7077/82120 elements differ | max_abs 2.679e-05 max_rel 1.719e-02
+=== done 20:16:37

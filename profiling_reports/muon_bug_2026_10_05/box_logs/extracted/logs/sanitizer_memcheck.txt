@@ -1,0 +1,15 @@
+========= COMPUTE-SANITIZER
+=== ShardedMuon reduce-scatter/all-gather equivalence (W=1, 22 params) ===
+
+-- scenario: sync publish --
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[sync publish] PASS bit-identical across 82120 elements
+[sync publish] grad_norm agrees: 165.624054
+
+-- scenario: staged refresh --
+  [layout] 3 bucket(s), padded 82120 vs real 82120 (0.00% padding), shard 82120
+[staged refresh] PASS bit-identical across 82120 elements
+[staged refresh] grad_norm agrees: 165.624054
+
+=== ALL TESTS PASSED ===
+========= ERROR SUMMARY: 0 errors

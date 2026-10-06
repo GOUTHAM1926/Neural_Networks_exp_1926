@@ -1,0 +1,9 @@
+shape  64x64  (k=64) | elements that differ from the zero-filled run (of 4096):
+   same again 0 | garbage in A only 0 | in B only 0 | in Xb_new only 0 | in all 0 | zeros but OTHER addresses 0  (A at 0x320600000 vs 0x321000000)
+shape  96x96  (k=96) | elements that differ from the zero-filled run (of 9216):
+   same again 0 | garbage in A only 0 | in B only 0 | in Xb_new only 0 | in all 0 | zeros but OTHER addresses 0  (A at 0x320600000 vs 0x321000000)
+shape 128x64  (k=64) | elements that differ from the zero-filled run (of 8192):
+   same again 0 | garbage in A only 0 | in B only 0 | in Xb_new only 0 | in all 0 | zeros but OTHER addresses 0  (A at 0x320600000 vs 0x321000000)
+shape  48x48  (k=48) | elements that differ from the zero-filled run (of 2304):
+   same again 0 | garbage in A only 0 | in B only 0 | in Xb_new only 0 | in all 0 | zeros but OTHER addresses 0  (A at 0x320600000 vs 0x321000000)
+=== CUDA status: no error

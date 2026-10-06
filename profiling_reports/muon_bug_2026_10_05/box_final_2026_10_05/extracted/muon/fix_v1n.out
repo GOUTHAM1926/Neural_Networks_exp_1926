@@ -1,0 +1,56 @@
+=== fix V1n | clone b9b567f | TI a60099b | 2026-10-05 21:39:33 | GPU 1
+--- 1. scratch TI + patch + rebuild
+linked neighbour Profiler -> clone's Profiler (read only use)
+linked neighbour dist -> clone's dist (read only use)
+patched /home/operator/gautam_k/muon/fixroot/Tensor-Implementations/src/Kernels/cuda/optimizer/MuonKernels.cu: 4 edits, each matched once; new md5 4e1d93931f0411b1d6b062fcbe5a0089
+make dry run: 1 source file(s) to compile: src/Kernels/cuda/optimizer/MuonKernels.cu
+finalize kernel in fixed lib: 21 | in original lib: 0
+--- 2. which libtensor each run loads
+   0x000000000000001d (RUNPATH)            Library runpath: [/home/operator/gautam_k/BluTrain_bluccl/Tensor-Implementations/lib:/home/operator/gautam_k/BluTrain_bluccl/Profiler/lib:/home/operator/gautam_k/BluTrain_bluccl/dist/lib:/usr/lib/x86_64-linux-gnu]
+original run -> /home/operator/gautam_k/BluTrain_bluccl/Tensor-Implementations/lib/libtensor.so
+fixed run    -> /home/operator/gautam_k/muon/fixroot/Tensor-Implementations/lib/libtensor.so
+--- 3. test_muon_rsag, same binary, original vs fixed lib, alternating, 20 rounds
+round  1 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+round  2 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+round  3 | original lib exit 1 PASS/FAIL/ | fixed lib exit 0 PASS/PASS/
+round  4 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+round  5 | original lib exit 1 PASS/FAIL/ | fixed lib exit 0 PASS/PASS/
+round  6 | original lib exit 1 PASS/FAIL/ | fixed lib exit 0 PASS/PASS/
+round  7 | original lib exit 1 FAIL/PASS/ | fixed lib exit 0 PASS/PASS/
+round  8 | original lib exit 1 PASS/FAIL/ | fixed lib exit 0 PASS/PASS/
+round  9 | original lib exit 1 PASS/FAIL/ | fixed lib exit 0 PASS/PASS/
+round 10 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+round 11 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+round 12 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+round 13 | original lib exit 1 PASS/FAIL/ | fixed lib exit 0 PASS/PASS/
+round 14 | original lib exit 0 PASS/PASS/ | fixed lib exit 0 PASS/PASS/
+round 15 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+round 16 | original lib exit 1 FAIL/PASS/ | fixed lib exit 0 PASS/PASS/
+round 17 | original lib exit 1 PASS/FAIL/ | fixed lib exit 0 PASS/PASS/
+round 18 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+round 19 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+round 20 | original lib exit 1 FAIL/FAIL/ | fixed lib exit 0 PASS/PASS/
+RESULT: original lib 19 of 20 runs FAILED | fixed lib 0 of 20 runs FAILED
+--- 4. the real patched function under GPU stress (ns_probe5 part 2, fixed lib)
+part 2: the real library muon_frobenius_scale_cuda, 200 calls each (fingerprint x times seen)
+   idle GPU                                        b3f448f1a3cf2a55 x200
+   L2 flushed before each call                     b3f448f1a3cf2a55 x200
+   all but 4 SMs busy on another stream            b3f448f1a3cf2a55 x200
+   1..132 SMs busy on another stream (varies)      b3f448f1a3cf2a55 x200
+=== CUDA status: no error
+--- 5. Newton-Schulz on the dumped inputs, 200 calls each (ns_probe4): original lib vs fixed lib
+[orig lib] library NS outputs:
+=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step1.bin | 96x96 | input fingerprint 29ebab1c8c7d10ad	  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  3346bd7b59ac22d9 x200
+=== CUDA status: no error	=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step2.bin | 96x96 | input fingerprint 62a4c4469d87394f
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  ee3db3a1f3a96599 x200	=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step3.bin | 96x96 | input fingerprint 9e519f119211184e	  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  30da315efbfc1009 x200
+=== CUDA status: no error	=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step4.bin | 96x96 | input fingerprint 6b6023cd51360133
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  57bf40c3114993ed x200	=== CUDA status: no error
+[fix lib] library NS outputs:
+=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step1.bin | 96x96 | input fingerprint 29ebab1c8c7d10ad	  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  3346bd7b59ac22d9 x200
+=== CUDA status: no error	=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step2.bin | 96x96 | input fingerprint 62a4c4469d87394f
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  ee3db3a1f3a96599 x200	=== CUDA status: no error
+=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step3.bin | 96x96 | input fingerprint 9e519f119211184e	  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  30da315efbfc1009 x200
+=== CUDA status: no error	=== /home/operator/gautam_k/muon/logs/dbg2/HEAD/nsin_step4.bin | 96x96 | input fingerprint 6b6023cd51360133
+  [2] library newton_schulz_orthogonalize(bf16)                  1 different result(s) in 200 calls:  57bf40c3114993ed x200	=== CUDA status: no error
+=== done 21:53:34
