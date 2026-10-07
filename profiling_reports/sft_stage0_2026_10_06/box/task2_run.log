@@ -1,0 +1,90 @@
+[precision] bf16 logits ON — frees ~3 GiB ([B,T,vocab] fp32 activation + gradient). Gradients are unaffected (fp32 softmax stats, exact 1.0 backward seed), but the REPORTED loss is bf16 and quantizes to ~0.06 steps: compare tokens/s and grad-norm across an A/B, not the loss digits.
+[bench] BLU_MAX_STEPS=4 (warmup=1 stable=1)
+================ Configuration ================
+  d_model         : 2304
+  n_layers        : 26
+  q_heads/kv_heads: 18 / 6  (G=3)
+  head_dim        : 128
+  ffn_hidden      : 6144  (SwiGLU)
+  context_length  : 4096
+  rope_theta      : 500000  (interleaved=NeoX)
+  vocab_size      : 50304
+  weight_tying    : ON
+  precision       : resid bfloat16 | logits bfloat16 | embed bfloat16
+                    (matmuls bf16, QK-norm+RoPE fp32, optimizer masters fp32 — all fixed)
+  B x T           : 8 x 4096
+  world_size      : 1
+  global_batch    : 1048576  (grad_accum=32)
+  max_lr / min_lr : 0.0012 / 0.00012
+  warmup / steps  : 1 / 4
+  WSD stable_steps: 1  (decay tail=2)
+===============================================
+Initializing model on CUDA device 0...
+Number of parameters: 1588229888
+[pg] bootstrap=mpi-broadcast (mpirun) host=innmi1srh2-p032 rank=0/1 node=0 local_rank=0 (DERIVED) ranks_per_node=1 cuda_dev=0 bus=0000:BB:00.0
+[DCP] is_valid(/home/operator/gautam_k/ckpt/blumodel_step_8000) -> TRUE
+[init] BLU_INIT_VERIFY: 262/262 weights match the checkpoint's CRC32
+[init] weights only from /home/operator/gautam_k/ckpt/blumodel_step_8000 (its step 8000, loss 2.009818). Optimizer state, step and data position start fresh.
+==================== MFU accounting ====================
+  device            : NVIDIA H200 x 1
+  peak BF16 (dense) : 989.400 TFLOP/s per GPU
+  cluster peak      : 0.989 PFLOP/s
+  fwd FLOPs/token   : 3.667 GFLOP  (causal)
+  fwd+bwd /token    : 11.001 GFLOP  (causal, x3) <-- headline
+  fwd+bwd /token    : 12.473 GFLOP  (PaLM convention)
+  6*N cross-check   : 9.529 GFLOP  (weight matmuls only; excludes the T-dependent attention core)
+  model FLOPs/step  : 11.535 PFLOP  over 1048576 tokens
+  100% MFU would be : 11658.766 ms/step
+  note              : no activation checkpointing in this loop, so HFU == MFU
+========================================================
+[ZeRO-1] overlap: reduce=off (monolithic, after backward) | refresh=off (synchronous publish in step)
+[ZeRO-1] variant: v1 reduce/broadcast | symmetric memory: off  (BLU_ZERO_V2=0 BLU_SYMMETRIC=0)
+[ZeRO-1] params=1588223232 padded=1588224000 W=1 shard=1588224000 | optimizer state/GPU: 18175.781 MB (vs 18175.772 MB unsharded)
+[ZeRO-1] params=6656 padded=15360 W=1 shard=15360 | optimizer state/GPU: 0.176 MB (vs 0.076 MB unsharded)
+[optimizer] AdamW  (BLU_OPTIMIZER=adamw)
+  G0 adamw:bfloat16/1588M : zero1-v1 reduce/broadcast | lr 0.001 -> 0.000
+  G1 adamw:float32/0M : zero1-v1 reduce/broadcast | lr 0.001 -> 0.000
+[ZeRO-1] grad_clip=1.000 APPLIES TO 1588229888 / 1588229888 params (100.00%)
+decayed params: 1588101120, non-decayed: 128768 | ZeRO-1 optimizer groups: 2 | world_size: 1
+
+=== Data mixture: preset c0 (static) ===
+  [c0-static ] from step      0 :  commoncrawl=0.700  code=0.200  math=0.100
+=================================================
+[MixedLoader] domain 'commoncrawl': 3 shards, weight=0.700 (/home/operator/gautam_k/mix/commoncrawl)
+[MixedLoader] domain 'code': 3 shards, weight=0.200 (/home/operator/gautam_k/mix/code)
+[MixedLoader] domain 'math': 3 shards, weight=0.100 (/home/operator/gautam_k/mix/math)
+found 1 shards for split val
+found 1 shards for split val
+found 1 shards for split val
+
+Starting training...
+
+
+[mix] step 0 entering phase 'c0-static'
+[MixedLoader] weights -> {commoncrawl=0.700, code=0.200, math=0.100}  (phase 'c0-static')  [selection accounting rebased]
+  [val] step 0 | val_loss 2.453832 | commoncrawl 2.453832 | code 2.453832 | math 2.453832
+step      0 | train 2.327407 | val 2.453832 | tok/s 21300.62 | norm 0.1042 | dt 49227.49 ms | mfu 23.68% | TF/gpu 234.3 | lr 1.2000e-03 | G0(adamw:bfloat16/1588M) 0.1042 | G1(adamw:float32/0M) 0.0026
+step      1 | train 8.557083 | val 2.453832 | tok/s 21128.49 | norm 9.3379 | dt 49628.53 ms | mfu 23.49% | TF/gpu 232.4 | lr 1.2000e-03 | G0(adamw:bfloat16/1588M) 9.3376 | G1(adamw:float32/0M) 0.0758
+step      2 | train 10.755165 | val 2.453832 | tok/s 45428.65 | norm 5.4431 | dt 23081.82 ms | mfu 50.51% | TF/gpu 499.8 | lr 1.2000e-03 | G0(adamw:bfloat16/1588M) 5.4430 | G1(adamw:float32/0M) 0.0147
+  [val] step 3 | val_loss 13.382455 | commoncrawl 13.382455 | code 13.382455 | math 13.382455
+step      3 | train 13.296211 | val 13.382455 | tok/s 45338.66 | norm 16.2629 | dt 23127.63 ms | mfu 50.41% | TF/gpu 498.8 | lr 1.2000e-04 | G0(adamw:bfloat16/1588M) 16.2629 | G1(adamw:float32/0M) 0.0150
+
+==================== MFU summary ====================
+  steady-state MFU  : 0.00%   (0 steps, first 5 excluded)
+  best-step MFU     : 0.00%
+  model TFLOP/s/gpu : 0.00  of 989.40 peak
+  cluster PFLOP/s   : 0.00
+  steady tok/s      : 0
+  total model FLOPs : 0.000 EFLOP over 0.000 min
+=====================================================
+
+=== Domain Mixture Stats ===
+  domain        target    phase     run       samples     shard     epochs
+  commoncrawl   0.7000    0.6947    0.6947    91          0/3       0
+  code          0.2000    0.2061    0.2061    27          0/3       0
+  math          0.1000    0.0992    0.0992    13          0/3       0
+  samples this phase=131  whole run=131
+============================
+
+=== Training complete ===
+[MEM] active_peak 125086 MiB | allocated_peak 125086 MiB | reserved_peak 127256 MiB | cached_free 80729 MiB

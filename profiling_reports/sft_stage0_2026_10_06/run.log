@@ -1,0 +1,79 @@
+[precision] bf16 logits ON — frees ~3 GiB ([B,T,vocab] fp32 activation + gradient). Gradients are unaffected (fp32 softmax stats, exact 1.0 backward seed), but the REPORTED loss is bf16 and quantizes to ~0.06 steps: compare tokens/s and grad-norm across an A/B, not the loss digits.
+[bench] BLU_MAX_STEPS=4 (warmup=1 stable=1)
+[SftLoader] /home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096/train: 5000 rows x T=4096, 4771516 trained tokens | B=8 W=1 -> 625 micro-batches per rank per epoch, 0 rows unused per epoch
+[SftLoader] /home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096/val: 500 rows x T=4096, 444233 trained tokens | B=8 W=1 -> 62 micro-batches per rank per epoch, 4 rows unused per epoch
+[sft] 64 rows per step = B 8 x GRAD_ACCUM 8 x W 1 | 2 epochs = 156 steps | lr 2e-05 -> 2e-06, warmup 5 steps then cosine | val every 10 steps (62 batches per rank)
+[sft] loss: label 65535 ignored, divided by the step's global trained-token count, backward seed 1 (= W) | tok/s below counts all positions, padding included
+[sft] BLU_MAX_STEPS is ignored in SFT mode
+================ Configuration ================
+  d_model         : 2304
+  n_layers        : 26
+  q_heads/kv_heads: 18 / 6  (G=3)
+  head_dim        : 128
+  ffn_hidden      : 6144  (SwiGLU)
+  context_length  : 4096
+  rope_theta      : 500000  (interleaved=NeoX)
+  vocab_size      : 50304
+  weight_tying    : ON
+  precision       : resid bfloat16 | logits bfloat16 | embed bfloat16
+                    (matmuls bf16, QK-norm+RoPE fp32, optimizer masters fp32 — all fixed)
+  B x T           : 8 x 4096
+  world_size      : 1
+  global_batch    : 262144  (grad_accum=8)
+  max_lr / min_lr : 2e-05 / 2e-06
+  warmup / steps  : 5 / 156
+  WSD stable_steps: 0  (decay tail=151)
+===============================================
+Initializing model on CUDA device 0...
+Number of parameters: 1588229888
+[pg] bootstrap=mpi-broadcast (mpirun) host=innmi1srh2-p032 rank=0/1 node=0 local_rank=0 (DERIVED) ranks_per_node=1 cuda_dev=0 bus=0000:BB:00.0
+[DCP] is_valid(/home/operator/gautam_k/ckpt/blumodel_step_8000) -> TRUE
+[init] BLU_INIT_VERIFY: 262/262 weights match the checkpoint's CRC32
+[init] weights only from /home/operator/gautam_k/ckpt/blumodel_step_8000 (its step 8000, loss 2.009818). Optimizer state, step and data position start fresh.
+==================== MFU accounting ====================
+  device            : NVIDIA H200 x 1
+  peak BF16 (dense) : 989.400 TFLOP/s per GPU
+  cluster peak      : 0.989 PFLOP/s
+  fwd FLOPs/token   : 3.667 GFLOP  (causal)
+  fwd+bwd /token    : 11.001 GFLOP  (causal, x3) <-- headline
+  fwd+bwd /token    : 12.473 GFLOP  (PaLM convention)
+  6*N cross-check   : 9.529 GFLOP  (weight matmuls only; excludes the T-dependent attention core)
+  model FLOPs/step  : 2.884 PFLOP  over 262144 tokens
+  100% MFU would be : 2914.691 ms/step
+  note              : no activation checkpointing in this loop, so HFU == MFU
+========================================================
+[ZeRO-1] overlap: reduce=off (monolithic, after backward) | refresh=off (synchronous publish in step)
+[ZeRO-1] variant: v1 reduce/broadcast | symmetric memory: off  (BLU_ZERO_V2=0 BLU_SYMMETRIC=0)
+[ZeRO-1] params=1588223232 padded=1588224000 W=1 shard=1588224000 | optimizer state/GPU: 18175.781 MB (vs 18175.772 MB unsharded)
+[ZeRO-1] params=6656 padded=15360 W=1 shard=15360 | optimizer state/GPU: 0.176 MB (vs 0.076 MB unsharded)
+[optimizer] AdamW  (BLU_OPTIMIZER=adamw)
+  G0 adamw:bfloat16/1588M : zero1-v1 reduce/broadcast | lr 0.000 -> 0.000
+  G1 adamw:float32/0M : zero1-v1 reduce/broadcast | lr 0.000 -> 0.000
+[ZeRO-1] grad_clip=1.000 APPLIES TO 1588229888 / 1588229888 params (100.00%)
+decayed params: 1588101120, non-decayed: 128768 | ZeRO-1 optimizer groups: 2 | world_size: 1
+
+Starting training...
+
+  [val] step 0 | val_loss 1.446365 | 441382 trained tokens
+step      0 | train 1.450003 | val 1.446365 | tok/s 6125.27 | norm 0.7442 | dt 42797.14 ms | mfu 6.81% | TF/gpu 67.4 | lr 4.0000e-06 | G0(adamw:bfloat16/1588M) 0.7437 | G1(adamw:float32/0M) 0.0274 | trained 60263
+step      1 | train 1.522151 | val 1.446365 | tok/s 7621.72 | norm 0.7323 | dt 34394.34 ms | mfu 8.47% | TF/gpu 83.8 | lr 8.0000e-06 | G0(adamw:bfloat16/1588M) 0.7319 | G1(adamw:float32/0M) 0.0261 | trained 62575
+step      2 | train 1.518651 | val 1.446365 | tok/s 49530.00 | norm 0.5906 | dt 5292.63 ms | mfu 55.07% | TF/gpu 544.9 | lr 1.2000e-05 | G0(adamw:bfloat16/1588M) 0.5902 | G1(adamw:float32/0M) 0.0195 | trained 58970
+step      3 | train 1.326087 | val 1.446365 | tok/s 49577.53 | norm 0.9205 | dt 5287.56 ms | mfu 55.12% | TF/gpu 545.4 | lr 1.6000e-05 | G0(adamw:bfloat16/1588M) 0.9196 | G1(adamw:float32/0M) 0.0415 | trained 61728
+step      4 | train 1.438853 | val 1.446365 | tok/s 49771.14 | norm 0.4301 | dt 5266.99 ms | mfu 55.34% | TF/gpu 547.5 | lr 2.0000e-05 | G0(adamw:bfloat16/1588M) 0.4299 | G1(adamw:float32/0M) 0.0142 | trained 58828
+step      5 | train 1.394829 | val 1.446365 | tok/s 49327.98 | norm 0.3884 | dt 5314.31 ms | mfu 54.85% | TF/gpu 542.6 | lr 2.0000e-05 | G0(adamw:bfloat16/1588M) 0.3881 | G1(adamw:float32/0M) 0.0136 | trained 71421
+step      6 | train 1.352581 | val 1.446365 | tok/s 7153.32 | norm 0.3163 | dt 36646.50 ms | mfu 7.95% | TF/gpu 78.7 | lr 1.9998e-05 | G0(adamw:bfloat16/1588M) 0.3162 | G1(adamw:float32/0M) 0.0094 | trained 63272
+step      7 | train 1.397054 | val 1.446365 | tok/s 49540.78 | norm 0.3140 | dt 5291.48 ms | mfu 55.08% | TF/gpu 545.0 | lr 1.9992e-05 | G0(adamw:bfloat16/1588M) 0.3139 | G1(adamw:float32/0M) 0.0098 | trained 64294
+step      8 | train 1.336145 | val 1.446365 | tok/s 49727.18 | norm 0.3114 | dt 5271.64 ms | mfu 55.29% | TF/gpu 547.0 | lr 1.9982e-05 | G0(adamw:bfloat16/1588M) 0.3113 | G1(adamw:float32/0M) 0.0091 | trained 59354
+step      9 | train 1.267298 | val 1.446365 | tok/s 49648.89 | norm 0.2921 | dt 5279.96 ms | mfu 55.20% | TF/gpu 546.2 | lr 1.9968e-05 | G0(adamw:bfloat16/1588M) 0.2920 | G1(adamw:float32/0M) 0.0073 | trained 54771
+  [val] step 10 | val_loss 1.352746 | 441382 trained tokens
+step     10 | train 1.389565 | val 1.352746 | tok/s 49488.64 | norm 0.3418 | dt 5297.05 ms | mfu 55.02% | TF/gpu 544.4 | lr 1.9951e-05 | G0(adamw:bfloat16/1588M) 0.3417 | G1(adamw:float32/0M) 0.0093 | trained 55704
+step     11 | train 1.407467 | val 1.352746 | tok/s 49370.22 | norm 0.2879 | dt 5309.76 ms | mfu 54.89% | TF/gpu 543.1 | lr 1.9929e-05 | G0(adamw:bfloat16/1588M) 0.2877 | G1(adamw:float32/0M) 0.0080 | trained 63638
+step     12 | train 1.438974 | val 1.352746 | tok/s 49460.82 | norm 0.2824 | dt 5300.03 ms | mfu 54.99% | TF/gpu 544.1 | lr 1.9903e-05 | G0(adamw:bfloat16/1588M) 0.2823 | G1(adamw:float32/0M) 0.0087 | trained 56958
+step     13 | train 1.325966 | val 1.352746 | tok/s 49236.43 | norm 0.2409 | dt 5324.19 ms | mfu 54.74% | TF/gpu 541.6 | lr 1.9874e-05 | G0(adamw:bfloat16/1588M) 0.2408 | G1(adamw:float32/0M) 0.0070 | trained 65543
+step     14 | train 1.333622 | val 1.352746 | tok/s 49250.95 | norm 0.2174 | dt 5322.62 ms | mfu 54.76% | TF/gpu 541.8 | lr 1.9841e-05 | G0(adamw:bfloat16/1588M) 0.2173 | G1(adamw:float32/0M) 0.0053 | trained 64889
+step     15 | train 1.188848 | val 1.352746 | tok/s 49253.97 | norm 0.2052 | dt 5322.29 ms | mfu 54.76% | TF/gpu 541.8 | lr 1.9803e-05 | G0(adamw:bfloat16/1588M) 0.2052 | G1(adamw:float32/0M) 0.0045 | trained 61621
+step     16 | train 1.195810 | val 1.352746 | tok/s 49340.53 | norm 0.2014 | dt 5312.95 ms | mfu 54.86% | TF/gpu 542.8 | lr 1.9762e-05 | G0(adamw:bfloat16/1588M) 0.2014 | G1(adamw:float32/0M) 0.0039 | trained 57257
+step     17 | train 1.282764 | val 1.352746 | tok/s 49244.22 | norm 0.2047 | dt 5323.35 ms | mfu 54.75% | TF/gpu 541.7 | lr 1.9717e-05 | G0(adamw:bfloat16/1588M) 0.2047 | G1(adamw:float32/0M) 0.0050 | trained 59672
+step     18 | train 1.331094 | val 1.352746 | tok/s 48947.40 | norm 0.1921 | dt 5355.63 ms | mfu 54.42% | TF/gpu 538.5 | lr 1.9668e-05 | G0(adamw:bfloat16/1588M) 0.1921 | G1(adamw:float32/0M) 0.0042 | trained 71324
+step     19 | train 1.287127 | val 1.352746 | tok/s 49315.81 | norm 0.2088 | dt 5315.62 ms | mfu 54.83% | TF/gpu 542.5 | lr 1.9616e-05 | G0(adamw:bfloat16/1588M) 0.2087 | G1(adamw:float32/0M) 0.0044 | trained 58294
+  [val] step 20 | val_loss 1.331688 | 441382 trained tokens

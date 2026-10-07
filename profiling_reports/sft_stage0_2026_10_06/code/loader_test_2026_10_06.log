@@ -1,0 +1,50 @@
+train "/home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/train": 5000 rows x T=4096 | B=8 | GPU 0 NVIDIA GeForce RTX 3060
+
+== 1. data: GPU batches = file rows; target = next input; answers end with the end token
+[SftLoader] /home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/train: 5000 rows x T=4096, 4771516 trained tokens | B=8 W=1 -> 625 micro-batches per rank per epoch, 0 rows unused per epoch
+    625 batches (5000 rows): byte mismatches 0, wrong shape/dtype/device 0, wrong token_offset/shard 0
+    trained targets that are not the next input: 0 | rows not ending with the end token: 0
+    control: the pretraining target (next input) differs from labels.bin at 15703484 positions (ignored positions: 15708484)
+  -> PASS
+
+== 2. counts: per batch, look-ahead (also across the epoch end), total
+    total_valid_tokens() 4771516 | valid_counts.bin 4771516 | meta.json 4771516
+    per batch (from the GPU copy): min 2920 max 12729 mean 7634 | last_valid_tokens() wrong in 0 of 633 batches
+    valid_tokens_ahead(8) wrong in 0 of 625 positions (the last 7 look across the epoch end)
+  -> PASS
+
+== 3. ranks: W = 2 split, no overlap, global count
+    global count for step 0 (rows 0-63): 2 GPUs 60263 | 1 GPU 60263 | valid_counts.bin 60263
+    one epoch: rank 0 2496 rows, rank 1 2496 rows, on both 0, unused 8 (expected 8, the last rows) | wrong rows 0, byte mismatches 0
+  -> PASS
+
+== 4. epochs: wrap-around, reset, skip
+    after 625 batches: epoch() = 1
+    next batch: token_offset 0, shard_index 1
+    reset() -> row 0; skip 5 -> batch 6; skip M + 3 -> batch 3 of epoch 1
+  -> PASS
+
+== 5. bad files fail loudly
+    ok   unchanged copy opens: 500 rows
+    ok  wrong T -> "SftDataLoader: /home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/val was made with T=4096 but the trainer uses T=2048"
+    ok  rank >= world -> "SftDataLoader: bad B / T / rank / world"
+    ok  too few rows -> "SftDataLoader: 500 rows is less than one micro-batch on every rank (B*W = 512)"
+    ok  missing file -> "SftDataLoader: cannot open /tmp/claude-1000/-home-blu-bridge016-Downloads-Neural-Networks-exp-1926/d36b6b0d-fbee-47c9-8b10-a9773d29d8dc/scratchpad/sft_loader_test_120681/missing/valid_counts.bin"
+    ok  short file -> "SftDataLoader: /tmp/claude-1000/-home-blu-bridge016-Downloads-Neural-Networks-exp-1926/d36b6b0d-fbee-47c9-8b10-a9773d29d8dc/scratchpad/sft_loader_test_120681/short/labels.bin has 4095998 bytes, meta.json says it should have 4096000"
+    ok  input id >= vocab -> "SftDataLoader: /tmp/claude-1000/-home-blu-bridge016-Downloads-Neural-Networks-exp-1926/d36b6b0d-fbee-47c9-8b10-a9773d29d8dc/scratchpad/sft_loader_test_120681/bad_input row 5: input id 50304 at position 0 >= vocab rows"
+    ok  label >= vocab -> "SftDataLoader: /tmp/claude-1000/-home-blu-bridge016-Downloads-Neural-Networks-exp-1926/d36b6b0d-fbee-47c9-8b10-a9773d29d8dc/scratchpad/sft_loader_test_120681/bad_label row 7: label 60000 at position 26 >= vocab rows and not 65535"
+    ok  wrong count -> "SftDataLoader: /tmp/claude-1000/-home-blu-bridge016-Downloads-Neural-Networks-exp-1926/d36b6b0d-fbee-47c9-8b10-a9773d29d8dc/scratchpad/sft_loader_test_120681/bad_count row 3: valid_counts.bin says 252, labels.bin has 251"
+    ok  no trained token -> "SftDataLoader: /tmp/claude-1000/-home-blu-bridge016-Downloads-Neural-Networks-exp-1926/d36b6b0d-fbee-47c9-8b10-a9773d29d8dc/scratchpad/sft_loader_test_120681/no_trained row 9: no trained token"
+  -> PASS
+
+==================== SUMMARY ====================
+PASS  1. data: GPU batches = file rows; target = next input; answers end with the end token
+PASS  2. counts: per batch, look-ahead (also across the epoch end), total
+PASS  3. ranks: W = 2 split, no overlap, global count
+PASS  4. epochs: wrap-around, reset, skip
+PASS  5. bad files fail loudly
+5 of 5 checks passed, 0 failures
+
+real	0m0.821s
+user	0m0.208s
+sys	0m0.463s

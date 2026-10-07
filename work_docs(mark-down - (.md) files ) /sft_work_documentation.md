@@ -2868,6 +2868,37 @@ md5 `ad7c5f6803dd64f252bf7fd9ef6dd690`, diff in `bluscript_init_from.diff`):**
 3. Run 4 steps with `BLU_INIT_FROM=... BLU_INIT_VERIFY=1 BLU_ALL_BF16=1 BLU_CKPT=0`.
 4. Expect `262/262 weights match the checkpoint's CRC32`, and a **step-0 validation loss of about 1.87**, not ~11.
 
+### 35.1 Result: task 2 PASSED (2026-10-06, H200 box `ssh -p 2224`, GPU 5)
+
+**How it was run.** The user ran every command; I gave the commands.
+- **Code on the box:** a fresh clone of BluTrain `dist_side_merge` (`909ab75`, TI `d96b991`), identical to GitHub. The laptop's edited `bluscript_zero_ckpt.cpp` was copied in with `scp` (md5 `ad7c5f6803dd64f252bf7fd9ef6dd690`); `git diff --stat` showed only that file, +80 −1.
+- **Build:** `make -j dist SM_ARCH=90`, which builds profiler → tensor → dist. That avoids `make all` and its system-wide `ensure-blurun`. Backend cuBLAS, `sm_90a`. The trainer was compiled with the Makefile's own `build-mpi` line.
+- **Checkpoint** (HF `navingv/curriculum_8btokens/blumodel_step_8000`, public):
+  - `metadata.bin` is 129,127 bytes, md5 `5119b20d…`, the same file as our 09-29 copy;
+  - `data_rank_0.bin` is 6,469,415,424 bytes, md5 `62804353…`.
+  - The file is 406,528 bytes larger than the shard records add up to; ranks 1-3 are each 32,768 bytes larger. That is padding between records, and the CRC check below proves the data itself matches.
+- **Data:** the trainer reads the mixed layout (`BLU_MIX_ROOT/{commoncrawl,code,math}`). There is no team mix data on this box, so the three folders are links to our 4 `flux_*.bin` files. All three domains are therefore the same flux data.
+- **Flags:** `CUDA_VISIBLE_DEVICES=5 BLU_INIT_FROM=… BLU_INIT_VERIFY=1 BLU_ALL_BF16=1 BLU_CKPT=0 BLU_MAX_STEPS=4 BLU_MIX_ROOT=… BLU_TOKEN_MAX=50304`, with the default AdamW, B=8, T=4096, `grad_accum` 32.
+
+**Results:**
+
+| Check | Result |
+|---|---|
+| CRC of every loaded weight | **`262/262 weights match the checkpoint's CRC32`** |
+| Load message | `weights only from …/blumodel_step_8000 (its step 8000, loss 2.009818)` |
+| Step-0 validation loss (flux val, before any update) | **2.4538**; step-0 train loss 2.3274. Random weights give ~10.8 |
+| Out-of-range token ids (`BLU_TOKEN_MAX=50304`) | none |
+| Steps 1-3 | train 8.56 → 10.76 → 13.30, val at step 3 is 13.38, no NaN |
+| Peak memory (`[MEM]`) | active 125,086 MiB, reserved 127,256 MiB, at B=8 with all bf16 |
+
+**What it means:**
+- **The weights-only load works.** The loss is close to Navin's level, so rope_theta 500000 matches. It is not exactly 1.866 because this is flux validation data, not his validation set.
+- **The loss jump in steps 1-3 is expected.** A fresh AdamW at the PRETRAINING learning rate (1.2e-3, warmup 1 step) wrecks trained weights. SFT must use its own small LR: §3.10 plans 5e-6 to 2e-5.
+- **Memory is the same model** (1,588,229,888 params, 18,176 MB of optimizer state, as in the 09-25 runs). The 09-25 run peaked at 90,322 MiB, but at B=4 with fp32 residual/embedding. Today's B=8 is twice the activations.
+- **The same model at B=8 used to not fit:** 147,528 MiB with fp32 logits (loss doc §15.5). Now it fits with ~18 GB spare. Which flag saves how much (bf16 logits vs the bf16 residual stream vs the embedding, ~0.8 GiB) was not measured; an A/B is left for later, as curiosity only.
+
+**Status:** the code is NOT pushed yet. It stays in the laptop's `~/Downloads/BluTrain_sft` (`dist_side_merge`) until the SFT work is complete. The working method: edit only on the laptop; each day the box gets a fresh clone of `dist_side_merge` plus the changed files.
+
 ---
 
 ## 36. Notes for SFT from 2026-09-30 (full explanations in `embedding_optimizer_zero_1_parallelism.md`)
