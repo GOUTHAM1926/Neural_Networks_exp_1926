@@ -2918,3 +2918,220 @@ md5 `ad7c5f6803dd64f252bf7fd9ef6dd690`, diff in `bluscript_init_from.diff`):**
    number of ids, silently. It must take the real count first.
 4. **F4 is fixed on BLUCCL only** (`149249d`): at 1 GPU the ZeRO optimizers no longer round the gradient to bf16 and back.
    `dist_side_merge` (our SFT branch) still has the round trip at W = 1 until `149249d` is ported.
+
+---
+
+## 37. The SFT pipeline: built, run and tested (2026-10-06 and 2026-10-07)
+
+**In one paragraph:** the whole SFT path now works in our own C++ trainer on the H200. The path is preprocessing → SFT dataloader → trainer SFT mode, starting from Navin's step-8000 weights.
+- A full 2-epoch run took the validation loss from **1.4464 to 1.2839**.
+- Resume, 2 GPUs and 4 GPUs reproduce the 1-GPU numbers.
+- The pretraining path is unchanged, checked bit-for-bit at step 0.
+- A Muon learning-rate sweep shows **Muon needs a higher LR than AdamW**. At 5e-5 it about matches AdamW, and at 1.2e-4 it gives the best val of all runs, then overfits in epoch 2.
+- Not done yet: evaluation of the model's answers, and the push. The user decided on 10-07 not to push yet.
+
+Code: laptop `~/Downloads/BluTrain_sft` (`dist_side_merge`, base `909ab75`, TI `d96b991`). It is not pushed; a backup is in `profiling_reports/sft_stage0_2026_10_06/code/`, pushed to the docs repo in `fc8e20c`. Logs:
+- `profiling_reports/sft_stage0_2026_10_06/` (the 10-06 smoke run and the box logs);
+- `profiling_reports/sft_stage0_full_2026_10_07/` (every 10-07 run, the two queue scripts and the Muon sweep).
+
+### 37.1 Data (tasks 3 and 4)
+
+- **Dataset decision (the user's):** use one English-only dataset instead of filtering languages out of a mixed one.
+  - `HuggingFaceH4/ultrachat_200k` at revision `8049631c`: MIT licence, English, used for Zephyr's SFT.
+  - `train_sft` has 207,865 chats; `test_sft` has 23,110.
+- **`sft/prepare_sft_data.py`** (new, 236 lines) does the following:
+  - Applies template `tulu-plain-v1`: `<|system|>\n…\n<|user|>\n…\n<|assistant|>\n{answer}<|endoftext|>`.
+  - Uses the GPT-2 tokenizer. **No new tokens:** the markers are plain text (6–7 normal tokens each), and `<|endoftext|>` is id 50256.
+  - Builds `inputs = ids[:-1]` and `labels = ids[1:]`. Every label that is not an answer token or the end token after an answer is set to 65535 (ignored).
+  - Pads inputs with 50256 to T = 4096. A chat longer than T is **dropped, not cut**.
+  - Writes `inputs.bin`, `labels.bin` (uint16 [N, 4096]), `valid_counts.bin` (uint32 [N]) and `meta.json`.
+- **Stage-0 set:** `~/Downloads/sft_data/stage0_ultrachat_5k_T4096/`.
+  - **train:** 5,000 random `train_sft` chats (seed 1234; 10 too long were dropped). It has 4,771,516 trained tokens, which is 23.3% of the positions. Mean length 1,238 tokens, max 4,069.
+  - **val:** 500 `test_sft` chats, 444,233 trained tokens.
+- **Measured from `valid_counts.bin`:**
+  - Per micro-batch of 8 rows, the trained tokens range from 2,920 to 12,729.
+  - Inside one optimizer step, the biggest micro-batch has 2.54× (median) to 4.13× (max) the trained tokens of the smallest.
+  - This is why the global denominator is needed; see `loss_calculation_in_pretraining_and_sft.md`.
+
+### 37.2 SFT dataloader (task 5)
+
+**`sft/SftDataLoader.h`** (new, 174 lines). The only real change from `DataLoaderLite`: the target comes from `labels.bin`, at the same position, instead of the input shifted by one. What it does:
+- Takes one chat per row and gives each rank its rows: micro-batch g of rank r is rows `((g % M)·W + r)·B …`.
+- `valid_tokens_ahead(n)` reports the trained tokens of the next n micro-batches, which is what the global denominator needs.
+- Checks every file when it opens them: ids below the vocab size, labels below the vocab size or equal to 65535, row counts equal to `valid_counts.bin`, and no row without a trained token.
+
+**`sft/test_sft_dataloader.cpp`** passed **5/5** on the laptop RTX 3060 in 0.8 s. Log: `code/loader_test_2026_10_06.log`.
+
+| Check | Result |
+|---|---|
+| Data | 625 batches copied back from the GPU are byte-equal to the files. Every trained label is the next input token, and every row ends with 50256. Control: the pretraining target differs at 15,703,484 positions |
+| Counts | total 4,771,516 = files = meta. Per-batch count and look-ahead wrong in 0 of 633 and 0 of 625 (including across the epoch end) |
+| 2 ranks | 2,496 rows each, 0 overlap, the last 8 rows unused. Step-0 global count: 1 GPU = 2 GPUs = **60,263** |
+| Epochs | wraps to row 0 at epoch 1; `reset()` and skip land on the right rows |
+| Bad files | 9 cases (wrong T, bad rank, too few rows, missing file, short file, input ≥ vocab, label ≥ vocab, wrong count, row with no trained token) all stop with a message naming the row |
+
+### 37.3 Trainer changes (task 6)
+
+`bluscript_zero_ckpt.cpp`, +154 / −23 on top of task 2. The task-2 + task-6 diff against `909ab75` is in `code/bluscript_zero_ckpt_task2_task6.diff`.
+
+| Piece | Today (pretraining) | SFT mode (`BLU_SFT_DATA=<dir>`) |
+|---|---|---|
+| Loader | `MixedDataLoaderLite` (not created in SFT mode) | `SftDataLoader` for train and val |
+| Loss call | `(logits, target)` | `(logits, target, 65535, &denom)` |
+| Denominator | each micro-batch's own count (32,768) | the step's trained tokens over all micro-steps and GPUs (look-ahead, then all-reduce SUM) |
+| Backward seed | 1/GRAD_ACCUM | W (ZeRO averages over GPUs) |
+| Logged train loss | ÷ GRAD_ACCUM, then ÷ W | a plain sum over micro-steps and GPUs |
+| Val loss | per-batch mean, then averaged | the whole val set, summed once and divided once |
+| Settings | config | `BLU_SFT_ROWS_PER_STEP` 64, `BLU_SFT_EPOCHS` 2, `BLU_SFT_LR` 2e-5 (min LR/10), `BLU_SFT_WARMUP` 0.03 then cosine, `BLU_SFT_VAL_FREQ` 10, `BLU_SFT_MUON_LR` (required with Muon) |
+| Checkpoints | `checkpoints_bluscript` | `checkpoints_sft` by default, so it never resumes a pretraining checkpoint |
+
+Checks before the first run:
+- the compile check (`mpic++ -fsyntax-only`, Makefile flags) is clean, and a control copy with a broken call fails as it should;
+- the ZeRO path adds no hidden 1/GRAD_ACCUM (`grad_accum_steps` = 1; `reduce_grads_now` only averages).
+
+### 37.4 Runs on the H200 (node `innmi1srh2-p032`; the user ran every command or OKed each queue)
+
+All runs start from `blumodel_step_8000`. Settings: B = 8, 64 rows per step, 2 epochs = 156 steps, LR 2e-5 → 2e-6 (5 warmup steps, then cosine), `BLU_ALL_BF16=1`.
+
+| Run (date, GPUs) | What it tests | Result |
+|---|---|---|
+| Smoke (10-06, GPU 5, stopped at step 20) | does SFT run at all | val 1.4464 → 1.3528 → 1.3317; step-0 count **60,263** and val count **441,382**, both exact |
+| Full run (10-07, GPU 4) | a full 2 epochs plus checkpoint saves | val **1.4464 → 1.2839**, falling to the end (no overfit). Train epoch means 1.316 / 1.239. Max norm 0.918. 5.3 s/step, 53% MFU, peak 125,026 MiB. Checkpoints at 78 and 156 (22.2 GB each) |
+| Resume (GPU 4) | restart from the step-78 checkpoint | step 78 **exact** (train 1.264598, 58,076 tokens); later steps within ~2e-4; final val 1.283921 vs 1.283946 |
+| Pretraining check (GPU 4) | is the pretraining path unchanged | step 0 **exact** against 10-06 (train 2.327407, val 2.453832); steps 1–3 track it |
+| 2 GPUs (4,5) | count all-reduce, seed W = 2 | step 0 identical, **including grad norm 0.7442**; exact counts to step 77; final val 1.283918; 2.68 s/step (2×) |
+| 4 GPUs (3–6) | seed W = 4 | step 0 identical (train 1.450003, norm 0.7442); 1.35 s/step (4×); 102 GB per GPU. Val uses 480 rows (426,157 tokens): 1.4432 → 1.2809, the same 0.162 drop as on 1 GPU |
+| Muon 2e-5 (GPU 4) | Muon with today's LR | runs fine (no rejected NS updates), but val 1.3192, slower than AdamW |
+
+**Run-to-run noise:** step 0 is bit-identical between runs; after the first update the val values differ by about 2e-5.
+
+**Why the 2-GPU and 4-GPU runs differ from 1 GPU from step 78:** the loader makes each GPU's epoch `N / (B·W)` micro-batches.
+- On 1 GPU an epoch is 625 micro-batches, not a whole number of 8-micro-batch steps, so epoch 2 starts one micro-batch into step 78.
+- On 2 and 4 GPUs, epoch 2 starts exactly at step 78.
+
+This is by design, not a bug. It is fixable later by making every epoch a whole number of steps.
+
+### 37.5 Muon learning-rate sweep (10-07, GPUs 2–5)
+
+Muon and the AdamW part get the **same** LR, like Kathir's `sft.py`. The reference is the 4-GPU AdamW run (same 480 val rows). Script: `run_muon_sweep_1007.sh`.
+
+| Run | val @10 | val @40 | val @80 | best val (step) | final val | train epoch 1 / epoch 2 |
+|---|---|---|---|---|---|---|
+| AdamW 2e-5 | 1.3497 | 1.3011 | 1.2860 | 1.2809 (155) | **1.2809** | 1.316 / 1.239 |
+| Muon 2e-5 | 1.4364 | 1.3757 | 1.3330 | 1.3162 (155) | 1.3162 | 1.384 / 1.295 |
+| Muon 5e-5 | 1.4121 | 1.3192 | 1.2920 | 1.2843 (155) | 1.2843 | 1.340 / 1.208 |
+| Muon 1.2e-4 | 1.3584 | 1.2972 | **1.2747** | **1.2747 (80)** | 1.2820 | 1.314 / **1.084** |
+
+What it shows:
+- Muon needs about **2.5–6× AdamW's LR**. The likely reason: our Muon scales each update to RMS 0.2 × LR, like a settled AdamW, while a fresh AdamW takes much bigger first steps. This is not proven.
+- At 1.2e-4 the best val of any run comes at the end of epoch 1. In epoch 2 it overfits: train falls to 1.08 while val goes back up.
+- On 5,000 chats: **2 epochs at about 5e-5–8e-5** for now. The 1.2e-4 best (step 80) is a mid-run point with the LR still at 6.6e-5, not a finished 1-epoch run, so **a real 1-epoch run at about 1.2e-4 is the next test**. Note: in the sweep the AdamW part (embeddings, norms) used the same LR as Muon, and each run decays to one tenth of its LR.
+- Caveat: one seed, small data, val loss only (no benchmarks).
+
+### 37.6 Muon or AdamW for SFT: what the papers actually say (checked in the full text, 10-07)
+
+| Paper | Pretraining optimizer | SFT optimizer, as written |
+|---|---|---|
+| Moonlight, arXiv 2502.16982 (Moonshot) | Muon | §3.5, Table 6: **Muon-pretrained + Muon-SFT is the best** of the 4 combinations (MMLU 55.7 / HumanEval 57.3 / MBPP 55.6 / GSM8K 68.0; Muon→AdamW 50.2 / 52.4 / 55.2 / 64.9). SFT on the Tülu 3 mix, 2 epochs, LR 5e-5, linear to 0 |
+| Kimi K2, arXiv 2507.20534 | MuonClip (15.5T tokens) | §3.1: "We employ the Muon optimizer in our post-training and recommend its use for fine-tuning with K2"; Muon for RL too |
+| GLM-4.5, arXiv 2508.06471 | Muon (not for embeddings, biases or RMSNorm; update RMS 0.2) | not stated |
+| Qwen2 / Qwen2.5 / Qwen3 | **not stated** | not stated (Qwen2.5 SFT: >1M examples, 2 epochs, LR 7e-6 → 7e-7; DPO with an "Online Merging Optimizer") |
+| Llama 2, Llama 3, DeepSeek-V3, OLMo 2 | AdamW | not named in their SFT sections |
+| LIMA, Zephyr, InstructGPT | — | AdamW, AdamW, Adam (stated) |
+| Tülu 3 | — | the paper names no optimizer |
+| Stanford, arXiv 2509.02046 | Muon vs AdamW, carefully tuned | the speedup shrinks with size: 1.4× at 0.1B, **1.1× at 1.2B** |
+| Essential AI, arXiv 2505.02222 | Muon vs AdamW | Muon expands the compute–time frontier and keeps data efficiency at large batch sizes |
+
+Conclusions:
+- "All SFT papers use AdamW" is not true. Many do not name the SFT optimizer. Kimi K2 uses Muon for SFT, and Moonlight shows it is best when the base was also pretrained with Muon.
+- **Our base was pretrained with Muon, so the evidence points to Muon SFT.**
+- Our earlier SFT report said Llama 2 used AdamW for SFT. Its SFT section names no optimizer; AdamW is named only for pretraining and RLHF.
+
+### 37.7 Kathir's PyTorch `sft.py` vs our trainer (read 10-07)
+
+The file is now at `Neural_Networks_exp_1926/kathir_sft/sft.py`. It was moved out of `work_docs`, where it had been put by mistake.
+
+| | Ours (BluTrain C++) | Kathir (PyTorch) |
+|---|---|---|
+| Same | base step 8000; answer-only loss; summed loss ÷ the whole step's trained tokens; Muon for matrices + AdamW for embeddings and norms; betas (0.9, 0.95), eps 1e-8, weight decay 0.1, clip 1.0 on the AdamW part; 3% warmup; 2 epochs | same |
+| Data | UltraChat, 5,000 chats | OLMo 2 SFT mix, 839,168 chats |
+| Batch | 64 chats per step, fixed [8, 4096] rows (about 70% padding) | 512 chats per step, sorted by length, cut into micro-batches of ≤ 16,384 padded tokens (little padding) |
+| LR, schedule | separate LRs; cosine to 10% | **one** LR (5e-5); linear to 0 (the same recipe as Moonlight) |
+| Logits | all positions | **only trained positions, fp32** (Q11 already done in PyTorch) |
+| Shuffle | the same order every epoch | a new shuffle every epoch |
+| Activation checkpointing | off | on |
+| Output | DCP checkpoints | an HF checkpoint at each epoch end (for inference) |
+| Eval | val loss | val loss plus manual inference on 2 prompts (base vs epoch 1 vs epoch 2); no benchmarks |
+
+Worth adopting:
+1. logits only at trained positions;
+2. length-sorted micro-batches (T per micro-batch in steps of 256);
+3. a new shuffle every epoch;
+4. an HF export for evals.
+
+Needed from Kathir:
+- his **prep script** (template, special tokens, max length);
+- `zero_muon.py` (Muon scaling);
+- `blu_model.py`;
+- his **DCP → HF converter**. Ours (`TI/convert_ckpt.py`) reads the old `TNS1` format, not DCP.
+
+### 37.8 Traps found on the box
+
+1. **`mpirun` on one node passes the whole shell environment to the job, whatever `-x` lists.** On 10-06 an old `BLU_CKPT=0` (and `BLU_MAX_STEPS=4`, `BLU_INIT_VERIFY=1`) leaked in from the morning's shell and switched checkpoints off. The queue scripts now unset every `BLU_*` before each run.
+2. **A started queue whose parent script dies leaves an orphaned `mpirun`.** The first Muon-sweep start went to the default GPUs 3–6 and lost its parent, so the queue would not have continued. The user OKed killing it by its exact PID, and it was restarted on 2–5.
+3. **The val set depends on the GPU count:** 496 rows on 1 or 2 GPUs, 480 on 4. Only compare val numbers across runs with the same GPU count.
+4. **Disk:** each SFT checkpoint is 22.2 GB (weights + optimizer state). The duplicates were deleted, and only `stage0_adamw_full/ckpt/blumodel_step_156` is kept, for evals.
+5. **Steps 1 and 6 take ~35 s instead of 5.3 s** because of the trainer's `empty_cache()` at steps 0 and 5. It is a colleague's old experiment, and he will remove it.
+
+### 37.9 Status at the end of 10-07
+
+| Part | Tested? |
+|---|---|
+| Prep script, loader, weights-only load | ✅ |
+| SFT training: 1 GPU, full 2 epochs, checkpoint save, resume | ✅ |
+| 2 GPUs, 4 GPUs | ✅ |
+| Pretraining unchanged | ✅ (step 0 bit-exact) |
+| Muon in SFT mode | ✅ works; the LR needs tuning (37.5) |
+| The model's real answers and benchmarks | ❌ needs the HF converter and inference (ask Kathir) |
+
+Next:
+1. Get Kathir's converter and files.
+2. Run his 2 prompts and real benchmarks on `blumodel_step_156`.
+3. Decide the SFT optimizer and LR from evals.
+4. Logits only at trained positions, and length-sorted batching.
+5. More data (stage 1).
+
+**Push:** not yet (the user's decision, 10-07).
+
+### 37.10 The SFT report now lives in the shared post-training doc (10-07)
+
+- **Where it is now:** the SFT report is the "SFT - what it is" tab of the shared Google Doc *PostTraining - Research and Planning*. The latest download is `work_docs/PostTraining - Research and Planning.docx`.
+  - The 10-05 `sft_report.md` export and its PDF were deleted from `work_docs` by the user.
+  - The tab keeps sections 1–6, plus the doubts (now numbered 7) and the sources.
+  - It drops the old sections 7 (what I did) and 8 (what's next).
+- **New section 8 for that tab:** `profiling_reports/sft_report_2026_10_07/sft_doc_section8_1007.md`, pasted by the user. It covers:
+  - 8.1 what was built;
+  - 8.2 tests and results;
+  - 8.3 the Muon sweep;
+  - 8.4 the papers;
+  - 8.5 what was learned;
+  - 8.6 Kathir vs ours;
+  - 8.7 the plan;
+  - new sources.
+- **Pasted on 10-07 (download 21:11):** 8.1–8.5 and the new sources. Not pasted: 8.6 (Kathir vs ours) and 8.7 (the plan). The user had also removed the old summary items and the old 5.5 plan table, so the old 5.6 is now 5.5 and 8.7's references were updated to match.
+- **Still out of date in that tab at 21:11:**
+  - the settings-table optimizer row (still "open", still says Llama 2 used AdamW);
+  - the "(7.5)" and "(7.6)" references in that table, which point to sections that no longer exist;
+  - the 6.3 row "a validation split";
+  - a stray copy of the last 8.2 table row, pasted as a line below the table;
+  - the headings: "3.10 The dataloader design" sits over the preprocessing-script list, and "3.11 The preprocessing script" sits over the settings table.
+- **Listed before the user's own edits (most now handled):**
+  - Summary: "Where it stands" still says SFT has not run, and all 5 "What I need to decide" items are now decided.
+  - Settings table: the optimizer row is still "open"; the batch row says 128 (we use 64); the schedule row says linear (we use cosine).
+  - 3.7: "Still to do on the trainer side" is done.
+  - 3.9: the dataloader is done, except a per-epoch shuffle and bucketing.
+  - 5.5: stage 0 is done, with UltraChat 5k.
+  - 6.3: the held-out SFT loss now runs.
+- **Heading fix in that tab:** "3.9 The dataloader" appears twice.
+  - The second one should be "3.10 The preprocessing script".
+  - The table now headed "3.10 The preprocessing script" should be "3.11 Training settings". The text already points to Section 3.11 for the optimizer and NaN rows.

@@ -1,0 +1,9 @@
+2026-10-07 19:04:45 START muon_lr2e-5  ranks=4 gpus=3,4,5,6  BLU_SFT_DATA=/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096 BLU_INIT_FROM=/home/operator/gautam_k/ckpt/blumodel_step_8000 BLU_ALL_BF16=1 BLU_CKPT=0 BLU_OPTIMIZER=muon BLU_SFT_MUON_LR=2e-5 BLU_SFT_LR=2e-5
+2026-10-07 19:05:49 FAIL muon_lr2e-5: GPU 3 already has 3143 MiB in use
+2026-10-07 19:09:40 START muon_lr2e-5  ranks=4 gpus=2,3,4,5  BLU_SFT_DATA=/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096 BLU_INIT_FROM=/home/operator/gautam_k/ckpt/blumodel_step_8000 BLU_ALL_BF16=1 BLU_CKPT=0 BLU_OPTIMIZER=muon BLU_SFT_MUON_LR=2e-5 BLU_SFT_LR=2e-5
+2026-10-07 19:18:00 DONE  muon_lr2e-5  final:   [val] step 155 | val_loss 1.316195 | 426157 trained tokens
+2026-10-07 19:18:05 START muon_lr5e-5  ranks=4 gpus=2,3,4,5  BLU_SFT_DATA=/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096 BLU_INIT_FROM=/home/operator/gautam_k/ckpt/blumodel_step_8000 BLU_ALL_BF16=1 BLU_CKPT=0 BLU_OPTIMIZER=muon BLU_SFT_MUON_LR=5e-5 BLU_SFT_LR=5e-5
+2026-10-07 19:25:44 DONE  muon_lr5e-5  final:   [val] step 155 | val_loss 1.284278 | 426157 trained tokens
+2026-10-07 19:25:51 START muon_lr1.2e-4  ranks=4 gpus=2,3,4,5  BLU_SFT_DATA=/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096 BLU_INIT_FROM=/home/operator/gautam_k/ckpt/blumodel_step_8000 BLU_ALL_BF16=1 BLU_CKPT=0 BLU_OPTIMIZER=muon BLU_SFT_MUON_LR=1.2e-4 BLU_SFT_LR=1.2e-4
+2026-10-07 19:33:41 DONE  muon_lr1.2e-4  final:   [val] step 155 | val_loss 1.281962 | 426157 trained tokens
+2026-10-07 19:33:41 SWEEP FINISHED

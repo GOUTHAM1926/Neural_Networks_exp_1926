@@ -1,0 +1,9 @@
+2026-10-07 17:09:35 START resume78  ranks=1 gpus=4  BLU_SFT_DATA=/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096 BLU_INIT_FROM=/home/operator/gautam_k/ckpt/blumodel_step_8000 BLU_ALL_BF16=1 BLU_CKPT=1 BLU_CKPT_FREQ=78 BLU_CKPT_DIR=/home/operator/gautam_k/sft_runs/resume78/ckpt
+2026-10-07 17:25:10 DONE  resume78
+2026-10-07 17:25:12 START pretrain4  ranks=1 gpus=4  BLU_INIT_FROM=/home/operator/gautam_k/ckpt/blumodel_step_8000 BLU_INIT_VERIFY=1 BLU_ALL_BF16=1 BLU_CKPT=0 BLU_MAX_STEPS=4 BLU_MIX_ROOT=/home/operator/gautam_k/mix BLU_TOKEN_MAX=50304
+2026-10-07 17:31:26 DONE  pretrain4
+2026-10-07 17:31:30 START twogpu  ranks=2 gpus=4,5  BLU_SFT_DATA=/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096 BLU_INIT_FROM=/home/operator/gautam_k/ckpt/blumodel_step_8000 BLU_ALL_BF16=1 BLU_CKPT=0
+2026-10-07 17:45:32 DONE  twogpu
+2026-10-07 17:45:34 START muon  ranks=1 gpus=4  BLU_SFT_DATA=/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096 BLU_INIT_FROM=/home/operator/gautam_k/ckpt/blumodel_step_8000 BLU_ALL_BF16=1 BLU_CKPT=0 BLU_OPTIMIZER=muon BLU_SFT_MUON_LR=2e-5
+2026-10-07 18:09:23 DONE  muon
+2026-10-07 18:09:23 QUEUE FINISHED
