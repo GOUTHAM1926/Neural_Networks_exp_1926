@@ -3363,3 +3363,260 @@ Script: `profiling_reports/q10_packing_sim_2026_10_08/pack_sim.py`, output saved
 2. v1.5 bucketing (loader, GEMM-shape check, Kruthik's kernel with the real-N fix), then v2 packing (mask forward and backward, RoPE restart, packing loader, correctness vs SDPA).
 3. Q11 after v2.
 4. The remaining Q&A questions (Q4, Q5, Q6, Q11, Q12, Q13).
+
+## 39. 2026-10-09: v2 step 1 (how every library does variable-length attention), attention background, and the loss-kernel benchmark on H200
+
+**In one paragraph:**
+- I documented everything up to 10-08 (§38).
+- I started v2 (packing + variable-length attention) with step 1: reading the code of every library we cloned to see how they handle packed chats.
+  - Every library uses one of two designs: A (each chat as its own sequence) or B (one row plus a block mask).
+- Background questions answered from the code:
+  - what each library is;
+  - whether causal attention skips or masks the upper triangle;
+  - the attention types from 2014 to now;
+  - FlashAttention vs memory-efficient attention and their precision;
+  - which kernels our SFT run uses.
+- A colleague asked for numbers on our modified SFT loss kernel, so I wrote a standalone benchmark and ran it on H200 GPU 5. I wrote a separate document for her.
+
+### 39.1 The libraries (what each one is)
+
+All clones are under `~/Downloads/sft_research/`, except PyTorch, which is at `~/pytorch_cloned/pytorch` (commit `5f76830b728`, 2025-12-05, older than the rest).
+
+| Library | Made by | What it is | Built on | Own attention kernel? |
+|---|---|---|---|---|
+| PyTorch | Meta / PyTorch Foundation | the base: tensors, autograd, CUDA ops, distributed | itself | yes: math, flash (FA2 compiled from the `third_party/flash-attention` submodule), memory-efficient (xFormers), cuDNN, FlexAttention |
+| flash-attention (`94e22c9`) | Dao-AILab | a kernel library: FA2 `csrc/`, FA3 `hopper/`, FA4 `flash_attn/cute/` | PyTorch C++/CUDA extension (`setup.py:821`) | yes |
+| Liger-Kernel (`19d92e7`) | LinkedIn | Triton kernel library: losses, norms, RoPE, SwiGLU | PyTorch + Triton | no varlen attention (0 files with `cu_seqlens`) |
+| Transformer Engine (`39c30c5`) | NVIDIA | fused layers and FP8/FP4 for PyTorch and JAX | PyTorch / JAX | calls cuDNN (closed source) or FlashAttention |
+| Megatron-LM (`8b2f660`) | NVIDIA | training framework (parallelism, models, data) | PyTorch (`torch>=2.6.0`; its own `torch.autograd.Function`s, no own tensor or autograd) | no; packed attention only through TE |
+| transformers (`4cc2aa8`) | Hugging Face | model definitions + Trainer | PyTorch | no; dispatches to eager / SDPA / FA2 / FA3 / Flex (`modeling_utils.py:5120-5123`) |
+| TRL (`478624d`) | Hugging Face | "Transformers Reinforcement Learning": SFT/DPO/GRPO trainers | transformers + accelerate + datasets | no (one loss kernel). Not related to Transformer Engine (0 files mention it) |
+| torchtitan (`1e4d33d`) | PyTorch org | "PyTorch native platform for training" | PyTorch | no; calls PyTorch varlen / Flex / SDPA |
+
+### 39.2 v2 step 1: the two designs, from the code
+
+**Variable-length attention is not a new kind of attention.** The math is the same: softmax(Q·Kᵀ/√d)·V, causal, GQA. The new input is only where each chat starts and ends. Each library added it kernel by kernel. Paths without it either refuse packed input (Megatron's own attention: "Packed sequence is not supported by DotProductAttention", `core/transformer/dot_product_attention.py:161`) or undo the packing (TE's unfused path converts packed back to padded, `backends.py:545-563`).
+
+**Design A: each chat is its own sequence (`cu_seqlens` = start offset of each chat).**
+- **FA2:**
+  - the grid is (ceil(max_len/BlockM), chats, heads) (`flash_fwd_launch_template.h:63-64`);
+  - each block reads its chat's offset and length (`block_info.h`) and exits early past the chat end (`flash_fwd_kernel.h:88`);
+  - causal is per chat (`:91-94`);
+  - rows past the chat end are not loaded, and their scores are set to −∞ (`mask.h:96-100`);
+  - the backward's dQ buffer is padded by 128 rows per chat (`flash_api.cpp:1145-1155`).
+- **FA3 (Hopper):**
+  - one TMA descriptor for the whole packed tensor, shifted per chat (`domain_offset`, `mainloop_fwd_sm90_tma_gmma_ws.hpp:663-665`);
+  - it returns before loading K when a chat has no work (`:612-617`);
+  - **TMA output stores are switched off for varlen**, so a tile cannot overwrite the next chat (`epilogue_fwd.hpp:37, 331`; dK/dV `epilogue_bwd.hpp:31`);
+  - a persistent scheduler maps a global tile number to (chat, tile, head) with a warp prefix sum (`tile_scheduler.hpp:493, 600-680`), with an optional longest-first sort (`flash_prepare_scheduler.cu:163-179`);
+  - dQ is accumulated with atomicAdd into a padded fp32 buffer (`mainloop_bwd…:621, 964`).
+- **FA4:** the same structure (`flash_attn/cute/seqlen_info.py`, `interface.py:682-813`), plus block sparsity.
+- **PyTorch:**
+  - `varlen_attn` → `aten._flash_attention_forward` = the FA2 kernels. Its cuDNN path is switched off (`varlen.py:21-23, 75-84`);
+  - nested tensors use the same kernels (`nested/_internal/sdpa.py:352, 793, 830`);
+  - the memory-efficient kernel takes `seqstart` offsets (`kernel_forward.h:211-235`).
+- **Transformer Engine:** `qkv_format="thd"`.
+  - The cuDNN graph gets ragged offsets (`fused_attn_f16_arbitrary_seqlen.cu:124-155`) and a causal band (`:183-186`).
+  - Or it calls FA2/3/4 varlen (`backends.py:130, 191, 246-248`).
+
+**Design B: one long row plus a block mask.**
+- **FlexAttention:**
+  - `create_block_mask` evaluates the mask on every (q, kv) pair, cuts it into 128×128 blocks and labels each block skip / full / partial (`flex_attention.py:979-1030`);
+  - the kernel runs a loop over partial blocks (mask applied) and a loop over full blocks (no mask) (`flex_attention.py.jinja:129-180`; `common.py.jinja:67-81`);
+  - splitting out the full blocks is "about a 15% speedup" for causal;
+  - `BACKEND='FLASH'` passes the same block mask to FA4.
+- **torchtitan:** a chat id from `positions == 0`; the fast causal mask is `kv_idx >= chat_start[chat_id[q_idx]]` (`models/common/attention.py:467-530`). It can also use PyTorch's varlen (`:39-41, 598+`).
+
+**The frameworks only prepare data and call the kernels above:**
+- **Megatron:**
+  - SFT packing appends chats in order, pads each to a multiple, and truncates overflow (`training/datasets/sft_dataset.py:120-200`);
+  - `PackedSeqParams(qkv_format="thd")` goes to TE (`pretrain_gpt.py:341-365`);
+  - RoPE takes per-chat positions from `cu_seqlens` (`rope_utils.py:208-275`).
+- **HF transformers:**
+  - detects packing from `position_ids` (`modeling_flash_attention_utils.py:558-572`);
+  - builds `cu_seqlens` from `position_ids == 0` and calls FA varlen (`:480-517, 843-847`);
+  - for SDPA it builds a dense same-chat + causal mask (`masking_utils.py:183-190, 522`).
+- **TRL:**
+  - best-fit-decreasing packing (`data_utils.py:739`);
+  - padding-free collator with positions restarting per chat (`sft_trainer.py:1180, 528-552`);
+  - sets the label of each chat's first token to −100 (`:516`), because HF shifts labels inside the loss. Our labels are already shifted per chat, so we don't need this.
+
+**For us, varlen is a feature to add to the kernels the SFT run uses, not a new attention.** On H200, SFT (`bluscript_zero_ckpt.cpp:642-644`) runs:
+- **v62 forward** (`GQA_fwd_generic.cu:330-336`);
+- **Vj1d backward** by default (`GQA_bwd_generic.cu:126-130`; `USE_FLASH=1` picks Vj1, `USE_DETERMINISTIC_DQ=1` picks V44).
+
+Every other attention path must either get the feature or refuse packed input with an error. Silently ignoring the chat boundaries would let chats see each other with no error.
+
+### 39.3 Causal attention: computed and masked, or skipped?
+
+**Both, depending on the tile.**
+- **Tiles fully above the diagonal are never loaded or computed** in every optimized kernel:
+  - FA2 `flash_fwd_kernel.h:91-94` (backward `flash_bwd_kernel.h:318-320`);
+  - FA3 `block.h:23-33`;
+  - memory-efficient `kernel_forward.h:282-290`;
+  - FlexAttention (only listed blocks);
+  - our v62 `GQA_fwd_sm90.cu:436` (`my_nkv`), with the producer loading only `pair+1` key tiles (`:397-401`).
+- **Tiles crossing the diagonal are computed fully, then the entries above the diagonal are set to −∞**:
+  - FA2 `mask.h:96-100`;
+  - FA3 `mask.h:89-100`;
+  - v62 `:479-498`.
+- **The naive path computes everything and masks.** PyTorch math SDPA builds a full lower-triangle mask, computes all of Q·Kᵀ and adds −∞ (`attention.cpp:60-71`). This is also how the 2017 paper defines it ("masking out (setting to −∞)").
+- **FA2 paper:** skipping about half the blocks gives "around 1.7-1.8× speedup compared to attention without the causal mask"; only 1 block per row needs the mask.
+- **Our v62 at T = 4096** (tile 64 × 128): 2,048 tiles in the full grid, **1,056 computed (51.6%)**. 64 diagonal tiles are about half masked, which is about 3% of the computed work.
+- **Unequal work per row:**
+  - FA2 loops key tiles in reverse (`flash_fwd_kernel.h:138-140`);
+  - FA3 uses longest-processing-time-first (`tile_scheduler.hpp:222-224, 309-310`);
+  - v62 pairs an early query tile with a late one (`decode_u`).
+- **−∞ and NaN:** exp(−∞) = 0. A fully masked row would give −∞ − (−∞) = NaN. FA guards this (`softmax.h:73-76`). Plain causal never fully masks a row; packing with pad rows can.
+- **The KV cache only works because of causal attention.** At decode, no mask is needed. When seqlen_q ≠ seqlen_k, FA2 aligns the mask to the bottom right (README "2.1").
+
+### 39.4 Attention types (background, answered in the chat)
+
+The history from Bahdanau 2014 to 2026, grouped by what each type changes:
+- **the score function:** additive, multiplicative, scaled dot;
+- **which pairs are allowed:** bidirectional, causal, prefix-LM, sliding window, fixed sparse (Sparse Transformer, Longformer, BigBird, Reformer), learned sparse (NSA, MoBA, DeepSeek DSA, DeepSeek-V4 CSA+HCA);
+- **the K/V storage:** MHA, MQA, GQA, MLA;
+- **replacing softmax:** linear attention, Performer, Linformer; then RetNet, Mamba/Mamba-2, GLA, DeltaNet, Gated DeltaNet, KDA, and the hybrids Jamba, MiniMax-01, Qwen3-Next, Kimi Linear. MiniMax went back to full attention for M2;
+- **the computation only:** online softmax, memory-efficient attention, FlashAttention 1–4, PagedAttention, FlexAttention.
+
+Facts checked on 10-09:
+- the DeepSeek-V4 model card: at 1M context, 27% of single-token FLOPs and 10% of the KV cache of V3.2;
+- the MiniMax M2 post (2025-10-30): efficient attention "still has some way to go".
+
+**Our model is GQA (18 query heads, 6 KV heads, head_dim 128), causal, RoPE, with an exact FA3-style kernel. v2 does not change this; it only changes which pairs are allowed (block-diagonal causal).**
+
+### 39.5 FlashAttention vs memory-efficient attention, precision, and what we run
+
+**PyTorch (`aten/.../cuda/sdp_utils.cpp`): the two are different kernels with different rules, not only different dtypes.**
+- **Flash** = FA2:
+  - fp16/bf16 only (`:662-664`);
+  - no attention mask (`:777`);
+  - GQA supported (`:801`);
+  - sm80 and newer.
+- **Memory-efficient** = xFormers on CUTLASS:
+  - fp16/bf16/fp32 (`:830-831`);
+  - any additive mask;
+  - **no GQA**: K/V must have as many heads as Q (`:871`);
+  - sm50 and newer.
+- **On H100/H200 the order is cuDNN, then flash, then memory-efficient, then math**, when cuDNN ≥ 9.9 (`:78-108`; `Context.h:457-462`).
+- FA3 is not in PyTorch. FA4 is opt-in (`activate_flash_attention_impl("FA4")`, sm90/sm100 only, `_fa4.py:105-106`).
+- **The forward and backward always come from the same backend** (`derivatives.yaml:2882-2908`).
+
+**Precision (bf16 inputs).** FA2, PyTorch memory-efficient and our v62 use the same scheme:
+
+| Step | Precision |
+|---|---|
+| Q, K, V | bf16 |
+| Q·Kᵀ | **fp32 accumulate** |
+| softmax max, exp, sum | **fp32** |
+| P | rounded to bf16 for the P·V matmul |
+| O | **fp32 accumulate**, written as bf16 |
+| LSE | **fp32** |
+
+Code:
+- FA2: `kernel_traits.h:26, 33`, `softmax.h:131`, `flash_fwd_kernel.h:194, 310, 354, 443`;
+- memory-efficient: `kernel_forward.h:99`, `mma_from_smem.h:1526`;
+- v62: `GQA_fwd_sm90.cu:278, 440-441, 511, ~540, 605-609`.
+
+**"Flash = everything bf16" is false. Softmax is fp32 everywhere.** With fp32 inputs, PyTorch memory-efficient uses 3×TF32 (`gemm_kernel_utils.h:112-123`).
+
+**Our BluTrain paths:**
+- **Current trainers (single, zero, zero_ckpt = SFT, production):** `FlashAttention` backend, bf16, GQA, v62 + Vj1d on H200. Before attention, QK-norm + RoPE run in fp32 (`qk_dtype()`, `bluscript_zero_ckpt.cpp:198`).
+- **Vj1d backward:**
+  - D = rowsum(dO·O) in fp32;
+  - dQ summed in an fp32 buffer (TMA reduce-add);
+  - dK/dV: per-query-head bf16 partials, then the 3 heads of a group summed in fp32 (`GQA_bwd_vj1d_sm90.cu:283, 373, 395-413, 646`). FA2 does the same for GQA (`flash_api.cpp:935-1004`).
+- **Our old `MemoryEfficient` backend:**
+  - fp32 only, MHA only, causal or none, no dropout, no varlen;
+  - matmuls in **1×TF32** (`AttentionOps.cpp:89-90`; `AttentionForward.cu:727-733`);
+  - used only by `gpt2_fmha.cpp` and an old DDP test.
+  - It is a real memory-efficient kernel (same idea as flash), but not PyTorch's xFormers kernel.
+- **v62 header:** H200, B=8, Hq=12, Hkv=4, S=4096 → 0.7075 ms, 579 TFLOPS, "~1.6% faster than PyTorch SDPA's cuDNN path" (`GQA_fwd_sm90.cu:14-15`).
+
+**Attention rivals on H200, forward and backward:**
+- cuDNN (PyTorch's default);
+- FA3, FA4, FA2 (PyTorch's fallback);
+- FlexAttention;
+- ThunderKittens. Its paper says the forward is level with FA3 and the backward is 10–40% faster than FA3 on H100; I have not cloned it.
+
+Liger is a rival for the loss kernel, not for attention.
+
+### 39.6 Loss-kernel standalone benchmark on H200 (for a colleague)
+
+**Everything about it is in `profiling_reports/sft_loss_bench_2026_10_09/SFT_loss_kernel_benchmark_H200.md`:** the plan, design, data, settings, every result, a glossary and a checklist for running other kernels the same way.
+
+**The test:**
+- the loss kernels alone (no model);
+- H200 GPU 5;
+- B=8 × T=4096 = 32,768 positions, V = 50,304, bf16 logits;
+- labels from `stage0_ultrachat_5k_T4096/train/labels.bin` (answer 23.30%, prompt 6.92%, pad 69.78% of positions);
+- random logits from a fixed formula;
+- 6 cases: 4 real batches (first, min, median, max trained share), masking off, and all masked;
+- 5 timed operations: F (forward with saved stats), B (backward with stats), F+B, Fv (forward without stats, used by validation), Fv+Bo (no-stats pair);
+- 5 warm-up + 50 timed calls with CUDA events.
+
+**Results (median batch, 23.1% trained):**
+
+| Operation | Time | % of 4.8 TB/s peak |
+|---|---|---|
+| F | 0.276 ms | 57.5% |
+| B | 1.600 ms | 52.9% |
+| **F+B** | **1.878 ms** | |
+
+- **Per step on 1 GPU:** 8 × 1.878 = **15.0 ms**, about 0.3% of the ~5.3 s step.
+- **Masking:** 3.2× faster than no masking on the same rows (1.676 vs 5.376 ms).
+- **Saved stats:** 17–22% faster than recomputing them (1.878 vs 2.258 ms; 5.376 vs 6.884 ms).
+- **The backward is 85% of the pair.**
+  - Writing the full gradient as zeros runs at 83% of peak (all-masked case).
+  - The trained-row part of the backward runs at only about a third of peak (nomask: 31.6%). This is the slowest part; the cause is not measured yet.
+- **Time is linear in the trained share:** F+B ≈ 0.87 + 4.51 × share (ms).
+- **All checks PASS:**
+  - every trained position computed, every skipped one skipped;
+  - skipped gradients exactly zero;
+  - the no-stats path identical;
+  - the loss equal to the theory value (12.746 for this logit distribution).
+
+**Run state:**
+- source md5 `f8a5bf8c98b2…`; binary on the box `~/gautam_k/loss_bench/bench_sparse_ce_sft`; TI `d96b991`; CUDA 13.4; `sm_90`; free clocks;
+- the GPU was empty before and after;
+- the raw log `bench_run1.log` is on the box and still to be copied back;
+- nsys per-kernel run prepared, not run.
+
+### 39.7 Found and parked: the B300 loss forward ignores ignore_index
+
+- On B300, `sparse_cross_entropy_forward_cuda_impl_vec_save_stats` calls `sparse_ce_fwd_sm103_launch`, which has no `ignore_index` parameter (`arch/CrossEntropyKernels_sm103.cu:140-143`).
+- So on B300 the masked positions are computed as trained, and the target 65535 is read past the row. The loss value and the saved stats are wrong. The backward still zeroes the masked rows.
+- H200 is not affected.
+- Parked: the user said "forget B300, we are doing H200". Fix it before any SFT run on B300.
+
+### 39.8 Which design for v2: A or B
+
+PyTorch has both: `varlen_attn` (A, the FA2 kernels) and FlexAttention (B). A is what FlashAttention and TE use, and the most general. **For our kernels I lean to B. The final choice comes after reading Vj1d (step 2).** Reasons:
+
+1. **The rows stay 4096 tokens** (v2 fills rows; on average 16 pad tokens per row). So v62 and Vj1d still see B rows × S = 4096, and their constraints hold: S % 256 = 0, head_dim 128, causal, a fixed 132-CTA persistent grid, TMA loads.
+2. **Output stores stay as they are.** In B a tile never writes into another row's memory. In A, FA3 had to switch off TMA output stores so a tile at a chat end does not overwrite the next chat.
+3. **The change is local:**
+   - forward: per query tile, start the key loop at the chat start of the tile's first row, and set to −∞ the keys of an earlier chat on that first key tile;
+   - backward: the mirror, so per key tile, stop at the end of that key's chat.
+4. **No NaN case:** if pad tokens form their own segment, every token sees at least itself, so no row is fully masked.
+
+**Costs of B:**
+- part of a key tile is wasted at each chat start, because tiles are aligned to the row, not to the chat. A wastes part of a query tile at each chat end instead. The exact difference on our packed rows is to be measured in step 3;
+- the work per query tile is no longer the plain triangle, so v62's early/late pairing no longer balances exactly. A has the same problem.
+
+**What A has that B does not:** any chat lengths without a fixed row size, which is what FA/TE need. We do not need it, because we drop chats longer than 4096.
+
+### 39.9 Records
+
+- `profiling_reports/sft_loss_bench_2026_10_09/`: `bench_sparse_ce_sft.cu`, `SFT_loss_kernel_benchmark_H200.md`. `bench_run1.log` and the nsys output are to be added.
+- The library clones: `~/Downloads/sft_research/{flash-attention, TransformerEngine, transformers, trl, torchtitan, Megatron-LM, Liger-Kernel}` and `~/pytorch_cloned/pytorch`.
+- **Verda:** H200 GPU 5 for about 10 seconds (the loss benchmark); no other box GPU use.
+
+### 39.10 Next
+
+1. **v2 step 2:** read Vj1d, RoPE and the loader, then choose A or B.
+2. **v2 step 3:** the design, with the exact tile cost of A vs B measured on our packed rows.
+3. **v2 step 4:** build it, test against a PyTorch reference with an explicit mask, benchmark against FA3 varlen / FlexAttention / cuDNN.
+4. Optional: the nsys run for the loss benchmark. Copy `bench_run1.log` back.
+5. The shared doc tab: change "1–5" chats per row to "1–12" (kernel section, Step 5).
+6. Later: benchmark the loss kernel vs PyTorch / Liger / Apple CCE; Q11; Q4, Q5, Q6, Q12, Q13.
