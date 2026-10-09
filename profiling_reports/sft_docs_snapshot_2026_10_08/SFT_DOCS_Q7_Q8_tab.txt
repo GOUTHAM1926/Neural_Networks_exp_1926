@@ -1,0 +1,1027 @@
+﻿GAUTAM K , 
+SFT - DOCS on CURRENT PROGRESS and PLANS , 
+
+
+1)Implementations and sample validation runs for whole sft-pipeline completed (used naivepadding technique for data-inputs/labels stuffing and processing , wanted to experiment on every available method to know all merits and demerits , the actual efficient planned thing is to implement variable-length attention to pack/stuff multiple examples(prompt+answer) in one sequence (B,T) -> FUTURE TASK )
+
+
+Present sft-pipeline : (refer section-3 in PostTraining - Research and Planning) 
+Pre-processing : 
+ 1. load dataset     {"messages": [{"role":"user","content":...}, {"role":"assistant",...}]}
+ 2. chat template    messages -> one string with role markers                    (Section 3.2)
+ 3. tokenizer        string -> token ids (GPT-2 BPE, 0..50256)                     (Section 3.3, Section 3.4)
+ 4. labels           target = next token; 65535 on prompt and padding              (Section 3.5)
+ 5. pad + write      pad every row to T with 50256 -> inputs.bin, labels.bin       (Section 3.8, Section 3.10)
+
+
+TRAINING (C++/CUDA, every step) : 
+ 6. dataloader       read rows of both files, count valid labels, check ids        (Section 3.9)
+ 7. forward          all positions, prompt included -> logits [rows, 50304]
+ 8. loss             masked cross-entropy, divided by the GLOBAL valid-token count (Section 3.6, Section 3.7)
+ 9. backward         masked rows give exactly zero gradient
+10. optimizer        NaN/Inf check first, then update, checkpoint                  (Section 3.11)
+
+
+
+
+Qn - 7&8 : 
+7)Evaluations/benchmarks : 
+->benchmarks for kernels (loss kernels , attention kernels will be modified for sft capabilities) , so benchmarks against other libraries ?  
+->benchmarks for sft-data (for each domain and overall data-mix) for deciding what , which , How much data is best ? 
+-> Benchmarks for sft-model ? (what each benchmark tells us about the model performance interms of capabilities ? ) 
+
+
+8)Different Benchmark/evaluation tests at different checkpoints and How to validate which is best and how to identify overfitting isn’t happening ?  (dev suite ablation tests)
+
+
+
+
+SFT -DATA EVALUATION PLAN –-> 
+
+
+Step 1: What I have to decide
+I have to make three decisions:
+1. Which dataset : UltraChat, SmolTalk, a Tülu 3 subset, or another.
+2. How much data : 5,000 chats, 100,000, or a million.
+3. The mix : If I combine sources (general chat, math, code, instruction-following, safety), what share each one gets.
+Each decision can only be judged by its effect on the trained model.
+
+
+
+
+Step 2: Why reading a dataset can't tell you if it's good
+Two reasons:
+* Looking good is not the same as helping : A dataset can have clean, correct, well-written answers and still not improve the model. For example, the model may already know how to produce those answers.
+* Datasets improve different skills : A math dataset raises math scores and may do nothing for instruction-following.
+Proof : the first Tülu paper, "How Far Can Camels Go?" (Ai2, NeurIPS 2023).
+* They fine-tuned models from 6.7B to 65B parameters on 12 different instruction datasets, one model per dataset.
+* They measured each model on factual knowledge, reasoning, multilingual tasks, coding, safety and open-ended instruction following.
+* Their finding, in their words: "different instruction-tuning datasets can uncover or enhance specific skills, while no single dataset (or combination) provides the best performance across all evaluations".
+* They also found that scores from model judges and human preference missed differences that the benchmarks showed. So you need several kinds of tests, not one.
+* Source: How Far Can Camels Go? (NeurIPS 2023)
+Step 3: The method every lab uses, the ablation experiment
+An ablation is a set of training runs that are identical except for one thing. You compare the results to see the effect of that one thing.
+
+
+
+start:        the same base model (my step-8000 checkpoint)
+                 │                 │                 │
+train on:     dataset A         dataset B         dataset C
+             (UltraChat)       (SmolTalk)        (Tülu 3 subset)
+                 │                 │                 │
+same settings: same LR, same epochs, same number of examples
+                 │                 │                 │
+same tests:   IFEval, TruthfulQA, HellaSwag, …  (identical list for all)
+                 ▼                 ▼                 ▼
+              scores A          scores B          scores C   → compare
+In my trainer, "same settings" means all of these are identical between runs:
+* the starting checkpoint (step 8000);
+* the optimizer and its LR, warmup and decay;
+* the number of epochs;
+* the chats (or tokens) per step;
+* the sequence length (4096);
+* the chat template (tulu-plain-v1) and tokenizer (GPT-2);
+* the precision flags (BLU_ALL_BF16=1).
+Only the training data changes : If two things change at once (say, the data and the LR), a score difference can't be assigned to either one.
+Step 4: Rules that make the comparison trustworthy
+4.1 Same amount of data, and the choice between examples and tokens
+* Compare 5,000 chats with 5,000 chats, never 5,000 with 50,000. More data usually changes the score by itself.
+* Examples vs tokens : datasets have different answer lengths. 5,000 chats with long answers contain more trained tokens than 5,000 with short ones. Answer length alone changes results ("Long Is More", Step 6). So if two datasets have very different lengths, also run them at the same number of trained tokens. That way the comparison isn't just "longer answers win".
+* This is my reasoning from that paper's finding, not a rule a paper states.
+4.2 Measure the noise, and only trust differences bigger than it
+Two runs with identical settings don't give identical scores. The data order (shuffle seed) and the GPU's non-deterministic adds make small differences.
+Proof that this matters : "Quantifying Variance in Evaluation Benchmarks" (Meta and others, 2024).
+* They trained 10 identical 7B models that differed only in the random seed.
+* Benchmark scores still varied between them.
+* Their point: without measuring this variance you can't tell whether a difference between two models is meaningful.
+* They also found that, for smaller models, scoring multiple-choice tasks as a completion (the "cloze" form) gives less variance than the letter form. That matches Ai2's OLMES advice from Q7/Q8.
+* Source: Quantifying Variance in Evaluation Benchmarks (2024)
+A second source of noise : the benchmark size. A benchmark with few questions gives a noisy score. Simple math (one standard error at a 50% score):
+* IFEval, 541 prompts: √(0.5 × 0.5 ÷ 541) ≈ ±2.1 points;
+* GSM8K, 1,319 problems: ≈ ±1.4 points.
+The rule for me :
+1. Run each setup at least twice with different shuffle seeds, and note how far apart the two scores are.
+2. Treat a difference between two datasets as real only if it's clearly bigger than both that run-to-run gap and the benchmark's own noise. Roughly, more than twice either.
+4.3 Two benchmark lists: dev and unseen suites 
+* Dev list : used for every decision (which dataset, which size, which mix).
+* Unseen list : designed separately, never used for decisions, and run once on the final choice.
+Proof : Tülu 3 : 
+* Its dev suite: MMLU, PopQA, TruthfulQA, HumanEval, GSM8K, MATH, BBH, DROP, IFEval, AlpacaEval 2, and safety.
+* Its unseen suite was designed independently. It includes AGIEval, MMLU-Pro, GPQA, a new IFEval-OOD (new kinds of instructions not in IFEval) and HREF.
+* The unseen suite is there "to measure overfitting and generalization".
+* Source: Tülu 3 (Ai2, 2024)
+4.4 Measure the base model the right way (from Q7/Q8)
+* The base model doesn't follow instructions, so it gets a few solved examples in its prompt (few-shot).
+* The SFT model gets the plain question inside its chat template (zero-shot).
+* For multiple-choice tests on a small model, use the cloze form: score each full answer by its probability. Don't ask for a letter (A/B/C/D).
+* Source: OLMES (Ai2, 2024)
+Step 5: The questions ablations answer, and how the labs ran each one
+a) Which dataset is better? (dataset vs dataset)
+"Fixing It in Post" (NeurIPS 2025) , What they did :
+1. Took two popular open SFT datasets, the Tülu 3 SFT mix and SmolTalk.
+2. Labelled every sample with the Magpie tools: single or multi-turn, task category (math, code, …), the quality of the prompt and the quality of the answer.
+3. Trained the same model with the same hyperparameters on each dataset and measured both on 14 benchmarks.
+4. Each dataset was stronger on different skills (coding, math, instruction following).
+Built a new dataset, TuluTalk, by keeping high-quality samples while keeping all task types covered. It has 14% fewer samples than Tülu and 23% fewer than SmolTalk, and scored the same or better on the key benchmarks.
+Source: Fixing It in Post (NeurIPS 2025)
+b) Which categories in a mix matter? (remove one at a time)
+Tülu 3, Table 10. They trained the full mix, then again with one category removed each time:
+* math removed: GSM8K 76.2 → 64.1, MATH 31.5 → 23.5;
+* safety removed: safety score 93.1 → 74.7;
+persona instruction data removed: IFEval 72.8 → 53.6.
+Each category carries its own skill. Removing it removes that skill.
+Source: Tülu 3
+c) What does adding a category do? (add one at a time)
+OLMo 3, Table 28. They started from a small base mix (on an OLMo 2 model) and added one category at a time, then looked at every benchmark separately:
+* adding math: MATH 6.6 → 14.2, GSM8K 30.1 → 39.7, but IFEval 61.7 → 54.0;
+adding instruction-following data: IFEval 74.1, but HumanEval 23.2 → 14.6.
+So adding one category can lower another skill. That's why a mix has to be judged per benchmark, not only by the average.
+Source: OLMo 3 (Ai2, 2025)
+d) How much data is enough? (size curve)
+Tülu 3, Figure 4. They trained on 5%, 10%, 25%, 50%, 75% and 100% of their mix.
+* The average kept rising, and the full mix was best overall.
+* GSM8K gained the most from more data.
+TruthfulQA went down as the data grew.
+"More" helps on average but not for every skill.
+Source: Tülu 3
+e) How should the data itself be made?
+OpenThoughts (ICLR 2026). They ran over 1,000 controlled experiments, one for each step of making the data:
+* where the questions come from;
+* how sources are mixed;
+* how questions are filtered;
+* how answers are generated (one or several per question, deduplication);
+which teacher model writes the answers.
+Each choice was decided by fine-tuning and measuring on AIME24, AMC23, MATH500, CodeElo, CodeForces, LiveCodeBench, GPQA Diamond and JEEBench. The final recipe produced OpenThinker3-7B: 53% on AIME 2025, 51% on LiveCodeBench, 54% on GPQA Diamond.
+Source: OpenThoughts
+f) The same method at my model size
+SmolLM2 (Hugging Face, 1.7B, the closest to my 1.5B). They decided their data with small-scale ablations, plus manual updates of the mix ratios at each training stage based on the previous stage's results. Their SFT dataset, SmolTalk, came out of this process.
+Source: SmolLM2
+Step 6: Scoring single examples without training a model for every choice
+Training a model for every candidate subset is expensive. So researchers built methods that give each example a score, then keep the top-scoring ones. Each method below, what it computes, and what it reported:
+1. AlpaGasus: an LLM grades every example (ICLR 2024).
+* ChatGPT rated each Alpaca example (instruction, input, answer) for quality.
+* Of 52,000 examples they kept about 9,000 high-rated ones.
+* The model trained on those 9,000 beat the one trained on all 52,000 (judged by GPT-4 and by humans).
+* Training was 5.7× faster: 80 minutes → 14 minutes for 7B.
+* Their reason: Alpaca contained many wrong or off-topic answers that hurt training.
+* Source: AlpaGasus
+2. Deita: complexity + quality + no near-duplicates (ICLR 2024).
+* They trained two small scorer models: one rates how complex an instruction is ("Evol Complexity"), one rates how good an answer is ("Evol Quality").
+* They ranked examples by these scores and added them one by one, skipping any that are too similar (by embedding distance) to ones already chosen. That keeps the selection varied.
+* With 6,000 selected examples, their models matched or beat open models trained on about 10× more data.
+* Source: Deita: What Makes Good Data for Alignment?
+3. IFD: measure how hard each example is for the model itself (NAACL 2024).
+* For each example, compare two losses on the answer: the loss with the prompt in front of it, and the loss of the answer alone.
+* IFD = (loss with prompt) ÷ (loss without prompt).
+* If the prompt barely lowers the loss, the ratio is near 1: the model doesn't yet know how to use this kind of instruction, so it's a hard, useful example.
+* They kept high-IFD examples: about 10% of Alpaca / WizardLM data gave better results than all of it.
+* Source: From Quantity to Quality (IFD)
+4. LESS: pick examples that push the model toward the skill you want (ICML 2024).
+* For each training example, compute its gradient (with LoRA, then shrunk to a small vector).
+* Do the same for a few examples of the target skill.
+* Keep the training examples whose gradients point the same way as the target skill's (highest cosine similarity).
+* A 5% selection often beat training on everything.
+* A selection made with a small model also worked for larger models and other model families.
+* Source: LESS
+5. Long Is More: keep the longest answers (ICML 2024).
+* Keep the 1,000 examples with the longest answers, from Alpaca-52k or Evol-Instruct-70k.
+* This beat LIMA and AlpaGasus (judged by GPT-4 and PaLM-2) and stayed competitive on factual-knowledge benchmarks.
+* They checked that the win wasn't just the judge model preferring longer text.
+* They say longest-answers selection "should be the default baseline".
+* Source: Long Is More for Alignment
+6. Magpie: generate data, then filter it (2024).
+* They made Llama-3-Instruct write 4 million instructions with answers, then filtered them down to 300,000.
+* Models trained on those matched the official Llama-3-8B-Instruct, which used about 10 million SFT examples plus preference training, on AlpacaEval, ArenaHard and WildBench.
+* Source: Magpie
+The later result that checks all of these: "Rethinking Data Selection at Scale: Random Selection is Almost All You Need" (EMNLP 2025 Findings).
+* They tested self-scoring methods like the ones above on two datasets of about a million examples each.
+* Almost none clearly beat random selection.
+* Variety in the data mattered more than quality scores.
+* Filtering by token length gave a stable gain.
+* Why the earlier papers looked better: they mostly tested on small pools (like Alpaca's 52,000), where filtering out bad examples matters more.
+* Source: Rethinking Data Selection at Scale
+How these methods are grouped (survey, 2024): every method scores examples by one of three things.
+1. Quality: is the answer correct and well written? (AlpaGasus, Deita's quality score)
+2. Diversity: does the set cover many kinds of prompts? (Deita's similarity filter)
+Importance: does the example help the target skill? (IFD, LESS)
+Source: Survey: Data Assessment and Selection for Instruction Tuning
+What this means for me:
+1. Any selection method I try must be compared, at the same size, against random selection and longest answers. It's only worth using if it beats both.
+2. A selection method only produces a candidate subset. That subset is still judged by Step 3: train, then measure.
+Step 7: Testing with a smaller model to save compute
+DataDecide (Ai2, ICML 2025). This is about pretraining data, not SFT.
+* They pretrained models on 25 different corpora (up to 100B tokens), at 14 sizes up to 1B parameters.
+* Ranking the datasets with 150M models gave the same order as the 1B models in about 80% of comparisons.
+* Smooth likelihood-based scores (the probability of the right answer) predicted the 1B results better than plain accuracy did at small scale.
+* Source: DataDecide
+LESS (Step 6) also showed that data chosen with a small model works for bigger models.
+Why I don't need a smaller model: mine is already small (1.5B), and my runs are cheap.
+* A 5,000-chat, 2-epoch run is about 4 minutes on 4 H200s (1.35 s per step × 156 steps, plus startup and validation).
+* A 100,000-chat run is roughly 70 minutes.
+Both drop about 3× once v2 packing is in.
+So I can run every ablation on the real model.
+Step 8: Cleaning the data before any experiment
+1. Decontamination: remove training examples that match benchmark questions.
+* If a training example contains a benchmark question, the model can memorize the answer, and that benchmark's score becomes fake.
+* How Tülu 3 and OLMo 3 check:
+   1. Cut each benchmark question into all its runs of 8 consecutive tokens (8-grams).
+   2. For each training example, count how many of those 8-grams also appear in it.
+   3. If 50% or more of a question's 8-grams appear in a training example, drop that example.
+* Sources: Tülu 3 · OLMo 3
+2. Deduplication : Remove exact and near-exact repeats. Repeats over-weight some examples and waste compute.
+3. Licence check : OLMo 3 removed examples "with (1) non-commercial or unclear licenses". I must check every dataset card before company use.
+4. Correctness : OLMo 3:
+* runs code answers against test cases;
+* checks that instruction constraints are met;
+drops incomplete reasoning and heavy repetition.
+Math answers should be checked against the known final answer.
+Step 9: My plan, in order 
+1. Fix the benchmark lists : 
+   * Dev: answer-token val loss, end-token rate, IFEval, TruthfulQA (MC2), PopQA, DROP, and HellaSwag/ARC in cloze form to catch forgetting.
+   * Unseen: a separate set, e.g. MMLU-Pro and AGIEval in cloze form. Chosen now, and not looked at until the final choice.
+2. Fix the training settings (all of Step 3's list).
+3. Clean every candidate dataset (Step 8). Decontaminate against both benchmark lists.
+4. Run the ablations, each at least twice:
+   * dataset vs dataset at the same size (and the same trained tokens if their lengths differ): UltraChat vs SmolTalk vs a Tülu 3 subset;
+   * a size curve: 1k → 5k → 20k → 100k chats;
+   * one category added or removed at a time;
+   * any selection method vs random vs longest answers.
+5. Trust only differences larger than the noise (Step 4.2).
+6. Check the final winner once on the unseen list.
+One dependency: IFEval, PopQA and DROP need the model to generate text, so they need the evaluation setup from Q7/Q8. The val loss and the cloze-form tests can run before that.
+
+
+
+
+SFT – KERNEL BENCHMARKS 
+
+
+Step 1: What I have to decide
+
+
+The kernels used in pretraining are already benchmarked: the BluBLAS GEMMs, attention (forward v62 and backward Vj1d), RMSNorm, RoPE, SwiGLU, AdamW/Muon, and the gradient all-reduce. For SFT, only three groups of kernels need new benchmarks:
+* Kernels I changed for SFT.
+* Kernels I didn't change, but which get different inputs in SFT.
+Kernels that will be new once I build the planned features (v1.5 bucketing, v2 packing, logits only at trained positions).
+For each one I decide what to measure (speed, memory, correctness) and who to compare against.
+
+
+Step 2: Where the work goes in one SFT step today (v1, padding)
+
+
+This is my arithmetic from the model config (d_model 2304, 26 layers, ffn 6144, vocab 50,304) for one micro-batch of 8 × 4096 tokens. These are not measured kernel times.
+
+
+* Linear layers: about 289 TFLOP, 80% of the work. About 70% of it is spent on padding rows, because the average chat in my data is 1,238 of 4,096 tokens.
+* Attention: about 48 TFLOP, 13% of the work. Up to about 90% of it is spent on padding. The pads sit at the end of each row, where every position reads the most earlier positions.
+* lm_head (the logits): about 23 TFLOP, 6% of the work. About 77% of it is spent on rows with no loss (prompt + padding).
+* In total, about 73% of each step's work goes to tokens that don't change the result.
+The logged 53% MFU counts padding as useful work (tokens = B·T·GA·W, bluscript_zero_ckpt.cpp:2666). On real tokens it is about 14% (my estimate).
+So for SFT speed, the biggest gain comes from removing padding (v1.5 / v2, Step 5), not from any single kernel. A one-step nsys profile on the H200 will replace these estimates with measured kernel times.
+
+
+Step 3: Kernels I changed for SFT (benchmark now)
+Loss kernel (LossKernels.cu). What changed:
+
+
+* label 65535 is ignored: the forward skips the row (:215, :350), the backward writes a zero row (:692, :777), and the count skips it (:110);
+* it can divide by the global trained-token count of the whole step;
+* the loss value is always fp32;
+* the bf16 vector path and the vocab%4 case are fixed;
+It is tested correct on 136 cases.
+
+
+What to measure:
+
+
+* forward + backward time with 0%, 50%, 77% (the real share in my data) and 95% of rows ignored;
+* peak memory;
+the numerical error against an fp64 reference.
+One fact to keep in mind: the backward still writes a full row of 50,304 zeros for every ignored row. That is about 3.3 GB per micro-batch, or about 0.5 ms on the H200 out of a ~660 ms micro-step. So for this kernel, correctness and memory matter more than speed.
+
+
+Rivals:
+
+
+* PyTorch F.cross_entropy (fp32 and bf16): the baseline. Its ignore_index (default −100) "does not contribute to the input gradient", and the mean is taken over the non-ignored targets only.
+* Liger Kernel (LinkedIn, Triton): about +20% throughput and −60% memory overall. Its fused linear cross-entropy (lm_head + loss in chunks) cuts loss memory more than 4× at a 128k vocabulary.
+Apple Cut Cross-Entropy (CCE): from Apple researchers, written in Triton, needs an NVIDIA Ampere or newer GPU. It never stores the full logits. On Gemma 2 (2B), loss memory went from 24 GB to 1 MB and the classifier head from 28 GB to 1 GB, with no loss in speed (their claim).
+Sources: PyTorch CrossEntropyLoss docs · Liger Kernel (arXiv 2410.10989) · Cut Your Losses (Apple, ICLR 2025, arXiv 2411.09009) · apple/ml-cross-entropy
+
+
+Step 4: Kernels I didn't change, but SFT gives them different inputs (measure now)
+
+
+Embedding backward. Checked in the code:
+
+
+* My SFT runs use BLU_ALL_BF16=1, so the embedding table is bf16.
+* The atomic-free "cooperative" kernel is fp32-only (EmbeddingKernels.cu:415). A bf16 table always falls back to the one-atomicAdd-per-element kernel (:127-148).
+* The trainer passes padding_idx = −1 (bluscript_zero_ckpt.cpp:713), so padding is not skipped.
+* About 70% of every row is the pad id 50256. So in one micro-batch, about 22,900 pad positions × 2,304 columns ≈ 53 million atomic adds of 0.0 onto the same 2,304 memory addresses, which all wait in line.
+* For comparison, the most repeated pretraining token in my 10-01 test (,) appeared 1,290 times per micro-batch. The pad token appears about 18× more.
+Precision:
+
+
+* Adding 0.0 changes nothing, so the pads themselves don't hurt precision.
+* But template tokens (<, |, \n, user, ass, istant) repeat in every chat, so the bf16 rounding problem is bigger in SFT.
+* My 10-01 local test used real token ids and made-up gradients. On the most frequent tokens, the bf16 atomicAdd lost 4.2% (random-direction gradients) to 52–55% (aligned gradients), against about 3e-8 for an fp32 table.
+Decision:
+Use Kruthik's EmbeddingBwdFused (BLUCCL branch) instead of the atomicAdd kernel. It sorts the token ids, adds each token's gradients in fp32, and rounds to bf16 once. No atomics, and the same result every run.
+* Its file header (their numbers, not measured by me) gives the error against fp64: atomicAdd 1.83e-3 (different each run), cooperative 1.10e-3, fused 2.44e-4 (the same every run).
+* Required fix: it ignores the real token count. It throws away N (embedding_fused.cu:1300) and always sorts the count fixed at install, B × T (:1189). That's correct while every micro-batch is 8 × 4096 (v1 and v2), and silently wrong when the count changes (v1.5, Step 5). The fix is to pass the real N into run() and size its buffer for the largest N.
+What to measure:
+
+
+* time and error with SFT-like ids (70% = 50256) and with pretraining ids;
+determinism: two runs must give identical results.
+Rival: PyTorch's embedding backward. For large batches it sorts the indices and then sums each token's rows, the same idea as Kruthik's.
+
+
+Sources: PyTorch embedding backward (commit #22016, "Optimization of the Embedding and Embedding-Bag CUDA Kernel") · work doc §36.2 · embedding_optimizer_zero_1_parallelism.md §6.2, §17
+
+
+Step 5: The three ways to put chats into rows: v1, v1.5 and v2
+
+
+How chats are put into the [8 × 4096] rows decides how much padding the GPU computes, and which kernels have to change.
+
+
+v1 (today): one chat per row, padded to 4096
+
+
+
+
+
+
+row 1: [chat A 1,200][pad ......................................... 2,896]
+* Every pad position is fully computed: embedding lookup (id 50256), norms, Q/K/V, attention, MLP and its 50,304 logits. The kernels don't know which rows are pads, because no length or mask is passed.
+* Causal attention lets a pad read everything before it, the whole chat included. So a pad near position 3,000 reads about 3,000 positions, while a chat token reads at most about 1,238.
+The result doesn't change:
+* a pad's label is 65535, so it has no loss;
+* nothing reads a pad, because pads come after the chat;
+* so its gradient is exactly 0, and it sends exactly 0 back to the chat.
+* Measured (my Q9 test): I replaced the pads with random tokens, and also with tokens that appear in the chat (" France", "Paris", …). The weight gradients changed by 0.0, bit-for-bit. The pad positions' own logits changed (by up to 0.36), but nothing uses them.
+So the pads' forward and backward work, and the memory for their activations, are all wasted: about 73% of each step's work (Step 2).
+The row length (T) and padding in each method
+
+
+
+
+
+
+Method
+	Chats per row
+	Row length T
+	Padding
+	Attention change?
+	v1 (today)
+	1
+	always 4096
+	lots (~70%)
+	no
+	v1.5 (bucketing)
+	1
+	changes per micro-batch (the longest chat in it, rounded up to 256)
+	some (~20%)
+	no
+	v2 (packing)
+	many
+	always 4096
+	tiny (~0.4%)
+	yes: each chat may see only itself
+	So the row length changes in v1.5, not in v2. The "variable size" I mentioned for v2 was a different style, "padding-free" (all chats in one flat stream with no rows). I don't need that. Packing into fixed 4096 rows is the right choice for me.
+
+
+About the padding-free style. This is what HF TRL's padding_free and FlashAttention's varlen functions use: all chats of a micro-batch are joined into one flat stream, and only the chat start positions (cu_seqlens) are passed to attention. There are no rows at all. The number of tokens per micro-batch then changes every time, which breaks fixed-size kernels such as Kruthik's embedding kernel (Step 4). Fixed 4096 rows keep the same 8 × 4096 tokens every micro-batch.
+
+
+v1.5: still one chat per row, just shorter rows
+
+
+Sort the chats inside each step by length, put similar lengths in the same micro-batch, and pad only up to the longest one in that micro-batch : 
+
+
+v1 (today), every row padded to 4096:
+row 1: [chat A 1,200][pad ......................................... 2,896]
+
+
+v1.5, micro-batch of 8 similar chats, T = 1,280 (longest 1,250 → rounded up to 1,280):
+row 1: [chat A 1,200][pad 80]
+row 2: [chat B 1,250][pad 30]
+row 3: [chat C 1,180][pad 100]
+ ...
+
+Still one chat per row, padding at the end. Attention only looks back, so no attention change is needed, same as v1.
+Padding still exists, just much less: on my data, 79.8% of tokens are real vs 30.2% in v1.
+Added details for v1.5:
+Why sort only inside each step, not the whole dataset: if the whole dataset were sorted, each step would hold only long chats or only short chats, and the order would no longer be random. So the realistic method is:
+* 1. shuffle;
+* 2. take one step's 64 chats;
+* 3. sort only those;
+4. cut them into 8 micro-batches of 8.
+HF Transformers' group_by_length does the same kind of thing: it groups similar lengths "while keeping a bit of randomness". Kathir's PyTorch script sorts inside each global batch too.
+Why round up to 256: the attention forward kernel (v62) needs T to be a multiple of 256 (the backward needs 64).
+What changes for the kernels:
+
+
+* the GEMMs get new shapes every micro-batch (M = 8·T), while the BluBLAS dispatch is tuned for M = 32,768;
+* the number of tokens per micro-batch changes, so Kruthik's fused embedding kernel needs the real-N fix.
+v2: several chats in one 4096 row → 
+
+
+row (T = 4096):
+tokens:     [ chat A: 1,200 ][ chat B: 1,500 ][ chat C: 1,380 ][pad 16]
+positions:   0 … 1,199        0 … 1,499        0 … 1,379        (RoPE restarts per chat)
+labels:      A's own labels    B's own labels   C's own labels   65535
+             (65535 on A's     (65535 on B's    (65535 on C's
+              prompt)           prompt)          prompt)
+The attention mask has to be block-diagonal: each chat sees only itself, and only backwards : 
+
+
+            A A A   B B B   C C C   pad
+A           ■
+A           ■ ■
+A           ■ ■ ■
+B                   ■
+B                   ■ ■
+B                   ■ ■ ■
+C                           ■
+C                           ■ ■
+C                           ■ ■ ■
+pad                                  ■   (its own block; label 65535, so no loss either way)
+Without this mask, chat B would read chat A. The loss would still go down and nothing would warn me.
+The skipped blocks are also why v2's attention is the cheapest: a chat of 1,500 tokens costs 1,500², not 4,096².
+"Must I fill exactly 4096?" No. A small leftover is padded
+
+
+Chats rarely add up to exactly 4096. The usual method is best-fit decreasing:
+
+
+* 1. Sort the chats from longest to shortest.
+* 2. Put each chat into the row where it fits best, with the least space left over.
+* 3. If it fits nowhere, start a new row.
+4. Fill whatever space is left at the end of each row with pad tokens (label 65535).
+
+
+
+
+row 1: [ 2,000 ][ 1,500 ][ 580 ][pad 16]   = 4,096
+row 2: [ 3,100 ][ 990 ][pad 6]             = 4,096
+Measured on my 5,000 chats: 1,517 rows, an average of 16 pad tokens per row, 99.6% real.
+Never split one chat across two rows. The answer would lose its prompt, or the end token would land in another row. TRL has a split option (bfd_split), but it isn't for SFT.
+A chat longer than 4096 is dropped, same as today.
+The pad tail sits at the end of the row and only looks back, so it's harmless, same as in v1.
+Two small things that change with v2
+
+
+The number of chats per row varies (here 1–5). So a "step" should be counted in tokens or chats, not rows. My loss already divides by the global trained-token count, so every token keeps the same weight.
+Tokens per micro-batch stay 8 × 4096, so Kruthik's fused embedding kernel (fixed N) still works with v2. With v1.5 it doesn't, until it takes the real count.
+Measured comparison on my real stage-0 data (5,000 UltraChat chats; mean 1,238 tokens, median 1,154, longest 4,069). Work is my model's work per token plus attention, relative to v1:
+
+
+
+
+Method
+	Real tokens (not padding)
+	Total work vs v1
+	Speed-up (upper bound)
+	v1 (today)
+	30.2%
+	100%
+	×1.00
+	v1.5 realistic (shuffle, sort each 64-chat step, pad to the longest ×256)
+	79.8%
+	35.2%
+	×2.84
+	v1.5 ideal (whole dataset sorted; not usable in practice)
+	90.5%
+	30.7%
+	×3.26
+	v2 packing + block-diagonal mask
+	99.6%
+	27.8%
+	×3.60
+	v2 without the mask
+	99.6%
+	30.3%
+	×3.30, and wrong: chats see each other
+	These are upper bounds. The optimizer step and the gradient all-reduce run once per step and don't shrink.
+Which tokens-per-micro-batch each method gives, and whether Kruthik's fused embedding kernel works with it:
+
+
+Method
+	Tokens per micro-batch
+	Fused kernel (fixed N = 32,768)
+	v1
+	always 8 × 4096
+	works
+	v1.5
+	8 × T, T changes
+	silently wrong until the real-N fix
+	v2 (fixed 4096 rows)
+	always 8 × 4096
+	works
+	padding-free (flat stream)
+	changes
+	silently wrong until the real-N fix
+	My order: v1.5 first (no kernel change, most of the gain), then v2 (the most efficient). This is also SFT Q&A question 10.
+Sources: HF Transformers group_by_length / LengthGroupedSampler · HF TRL SFTTrainer docs (packing strategies bfd, bfd_split, wrapped; padding_free) · simulation script pack_sim.py on my stage-0 data
+
+
+Step 6: Kernels that will be new when I build these (benchmark when built)
+
+
+v1.5: length bucketing.
+
+
+* No new kernel.
+* New GEMM shapes: M = 8·T, with T anywhere from 256 to 4096. The BluBLAS dispatch is tuned for M = 32,768, so each new shape must be checked against cuBLAS.
+* Attention v62 needs T to be a multiple of 256 in the forward, and of 64 in the backward.
+* The fused embedding kernel needs the real-N fix, because N changes every micro-batch.
+v2: packing several chats into each 4096 row.
+
+
+* Attention forward (v62) and backward (Vj1d) with a block-diagonal causal mask, so each chat sees only itself.
+* A guard for fully-masked tiles (they give NaN today).
+* RoPE positions restarting at 0 for each chat.
+* The loader passing the chat boundaries.
+* Correctness check: compare against PyTorch SDPA with an explicit mask. A mask bug gives no error, and the loss still goes down.
+Speed rivals:
+* FlashAttention-3 flash_attn_varlen_func: forward + backward, takes the chat boundaries as cu_seqlens. I checked its code in the hopper folder. FA3 reaches up to 840 TFLOP/s in BF16 on H100 (85% of peak), 1.5–2.0× FA2.
+* FlashAttention-2 varlen.
+* PyTorch FlexAttention document mask: 90% of FA2 forward and 85% backward (A100), and +71% sample-packing throughput in torchtune.
+* NVIDIA Transformer Engine / cuDNN "THD" format, used by NeMo.
+Logits only at trained positions (Q11).
+
+
+A gather of the trained rows, then the lm_head GEMM with M = the number of trained tokens (for example 7,533 in one micro-batch), then a scatter back in the backward.
+Risk: BluBLAS silently returns wrong numbers when M or N is not a multiple of 64 with a transposed operand. I saw this on 09-26 in Muon's Newton–Schulz. So M must be padded to a multiple of 64, or a guard added.
+Saving: about 4.9% of a step's work today, but only about 1.5% after v2, because then only prompt rows are wasted.
+Rivals: Liger fused linear CE, Apple CCE.
+Long-context think SFT.
+
+
+A chunked or fused linear + loss kernel, so the full logits are never stored. At T = 32,768, one sequence's logits take 3.3 GB in bf16.
+Rivals: Liger fused linear CE, Apple CCE.
+DFT / focal loss (future): loss-kernel variants, compared for numbers against a PyTorch reference.
+
+
+Sources: FlashAttention-3 (NeurIPS 2024, arXiv 2407.08608) · Dao-AILab/flash-attention (hopper flash_attn_varlen_func) · FlexAttention (PyTorch blog; arXiv 2412.05496) · NVIDIA NeMo sequence packing docs
+
+
+Step 7: What doesn't need new benchmarks
+
+
+RMSNorm, RoPE (v1), SwiGLU, the GEMMs at today's shapes, AdamW/Muon, the all-reduce: same shapes and same kind of inputs as pretraining, which are already benchmarked.
+The denominator: no kernel. It's the CPU count from valid_counts.bin plus one MPI all-reduce of a single number. The library's GPU count kernel (LossKernels.cu:104) is not used by the trainer.
+Step 8: The rivals I compete against
+
+
+
+
+What
+	Rivals
+	Loss kernel
+	Apple Cut Cross-Entropy, Liger (fused linear CE), PyTorch F.cross_entropy
+	Attention (v1, v1.5, and v2 packed)
+	FlashAttention-3 (incl. varlen), FlexAttention, PyTorch SDPA
+	Embedding backward
+	PyTorch's embedding backward
+	Whole SFT step
+	NVIDIA NeMo / Megatron + Transformer Engine, HF TRL (+ FlashAttention), torchtitan (PyTorch-native, SFT with chat datasets)
+	Whole-step claims (theirs, not mine):
+
+
+NeMo sequence packing: "up to 10X performance improvement in terms of FLOPs, up to 6X … in terms of training time, and no impact on model convergence".
+HF + IBM packing with FlashAttention-2: "up to 2x improvement in training throughput".
+PyTorch vs torchtitan:
+
+
+* torchtitan is a separate project from the PyTorch team, installed on its own. It's a training platform built on top of PyTorch.
+Its loss calls PyTorch's F.cross_entropy with reduction="sum" and ignore_index = −100, then divides by the global trained-token count.
+So the kernel and ignore_index come from PyTorch. The "sum, then divide once by the whole step's token count" recipe comes from torchtitan's code, and that is the recipe I used in the SFT trainer.
+torchtitan is a whole-step rival, not a kernel rival:
+* its README lists "Supervised Fine-Tuning (SFT) with chat-formatted datasets";
+* its loss, attention and embedding are PyTorch's kernels, so my kernel comparisons against PyTorch already cover it at the kernel level;
+* as a whole SFT trainer, it's the PyTorch-native one to compare against (tokens/s, memory, final val loss);
+its README doesn't mention packing or document masking, so I check its SFT code before comparing v2 against it.
+torchtune is no longer maintained ("torchtune development wound down in 2025"), so it isn't a rival target. Its FlexAttention packing number (+71%) is still a valid data point for FlexAttention.
+torchforge, PyTorch's newer post-training (RL) library, uses torchtitan for its distributed training.
+Sources: NeMo packed sequence docs · HF blog "Improving Hugging Face Training Efficiency Through Packing with Flash Attention" · IBM paper (arXiv 2407.09105) · pytorch/torchtitan (README, components/loss.py) · pytorch/torchtune (maintenance notice) · torchforge (Thoughtworks Technology Radar)
+
+
+Step 9: How to benchmark fairly
+1. Same shapes as my real run:
+* 8 × 4096 = 32,768 rows;
+* vocabulary 50,304;
+* d_model 2,304, 26 layers;
+   * head_dim 128, 18 query heads and 6 key/value heads.
+* 2. Same conditions: bf16, the H200, free (unlocked) clocks, which is how production runs.
+* 3. Correctness before speed: compare outputs and gradients against an fp64 reference first. A fast kernel that is wrong is useless.
+4. Timing:
+* do warm-up runs first;
+* time many repetitions and report the median and the spread;
+   * repeat the whole measurement at least twice.
+* 5. Memory: record the peak memory of each kernel and of the whole step.
+6. Whole step:
+* measure useful tokens per second (real non-pad tokens per second), because the logged MFU counts padding;
+   * also measure step time, peak memory, and the final val loss, which must be the same.
+7. One nsys profile of a real SFT step on the H200, to get measured kernel time shares instead of the estimates in Step 2.
+Step 10: My plan, in order
+
+
+* Loss kernel vs PyTorch, Liger and Apple CCE, at 77% ignored rows: laptop GPU first, then H200.
+* Embedding backward:
+   * port Kruthik's fused kernel with the real-N fix;
+   * compare against the atomicAdd kernel and PyTorch for time, error and determinism.
+* One nsys profile of a real SFT step on the H200.
+* v1.5:
+   * loader bucketing, the GEMM shape check, and the fused embedding with real N;
+   * whole-step comparison against HF group_by_length and torchtitan's SFT.
+* v2:
+   * masked attention forward and backward, RoPE restart, packing loader;
+   * correctness against SDPA;
+   * speed against FA3 varlen and FlexAttention;
+   * whole-step comparison against NeMo, HF TRL packing, and torchtitan (if its SFT packs chats).
+Logits only at trained positions (Q11) after v2, with the BluBLAS M%64 guard.
+Links for the Source lines (keep them as hyperlinks when you paste):
+
+
+PyTorch CrossEntropyLoss
+Liger Kernel 2410.10989
+Cut Your Losses 2411.09009 · apple/ml-cross-entropy
+PyTorch embedding commit #22016
+HF group_by_length (forum) · HF TRL SFTTrainer docs
+FlashAttention-3 2407.08608 · flash-attention repo
+FlexAttention blog · FlexAttention paper 2412.05496
+NeMo sequence packing
+HF + IBM packing blog · IBM paper 2407.09105
+torchtitan · torchtitan loss.py
+torchtune (maintenance notice) · torchforge (Thoughtworks Radar)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+SFT – MODEL EVALUATION PLAN (Q7: benchmarks for the SFT model, Q8: checkpoints and overfitting)
+
+
+Step 1: What I have to decide
+* Which benchmarks measure what SFT is supposed to change, and which ones catch what SFT can break.
+* How to run each benchmark (prompt format, shots, decoding settings, answer extraction), so that scores are comparable between runs.
+* How to compare the base model with the SFT model, and different SFT runs and checkpoints with each other.
+* How to know that a difference is real and not noise, and how to see whether I'm overfitting.
+Step 2: Two ways a model can be scored
+
+
+
+
+	Scoring by likelihood (no text generated)
+	Scoring by generation (the model writes an answer)
+	How it works
+	Each answer option is scored by the probability the model gives it; the highest-probability option counts as the model's choice
+	The model writes a full answer, then a program or a judge checks it
+	Examples
+	HellaSwag, ARC, MMLU (cloze form), TruthfulQA MC2
+	IFEval, GSM8K, MATH, DROP, PopQA, HumanEval, AlpacaEval
+	Works for a base model?
+	Yes. This is how base models are scored
+	Only with few-shot examples in the prompt, and often badly
+	Measures
+	Mostly knowledge from pretraining
+	Answer format, following instructions, reasoning: the things SFT changes
+	OLMo 3 uses two separate suites.
+* OlmoBaseEval is for base models during pretraining. It is mainly likelihood-based (bits-per-byte), plus a main suite and a held-out suite.
+* The post-training suite is for SFT/DPO/RL models. It is fully generation-based.
+The OLMES standard (Ai2) says that for small base models, multiple-choice questions should be scored in cloze form: each full answer is scored by its probability, instead of asking the model for the letter A/B/C/D. The letter form stays near random until models are larger. OLMES runs both forms and reports the better one.
+Sources: OLMo 3 · OLMES
+Step 3: How the top labs evaluate their SFT models
+Tülu 3 (Ai2, 2024): three separate suites.
+The dev suite, used for every decision (Table 3):
+
+
+Benchmark
+	What it measures
+	Setup
+	Metric
+	MMLU
+	knowledge, 57 subjects
+	0-shot, chain-of-thought
+	exact match
+	PopQA
+	rare facts
+	15-shot
+	exact match
+	TruthfulQA
+	avoiding common false answers
+	6-shot
+	MC2
+	BigBench-Hard
+	multi-step reasoning
+	3-shot, chain-of-thought
+	exact match
+	DROP
+	reading with arithmetic
+	3-shot
+	F1
+	MATH
+	competition math
+	4-shot, chain-of-thought
+	"flex" exact match
+	GSM8K
+	grade-school math
+	8-shot, chain-of-thought
+	exact match
+	HumanEval / HumanEval+
+	writing Python
+	—
+	pass@10
+	IFEval
+	following exact instructions
+	—
+	prompt-loose accuracy
+	AlpacaEval 2
+	chat quality, judged by a model
+	—
+	length-controlled win rate
+	* Unseen suite (never used for decisions): AGIEval English, MMLU-Pro, GPQA, DeepMind Mathematics, BigCodeBench, IFEval-OOD (new) and HREF (new). In their words: "we did not examine scores on our unseen set when developing our models, allowing us to observe how much we may have overfit."
+* Safety suite (an average of six tests): XSTest, HarmBench, Do-Anything-Now, JailbreakTrigger, WildJailbreakTest and WildGuardTest. Together they check both refusing harmful requests and not refusing safe ones.
+OLMo 3 (Ai2, 2025): one generation-based suite, all zero-shot (Table 16).
+
+
+Group
+	Benchmarks
+	Math
+	MATH, MATH-500, AIME 2024, AIME 2025, OMEGA
+	Reasoning
+	BigBench-Hard, ZebraLogic, AGIEval English
+	Code
+	HumanEval+, MBPP+, LiveCodeBench v3
+	Instruction following
+	IFEval, IFBench
+	Knowledge / QA
+	MMLU, PopQA, GPQA
+	Chat
+	AlpacaEval 2 (length-controlled)
+	Tools (Instruct model)
+	SimpleQA, LitQA2, BFCL (function calling)
+	Safety
+	a separate safety average
+	Settings:
+* zero-shot for every benchmark;
+* sampling temperature 0.6, top-p 0.95, up to 32,768 tokens;
+* AIME is sampled 32 times and the code tasks 10 times, then averaged;
+* thinking text (between <think> and </think>) is removed before scoring;
+* every reported number is the average of 3 runs;
+* evaluation cost 10–20% of their whole compute budget while they developed the 7B recipe.
+What changed between them: Tülu 3 (2024) mixed few-shot and zero-shot prompts. OLMo 3 (2025) uses zero-shot for everything, which is closer to how people actually use a chat model.
+Sources: Tülu 3, §7 · OLMo 3, §4.1 and Table 16
+Step 4: What each stage changes, measured
+Tülu 3 8B: SFT → DPO → final (RLVR):
+
+
+
+
+	SFT
+	DPO
+	Final
+	Average
+	60.6
+	64.7
+	65.1
+	IFEval
+	72.8
+	81.1
+	82.4
+	AlpacaEval 2
+	12.4
+	33.5
+	34.5
+	GSM8K
+	76.2
+	84.3
+	87.6
+	MATH
+	31.5
+	42.0
+	43.7
+	OLMo 3 Instruct 7B: SFT → DPO → final (Table 26, average of 3 runs):
+
+
+
+
+	SFT
+	DPO
+	Final
+	MATH
+	65.1
+	79.6
+	87.3
+	AIME 2024
+	6.7
+	23.5
+	44.3
+	BigBench-Hard
+	51.0
+	69.3
+	71.2
+	HumanEval+
+	69.8
+	72.9
+	77.2
+	IFEval
+	81.7
+	82.0
+	85.6
+	IFBench
+	27.4
+	29.3
+	32.3
+	MMLU
+	67.1
+	69.1
+	69.1
+	PopQA
+	16.5
+	20.7
+	14.1
+	GPQA
+	30.0
+	37.9
+	40.4
+	AlpacaEval 2 LC
+	21.8
+	43.3
+	40.9
+	Safety
+	89.5
+	89.9
+	87.6
+	OLMo 3 Think 7B: combinations of stages after the same SFT (Table 22, one run each):
+
+
+Pipeline
+	Average
+	SFT
+	70.1
+	SFT + DPO
+	72.7
+	SFT + RLVR
+	71.9
+	SFT + DPO + RLVR
+	74.1
+	At ~1B size, OLMo 2 1B: SFT → DPO → final:
+* average 36.9 → 40.6 → 42.7;
+* GSM8K 52.1 → 59.0 → 68.3;
+* IFEval 50.5 → 67.1 → 70.1;
+* AlpacaEval 2 only 2.4 → 9.5 → 9.1.
+Close to my case: a colleague's result in this doc (DPO section).
+* 480M model, ~2,000 pretraining steps.
+* TruthfulQA, PopQA and DROP improved in order base < SFT < DPO.
+* MMLU, BBH, GSM8K, MATH and HumanEval/+ stayed at the floor at every stage.
+What these tables show:
+* The ordering of the stages also matters. OLMo 3 Instruct SFT started from the Think SFT model scored +3.3 on average (Table 29). The best pipeline in Table 22 is SFT, then DPO, then RL.
+* Some skills only move after SFT.
+* AlpacaEval (chat quality, judged by a model) roughly doubles with DPO: 21.8 → 43.3 in OLMo 3, 12.4 → 33.5 in Tülu 3.
+* AIME jumps mostly with RL.
+* So a low AlpacaEval after SFT alone is normal, and it doesn't mean the SFT failed.
+* A later stage can lower some scores. In OLMo 3 Instruct, PopQA, AlpacaEval and Safety are lower after RL than after DPO. So the stages must be compared per benchmark, not only by the average.
+At small size, chat-judge scores stay low: OLMo 2 1B's AlpacaEval goes only 2.4 → 9.5 → 9.1, and other ~1–1.7B models in the same table score 5.8 (SmolLM2 1.7B) to 20.4 (Gemma 3 1B).
+Sources: Tülu 3 · OLMo 3 (Tables 22, 24, 26, 29) · OLMo 2 1B Instruct model card
+Step 5: Base vs SFT: measuring what SFT breaks (forgetting)
+"LoRA Learns Less and Forgets Less" measured forgetting with HellaSwag, WinoGrande and ARC-Challenge: the same likelihood tests, run before and after fine-tuning. Full fine-tuning forgot more than LoRA. In code training, full fine-tuning kept forgetting more as it saw more data.
+Tülu 3: TruthfulQA went down as more SFT data was added (Figure 4).
+Ghosh et al. (ICML 2024): full-parameter instruction tuning can degrade the knowledge the model had.
+URIAL (ICLR 2024): at most token positions, the base model and its SFT model pick the same token. SFT mostly changes style tokens. So knowledge tests should stay about the same after SFT, and a big drop is a warning.
+How I do this:
+* Run the base model and every SFT checkpoint on the same likelihood tests in cloze form: HellaSwag, ARC, WinoGrande, MMLU.
+If the scores stay about the same, SFT didn't hurt knowledge. A clear drop means forgetting. Then check the learning rate, the number of epochs and the data mix.
+Sources: LoRA Learns Less and Forgets Less · A Closer Look at the Limitations of Instruction Tuning · URIAL
+Step 6: Choosing checkpoints, and seeing overfitting (Q8)
+How the labs choose:
+OLMo 3:
+* trains SFT for 2 epochs "to avoid overfitting";
+* sweeps the learning rate (4 values for the 32B model);
+* picks candidate checkpoints by the evaluation suite;
+* then tests each candidate with qualitative "vibe-test" questions;
+* the final Think SFT model is a weighted merge of two checkpoints trained with different learning rates (made with mergekit).
+Tülu 3:
+* trained the 8B SFT model with 5 random seeds, which scored between 59.8 and 60.1 on average;
+* "the best random seed is comparable to the best model soup", so they used the best single run.
+Model soups (Wortsman et al., 2022): averaging the weights of several fine-tuned models often scores better than any single one.
+Signs of overfitting:
+* 1. Validation loss goes back up while training loss keeps falling. I already saw this in my Muon sweep: at LR 1.2e-4 the best val was 1.2747 at the end of epoch 1. In epoch 2 the train loss fell to 1.08 while val rose to 1.287.
+* 2. Dev scores go up but unseen scores don't. That's overfitting to the dev benchmarks (see the dev/unseen section).
+3. Scores rise on one benchmark's style but not on a new version of it. IFBench (Ai2, NeurIPS 2025) showed that most models "strongly overfit on a small set of verifiable constraints" from IFEval and don't generalize to its 58 new constraints. That's why IFEval-OOD and IFBench work as unseen tests.
+Sources: OLMo 3, §4.2.2 · Tülu 3, Table 14 · Model soups · IFBench
+Step 7: What changes a score besides the model itself
+1. Prompt format and chat template.
+* The SFT model must be evaluated with the same chat template it was trained with.
+* Tülu 3 compared chat templates on the same SFT data: averages from 51.6 to 53.0.
+* The lm-evaluation-harness authors ("Lessons from the Trenches", 2024) showed that scores are "highly sensitive to subtle prompt variations". They advise sharing the exact prompts and model outputs, and running significance tests.
+2. Few-shot vs zero-shot, and chain-of-thought or not.
+* Tülu 3 tested several CoT prompts for MMLU and kept the one that helped the most subjects.
+* OLMo 3 uses zero-shot everywhere.
+* Changing either setting changes the score, so it must be fixed before comparing anything.
+3. Answer extraction. Tülu 3: changing how the final answer is read out of the text ("flex" instead of the Minerva format) "can sometimes improve reported scores by up to 10 points".
+4. Decoding settings and randomness. "A Sober Look at Progress in LM Reasoning" (2025) found that math benchmark scores are sensitive to:
+* decoding settings (temperature, top-p, maximum tokens);
+* random seeds;
+* prompt format;
+even the GPU hardware and software stack (up to 8%).
+Small benchmarks are the worst: on AIME 2024 (30 questions), one question changes the score by 3.3 points.
+5. Run-to-run variation, measured by OLMo 3:
+* They took the standard deviation across 3 runs of 14 models.
+* High: GPQA 1.48, AlpacaEval 1.24, IFEval 0.88.
+* Stable: BBH 0.39, AGIEval 0.43, HumanEval+ 0.46.
+Very stable: MATH 0.25, MMLU 0.22, PopQA 0.16.
+So they report the average of 3 runs, and they sample AIME 32 times.
+6. Benchmark size. A small test is noisy in itself:
+* IFEval (541 prompts) is about ±2.1 points;
+* GSM8K (1,319 problems) is about ±1.4 points (one standard error at 50%).
+7. Signal vs noise. Ai2's "Signal and Noise" (NeurIPS 2025): a benchmark is useful only if it separates better from worse models (signal) more than it changes randomly (noise).
+* They studied 30 benchmarks and 465 models (60M–32B).
+Their fixes:
+* use metrics with less noise (likelihood or perplexity instead of accuracy, especially for small models);
+* drop noisy subtasks;
+average over checkpoints.
+OLMo 3 removed BoolQ for this reason: models "oscillate between predicting the majority and minority class".
+8. Judge-model benchmarks have their own biases.
+* MT-Bench / LLM-as-a-judge (NeurIPS 2023): judges show position, verbosity and self-enhancement bias. GPT-4 as judge still agrees with humans over 80% of the time, the same rate at which humans agree with each other.
+* AlpacaEval length-controlled removes the preference for longer answers. Its correlation with human Chatbot Arena rankings rises from 0.94 to 0.98.
+Arena-Hard (500 hard prompts) separates models 3× better than MT-Bench, with 98.6% agreement with human rankings, at about $20 per model.
+All of these need an external judge model: they cost money, and the model's answers leave the company.
+9. Contamination. Tülu 3 checks every training prompt against every benchmark with 8-grams:
+* a training example is removed if more than 50% of a test question's tokens appear in matching 8-grams;
+* a whole dataset is removed or filtered if more than 2% of a benchmark's questions overlap with it.
+10. Model size and the floor.
+* At ~1B, chat-judge scores are low (about 2–20 on AlpacaEval 2), and MATH and GSM8K need a strong base.
+* My base saw only 8.4B tokens (OLMo 2 1B saw ~4T). My colleague's 480M result already shows MMLU, GSM8K, MATH and HumanEval at the floor.
+So I pick tests that can move at my size, and I keep the hard ones only as a floor check.
+Sources: Lessons from the Trenches (lm-eval) · A Sober Look at Progress in LM Reasoning · Signal and Noise (Ai2) · Judging LLM-as-a-Judge (MT-Bench) · Length-Controlled AlpacaEval · Arena-Hard / BenchBuilder · IFEval · Tülu 3 · OLMo 3
+Step 8: Tools that run these benchmarks
+* lm-evaluation-harness (EleutherAI): the most widely used. Supports likelihood and generation tasks.
+* OLMES (Ai2): the standard behind the Tülu 3 and OLMo evaluations, with fixed prompts and few-shot examples, and cloze vs letter forms.
+* lighteval (Hugging Face): used for the SmolLM2 evaluations.
+* AlpacaEval (Stanford, tatsu-lab): for the length-controlled chat win rate.
+What I need first: my trainer can only score HellaSwag today. Generation-based tests need my SFT checkpoint converted to Hugging Face format, plus a generation loop. The DPO section of this doc says a colleague has already rebuilt Tülu 3's dev suite as an offline harness (10 benchmarks, no judge model), which I can reuse.
+Sources: lm-evaluation-harness · OLMES · lighteval · AlpacaEval
+Step 9: My evaluation plan for my SFT model
+Dev list (used for every decision) :
+Test
+	Why
+	How it's scored
+	Validation loss on answer tokens
+	fit to unseen chats from the same data
+	likelihood (running now)
+	End-token rate
+	does the model stop after answering
+	generation
+	IFEval (strict and loose)
+	following format instructions, the main SFT goal
+	generation
+	TruthfulQA MC2
+	avoiding false answers; moved with SFT at 480M
+	likelihood
+	PopQA, DROP
+	facts and reading; moved with SFT at 480M
+	generation
+	HellaSwag, ARC, WinoGrande (cloze)
+	forgetting: base vs SFT should stay about the same
+	likelihood
+	GSM8K
+	floor check only
+	generation
+	Unseen list (run once, on the final choice): IFBench or IFEval-OOD, MMLU-Pro (cloze), AGIEval English.
+Settings, fixed for every run :
+* SFT model: zero-shot, inside my chat template (tulu-plain-v1).
+* Base model: OLMES few-shot.
+* one fixed decoding setting, one fixed max length, the same answer extraction everywhere.
+What I evaluate: the base model, every saved SFT checkpoint, and the final model. For the noisy generation tests (IFEval), average 3 sampling runs.
+How I decide:
+   1. look at each benchmark separately, not only the average;
+   2. treat a difference as real only if it's clearly bigger than the run-to-run spread and the benchmark's own noise;
+   3. choose the checkpoint on the dev list;
+   4. optionally merge the two best checkpoints (as OLMo 3 does);
+   5. check the final model once on the unseen list.
+Chat-quality judges (AlpacaEval LC, Arena-Hard): later, and only if company policy allows sending outputs to an external judge. At my size the scores would be near the floor anyway.
+Dependency: the HF export of my checkpoint plus generation. The likelihood tests and the validation loss can run before that.
+All sources (keep as hyperlinks when you paste):
+Tülu 3 · OLMo 3 · OLMES · OLMo 2 1B Instruct card
+IFEval · IFBench
+Judging LLM-as-a-Judge (MT-Bench) · Length-Controlled AlpacaEval · Arena-Hard
+A Sober Look at Progress in LM Reasoning · Signal and Noise · Lessons from the Trenches
+LoRA Learns Less and Forgets Less · Limitations of Instruction Tuning · URIAL · Model soups
+lm-evaluation-harness · lighteval · AlpacaEval

@@ -1,0 +1,8 @@
+pad slots now hold: [' France', ' capital', 'Paris', '.', '?']
+largest change in ANY weight gradient: 0.0
+  embedding row ' France'  : grad before 8.871541e-01  after 8.871541e-01  diff 0.0e+00
+  embedding row ' capital' : grad before 1.517491e+00  after 1.517491e+00  diff 0.0e+00
+  embedding row 'Paris'    : grad before 2.814328e+00  after 2.814328e+00  diff 0.0e+00
+  embedding row '.'        : grad before 2.834999e+00  after 2.834999e+00  diff 0.0e+00
+  embedding row '?'        : grad before 8.585499e-01  after 8.585499e-01  diff 0.0e+00
+logits change at chat positions 0-22: 0.0 | at pad positions 23-27: 0.35914540901602665

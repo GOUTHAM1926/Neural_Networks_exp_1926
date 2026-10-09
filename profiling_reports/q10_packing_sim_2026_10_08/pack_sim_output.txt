@@ -1,0 +1,7 @@
+chats 5000, real tokens 6,188,911, mean length 1238, median 1154, p90 2021, max 4069
+v1 pad to 4096                           rows  5000  tokens computed  20,480,000  useful  30.2%  total work 100.0% of v1  -> speed-up x1.00
+v1.5 buckets of 8, pad to max (x256)     rows  5000  tokens computed   6,840,320  useful  90.5%  total work  30.7% of v1  -> speed-up x3.26
+v2 packing, block-diagonal mask          rows  1517  tokens computed   6,213,632  useful  99.6%  total work  27.8% of v1  -> speed-up x3.60
+v1.5 realistic (sort within each 64-chat step) rows  5000  tokens computed   7,751,680  useful  79.8%  total work  35.2% of v1  -> speed-up x2.84
+v2 WITHOUT mask (chats see each other)   total work  30.3% of v1  -> speed-up x3.30
+v2 rows 1517, mean pad per row 16.3, chats per row 1-12

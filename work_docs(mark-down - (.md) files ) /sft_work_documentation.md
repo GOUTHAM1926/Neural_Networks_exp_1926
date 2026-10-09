@@ -3135,3 +3135,231 @@ Next:
 - **Heading fix in that tab:** "3.9 The dataloader" appears twice.
   - The second one should be "3.10 The preprocessing script".
   - The table now headed "3.10 The preprocessing script" should be "3.11 Training settings". The text already points to Section 3.11 for the optimizer and NaN rows.
+
+---
+
+## 38. 2026-10-08: SFT Q&A work. Q9 measured; Q7/Q8 researched and written into the shared doc; Q10 packing measured
+
+**In one paragraph:** the plan changed to the user's own 13 SFT Q&A questions. Q9 (how SFT learns only from the answer) was measured on a small model built like ours and written up as `How_learning_happens_in_sft.md`. Q7 (kernel, SFT-data and SFT-model benchmarks) and Q8 (checkpoints, overfitting, dev vs unseen) were researched from the papers and pasted into the shared Google Doc. The three ways of putting chats into rows (v1 / v1.5 / v2, which is Q10) were measured on the stage-0 data. No GPU-box runs that day; everything ran on the laptop CPU.
+
+### 38.1 Plan changes (user decisions)
+
+- **The plan is the 13 questions** in the shared doc's SFT Q&A, answered in depth. Order: Q9, then Q7 + Q8.
+- **#5 (evals as a separate task) and the comparison with Kathir's PyTorch script were dropped** ("the questions will cover it"). Evals come up only inside Q7/Q8.
+- **Explanations stay in the chat**, with ASCII diagrams and tables, and no analogies. I had published one private Artifact page for Q9; the user rejected that way of explaining.
+- **Batching (Q10):**
+  - the user first said "skip v1.5, do v2", then revised it the same day to **do v1.5, then v2**;
+  - the embedding backward will be **Kruthik's fused kernel**, which the user says is the mandated one, after a fix so it takes the real token count (38.4).
+
+### 38.2 Q9: how learning happens only on the answer tokens (measured)
+
+**Setup:**
+- a small model built like ours: 4 layers, d = 64, a tied embedding table of 50,304 rows, RMSNorm, causal attention, SwiGLU;
+- fp64 on the laptop CPU;
+- one real chat ("What is the capital of France?" → "Paris.") tokenized by `sft/prepare_sft_data.py` (`tulu-plain-v1`), padded to T = 28: 23 real positions, 3 trained, 5 padding.
+
+| Check | Result |
+|---|---|
+| Loss | only positions 20–22 are scored; N = 3; loss = (10.984 + 10.850 + 10.946) ÷ 3 = 10.927 |
+| Logit gradient | rows 20–22 non-zero in all 50,304 columns (−0.3333 on the right token = (p−1)/N); every other row exactly 0 |
+| Gradient through the layers | the top layer has only the 3 trained rows; every layer below also has the prompt rows (the answer reads their K, V); padding is 0 in every layer |
+| Weight contributions, last layer | the prompt feeds only Wk and Wv (20/20 positions); Wq, Wo and the MLP get 0 from the prompt |
+| Weight contributions, layers 1–3 | the prompt feeds every weight (Wq 19/20: position 0 can only look at itself) |
+| Embedding table | input side touches 16 rows (the chat's distinct tokens); output side touches all 50,304 rows; the pad row's input side is 0 |
+| Pads → random tokens | largest change in any weight gradient: **0.0** |
+| Pads → tokens from the chat (" France", "Paris", …) | weight gradients change by **0.0**; logits at chat positions change by 0.0; the pad positions' own logits change by 0.36 (unused) |
+| One prompt word changed (France → Japan) | loss 10.9265 → 10.9011; gradients change (largest 0.379) |
+| 60 steps with SFT labels vs every position trained | answer 10.93 → 0.065 vs → 0.64; prompt 10.81 → 9.00 vs → 0.47 |
+| Why the prompt dropped to 9.00 without being trained | the true next prompt token scores 9.00, the same as any other chat token (9.08); tokens never in the chat were pushed down to 15.56; the answer tokens rose to 2.11 everywhere. So the order of the prompt was not learned |
+
+**Points explained in the chat that day:**
+- **A token has two jobs.** Masking removes only its prediction job, not its job as context. Gradient reaches a prompt token only through attention, the only operation that mixes positions.
+- **Gradient belongs to a position, not to a token id.** A pad slot adds 0 whatever token it holds.
+- **Padding is fully computed but wasted.** Pads read the whole chat, but nothing reads them, so their gradient is exactly 0. Left padding would need a pad mask.
+- **Weight decay.** It is 0.1 on all 2-D weights, wte included; only 1-D weights are excluded (`bluscript_zero_ckpt.cpp:1267`). A token used only as padding never learns an input meaning, but its row still moves: it gets the softmax push-down on the output side, plus weight decay. The 47 spare rows (50257–50303) are in the same state.
+
+**Files:**
+- doc `How_learning_happens_in_sft.md` (master `~/Downloads/sft_research/` + `work_docs/` mirror), with trusted sources: Lambert's RLHF Book chapter, the HF TRL docs, Llama 2 §3.1, URIAL, the PyTorch CrossEntropyLoss docs, torchtune, Ren & Sutherland ICLR 2025, Ghosh et al. ICML 2024, Shi et al. NeurIPS 2024, Huerta-Enochian EMNLP 2024;
+- run records in `profiling_reports/q9_gradient_flow_2026_10_08/` (`q9_flow.py`, `q9_sideeffect.py`, `q9_padsame.py` (re-created and re-run on 10-09, same numbers), the results JSON, and the Artifact page source).
+
+### 38.3 Q7a: which kernels need SFT benchmarks, and the rivals
+
+**Scope** (checked in code):
+
+| Group | Kernels |
+|---|---|
+| Changed for SFT | the loss kernel (ignore 65535 at `LossKernels.cu:215/:350`, zero gradient row at `:692/:777`, count at `:110`; global denominator; fp32 loss value; bf16 vector path and vocab%4 fixed) |
+| Unchanged, but SFT gives them different input | the embedding backward (38.4) |
+| New when the features are built | v1.5: new GEMM shapes M = 8·T. v2: block-diagonal attention mask in forward and backward, RoPE restart per chat, a guard for fully-masked tiles. Q11: a gather of trained rows and an lm_head GEMM with irregular M (BluBLAS gives wrong numbers silently when M/N is not a multiple of 64 with a transposed operand). Long-context SFT: fused linear + CE. DFT/focal loss variants |
+| No new benchmark needed | RMSNorm, RoPE (v1), SwiGLU, GEMMs at today's shapes, AdamW/Muon, all-reduce; the denominator has no kernel (CPU count + one MPI all-reduce; the library's GPU count kernel at `LossKernels.cu:104` is unused) |
+
+**Where the work goes in one v1 micro-batch** (arithmetic from d 2304, 26 layers, ffn 6144, V 50,304, B × T = 8 × 4096; not measured):
+
+| Part | Work | Wasted |
+|---|---|---|
+| linear layers | ~289 TFLOP (80%) | ~70% (pad rows) |
+| attention | ~48 TFLOP (13%) | up to ~90% (pads sit at the end of each row) |
+| lm_head | ~23 TFLOP (6%) | ~77% (prompt + pad) |
+
+- About 73% of the work is wasted.
+- The logged 53% MFU counts pads (`tokens = B·T·GA·W`, `bluscript_zero_ckpt.cpp:2666`); on real tokens it is about 14%.
+- The loss kernel's backward writes ~3.3 GB of mostly-zero rows per micro-batch, about 0.5 ms out of ~660 ms. For that kernel, correctness and memory matter more than speed.
+
+**Rivals** (their own claims; sources checked on 10-08):
+
+| What | Rivals |
+|---|---|
+| Loss kernel | Apple Cut Cross-Entropy (Apple research, Triton, Ampere+; Gemma 2 2B loss memory 24 GB → 1 MB); Liger (fused linear CE: >4× memory cut at a 128k vocab; +20% throughput, −60% memory overall); PyTorch `F.cross_entropy` (ignore_index −100, mean over non-ignored targets) |
+| Attention | FlashAttention-3 (H100 BF16 up to 840 TFLOP/s; `flash_attn_varlen_func` with forward + backward exists in `hopper/flash_attn_interface.py`, checked); FlexAttention (90% of FA2 forward / 85% backward on A100; +71% packing throughput in torchtune); PyTorch SDPA |
+| Embedding backward | PyTorch's embedding backward (sorts the ids for large batches) |
+| Whole SFT step | NVIDIA NeMo / Megatron + Transformer Engine ("up to 6×" training time with packing); HF TRL + FlashAttention ("up to 2×" with padding-free packing); torchtitan |
+
+**Framework facts:**
+- **torchtitan** is a separate PyTorch-team project, built on top of PyTorch and installed on its own. Its README lists "SFT with chat-formatted datasets".
+  - Its loss calls `F.cross_entropy(reduction="sum")`, then divides by the global token count.
+  - So the kernel comes from PyTorch, and the averaging recipe from torchtitan (the recipe our trainer follows).
+  - Its README doesn't mention packing.
+- **torchtune** is no longer maintained ("wound down in 2025").
+- **torchforge** (PyTorch's RL post-training library) uses torchtitan underneath.
+
+### 38.4 Embedding backward facts (SFT runs on `dist_side_merge`)
+
+- **Which kernel the SFT runs used:**
+  - `BLU_ALL_BF16=1` gives a bf16 wte, which falls to the atomicAdd kernel (`EmbeddingKernels.cu:127-148`); the cooperative atomic-free kernel is fp32-only (`:415`).
+  - The trainer passes `padding_idx = -1` (`bluscript_zero_ckpt.cpp:713`).
+  - So per micro-batch, about 22,900 pad positions × 2,304 columns ≈ 53M atomic adds of 0.0 land on the same addresses.
+  - The template tokens repeat in every chat, which makes the bf16 rounding issue bigger (see the 10-01 D1 test).
+- **The user's direction (10-08):** Kruthik's `EmbeddingBwdFused` (BLUCCL, the fused trainer, `BLUCCL_FUSED_EMB=1`) is the kernel the team uses and mandates. It sorts the ids, adds in fp32, rounds once, and uses no atomics.
+- **The fix it needs:** the hook ignores the real N (`embedding_fused.cu:1300`, `(void)N`), and `run()` sorts `N_`, fixed at install to B × T (`:1189`; install at `bluscript_zero_ckpt_bluccl_fused.cpp:1154`).
+  - That is correct for v1 and v2 (always 8 × 4096 tokens), and silently wrong for v1.5 or padding-free batching.
+  - Pass the real N, and size the workspace for the largest N.
+- **Do not mention the atomicAdd kernel in EODs or reports** (the user's rule).
+
+### 38.5 Q10: v1 / v1.5 / v2 measured on stage-0
+
+Script: `profiling_reports/q10_packing_sim_2026_10_08/pack_sim.py`, output saved. Re-created and re-run on 10-09, same numbers. Data: 5,000 UltraChat chats; mean 1,238 tokens, median 1,154, p90 2,021, longest 4,069.
+
+| Method | Real tokens | Work vs v1 | Speed-up (upper bound) |
+|---|---|---|---|
+| v1: one chat per row, padded to 4096 | 30.2% | 100% | ×1.00 |
+| v1.5 realistic: shuffle, sort each 64-chat step, pad to the longest ×256 | 79.8% | 35.2% | ×2.84 |
+| v1.5 ideal: whole set sorted (not usable) | 90.5% | 30.7% | ×3.26 |
+| v2: best-fit-decreasing packing + block-diagonal mask | 99.6% | 27.8% | ×3.60 |
+| v2 without the mask | 99.6% | 30.3% | ×3.30, and wrong (chats see each other) |
+
+- **v2:** 1,517 rows, an average of 16.3 pad tokens per row, **1 to 12 chats per row**.
+  - Correction: the chat on 10-08 and the shared doc's kernel section said "1–5"; the measured range is 1–12.
+  - Never split a chat across rows; chats longer than 4096 are dropped.
+- **Row length:** it changes per micro-batch in v1.5 and stays 4096 in v2. "Padding-free" (one flat stream with `cu_seqlens`) is not needed.
+- **Fused embedding kernel with fixed N:** works with v1 and v2, silently wrong with v1.5 and padding-free until the real-N fix.
+
+### 38.6 Q7b: how to evaluate SFT data (research summary)
+
+- **The method every lab uses is an ablation:** same base model and settings, only the data changes, same benchmarks.
+  - Tülu 1 ("How Far Can Camels Go?", NeurIPS 2023): 12 datasets, no single best.
+  - Tülu 3: leave one category out (without math: GSM8K 76.2 → 64.1; without safety: 93.1 → 74.7; without persona IF: IFEval 72.8 → 53.6), a size curve (TruthfulQA falls with more data), and mix vs mix (Tülu 2 mix 48.3 vs Tülu 3 mix 60.1).
+  - OLMo 3: add one category at a time; adding math lowered IFEval 61.7 → 54.0.
+  - OpenThoughts: 1,000+ experiments.
+  - "Fixing It in Post" (NeurIPS 2025): Tülu 3 mix vs SmolTalk on 14 benchmarks, giving TuluTalk (14–23% smaller, same or better).
+  - SmolLM2 (1.7B): small ablations plus stage-by-stage mix updates.
+- **Fairness rules:**
+  - the same number of examples, and the same trained tokens if answer lengths differ;
+  - at least 2 runs per arm;
+  - a dev suite plus an unseen suite;
+  - few-shot for the base model, zero-shot in the chat template for the SFT model.
+  - Run-to-run variance: Madaan et al. 2024, with 10 seeds. Benchmark-size noise (one standard error at 50%): IFEval 541 prompts ±2.1, GSM8K 1,319 problems ±1.4.
+- **Scoring methods** (AlpaGasus 9k/52k, 5.7× faster; Deita 6k; IFD 10%; LESS 5%; Long Is More, 1,000 longest):
+  - "Rethinking Data Selection at Scale" (EMNLP 2025 Findings): at about a million examples they are ≈ random; variety matters more; length filtering helps.
+  - So always compare against random and longest.
+- **Small proxy models:** not needed (DataDecide's 150M → 1B ranking agreement is ~80%; our runs are cheap: about 4 min per 5k-chat run on 4 H200s).
+- **Cleaning:**
+  - decontamination: an example is removed if it holds >50% of a test question's tokens in matching 8-grams; a dataset is removed or filtered if >2% of a benchmark's questions overlap;
+  - dedup, licence, correctness.
+
+### 38.7 Q7c / Q8: how to evaluate the SFT model and pick checkpoints (research summary)
+
+- **Two kinds of scoring:**
+  - **likelihood (cloze):** works for base models; OLMES says small models need the cloze form;
+  - **generation:** the SFT skills.
+  - OLMo 3 has a separate base suite (OlmoBaseEval, mostly bits-per-byte) and post-training suite.
+- **Tülu 3 suites:**
+  - **dev:** MMLU 0-shot CoT, PopQA 15-shot, TruthfulQA 6-shot MC2, BBH 3-shot CoT, DROP 3-shot F1, MATH 4-shot CoT flex, GSM8K 8-shot CoT, HumanEval(+) pass@10, IFEval prompt-loose, AlpacaEval 2 LC;
+  - **unseen:** AGIEval, MMLU-Pro, GPQA, DeepMind Math, BigCodeBench, IFEval-OOD, HREF;
+  - **safety:** six tests.
+  - 5 SFT seeds scored 59.8–60.1; the best seed ≈ the best soup.
+- **OLMo 3 suite** (Table 16):
+  - all zero-shot; temperature 0.6, top-p 0.95, 32,768 tokens; AIME 32 samples, code 10; think traces stripped; mean of 3 runs;
+  - evaluation was 10–20% of compute;
+  - standard deviation across 3 runs: GPQA 1.48, AlpacaEval 1.24, IFEval 0.88 … MMLU 0.22, PopQA 0.16;
+  - BoolQ was removed (too noisy).
+- **OLMo 3 SFT selection:** 2 epochs "to avoid overfitting", an LR sweep (4 values at 32B), candidates chosen by the eval suite, then "vibe-tests", then a linear merge of two checkpoints trained with different LRs.
+- **Stage tables:**
+
+| Model | Benchmark | SFT → DPO → final |
+|---|---|---|
+| Tülu 3 8B | average | 60.6 → 64.7 → 65.1 |
+| Tülu 3 8B | IFEval | 72.8 → 81.1 → 82.4 |
+| Tülu 3 8B | AlpacaEval 2 | 12.4 → 33.5 → 34.5 |
+| OLMo 3 Instruct 7B | MATH | 65.1 → 79.6 → 87.3 |
+| OLMo 3 Instruct 7B | IFEval | 81.7 → 82.0 → 85.6 |
+| OLMo 3 Instruct 7B | AlpacaEval LC | 21.8 → 43.3 → 40.9 |
+| OLMo 3 Instruct 7B | PopQA | 16.5 → 20.7 → 14.1 |
+| OLMo 3 Instruct 7B | Safety | 89.5 → 89.9 → 87.6 |
+| OLMo 2 1B | average | 36.9 → 40.6 → 42.7 |
+
+  - OLMo 3 Think 7B, average (Table 22): SFT 70.1, SFT+DPO 72.7, SFT+RLVR 71.9, SFT+DPO+RLVR 74.1.
+  - Other ~1–1.7B models' AlpacaEval (Ai2 table): 5.8 (SmolLM2 1.7B) to 20.4 (Gemma 3 1B).
+  - A colleague's 480M model: TruthfulQA, PopQA and DROP rose base < SFT < DPO; MMLU, BBH, GSM8K, MATH and HumanEval stayed at the floor.
+- **Forgetting:** run the base model and the SFT model on the same likelihood tests.
+  - "LoRA Learns Less and Forgets Less" used HellaSwag, WinoGrande and ARC-C; full fine-tuning forgets more.
+  - Tülu 3: TruthfulQA falls with more data.
+  - URIAL: SFT mostly changes style tokens.
+- **Factors that change scores:**
+  - the chat template (Tülu 3: 51.6–53.0 across templates);
+  - prompt wording (lm-eval, "Lessons from the Trenches");
+  - shots and CoT;
+  - answer extraction (Tülu 3 "flex": up to +10 on MATH);
+  - decoding, seeds and hardware ("A Sober Look": up to 8%; AIME, 30 questions, moves 3.3 points per question);
+  - signal vs noise (Ai2 "Signal and Noise", 30 benchmarks × 465 models);
+  - judge biases (MT-Bench: position, verbosity, self-preference, >80% agreement with humans; AlpacaEval LC: 0.94 → 0.98 correlation with Chatbot Arena; Arena-Hard: 500 prompts, 3× separation, 98.6%, ~$20);
+  - contamination;
+  - the floor at small size;
+  - IFBench: models overfit IFEval's constraints and fail its 58 new ones.
+- **Dev vs unseen** (explanation agreed with the user):
+  - Every choice made by the dev score also picks up luck on those exact questions. Example: the best of 10 truly equal options is about +3.2 points above its real level on IFEval.
+  - So the dev score of the final model is too high.
+  - An unseen suite, designed separately and run once on the frozen model, gives the honest number.
+  - In SFT, dev and unseen are separate benchmark lists, not slices of the training data.
+- **Plan for our model:**
+  - **dev:** answer val loss, end-token rate, IFEval, TruthfulQA MC2, PopQA, DROP, HellaSwag/ARC/WinoGrande (cloze, base vs SFT), GSM8K as a floor check;
+  - **unseen:** IFBench or IFEval-OOD, MMLU-Pro (cloze), AGIEval;
+  - **settings:** SFT model zero-shot in `tulu-plain-v1`, base model OLMES few-shot; average 3 runs for noisy generation tests;
+  - **depends on** an HF export plus generation.
+
+### 38.8 Shared Google Doc (Q7/Q8 tab)
+
+- **Tab:** `https://docs.google.com/document/d/1nJ4utik9Jm7RT9YuaWD8UXcPpJRAj2WUrXnEdjJ_jlg/edit?tab=t.jzwfpg8vqqer` (readable through its export link).
+- **Pasted that day, all in "I" voice:**
+  1. SFT-DATA EVALUATION PLAN (Steps 1–9);
+  2. SFT – KERNEL BENCHMARKS (Steps 1–10, including v1 / v1.5 / v2 and the rivals with torchtitan);
+  3. SFT – MODEL EVALUATION PLAN (Steps 1–9).
+- **Final check:** 86 links, 11 tables, no "we/our" (except the user's own question and a Tülu 3 quote).
+- **Snapshot:** `profiling_reports/sft_docs_snapshot_2026_10_08/` (docx + txt, downloaded on 10-09).
+- **Still to fix in the tab:** the kernel section, Step 5 ("Two small things that change with v2"), says "1–5" chats per row; the measured range is 1–12.
+
+### 38.9 EOD 2026-10-08
+
+- **Content:** the kernel, SFT-data and SFT-model benchmarks, checkpoints and overfitting, dev vs unseen, and the decision to go to v2.
+- **Rules learned:**
+  - cover only the topics the user's draft lists (no Q9);
+  - never write about the atomicAdd embedding kernel in reports;
+  - no unexplained paper or method names;
+  - plain words.
+- **Verda:** no box runs.
+
+### 38.10 Next
+
+1. Kernel benchmarks: the loss kernel vs PyTorch, Liger and Apple CCE at 77% ignored rows (laptop GPU, then H200).
+2. v1.5 bucketing (loader, GEMM-shape check, Kruthik's kernel with the real-N fix), then v2 packing (mask forward and backward, RoPE restart, packing loader, correctness vs SDPA).
+3. Q11 after v2.
+4. The remaining Q&A questions (Q4, Q5, Q6, Q11, Q12, Q13).
