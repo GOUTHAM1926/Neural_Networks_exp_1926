@@ -1,0 +1,13 @@
+18:23:56 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:23:59 pinned CUDA_VISIBLE_DEVICES=7 (GPU-37329774-592c-b7f0-a41a-dad821224d7c)
+18:23:59 1/3 probe start
+18:24:27 1/3 probe exit=0 | PROBE_SUMMARY exp=PASS gqa=PASS
+18:24:32 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:24:32 2/3 libs timing start (CUDNN_GQA=1)
+18:25:07 2/3 libs exit=0 | 84 BENCH lines, 28 gate PASS, 0 INVALID
+18:25:14 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:25:14 ours: libtensor.so 62bf5359, tva_step6 169fad10
+18:25:14 3/3 ours timing start
+18:25:35 3/3 ours exit=0 | 42 BENCH lines
+18:25:35 segments: ours ran the SAME layouts as segments_1012.txt
+18:25:35 main ALLDONE

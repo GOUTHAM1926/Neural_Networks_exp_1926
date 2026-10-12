@@ -1,0 +1,10 @@
+torch 2.14.1+cu130, cuDNN 92400, NVIDIA H200
+1024 seqs x 64 tokens, heads 18/6, hd 128; dQ error on the token-1 rows (2 keys), in bf16 steps
+model fp32-P (FA-style arithmetic)       row-steps mean 1.6372 p99 14.468 max 26037.283 | equal to fp32-P model 100.00%  bf16-P model  70.54%
+model bf16-P (Vj1d / mem-eff arithmetic) row-steps mean 1.6481 p99 14.482 max 25909.283 | equal to fp32-P model  70.54%  bf16-P model 100.00%
+cuDNN                                    row-steps mean 1.7472 p99 14.713 max 26037.283 | equal to fp32-P model  42.80%  bf16-P model  39.44%
+FA2 in PyTorch                           row-steps mean 1.7471 p99 14.714 max 26037.283 | equal to fp32-P model  60.01%  bf16-P model  49.79%
+memory-efficient                         row-steps mean 1.7611 p99 14.731 max 26037.283 | equal to fp32-P model  39.61%  bf16-P model  42.65%
+math bf16                                row-steps mean 0.0747 p99  0.424 max  1.115 | equal to fp32-P model  41.99%  bf16-P model  38.00%
+Flex (compiled)                          row-steps mean 1.7471 p99 14.714 max 26037.283 | equal to fp32-P model  60.01%  bf16-P model  49.78%
+EXIT=0

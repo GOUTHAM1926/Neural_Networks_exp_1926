@@ -1,0 +1,44 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA GeForce RTX 3060  sm_86  28 SMs  |  arch family Hopper: no  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+===== G1 reference self-test: GPU per-segment vs CPU full-row explicit mask =====
+  GQA G=2, T=320     truth O    max|gpu-cpu|/max|cpu| = 1.799e-16   uncovered 0   PASS
+  GQA G=2, T=320     truth LSE  max|gpu-cpu|/max|cpu| = 1.319e-16   uncovered 0   PASS
+  GQA G=2, T=320     truth dQ   max|gpu-cpu|/max|cpu| = 1.403e-16   uncovered 0   PASS
+  GQA G=2, T=320     truth dK   max|gpu-cpu|/max|cpu| = 1.863e-16   uncovered 0   PASS
+  GQA G=2, T=320     truth dV   max|gpu-cpu|/max|cpu| = 1.161e-16   uncovered 0   PASS
+  GQA G=2, T=320     floor O    mismatches 0 / 655360  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  GQA G=2, T=320     floor LSE  mismatches 0 / 5120  worst rel 0.000e+00   uncovered 0   PASS
+  GQA G=2, T=320     floor dQ   mismatches 0 / 655360  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  GQA G=2, T=320     floor dK   mismatches 0 / 327680  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  GQA G=2, T=320     floor dV   mismatches 0 / 327680  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  (1.1 s)
+  MQA G=3, T=192     truth O    max|gpu-cpu|/max|cpu| = 1.215e-16   uncovered 0   PASS
+  MQA G=3, T=192     truth LSE  max|gpu-cpu|/max|cpu| = 1.451e-16   uncovered 0   PASS
+  MQA G=3, T=192     truth dQ   max|gpu-cpu|/max|cpu| = 1.895e-16   uncovered 0   PASS
+  MQA G=3, T=192     truth dK   max|gpu-cpu|/max|cpu| = 1.872e-16   uncovered 0   PASS
+  MQA G=3, T=192     truth dV   max|gpu-cpu|/max|cpu| = 1.136e-16   uncovered 0   PASS
+  MQA G=3, T=192     floor O    mismatches 0 / 147456  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  MQA G=3, T=192     floor LSE  mismatches 0 / 1152  worst rel 0.000e+00   uncovered 0   PASS
+  MQA G=3, T=192     floor dQ   mismatches 0 / 147456  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  MQA G=3, T=192     floor dK   mismatches 0 / 49152  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  MQA G=3, T=192     floor dV   mismatches 0 / 49152  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  (0.1 s)
+
+===== SUMMARY =====
+checks passed 20, failed 0, skipped groups 6   (1 s total)
+  SKIP  G2: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G3: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G4: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G5: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G6: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G7: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  PENDING (need the packed-row kernels, Steps 3-5):
+    B/A on packed rows vs the same per-chat reference (all data loads, all head configs)
+    isolation: change one chat's q/k/v/dO -> every other chat bitwise unchanged
+    same chat at offsets 0/1/63/64/65/127/128/end; zero-length entries; pad segments
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    varlen API rejections; non-varlen paths (Vj1, v44, generic, B300) must refuse chat info
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS

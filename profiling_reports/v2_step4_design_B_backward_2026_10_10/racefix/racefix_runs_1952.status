@@ -1,0 +1,5 @@
+pre-check GPU 7: processes 0 19:52:17
+default exit=0 19:57:11
+USE_FLASH exit=1 19:59:45
+abba exit=0 20:03:19
+ALLDONE

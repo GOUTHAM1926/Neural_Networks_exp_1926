@@ -1,0 +1,34 @@
+==PROF== Connected to process 1815365 (/home/operator/gautam_k/v2_work/Tensor-Implementations/tva_step6)
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "gqa_v62_sm90": 0%....50%....100% - 40 passes
+==PROF== Profiling "gqa_v62_sm90": 0%....50%....100% - 40 passes
+==PROF== Profiling "gqa_v62_sm90": 0%....50%....100% - 40 passes
+==PROF== Profiling "gqa_bwd_vj1d": 0%....50%....100% - 40 passes
+==PROF== Profiling "gqa_bwd_vj1d": 0%....50%....100% - 40 passes
+==PROF== Profiling "gqa_bwd_vj1d": 0%....50%....100% - 40 passes
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+===== BENCH: ours (dense / B / A), fwd and bwd, interleaved =====
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=fwd med_ms=48255.8516 p10_ms=48255.8516 p90_ms=48255.8516 tflops=0.0
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=bwd med_ms=35999.3867 p10_ms=35999.3867 p90_ms=35999.3867 tflops=0.0
+BENCH layout=real_rows_752-759 impl=ours_B_segstart dir=fwd med_ms=35021.4258 p10_ms=35021.4258 p90_ms=35021.4258 tflops=0.0
+BENCH layout=real_rows_752-759 impl=ours_B_segstart dir=bwd med_ms=34788.3008 p10_ms=34788.3008 p90_ms=34788.3008 tflops=0.0
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=fwd med_ms=34247.7109 p10_ms=34247.7109 p90_ms=34247.7109 tflops=0.0
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=bwd med_ms=34991.6406 p10_ms=34991.6406 p90_ms=34991.6406 tflops=0.0
+  (free clocks; record nvidia-smi clocks next to it)
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (229 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS
+==PROF== Disconnected from process 1815365
+==PROF== Report: /home/operator/gautam_k/step6/ncu_6c/ours_packed.ncu-repz

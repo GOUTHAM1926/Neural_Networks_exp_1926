@@ -1,0 +1,82 @@
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+gpu NVIDIA H200 uuid 37329774-592c-b7f0-a41a-dad821224d7c | expected GPU-37329774-592c-b7f0-a41a-dad821224d7c
+MEM layout=real_rows_0-7 fa3_varlen fwd+bwd peak extra 901 MiB
+GATE layout=real_rows_0-7 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.22e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.47e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_0-7 cudnn_varlen_exp: rel O 1.64e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_0-7 cudnn_varlen_exp fwd+bwd peak extra 1407 MiB
+MEM layout=real_rows_752-759 fa3_varlen fwd+bwd peak extra 903 MiB
+GATE layout=real_rows_752-759 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.29e+00 dQ 1.13e+00 dK 1.36e+00 dV 1.16e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_752-759 cudnn_varlen_exp: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_exp fwd+bwd peak extra 905 MiB
+MEM layout=real_rows_1504-1511 fa3_varlen fwd+bwd peak extra 975 MiB
+GATE layout=real_rows_1504-1511 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.38e+00 dQ 1.08e+00 dK 1.26e+00 dV 1.36e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_1504-1511 cudnn_varlen_exp: rel O 9.06e-04 dQ 6.25e-03 dK 5.10e-03 dV 6.02e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_1504-1511 cudnn_varlen_exp fwd+bwd peak extra 918 MiB
+MEM layout=uniform_512 fa3_varlen fwd+bwd peak extra 955 MiB
+GATE layout=uniform_512 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.24e+00 dK 1.44e+00 dV 1.57e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_512 cudnn_varlen_exp: rel O 9.06e-04 dQ 7.19e-03 dK 5.15e-03 dV 6.06e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_512 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+MEM layout=uniform_1024 fa3_varlen fwd+bwd peak extra 913 MiB
+GATE layout=uniform_1024 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.26e+00 dK 1.35e+00 dV 1.44e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_1024 cudnn_varlen_exp: rel O 9.06e-04 dQ 7.35e-03 dK 5.43e-03 dV 6.25e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_1024 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+MEM layout=uniform_2048 fa3_varlen fwd+bwd peak extra 893 MiB
+GATE layout=uniform_2048 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.54e+00 dQ 1.32e+00 dK 1.35e+00 dV 1.43e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_2048 cudnn_varlen_exp: rel O 1.10e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.21e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_2048 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+MEM layout=uniform_4096 fa3_varlen fwd+bwd peak extra 881 MiB
+GATE layout=uniform_4096 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.49e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.17e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_4096 cudnn_varlen_exp: rel O 1.11e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_4096 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+PROBE_STEP expanded route: PASS on all 7 layouts
+USDT:2026-10-12 18:24:18 2958418:2958418 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-12 18:24:18 2958418:2958418 SyncActivityProfilerHandler.cpp:46] profiler_stop
+KERNEL cudnn_varlen_exp layout=real_rows_0-7: Memset (Device)
+KERNEL cudnn_varlen_exp layout=real_rows_0-7: cudnn::fusion::qkv_tma_setup(unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, void*, void*, void*, void*, void*, void*, void*
+KERNEL cudnn_varlen_exp layout=real_rows_0-7: cudnn_generated_fort_native_sdpa_sm90_flash_bprop_wgmma_f16_knob_2_64x64x128_1x4x1_cga1x1x1_kernel0_0
+KERNEL cudnn_varlen_exp layout=real_rows_0-7: cudnn_generated_fort_native_sdpa_sm90_flash_fprop_wgmma_f16_knob_1_64x128x128_4x1x1_cga1x1x1_kernel0_0
+KERNEL cudnn_varlen_exp layout=real_rows_0-7: void at::native::reduce_kernel<128, 4, at::native::ReduceOp<c10::BFloat16, at::native::func_wrapper_t<c10::BFloat16, at::native::sum_functor<c10::BFloat16, floa
+KERNEL cudnn_varlen_exp layout=real_rows_0-7: void at::native::unrolled_elementwise_kernel<at::native::CUDAFunctor_add<int>, std::array<char*, 3ul>, 4, TrivialOffsetCalculator<2, unsigned int>, TrivialOffse
+KERNEL cudnn_varlen_exp layout=real_rows_0-7: void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<int, int, int, at::native::binary_internal::MulFunctor<int> >, std::array<char*, 2ul
+KERNEL cudnn_varlen_exp layout=real_rows_0-7: void cudnn::fusion::compute_dot_do_o_specialized<true, 128>(void const*, void const*, void*, void*, unsigned int, unsigned int, unsigned int, unsigned int, unsi
+KERNEL cudnn_varlen_exp layout=real_rows_0-7: void cudnn::fusion::convert_dq_to_16bits_ragged<true>(void const*, void*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, un
+MEM layout=real_rows_0-7 fa3_varlen fwd+bwd peak extra 901 MiB
+GATE layout=real_rows_0-7 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.22e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.47e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_0-7 cudnn_varlen_gqa: rel O 1.64e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_0-7 cudnn_varlen_gqa fwd+bwd peak extra 2038 MiB
+MEM layout=real_rows_752-759 fa3_varlen fwd+bwd peak extra 904 MiB
+GATE layout=real_rows_752-759 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.29e+00 dQ 1.13e+00 dK 1.36e+00 dV 1.16e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_752-759 cudnn_varlen_gqa: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_gqa fwd+bwd peak extra 1037 MiB
+MEM layout=real_rows_1504-1511 fa3_varlen fwd+bwd peak extra 976 MiB
+GATE layout=real_rows_1504-1511 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.38e+00 dQ 1.08e+00 dK 1.26e+00 dV 1.36e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_1504-1511 cudnn_varlen_gqa: rel O 9.06e-04 dQ 6.25e-03 dK 5.10e-03 dV 6.02e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_1504-1511 cudnn_varlen_gqa fwd+bwd peak extra 1062 MiB
+MEM layout=uniform_512 fa3_varlen fwd+bwd peak extra 955 MiB
+GATE layout=uniform_512 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.24e+00 dK 1.44e+00 dV 1.57e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_512 cudnn_varlen_gqa: rel O 9.06e-04 dQ 7.19e-03 dK 5.15e-03 dV 6.06e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_512 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+MEM layout=uniform_1024 fa3_varlen fwd+bwd peak extra 913 MiB
+GATE layout=uniform_1024 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.26e+00 dK 1.35e+00 dV 1.44e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_1024 cudnn_varlen_gqa: rel O 9.06e-04 dQ 7.35e-03 dK 5.43e-03 dV 6.25e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_1024 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+MEM layout=uniform_2048 fa3_varlen fwd+bwd peak extra 893 MiB
+GATE layout=uniform_2048 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.54e+00 dQ 1.32e+00 dK 1.35e+00 dV 1.43e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_2048 cudnn_varlen_gqa: rel O 1.10e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.21e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_2048 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+MEM layout=uniform_4096 fa3_varlen fwd+bwd peak extra 882 MiB
+GATE layout=uniform_4096 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.49e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.17e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_4096 cudnn_varlen_gqa: rel O 1.11e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_4096 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+USDT:2026-10-12 18:24:25 2958418:2958418 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-12 18:24:25 2958418:2958418 SyncActivityProfilerHandler.cpp:46] profiler_stop
+KERNEL cudnn_varlen_gqa layout=real_rows_0-7: Memset (Device)
+KERNEL cudnn_varlen_gqa layout=real_rows_0-7: cudnn::fusion::qkv_tma_setup(unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, void*, void*, void*, void*, void*, void*, void*
+KERNEL cudnn_varlen_gqa layout=real_rows_0-7: cudnn_generated_fort_native_sdpa_sm90_flash_bprop_wgmma_f16_knob_2_64x64x128_1x4x1_cga1x1x1_kernel0_0
+KERNEL cudnn_varlen_gqa layout=real_rows_0-7: cudnn_generated_fort_native_sdpa_sm90_flash_fprop_wgmma_f16_knob_1_64x128x128_4x1x1_cga1x1x1_kernel0_0
+KERNEL cudnn_varlen_gqa layout=real_rows_0-7: void at::native::unrolled_elementwise_kernel<at::native::CUDAFunctor_add<int>, std::array<char*, 3ul>, 4, TrivialOffsetCalculator<2, unsigned int>, TrivialOffse
+KERNEL cudnn_varlen_gqa layout=real_rows_0-7: void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<int, int, int, at::native::binary_internal::MulFunctor<int> >, std::array<char*, 2ul
+KERNEL cudnn_varlen_gqa layout=real_rows_0-7: void cudnn::fusion::compute_dot_do_o_specialized<true, 128>(void const*, void const*, void*, void*, unsigned int, unsigned int, unsigned int, unsigned int, unsi
+KERNEL cudnn_varlen_gqa layout=real_rows_0-7: void cudnn::fusion::convert_dq_to_16bits_ragged<true>(void const*, void*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, un
+KERNEL cudnn_varlen_gqa layout=real_rows_0-7: void cudnn::fusion::fmha_reduce_head_ragged<true>(void const*, void*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsign
+PROBE_SUMMARY exp=PASS gqa=PASS

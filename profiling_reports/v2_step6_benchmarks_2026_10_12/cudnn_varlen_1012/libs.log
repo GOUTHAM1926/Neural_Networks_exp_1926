@@ -1,0 +1,181 @@
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+gpu NVIDIA H200 uuid 37329774-592c-b7f0-a41a-dad821224d7c | expected GPU-37329774-592c-b7f0-a41a-dad821224d7c
+MEM layout=real_rows_0-7 fa3_varlen fwd+bwd peak extra 901 MiB
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 17) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_fwd_sm90FlashAttentionForwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmem_o_i641_0088'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 21) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_bwd_sm90FlashAttentionBackwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi641_Tenso'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+GATE layout=real_rows_0-7 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 4.11e-04 dQ 1.92e-03 dK 2.73e-03 dV 1.61e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_0-7 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.22e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.47e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_0-7 cudnn_varlen_exp: rel O 1.64e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_0-7 cudnn_varlen_exp fwd+bwd peak extra 1407 MiB
+GATE layout=real_rows_0-7 cudnn_varlen_expsum: rel O 1.64e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_0-7 cudnn_varlen_expsum fwd+bwd peak extra 1695 MiB
+GATE layout=real_rows_0-7 cudnn_varlen_gqa: rel O 1.64e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_0-7 cudnn_varlen_gqa fwd+bwd peak extra 2038 MiB
+BENCH layout=real_rows_0-7 impl=fa3_varlen dir=fwd med_ms=1.0086 p10_ms=0.9981 p90_ms=1.0591 tflops=555.4
+BENCH layout=real_rows_0-7 impl=fa3_varlen dir=bwd med_ms=3.0739 p10_ms=3.0415 p90_ms=3.1585 tflops=455.6
+BENCH layout=real_rows_0-7 impl=fa3_varlen_det dir=fwd med_ms=0.9794 p10_ms=0.9714 p90_ms=1.0276 tflops=572.0
+BENCH layout=real_rows_0-7 impl=fa3_varlen_det dir=bwd med_ms=3.6327 p10_ms=3.6001 p90_ms=3.7289 tflops=385.5
+BENCH layout=real_rows_0-7 impl=fa4_varlen dir=fwd med_ms=1.1309 p10_ms=1.1170 p90_ms=1.1994 tflops=495.4
+BENCH layout=real_rows_0-7 impl=fa4_varlen dir=bwd med_ms=2.9986 p10_ms=2.9651 p90_ms=3.0873 tflops=467.1
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_exp dir=fwd med_ms=1.2026 p10_ms=1.1830 p90_ms=1.2607 tflops=465.8
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_exp dir=bwd med_ms=3.3593 p10_ms=3.3205 p90_ms=3.5319 tflops=416.9
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_expsum dir=fwd med_ms=1.4572 p10_ms=1.4351 p90_ms=1.5444 tflops=384.5
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_expsum dir=bwd med_ms=3.5838 p10_ms=3.5364 p90_ms=3.8054 tflops=390.8
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_gqa dir=fwd med_ms=1.1655 p10_ms=1.1447 p90_ms=1.2313 tflops=480.7
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_gqa dir=bwd med_ms=3.4462 p10_ms=3.4098 p90_ms=3.5786 tflops=406.4
+AGREE layout=real_rows_0-7 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_0-7 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_0-7 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_0-7 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+MEM layout=real_rows_752-759 fa3_varlen fwd+bwd peak extra 905 MiB
+GATE layout=real_rows_752-759 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 4.73e-04 dQ 1.64e-03 dK 2.67e-03 dV 1.53e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_752-759 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.29e+00 dQ 1.13e+00 dK 1.36e+00 dV 1.16e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_752-759 cudnn_varlen_exp: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_exp fwd+bwd peak extra 905 MiB
+GATE layout=real_rows_752-759 cudnn_varlen_expsum: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_expsum fwd+bwd peak extra 1194 MiB
+GATE layout=real_rows_752-759 cudnn_varlen_gqa: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_gqa fwd+bwd peak extra 1037 MiB
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=fwd med_ms=0.5330 p10_ms=0.5223 p90_ms=0.5429 tflops=398.5
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=bwd med_ms=1.5856 p10_ms=1.5645 p90_ms=1.6190 tflops=334.8
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=fwd med_ms=0.5051 p10_ms=0.4974 p90_ms=0.5174 tflops=420.4
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=bwd med_ms=1.8664 p10_ms=1.8442 p90_ms=1.9070 tflops=284.5
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=fwd med_ms=0.6212 p10_ms=0.6116 p90_ms=0.6413 tflops=341.9
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=bwd med_ms=1.5808 p10_ms=1.5592 p90_ms=1.6206 tflops=335.8
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_exp dir=fwd med_ms=0.5716 p10_ms=0.5612 p90_ms=0.5907 tflops=371.6
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_exp dir=bwd med_ms=1.6366 p10_ms=1.6127 p90_ms=1.6800 tflops=324.4
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_expsum dir=fwd med_ms=0.8179 p10_ms=0.8057 p90_ms=0.8398 tflops=259.7
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_expsum dir=bwd med_ms=1.8561 p10_ms=1.8305 p90_ms=1.9038 tflops=286.0
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_gqa dir=fwd med_ms=0.5336 p10_ms=0.5273 p90_ms=0.5499 tflops=398.0
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_gqa dir=bwd med_ms=1.7244 p10_ms=1.7025 p90_ms=1.7730 tflops=307.9
+AGREE layout=real_rows_752-759 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_752-759 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+MEM layout=real_rows_1504-1511 fa3_varlen fwd+bwd peak extra 976 MiB
+GATE layout=real_rows_1504-1511 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 9.06e-04 dQ 1.56e-03 dK 2.55e-03 dV 3.01e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_1504-1511 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.38e+00 dQ 1.08e+00 dK 1.26e+00 dV 1.36e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_1504-1511 cudnn_varlen_exp: rel O 9.06e-04 dQ 6.25e-03 dK 5.10e-03 dV 6.02e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_1504-1511 cudnn_varlen_exp fwd+bwd peak extra 918 MiB
+GATE layout=real_rows_1504-1511 cudnn_varlen_expsum: rel O 9.06e-04 dQ 6.25e-03 dK 5.10e-03 dV 6.02e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_1504-1511 cudnn_varlen_expsum fwd+bwd peak extra 1207 MiB
+GATE layout=real_rows_1504-1511 cudnn_varlen_gqa: rel O 9.06e-04 dQ 6.25e-03 dK 5.10e-03 dV 6.02e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_1504-1511 cudnn_varlen_gqa fwd+bwd peak extra 1062 MiB
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen dir=fwd med_ms=0.3416 p10_ms=0.3382 p90_ms=0.3502 tflops=196.1
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen dir=bwd med_ms=1.2269 p10_ms=1.2235 p90_ms=1.2396 tflops=136.5
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen_det dir=fwd med_ms=0.3168 p10_ms=0.3144 p90_ms=0.3198 tflops=211.5
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen_det dir=bwd med_ms=1.3680 p10_ms=1.3625 p90_ms=1.3725 tflops=122.4
+BENCH layout=real_rows_1504-1511 impl=fa4_varlen dir=fwd med_ms=0.4472 p10_ms=0.4433 p90_ms=0.4543 tflops=149.8
+BENCH layout=real_rows_1504-1511 impl=fa4_varlen dir=bwd med_ms=1.1615 p10_ms=1.1583 p90_ms=1.1664 tflops=144.2
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_exp dir=fwd med_ms=0.3789 p10_ms=0.3752 p90_ms=0.3846 tflops=176.8
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_exp dir=bwd med_ms=1.0533 p10_ms=1.0495 p90_ms=1.0598 tflops=159.0
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_expsum dir=fwd med_ms=0.6120 p10_ms=0.6107 p90_ms=0.6161 tflops=109.5
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_expsum dir=bwd med_ms=1.2643 p10_ms=1.2621 p90_ms=1.2721 tflops=132.5
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_gqa dir=fwd med_ms=0.3408 p10_ms=0.3388 p90_ms=0.3429 tflops=196.6
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_gqa dir=bwd med_ms=1.1495 p10_ms=1.1459 p90_ms=1.1553 tflops=145.7
+AGREE layout=real_rows_1504-1511 fa4_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_1504-1511 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_1504-1511 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_1504-1511 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+MEM layout=uniform_512 fa3_varlen fwd+bwd peak extra 956 MiB
+GATE layout=uniform_512 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 1.81e-03 dQ 1.80e-03 dK 2.58e-03 dV 3.03e-03 (tol 2e-02) -> PASS
+GATE layout=uniform_512 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.24e+00 dK 1.44e+00 dV 1.57e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_512 cudnn_varlen_exp: rel O 9.06e-04 dQ 7.19e-03 dK 5.15e-03 dV 6.06e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_512 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+GATE layout=uniform_512 cudnn_varlen_expsum: rel O 9.06e-04 dQ 7.19e-03 dK 5.15e-03 dV 6.06e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_512 cudnn_varlen_expsum fwd+bwd peak extra 1157 MiB
+GATE layout=uniform_512 cudnn_varlen_gqa: rel O 9.06e-04 dQ 7.19e-03 dK 5.15e-03 dV 6.06e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_512 cudnn_varlen_gqa fwd+bwd peak extra 966 MiB
+BENCH layout=uniform_512 impl=fa3_varlen dir=fwd med_ms=0.3416 p10_ms=0.3367 p90_ms=0.3634 tflops=226.3
+BENCH layout=uniform_512 impl=fa3_varlen dir=bwd med_ms=1.1667 p10_ms=1.1606 p90_ms=1.1773 tflops=165.7
+BENCH layout=uniform_512 impl=fa3_varlen_det dir=fwd med_ms=0.3163 p10_ms=0.3130 p90_ms=0.3244 tflops=244.4
+BENCH layout=uniform_512 impl=fa3_varlen_det dir=bwd med_ms=1.3047 p10_ms=1.2993 p90_ms=1.3125 tflops=148.1
+BENCH layout=uniform_512 impl=fa4_varlen dir=fwd med_ms=0.4348 p10_ms=0.4324 p90_ms=0.4475 tflops=177.8
+BENCH layout=uniform_512 impl=fa4_varlen dir=bwd med_ms=1.0972 p10_ms=1.0945 p90_ms=1.1037 tflops=176.2
+BENCH layout=uniform_512 impl=cudnn_varlen_exp dir=fwd med_ms=0.3432 p10_ms=0.3400 p90_ms=0.3547 tflops=225.3
+BENCH layout=uniform_512 impl=cudnn_varlen_exp dir=bwd med_ms=1.0292 p10_ms=1.0255 p90_ms=1.0511 tflops=187.8
+BENCH layout=uniform_512 impl=cudnn_varlen_expsum dir=fwd med_ms=0.5764 p10_ms=0.5751 p90_ms=0.5785 tflops=134.1
+BENCH layout=uniform_512 impl=cudnn_varlen_expsum dir=bwd med_ms=1.2416 p10_ms=1.2379 p90_ms=1.2484 tflops=155.7
+BENCH layout=uniform_512 impl=cudnn_varlen_gqa dir=fwd med_ms=0.3052 p10_ms=0.3032 p90_ms=0.3091 tflops=253.3
+BENCH layout=uniform_512 impl=cudnn_varlen_gqa dir=bwd med_ms=1.1160 p10_ms=1.1123 p90_ms=1.1219 tflops=173.2
+AGREE layout=uniform_512 fa4_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_512 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_512 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_512 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+MEM layout=uniform_1024 fa3_varlen fwd+bwd peak extra 913 MiB
+GATE layout=uniform_1024 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 1.81e-03 dQ 1.84e-03 dK 2.72e-03 dV 1.56e-03 (tol 2e-02) -> PASS
+GATE layout=uniform_1024 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.26e+00 dK 1.35e+00 dV 1.44e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_1024 cudnn_varlen_exp: rel O 9.06e-04 dQ 7.35e-03 dK 5.43e-03 dV 6.25e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_1024 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+GATE layout=uniform_1024 cudnn_varlen_expsum: rel O 9.06e-04 dQ 7.35e-03 dK 5.43e-03 dV 6.25e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_1024 cudnn_varlen_expsum fwd+bwd peak extra 1157 MiB
+GATE layout=uniform_1024 cudnn_varlen_gqa: rel O 9.06e-04 dQ 7.35e-03 dK 5.43e-03 dV 6.25e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_1024 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+BENCH layout=uniform_1024 impl=fa3_varlen dir=fwd med_ms=0.4410 p10_ms=0.4362 p90_ms=0.4582 tflops=350.6
+BENCH layout=uniform_1024 impl=fa3_varlen dir=bwd med_ms=1.3658 p10_ms=1.3585 p90_ms=1.3812 tflops=283.0
+BENCH layout=uniform_1024 impl=fa3_varlen_det dir=fwd med_ms=0.4164 p10_ms=0.4114 p90_ms=0.4273 tflops=371.4
+BENCH layout=uniform_1024 impl=fa3_varlen_det dir=bwd med_ms=1.5908 p10_ms=1.5835 p90_ms=1.6011 tflops=243.0
+BENCH layout=uniform_1024 impl=fa4_varlen dir=fwd med_ms=0.5283 p10_ms=0.5238 p90_ms=0.5453 tflops=292.7
+BENCH layout=uniform_1024 impl=fa4_varlen dir=bwd med_ms=1.3296 p10_ms=1.3223 p90_ms=1.3417 tflops=290.7
+BENCH layout=uniform_1024 impl=cudnn_varlen_exp dir=fwd med_ms=0.4594 p10_ms=0.4541 p90_ms=0.4661 tflops=336.5
+BENCH layout=uniform_1024 impl=cudnn_varlen_exp dir=bwd med_ms=1.3416 p10_ms=1.3348 p90_ms=1.3598 tflops=288.1
+BENCH layout=uniform_1024 impl=cudnn_varlen_expsum dir=fwd med_ms=0.6948 p10_ms=0.6895 p90_ms=0.7051 tflops=222.6
+BENCH layout=uniform_1024 impl=cudnn_varlen_expsum dir=bwd med_ms=1.5567 p10_ms=1.5496 p90_ms=1.5723 tflops=248.3
+BENCH layout=uniform_1024 impl=cudnn_varlen_gqa dir=fwd med_ms=0.4204 p10_ms=0.4152 p90_ms=0.4279 tflops=367.8
+BENCH layout=uniform_1024 impl=cudnn_varlen_gqa dir=bwd med_ms=1.4290 p10_ms=1.4182 p90_ms=1.4420 tflops=270.5
+AGREE layout=uniform_1024 fa4_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_1024 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_1024 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_1024 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+MEM layout=uniform_2048 fa3_varlen fwd+bwd peak extra 892 MiB
+GATE layout=uniform_2048 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 1.10e-03 dQ 1.92e-03 dK 2.73e-03 dV 7.76e-04 (tol 2e-02) -> PASS
+GATE layout=uniform_2048 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.54e+00 dQ 1.32e+00 dK 1.35e+00 dV 1.43e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_2048 cudnn_varlen_exp: rel O 1.10e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.21e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_2048 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+GATE layout=uniform_2048 cudnn_varlen_expsum: rel O 1.10e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.21e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_2048 cudnn_varlen_expsum fwd+bwd peak extra 1157 MiB
+GATE layout=uniform_2048 cudnn_varlen_gqa: rel O 1.10e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.21e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_2048 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+BENCH layout=uniform_2048 impl=fa3_varlen dir=fwd med_ms=0.6681 p10_ms=0.6561 p90_ms=0.7117 tflops=462.9
+BENCH layout=uniform_2048 impl=fa3_varlen dir=bwd med_ms=1.9592 p10_ms=1.9263 p90_ms=2.0817 tflops=394.6
+BENCH layout=uniform_2048 impl=fa3_varlen_det dir=fwd med_ms=0.6394 p10_ms=0.6306 p90_ms=0.6867 tflops=483.6
+BENCH layout=uniform_2048 impl=fa3_varlen_det dir=bwd med_ms=2.3380 p10_ms=2.2984 p90_ms=2.4711 tflops=330.7
+BENCH layout=uniform_2048 impl=fa4_varlen dir=fwd med_ms=0.7686 p10_ms=0.7534 p90_ms=0.8246 tflops=402.4
+BENCH layout=uniform_2048 impl=fa4_varlen dir=bwd med_ms=1.9611 p10_ms=1.9286 p90_ms=2.1052 tflops=394.2
+BENCH layout=uniform_2048 impl=cudnn_varlen_exp dir=fwd med_ms=0.7348 p10_ms=0.7202 p90_ms=0.7899 tflops=420.8
+BENCH layout=uniform_2048 impl=cudnn_varlen_exp dir=bwd med_ms=2.1158 p10_ms=2.0606 p90_ms=2.2653 tflops=365.4
+BENCH layout=uniform_2048 impl=cudnn_varlen_expsum dir=fwd med_ms=0.9885 p10_ms=0.9686 p90_ms=1.0729 tflops=312.8
+BENCH layout=uniform_2048 impl=cudnn_varlen_expsum dir=bwd med_ms=2.3398 p10_ms=2.2878 p90_ms=2.5178 tflops=330.4
+BENCH layout=uniform_2048 impl=cudnn_varlen_gqa dir=fwd med_ms=0.6982 p10_ms=0.6812 p90_ms=0.7525 tflops=442.9
+BENCH layout=uniform_2048 impl=cudnn_varlen_gqa dir=bwd med_ms=2.2073 p10_ms=2.1584 p90_ms=2.3751 tflops=350.2
+AGREE layout=uniform_2048 fa4_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_2048 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_2048 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_2048 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+MEM layout=uniform_4096 fa3_varlen fwd+bwd peak extra 881 MiB
+GATE layout=uniform_4096 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 5.53e-04 dQ 1.92e-03 dK 2.73e-03 dV 8.06e-04 (tol 2e-02) -> PASS
+GATE layout=uniform_4096 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.49e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.17e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_4096 cudnn_varlen_exp: rel O 1.11e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_4096 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+GATE layout=uniform_4096 cudnn_varlen_expsum: rel O 1.11e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_4096 cudnn_varlen_expsum fwd+bwd peak extra 1157 MiB
+GATE layout=uniform_4096 cudnn_varlen_gqa: rel O 1.11e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_4096 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+BENCH layout=uniform_4096 impl=fa3_varlen dir=fwd med_ms=1.0869 p10_ms=1.0729 p90_ms=1.1507 tflops=569.0
+BENCH layout=uniform_4096 impl=fa3_varlen dir=bwd med_ms=3.1824 p10_ms=3.1405 p90_ms=3.3608 tflops=485.9
+BENCH layout=uniform_4096 impl=fa3_varlen_det dir=fwd med_ms=1.0579 p10_ms=1.0455 p90_ms=1.1206 tflops=584.6
+BENCH layout=uniform_4096 impl=fa3_varlen_det dir=bwd med_ms=3.7983 p10_ms=3.7536 p90_ms=3.9917 tflops=407.1
+BENCH layout=uniform_4096 impl=fa4_varlen dir=fwd med_ms=1.2114 p10_ms=1.1948 p90_ms=1.3104 tflops=510.5
+BENCH layout=uniform_4096 impl=fa4_varlen dir=bwd med_ms=3.1990 p10_ms=3.1555 p90_ms=3.3890 tflops=483.3
+BENCH layout=uniform_4096 impl=cudnn_varlen_exp dir=fwd med_ms=1.2678 p10_ms=1.2486 p90_ms=1.3548 tflops=487.8
+BENCH layout=uniform_4096 impl=cudnn_varlen_exp dir=bwd med_ms=3.6092 p10_ms=3.5568 p90_ms=3.7992 tflops=428.4
+BENCH layout=uniform_4096 impl=cudnn_varlen_expsum dir=fwd med_ms=1.5292 p10_ms=1.5021 p90_ms=1.6341 tflops=404.5
+BENCH layout=uniform_4096 impl=cudnn_varlen_expsum dir=bwd med_ms=3.8372 p10_ms=3.7748 p90_ms=4.0227 tflops=402.9
+BENCH layout=uniform_4096 impl=cudnn_varlen_gqa dir=fwd med_ms=1.2272 p10_ms=1.2072 p90_ms=1.3160 tflops=504.0
+BENCH layout=uniform_4096 impl=cudnn_varlen_gqa dir=bwd med_ms=3.7108 p10_ms=3.6552 p90_ms=3.8951 tflops=416.7
+AGREE layout=uniform_4096 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_4096 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_4096 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_4096 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02

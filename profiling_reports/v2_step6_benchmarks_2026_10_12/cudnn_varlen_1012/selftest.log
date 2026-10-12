@@ -1,0 +1,31 @@
+torch 2.14.1+cu130 | cuda visible: False
+  ok   forward keyword names in the op schema
+  ok   backward keyword names in the op schema
+  ok   forward returns (output, logsumexp, ..)
+     aten::_cudnn_attention_forward(Tensor query, Tensor key, Tensor value, Tensor? attn_bias, Tensor? cum_seq_q, Tensor? cum_seq_k, SymInt max_q, SymInt max_k, bool compute_log_sumexp, float dropout_p=0., bool is_causal=False, bool return_debug_mask=False, *, float? scale=None, Tensor? seqused_k=None, Tensor? block_table=None) -> (Tensor output, Tensor logsumexp, Tensor cum_seq_q, Tensor cum_seq_k, SymInt max_q, SymInt max_k, Tensor philox_seed, Tensor philox_offset, Tensor debug_attn_mask)
+     aten::_cudnn_attention_backward(Tensor grad_out, Tensor query, Tensor key, Tensor value, Tensor out, Tensor logsumexp, Tensor philox_seed, Tensor philox_offset, Tensor attn_bias, Tensor cum_seq_q, Tensor cum_seq_k, SymInt max_q, SymInt max_k, float dropout_p, bool is_causal, *, float? scale=None) -> (Tensor, Tensor, Tensor)
+  ok   7 layouts in the segments file (got 7)
+  ok   real_rows_0-7: 23 segments tile 8 x 4096, longest 4069 > 128
+  ok   real_rows_752-759: 24 segments tile 8 x 4096, longest 1536 > 128
+  ok   real_rows_1504-1511: 79 segments tile 8 x 4096, longest 485 > 128
+  ok   uniform_512: 64 segments tile 8 x 4096, longest 512 > 128
+  ok   uniform_1024: 32 segments tile 8 x 4096, longest 1024 > 128
+  ok   uniform_2048: 16 segments tile 8 x 4096, longest 2048 > 128
+  ok   uniform_4096: 8 segments tile 8 x 4096, longest 4096 > 128
+  ok   expand_kv: query head h reads KV head h // 3
+  ok   sum_kv: dK of KV head g = sum of query heads 3g..3g+2
+  ok   negative control: 14 of 18 heads read the wrong KV head (only 0, 8, 9, 17 coincide)
+  ok   rel_err(x, x) = 0
+  ok   noise of 1e-3 relative passes
+  ok   a NaN in the result fails
+  ok   a NaN in the reference fails
+  ok   unrelated values fail
+GATE layout=cpu selftest wrong: rel O 0.00e+00 dQ 0.00e+00 dK 0.00e+00 dV 5.00e-01 (tol 2e-02) -> FAIL
+  ok   gate_line fails when one of the four tensors is off
+GATE layout=cpu selftest same: rel O 0.00e+00 dQ 0.00e+00 dK 0.00e+00 dV 0.00e+00 (tol 2e-02) -> PASS
+  ok   gate_line passes on four equal tensors
+  ok   BENCH_ONLY=fa3,fa4,cudnn keeps fa3*/fa4*/cudnn* only
+  ok   single prefix behaves as before
+  ok   no BENCH_ONLY keeps everything
+  ok   torch.profiler CUDA activity and DeviceType.CUDA exist
+SELFTEST PASS (25 checks)

@@ -1,0 +1,58 @@
+--- BLAS backend : cublas ---
+--- Compiling [CUDA] (sm_90): Tests/kernel_tests/test_rope_positions.cu ---
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -o run_cuda_runner Tests/kernel_tests/test_rope_positions.cu \
+        -L/usr/local/cuda/lib64 -L/usr/local/cuda/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -ltensor -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -lcuda
+\n--- Running Tests/kernel_tests/test_rope_positions.cu ---
+device: NVIDIA H200 (sm_90)  -- 'dispatch' runs the portable kernel on this GPU
+
+== config B=2 Hq=18 Hkv=6 T=4096 hd=128 NeoX
+  PASS  dispatch T1 identity == no positions: 0 mismatching values (q/k out, rstd, dq/dk); dgamma rel err 0.000005
+  PASS  dispatch T2 positions t+7 == pos_offset 7: 0 mismatching values
+  PASS  dispatch T3 packed == each of 7 chats alone: 0 mismatching (chat, head, tensor) blocks; dgamma vs sum of chats rel err 0.000008
+  PASS  dispatch T4 random positions vs fp64 reference: fwd 0.000000, dq/dk 0.000000, dgamma 0.000008
+  PASS  sm90 T1 identity == no positions: 0 mismatching values (q/k out, rstd, dq/dk); dgamma 0 mismatching
+  PASS  sm90 T2 positions t+7 == pos_offset 7: 0 mismatching values
+  PASS  sm90 T3 packed == each of 7 chats alone: 0 mismatching (chat, head, tensor) blocks; dgamma vs sum of chats rel err 0.000001
+  PASS  sm90 T4 random positions vs fp64 reference: fwd 0.000000, dq/dk 0.000000, dgamma 0.000001
+
+== config B=3 Hq=4 Hkv=2 T=333 hd=64 interleaved
+  PASS  dispatch T1 identity == no positions: 0 mismatching values (q/k out, rstd, dq/dk); dgamma rel err 0.000001
+  PASS  dispatch T2 positions t+7 == pos_offset 7: 0 mismatching values
+  PASS  dispatch T3 packed == each of 341 chats alone: 0 mismatching (chat, head, tensor) blocks; dgamma vs sum of chats rel err 0.000003
+  PASS  dispatch T4 random positions vs fp64 reference: fwd 0.000000, dq/dk 0.000000, dgamma 0.000002
+  PASS  sm90 T1 identity == no positions: 0 mismatching values (q/k out, rstd, dq/dk); dgamma 0 mismatching
+  PASS  sm90 T2 positions t+7 == pos_offset 7: 0 mismatching values
+  PASS  sm90 T3 packed == each of 341 chats alone: 0 mismatching (chat, head, tensor) blocks; dgamma vs sum of chats rel err 0.000000
+  PASS  sm90 T4 random positions vs fp64 reference: fwd 0.000000, dq/dk 0.000000, dgamma 0.000000
+
+== config B=1 Hq=8 Hkv=8 T=64 hd=128 NeoX
+  PASS  dispatch T1 identity == no positions: 0 mismatching values (q/k out, rstd, dq/dk); dgamma rel err 0.000001
+  PASS  dispatch T2 positions t+7 == pos_offset 7: 0 mismatching values
+  PASS  dispatch T3 packed == each of 2 chats alone: 0 mismatching (chat, head, tensor) blocks; dgamma vs sum of chats rel err 0.000001
+  PASS  dispatch T4 random positions vs fp64 reference: fwd 0.000000, dq/dk 0.000000, dgamma 0.000001
+  PASS  sm90 T1 identity == no positions: 0 mismatching values (q/k out, rstd, dq/dk); dgamma 0 mismatching
+  PASS  sm90 T2 positions t+7 == pos_offset 7: 0 mismatching values
+  PASS  sm90 T3 packed == each of 2 chats alone: 0 mismatching (chat, head, tensor) blocks; dgamma vs sum of chats rel err 0.000001
+  PASS  sm90 T4 random positions vs fp64 reference: fwd 0.000000, dq/dk 0.000000, dgamma 0.000000
+
+== config B=2 Hq=6 Hkv=2 T=256 hd=64 NeoX
+  PASS  dispatch T1 identity == no positions: 0 mismatching values (q/k out, rstd, dq/dk); dgamma rel err 0.000001
+  PASS  dispatch T2 positions t+7 == pos_offset 7: 0 mismatching values
+  PASS  dispatch T3 packed == each of 3 chats alone: 0 mismatching (chat, head, tensor) blocks; dgamma vs sum of chats rel err 0.000002
+  PASS  dispatch T4 random positions vs fp64 reference: fwd 0.000000, dq/dk 0.000000, dgamma 0.000002
+  PASS  sm90 T1 identity == no positions: 0 mismatching values (q/k out, rstd, dq/dk); dgamma 0 mismatching
+  PASS  sm90 T2 positions t+7 == pos_offset 7: 0 mismatching values
+  PASS  sm90 T3 packed == each of 3 chats alone: 0 mismatching (chat, head, tensor) blocks; dgamma vs sum of chats rel err 0.000000
+  PASS  sm90 T4 random positions vs fp64 reference: fwd 0.000000, dq/dk 0.000000, dgamma 0.000000
+
+== T5 API (Tensor-level fused_rms_rope_forward)
+  PASS  accepts valid int32 [B,T] positions; identity == no positions (bit-exact)
+  PASS  rejects int64 positions
+  PASS  rejects wrong shape [B, T+1]
+  PASS  rejects CPU positions
+  PASS  rejects positions + pos_offset=3
+
+================================================================
+SUMMARY: 37 cases, 0 failed  -> ALL PASS
+================================================================
+\n--- Removed run_cuda_runner (exit 0) ---

@@ -1,0 +1,57 @@
+15:05:06 check: CPU-only self-test (no GPU visible)
+15:05:09 selftest exit=0 | SELFTEST PASS (25 checks)
+18:23:56 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:23:59 pinned CUDA_VISIBLE_DEVICES=7 (GPU-37329774-592c-b7f0-a41a-dad821224d7c)
+18:23:59 1/3 probe start
+18:24:27 1/3 probe exit=0 | PROBE_SUMMARY exp=PASS gqa=PASS
+18:24:32 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:24:32 2/3 libs timing start (CUDNN_GQA=1)
+18:25:07 2/3 libs exit=0 | 84 BENCH lines, 28 gate PASS, 0 INVALID
+18:25:14 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:25:14 ours: libtensor.so 62bf5359, tva_step6 169fad10
+18:25:14 3/3 ours timing start
+18:25:35 3/3 ours exit=0 | 42 BENCH lines
+18:25:35 segments: ours ran the SAME layouts as segments_1012.txt
+18:25:35 main ALLDONE
+18:26:03 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:26:05 pinned CUDA_VISIBLE_DEVICES=7 (GPU-37329774-592c-b7f0-a41a-dad821224d7c)
+18:26:05 nsys libs start (CUDNN_GQA=1)
+18:27:27 nsys libs exit=0
+18:27:33 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:27:33 ours: libtensor.so 62bf5359, tva_step6 169fad10
+18:27:33 nsys ours start
+18:28:54 nsys ours exit=0
+18:28:56 nsys_libs_packed: rep 448979 bytes, kern csv 0 lines
+18:28:58 nsys_ours_packed: rep 560207 bytes, kern csv 11 lines
+18:29:01 nvtx per-contender csv 0 lines
+18:29:01 nsys ALLDONE
+18:30:30 check: CPU-only self-test (no GPU visible)
+18:30:37 selftest exit=0 | SELFTEST PASS (25 checks)
+18:30:50 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:30:52 pinned CUDA_VISIBLE_DEVICES=7 (GPU-37329774-592c-b7f0-a41a-dad821224d7c)
+18:30:52 nsys nsys_libs_exp start (BENCH_ONLY=fa3_varlen,cudnn_varlen_exp CUDNN_GQA=0)
+18:32:15 nsys nsys_libs_exp exit=0
+18:32:21 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:32:21 nsys nsys_libs_gqa start (BENCH_ONLY=cudnn_varlen_gqa CUDNN_GQA=1)
+18:33:42 nsys nsys_libs_gqa exit=0
+18:33:45 nsys_libs_exp: rep 678316 bytes, kern csv 15 lines, nvtx csv 30 lines
+18:33:49 nsys_libs_gqa: rep 557141 bytes, kern csv 7 lines, nvtx csv 0 lines
+18:33:49 nsys libs ALLDONE
+18:34:57 check: CPU-only self-test (no GPU visible)
+18:35:04 selftest exit=0 | SELFTEST PASS (25 checks)
+18:35:21 check: CPU-only self-test (no GPU visible)
+18:35:30 selftest exit=0 | SELFTEST PASS (29 checks)
+18:35:55 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:35:56 pinned CUDA_VISIBLE_DEVICES=7 (GPU-37329774-592c-b7f0-a41a-dad821224d7c)
+18:35:56 nsys nsys_libs_exp start (BENCH_ONLY=fa3_varlen,cudnn_varlen_exp CUDNN_GQA=0)
+18:37:23 nsys nsys_libs_exp exit=0 | BENCH lines: 8 total, 4 cuDNN
+18:37:30 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:37:30 nsys nsys_libs_gqa start (BENCH_ONLY=cudnn_varlen_gqa CUDNN_GQA=1)
+18:39:13 nsys nsys_libs_gqa exit=0 | BENCH lines: 2 total, 2 cuDNN
+18:39:17 nsys_libs_exp: rep 662631 bytes, kern csv 15 lines (0 cuDNN attention kernels), nvtx csv 30 lines
+18:39:20 nsys_libs_gqa: rep 603650 bytes, kern csv 7 lines (0 cuDNN attention kernels), nvtx csv 0 lines
+18:39:20 nsys libs ALLDONE
+18:40:12 nsys_libs_exp: rep 662631 bytes, kern csv 34 lines (2 cuDNN attention kernels), nvtx csv 71 lines
+18:40:16 nsys_libs_gqa: rep 603650 bytes, kern csv 34 lines (2 cuDNN attention kernels), nvtx csv 45 lines
+18:40:20 nsys_ours_packed: rep 560207 bytes, kern csv 11 lines (0 cuDNN attention kernels), nvtx csv 0 lines
+18:40:20 stats ALLDONE

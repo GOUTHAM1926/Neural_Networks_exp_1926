@@ -1,0 +1,5 @@
+pre-check GPU 7: processes 0
+21:19:11
+G11 exit=0 21:20:11
+USE_FLASH exit=0
+USE_DETERMINISTIC_DQ exit=0

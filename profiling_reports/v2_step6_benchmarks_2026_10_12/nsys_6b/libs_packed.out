@@ -1,0 +1,49 @@
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Memory efficient kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1240.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Memory Efficient attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:600.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Flash attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1242.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Flash Attention does not support non-null attn_mask. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:281.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: cuDNN attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1244.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: cuDNN attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:922.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 17) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_fwd_sm90FlashAttentionForwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmem_o_i641_0088'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 21) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_bwd_sm90FlashAttentionBackwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi641_Tenso'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+  [real_rows_752-759] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = 
+  [real_rows_752-759] sdpa flash mask unavailable: RuntimeError: No available kernel. Aborting execution.
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=fwd med_ms=0.6226 p10_ms=0.5791 p90_ms=0.8291 tflops=341.1
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=bwd med_ms=1.6148 p10_ms=1.5988 p90_ms=1.6401 tflops=328.8
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=fwd med_ms=0.5257 p10_ms=0.5204 p90_ms=0.5410 tflops=404.0
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=bwd med_ms=1.8483 p10_ms=1.8411 p90_ms=1.8649 tflops=287.2
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=fwd med_ms=0.6565 p10_ms=0.6336 p90_ms=0.8400 tflops=323.5
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=bwd med_ms=1.5759 p10_ms=1.5701 p90_ms=1.6231 tflops=336.9
+BENCH layout=real_rows_752-759 impl=torch_varlen dir=fwd med_ms=0.9696 p10_ms=0.9417 p90_ms=1.0562 tflops=219.0
+BENCH layout=real_rows_752-759 impl=torch_varlen dir=bwd med_ms=2.9866 p10_ms=2.9571 p90_ms=3.2681 tflops=177.8
+BENCH layout=real_rows_752-759 impl=flex_docmask dir=fwd med_ms=1.0428 p10_ms=0.9964 p90_ms=1.3249 tflops=203.6
+BENCH layout=real_rows_752-759 impl=flex_docmask dir=bwd med_ms=2.2630 p10_ms=2.2434 p90_ms=2.3182 tflops=234.6
+BENCH layout=real_rows_752-759 impl=sdpa_flash_fullrow dir=fwd med_ms=1.9719 p10_ms=1.9689 p90_ms=2.0224 tflops=107.7
+BENCH layout=real_rows_752-759 impl=sdpa_flash_fullrow dir=bwd med_ms=6.2529 p10_ms=6.2426 p90_ms=6.2721 tflops=84.9
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_fullrow dir=fwd med_ms=1.1251 p10_ms=1.1049 p90_ms=1.2101 tflops=188.8
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_fullrow dir=bwd med_ms=3.2925 p10_ms=3.2812 p90_ms=3.5125 tflops=161.2
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_mask dir=fwd med_ms=3.9632 p10_ms=3.9565 p90_ms=3.9812 tflops=53.6
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_mask dir=bwd med_ms=10.7299 p10_ms=10.6934 p90_ms=10.7668 tflops=49.5
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_fullrow dir=fwd med_ms=3.7892 p10_ms=3.7748 p90_ms=3.8076 tflops=56.0
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_fullrow dir=bwd med_ms=12.8703 p10_ms=12.8482 p90_ms=12.8983 tflops=41.3
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_mask dir=fwd med_ms=9.7551 p10_ms=9.7384 p90_ms=9.7747 tflops=21.8
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_mask dir=bwd med_ms=26.2818 p10_ms=26.2207 p90_ms=26.5572 tflops=20.2
+AGREE layout=real_rows_752-759 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_752-759 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 1.562e-02
+AGREE layout=real_rows_752-759 flex_docmask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 1.562e-02
+AGREE layout=real_rows_752-759 sdpa_cudnn_mask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 sdpa_efficient_mask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 3.125e-02
+Collecting data...
+Generating '/tmp/nsys-operator/nsys-report-ecab.qdstrm'
+[1/1] [0%                          ] libs_packed.nsys-rep[1/1] [0%                          ] libs_packed.nsys-rep[1/1] [1%                          ] libs_packed.nsys-rep[1/1] [2%                          ] libs_packed.nsys-rep[1/1] [5%                          ] libs_packed.nsys-rep[1/1] [8%                          ] libs_packed.nsys-rep[1/1] [9%                          ] libs_packed.nsys-rep[1/1] [10%                         ] libs_packed.nsys-rep[1/1] [11%                         ] libs_packed.nsys-rep[1/1] [12%                         ] libs_packed.nsys-rep[1/1] [13%                         ] libs_packed.nsys-rep[1/1] [14%                         ] libs_packed.nsys-rep[1/1] [=15%                        ] libs_packed.nsys-rep[1/1] [==19%                       ] libs_packed.nsys-rep[1/1] [==20%                       ] libs_packed.nsys-rep[1/1] [========42%                 ] libs_packed.nsys-rep[1/1] [===========50%              ] libs_packed.nsys-rep[1/1] [=======================96%  ] libs_packed.nsys-rep[1/1] [========================98% ] libs_packed.nsys-rep[1/1] [========================100%] libs_packed.nsys-rep[1/1] [========================100%] libs_packed.nsys-rep
+Generated:
+	/home/operator/gautam_k/step6/nsys_6b/libs_packed.nsys-rep

@@ -1,0 +1,30 @@
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+gpu NVIDIA H200 uuid 37329774-592c-b7f0-a41a-dad821224d7c | expected GPU-37329774-592c-b7f0-a41a-dad821224d7c
+MEM layout=real_rows_752-759 fa3_varlen fwd+bwd peak extra 905 MiB
+GATE layout=real_rows_752-759 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.29e+00 dQ 1.13e+00 dK 1.36e+00 dV 1.16e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_752-759 cudnn_varlen_exp: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_exp fwd+bwd peak extra 905 MiB
+GATE layout=real_rows_752-759 cudnn_varlen_expsum: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_expsum fwd+bwd peak extra 1193 MiB
+GATE layout=real_rows_752-759 cudnn_varlen_gqa: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_gqa fwd+bwd peak extra 1037 MiB
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=fwd med_ms=0.5146 p10_ms=0.5058 p90_ms=0.6455 tflops=412.7
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=bwd med_ms=1.5429 p10_ms=1.5396 p90_ms=1.5774 tflops=344.1
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=fwd med_ms=0.4899 p10_ms=0.4892 p90_ms=0.5127 tflops=433.5
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=bwd med_ms=1.8165 p10_ms=1.8147 p90_ms=1.8203 tflops=292.3
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_exp dir=fwd med_ms=0.5474 p10_ms=0.5441 p90_ms=0.7008 tflops=388.0
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_exp dir=bwd med_ms=1.5781 p10_ms=1.5718 p90_ms=1.6119 tflops=336.4
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_expsum dir=fwd med_ms=0.7876 p10_ms=0.7855 p90_ms=0.8150 tflops=269.6
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_expsum dir=bwd med_ms=1.7994 p10_ms=1.7968 p90_ms=1.8047 tflops=295.1
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_gqa dir=fwd med_ms=0.5208 p10_ms=0.5187 p90_ms=0.5276 tflops=407.7
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_gqa dir=bwd med_ms=1.6768 p10_ms=1.6704 p90_ms=1.6809 tflops=316.6
+AGREE layout=real_rows_752-759 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/tmp/nsys-operator/nsys-report-5df1.qdstrm'
+[1/1] [0%                          ] nsys_libs_packed.nsys-repProcessing events...
+[1/1] [0%                          ] nsys_libs_packed.nsys-rep[1/1] [1%                          ] nsys_libs_packed.nsys-rep[1/1] [2%                          ] nsys_libs_packed.nsys-rep[1/1] [5%                          ] nsys_libs_packed.nsys-rep[1/1] [==19%                       ] nsys_libs_packed.nsys-rep[1/1] [==20%                       ] nsys_libs_packed.nsys-rep[1/1] [=======36%                  ] nsys_libs_packed.nsys-rep[1/1] [=======================96%  ] nsys_libs_packed.nsys-rep[1/1] [========================98% ] nsys_libs_packed.nsys-rep[1/1] [========================100%] nsys_libs_packed.nsys-rep[1/1] [========================100%] nsys_libs_packed.nsys-rep
+Generated:
+	/home/operator/gautam_k/step6/cudnn_varlen_1012/nsys_libs_packed.nsys-rep

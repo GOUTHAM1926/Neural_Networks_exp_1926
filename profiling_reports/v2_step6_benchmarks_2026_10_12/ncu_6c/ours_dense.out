@@ -1,0 +1,27 @@
+==PROF== Connected to process 1806980 (/home/operator/gautam_k/v2_work/Tensor-Implementations/tva_step6)
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "gqa_v62_sm90": 0%....50%....100% - 40 passes
+==PROF== Profiling "gqa_bwd_vj1d": 0%....50%....100% - 40 passes
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+stage-0 data: cannot open /home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin (set VARLEN_STAGE0_LABELS)
+
+===== BENCHDENSE: ours dense causal, colleagues' shapes =====
+BENCH layout=dense_B8_H18x6 impl=ours_dense dir=fwd med_ms=55254.1484 p10_ms=55254.1484 p90_ms=55254.1484 tflops=0.0
+BENCH layout=dense_B8_H18x6 impl=ours_dense dir=bwd med_ms=34374.3164 p10_ms=34374.3164 p90_ms=34374.3164 tflops=0.0
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (95 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS
+==PROF== Disconnected from process 1806980
+==PROF== Report: /home/operator/gautam_k/step6/ncu_6c/ours_dense.ncu-repz

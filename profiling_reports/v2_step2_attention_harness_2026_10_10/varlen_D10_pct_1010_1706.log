@@ -1,0 +1,36 @@
+Sat Oct 10 17:06:16 IST 2026
+--- BLAS backend : cublas ---
+--- Compiling [CUDA] (sm_90): Tests/kernel_tests/test_varlen_attention.cu ---
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -o run_cuda_runner Tests/kernel_tests/test_varlen_attention.cu \
+        -L/usr/local/cuda/lib64 -L/usr/local/cuda/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -ltensor -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -lcuda
+\n--- Running Tests/kernel_tests/test_varlen_attention.cu ---
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+===== VARLEN_ONLY=D10 (diagnostic run: G6 D10 only) =====
+  D10 data: 5000 chats, 6188911 real tokens, 1517 packed rows (pack_sim.py: 5000 / 6,188,911 / 1517)  MATCH
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     O    chats  5000  worst ratio   0.538  (err 1.137e-02 vs floor 1.057e-02)  fails 0  nan 0  PASS  [p50 0.293 p90 0.351 p99 0.410 max 0.538]
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     LSE  chats  5000  worst ratio   0.000  (err 1.560e-06 vs floor 5.486e-03)  fails 0  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     dQ   chats  5000  worst ratio   1.156  (err 2.871e-02 vs floor 1.242e-02)  fails 1  nan 0  FAIL  [p50 0.383 p90 0.516 p99 0.680 max 1.156]
+        fail: row 1022 chat@2552 L=1276 (err 2.871e-02, floor 1.242e-02, nan 0)
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     dK   chats  5000  worst ratio   0.834  (err 3.678e-02 vs floor 2.205e-02)  fails 0  nan 0  PASS  [p50 0.416 p90 0.529 p99 0.678 max 0.834]
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     dV   chats  5000  worst ratio   0.956  (err 5.023e-02 vs floor 2.627e-02)  fails 0  nan 0  PASS  [p50 0.482 p90 0.560 p99 0.739 max 0.956]
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     5000 chats alone, non-finite outputs 0 PASS  (520.8 s)
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     G6c 16 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.562e-02)  PASS
+
+===== SUMMARY =====
+checks passed 7, failed 1, skipped groups 0   (521 s total)
+  FAIL  G6 D10 stage-0 packed (rows 0-1516) 18/6 dQ
+  PENDING (need the packed-row kernels, Steps 3-5):
+    B/A on packed rows vs the same per-chat reference (all data loads, all head configs)
+    isolation: change one chat's q/k/v/dO -> every other chat bitwise unchanged
+    same chat at offsets 0/1/63/64/65/127/128/end; zero-length entries; pad segments
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    varlen API rejections; non-varlen paths (Vj1, v44, generic, B300) must refuse chat info
+    tile-count check (debug build): tiles processed == host model
+FAILURES ABOVE
+\n--- Removed run_cuda_runner (exit 1) ---
+make: *** [Makefile:523: run-cuda] Error 1
+EXIT=2
+Sat Oct 10 17:15:13 IST 2026

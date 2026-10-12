@@ -1,0 +1,4 @@
+original v62        : 2280 instructions
+new <false> (dense) : 2280 instructions -> IDENTICAL to the original
+new <true> (packed) : 2432 instructions -> DIFFERENT to the original (must differ)
+global loads (LDG*) : original 0, dense 0, packed 5

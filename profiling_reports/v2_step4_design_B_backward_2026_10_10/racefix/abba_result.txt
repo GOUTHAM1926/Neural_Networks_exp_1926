@@ -1,0 +1,4 @@
+12/4 bwd: nofix median-of-medians 2.7542 ms, fix 2.7700 ms | paired diff -0.042% (sd 2.588%, n=12, t=-0.06)
+12/4 fwd (null: fix does not touch it): nofix median-of-medians 0.7343 ms, fix 0.7329 ms | paired diff -0.236% (sd 1.957%, n=12, t=-0.42)
+18/6 bwd: nofix median-of-medians 4.2210 ms, fix 4.2588 ms | paired diff +1.713% (sd 2.953%, n=12, t=+2.01)
+18/6 fwd (null: fix does not touch it): nofix median-of-medians 1.1193 ms, fix 1.1374 ms | paired diff +1.391% (sd 2.386%, n=12, t=+2.02)

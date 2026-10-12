@@ -1,0 +1,12 @@
+kernel            tensor inst %peak       tensor cyc %          DRAM GB/s           L2 hit %  smem wavefronts M  global RED inst M
+ours fwd dense                  6.2               31.7                7.7               92.2              103.7                0.0
+ours bwd dense                  5.7               43.0                7.5               95.8              661.7                0.0
+ours fwd A                      5.2            no data               16.7               84.4               40.9                0.0
+ours bwd A                      5.0            no data               21.6               86.9              249.8                0.0
+cuDNN fwd                       4.4               22.2                8.1               91.9              102.6                0.0
+cuDNN bwd                       5.4               40.8                9.7               92.0              404.6                0.0
+FA3 fwd                         5.2               36.6               12.0               88.0              101.7                0.0
+FA4 fwd                         4.7               37.4               12.7               85.3              103.3                0.0
+FA3 bwd                         7.0               57.3               12.6               90.2              419.3                0.0
+FA4 bwd                         7.1               45.7               11.7               90.8              419.0                0.0
+(FA3 bwd row = the first FA3 bwd capture, the non-deterministic one)

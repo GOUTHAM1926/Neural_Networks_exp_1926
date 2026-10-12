@@ -1,0 +1,3 @@
+Generating SQLite file /home/operator/gautam_k/step6/cudnn_varlen_1012/nsys_libs_exp.sqlite from /home/operator/gautam_k/step6/cudnn_varlen_1012/nsys_libs_exp.nsys-rep
+Processing [/home/operator/gautam_k/step6/cudnn_varlen_1012/nsys_libs_exp.sqlite] with [/opt/nvidia/nsight-systems/2026.3.2/target-linux-x64/reports/nvtx_kern_sum.py] to [/home/operator/gautam_k/step6/cudnn_varlen_1012/nsys_libs_exp_nvtx_kern_sum.csv]... PROCESSED
+

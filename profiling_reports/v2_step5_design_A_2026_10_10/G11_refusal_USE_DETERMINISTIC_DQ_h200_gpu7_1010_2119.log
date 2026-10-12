@@ -1,0 +1,20 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: v44 (USE_DETERMINISTIC_DQ=1)  |  quick: no
+
+stage-0 data: cannot open /home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin (set VARLEN_STAGE0_LABELS)
+
+===== VARLEN_ONLY=G11 (Step 5: design A backward) =====
+
+===== G11 design A backward: per-segment plan vs reference, alone, isolation (G9's inputs) =====
+  G10 refusal: bwd v44 (USE_DETERMINISTIC_DQ=1)             threw: gqa_flash_attn_backward_qkv: chats (packed rows, design A) needs the Hopper Vj1d path: causal, head_dim 128, T % 64 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset, and neither USE_FLASH=1 nor USE_DETERMINISTIC_DQ=1  PASS
+
+===== SUMMARY =====
+checks passed 1, failed 0, skipped groups 0   (2 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS

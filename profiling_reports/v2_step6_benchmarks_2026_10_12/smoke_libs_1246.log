@@ -1,0 +1,53 @@
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Memory efficient kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1240.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Memory Efficient attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:600.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Flash attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1242.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Flash Attention does not support non-null attn_mask. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:281.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: cuDNN attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1244.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: cuDNN attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:922.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 17) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_fwd_sm90FlashAttentionForwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmem_o_i641_0088'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 21) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_bwd_sm90FlashAttentionBackwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi641_Tenso'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+  [real_rows_752-759] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = 
+  [real_rows_752-759] sdpa flash mask unavailable: RuntimeError: No available kernel. Aborting execution.
+  [real_rows_752-759] torch_varlen failed in warm-up:
+/home/operator/gautam_k/step6/bench_step6_libs.py", line 184, in main
+    c.fwd(); c.bwd()
+    ^^^^^^^
+  File "/home/operator/gautam_k/step6/bench_step6_libs.py", line 131, in f
+    st["o"] = fwd_call(*leaf)
+              ^^^^^^^^^^^^^^^
+  File "/home/operator/gautam_k/step6/bench_step6_libs.py", line 144, in <lambda>
+    "torch_varlen", lambda a, b_, c: varlen_attn(a, b_, c, cu, cu, mx, mx, is_causal=True, scale=SCALE)
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: varlen_attn() got an unexpected keyword argument 'is_causal'
+
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=fwd med_ms=0.6659 p10_ms=0.5844 p90_ms=0.7075 tflops=318.9
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=bwd med_ms=1.6521 p10_ms=1.5927 p90_ms=1.6598 tflops=321.4
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=fwd med_ms=0.5177 p10_ms=0.5030 p90_ms=0.5264 tflops=410.2
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=bwd med_ms=1.8319 p10_ms=1.8266 p90_ms=1.8504 tflops=289.8
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=fwd med_ms=0.7117 p10_ms=0.6610 p90_ms=0.8130 tflops=298.4
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=bwd med_ms=1.5821 p10_ms=1.5553 p90_ms=1.5834 tflops=335.6
+BENCH layout=real_rows_752-759 impl=flex_docmask dir=fwd med_ms=1.0897 p10_ms=1.0346 p90_ms=1.0957 tflops=194.9
+BENCH layout=real_rows_752-759 impl=flex_docmask dir=bwd med_ms=2.4168 p10_ms=2.3019 p90_ms=2.4225 tflops=219.7
+BENCH layout=real_rows_752-759 impl=sdpa_flash_fullrow dir=fwd med_ms=1.9773 p10_ms=1.9653 p90_ms=1.9889 tflops=107.4
+BENCH layout=real_rows_752-759 impl=sdpa_flash_fullrow dir=bwd med_ms=6.2421 p10_ms=6.2334 p90_ms=6.2519 tflops=85.1
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_fullrow dir=fwd med_ms=1.1282 p10_ms=1.0979 p90_ms=1.1410 tflops=188.2
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_fullrow dir=bwd med_ms=3.2941 p10_ms=3.2843 p90_ms=3.3118 tflops=161.2
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_mask dir=fwd med_ms=3.9134 p10_ms=3.9131 p90_ms=3.9429 tflops=54.3
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_mask dir=bwd med_ms=10.7151 p10_ms=10.7048 p90_ms=10.7442 tflops=49.5
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_fullrow dir=fwd med_ms=3.7703 p10_ms=3.7523 p90_ms=3.7723 tflops=56.3
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_fullrow dir=bwd med_ms=12.8577 p10_ms=12.8189 p90_ms=12.8786 tflops=41.3
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_mask dir=fwd med_ms=9.7347 p10_ms=9.6995 p90_ms=9.7348 tflops=21.8
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_mask dir=bwd med_ms=26.2426 p10_ms=26.0717 p90_ms=26.2732 tflops=20.2
+AGREE layout=real_rows_752-759 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_752-759 flex_docmask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 1.562e-02
+AGREE layout=real_rows_752-759 sdpa_cudnn_mask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 sdpa_efficient_mask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 3.125e-02

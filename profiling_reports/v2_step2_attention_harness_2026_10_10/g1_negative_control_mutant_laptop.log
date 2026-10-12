@@ -1,0 +1,64 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA GeForce RTX 3060  sm_86  28 SMs  |  arch family Hopper: no  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+===== G1 reference self-test: GPU per-segment vs CPU full-row explicit mask =====
+  GQA G=2, T=320     truth O    max|gpu-cpu|/max|cpu| = 1.062e+00   uncovered 0   FAIL
+  GQA G=2, T=320     truth LSE  max|gpu-cpu|/max|cpu| = 1.078e+00   uncovered 0   FAIL
+  GQA G=2, T=320     truth dQ   max|gpu-cpu|/max|cpu| = 6.174e-01   uncovered 0   FAIL
+  GQA G=2, T=320     truth dK   max|gpu-cpu|/max|cpu| = 7.176e-01   uncovered 0   FAIL
+  GQA G=2, T=320     truth dV   max|gpu-cpu|/max|cpu| = 9.104e-01   uncovered 0   FAIL
+  GQA G=2, T=320     floor O    mismatches 250375 / 655360  worst bf16-ulp 8.640e+08   uncovered 0   FAIL
+  GQA G=2, T=320     floor LSE  mismatches 1960 / 5120  worst rel 1.293e+00   uncovered 0   FAIL
+  GQA G=2, T=320     floor dQ   mismatches 250373 / 655360  worst bf16-ulp 2.648e+07   uncovered 0   FAIL
+  GQA G=2, T=320     floor dK   mismatches 163487 / 327680  worst bf16-ulp 1.559e+32   uncovered 0   FAIL
+  GQA G=2, T=320     floor dV   mismatches 163449 / 327680  worst bf16-ulp 5.628e+32   uncovered 0   FAIL
+  (1.2 s)
+  MQA G=3, T=192     truth O    max|gpu-cpu|/max|cpu| = 1.394e+00   uncovered 0   FAIL
+  MQA G=3, T=192     truth LSE  max|gpu-cpu|/max|cpu| = 1.198e+00   uncovered 0   FAIL
+  MQA G=3, T=192     truth dQ   max|gpu-cpu|/max|cpu| = 6.768e-01   uncovered 0   FAIL
+  MQA G=3, T=192     truth dK   max|gpu-cpu|/max|cpu| = 8.602e-01   uncovered 0   FAIL
+  MQA G=3, T=192     truth dV   max|gpu-cpu|/max|cpu| = 1.150e+00   uncovered 0   FAIL
+  MQA G=3, T=192     floor O    mismatches 117423 / 147456  worst bf16-ulp 2.543e+07   uncovered 0   FAIL
+  MQA G=3, T=192     floor LSE  mismatches 957 / 1152  worst rel 1.878e+00   uncovered 0   FAIL
+  MQA G=3, T=192     floor dQ   mismatches 115792 / 147456  worst bf16-ulp 1.243e+08   uncovered 0   FAIL
+  MQA G=3, T=192     floor dK   mismatches 48205 / 49152  worst bf16-ulp 1.078e+32   uncovered 0   FAIL
+  MQA G=3, T=192     floor dV   mismatches 48214 / 49152  worst bf16-ulp 9.761e+31   uncovered 0   FAIL
+  (0.2 s)
+
+===== SUMMARY =====
+checks passed 0, failed 20, skipped groups 6   (1 s total)
+  FAIL  G1 GQA G=2, T=320 truth O
+  FAIL  G1 GQA G=2, T=320 truth LSE
+  FAIL  G1 GQA G=2, T=320 truth dQ
+  FAIL  G1 GQA G=2, T=320 truth dK
+  FAIL  G1 GQA G=2, T=320 truth dV
+  FAIL  G1 GQA G=2, T=320 floor O
+  FAIL  G1 GQA G=2, T=320 floor LSE
+  FAIL  G1 GQA G=2, T=320 floor dQ
+  FAIL  G1 GQA G=2, T=320 floor dK
+  FAIL  G1 GQA G=2, T=320 floor dV
+  FAIL  G1 MQA G=3, T=192 truth O
+  FAIL  G1 MQA G=3, T=192 truth LSE
+  FAIL  G1 MQA G=3, T=192 truth dQ
+  FAIL  G1 MQA G=3, T=192 truth dK
+  FAIL  G1 MQA G=3, T=192 truth dV
+  FAIL  G1 MQA G=3, T=192 floor O
+  FAIL  G1 MQA G=3, T=192 floor LSE
+  FAIL  G1 MQA G=3, T=192 floor dQ
+  FAIL  G1 MQA G=3, T=192 floor dK
+  FAIL  G1 MQA G=3, T=192 floor dV
+  SKIP  G2: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G3: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G4: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G5: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G6: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  SKIP  G7: kernels under test are Hopper-only (v62/Vj1d); this GPU is NVIDIA GeForce RTX 3060
+  PENDING (need the packed-row kernels, Steps 3-5):
+    B/A on packed rows vs the same per-chat reference (all data loads, all head configs)
+    isolation: change one chat's q/k/v/dO -> every other chat bitwise unchanged
+    same chat at offsets 0/1/63/64/65/127/128/end; zero-length entries; pad segments
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    varlen API rejections; non-varlen paths (Vj1, v44, generic, B300) must refuse chat info
+    tile-count check (debug build): tiles processed == host model
+FAILURES ABOVE

@@ -1,0 +1,9 @@
+O   checks  89 | same floor/inputs True | Vj2 error lower in 0, higher in 0, equal 89 | Vj2/Vj1d error: median 1.000, mean 1.000, worst 1.000 | max worst-ratio Vj1d 0.538 -> Vj2 0.538
+LSE checks  89 | same floor/inputs True | Vj2 error lower in 0, higher in 0, equal 89 | Vj2/Vj1d error: median 1.000, mean 1.000, worst 1.000 | max worst-ratio Vj1d 0.000 -> Vj2 0.000
+dQ  checks  84 | same floor/inputs False | Vj2 error lower in 53, higher in 20, equal 11 | Vj2/Vj1d error: median 0.904, mean 0.888, worst 1.555 | max worst-ratio Vj1d 1.156 -> Vj2 0.891
+dK  checks  84 | same floor/inputs False | Vj2 error lower in 54, higher in 24, equal 6 | Vj2/Vj1d error: median 0.923, mean 0.935, worst 1.907 | max worst-ratio Vj1d 0.834 -> Vj2 0.874
+dV  checks  89 | same floor/inputs True | Vj2 error lower in 0, higher in 0, equal 89 | Vj2/Vj1d error: median 1.000, mean 1.000, worst 1.000 | max worst-ratio Vj1d 0.956 -> Vj2 0.956
+
+# corrected comparison (worst ratio per check; the printed err/floor belong to the worst chat, which can differ):
+dQ: worst ratio (error / limit, max over the check's chats) -- Vj2 lower in 57, higher in 16, equal 11 of 84; Vj2/Vj1d median 0.910 mean 0.893; max Vj1d 1.156 -> Vj2 0.891
+dK: worst ratio (error / limit, max over the check's chats) -- Vj2 lower in 61, higher in 16, equal 7 of 84; Vj2/Vj1d median 0.913 mean 0.921; max Vj1d 0.834 -> Vj2 0.874

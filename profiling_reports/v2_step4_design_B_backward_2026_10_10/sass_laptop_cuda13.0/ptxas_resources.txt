@@ -1,0 +1,12 @@
+== ptxas -v, CUDA 13.0, sm_90a: ORIGINAL (git HEAD d96b991)
+ptxas info    : Compiling entry function 'gqa_bwd_vj1dILi64ELi64ELi128EEEv14CUtensorMap_stS3_S3_S3_S3_S3_S3_PKfS5_iiiiif' for 'sm_90a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 218 registers, used 1 barriers, 115216 bytes smem
+== NEW (dense = Lb0E, packed = Lb1E)
+ptxas info    : Compiling entry function 'gqa_bwd_vj1dILi64ELi64ELi128ELb0EEEv14CUtensorMap_stS3_S3_S3_S3_S3_S3_PKfS5_iiiiifPKi' for 'sm_90a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 218 registers, used 1 barriers, 115216 bytes smem
+ptxas info    : Compiling entry function 'gqa_bwd_vj1dILi64ELi64ELi128ELb1EEEv14CUtensorMap_stS3_S3_S3_S3_S3_S3_PKfS5_iiiiifPKi' for 'sm_90a'
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 236 registers, used 1 barriers, 115472 bytes smem
+== 2 CTAs/SM check: regs 236*32=7552 -> 7680/warp x4 = 30720/CTA, x2 = 61440 <= 65536; smem (115472+1024)*2 = 232992 <= 233472 (228 KB)

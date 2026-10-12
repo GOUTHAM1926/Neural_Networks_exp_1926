@@ -1,0 +1,3 @@
+Generating SQLite file /home/operator/gautam_k/step6/nsys_6b/ours_packed.sqlite from /home/operator/gautam_k/step6/nsys_6b/ours_packed.nsys-rep
+Processing [/home/operator/gautam_k/step6/nsys_6b/ours_packed.sqlite] with [/opt/nvidia/nsight-systems/2026.3.2/target-linux-x64/reports/cuda_gpu_kern_sum.py] to [/home/operator/gautam_k/step6/nsys_6b/ours_packed_cuda_gpu_kern_sum.csv]... PROCESSED
+

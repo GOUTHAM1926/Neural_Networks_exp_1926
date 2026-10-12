@@ -1,0 +1,113 @@
+pre-check GPU 7: processes 0 20:03:22; libtensor md5 aee7d24a
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+===== VARLEN_ONLY=G9 (Step 4: design B backward) =====
+
+===== G9 design B backward: packed rows (seg_start) vs the per-segment reference =====
+
+  ---- DIAG target: pad row 455 @4057 L=39 ----
+  ratios (2x rule)   dQ      dK      dV
+    packed         0.482   0.429   1.031
+    alone(dense)   0.482   0.429   1.031   (same inputs; t0 % 64 = 25 packed, 0 alone)
+  worst dV element (packed): kv head 5, segment token 0, dim 114
+    kernel 9.750000  model A (Vj1d) 9.750000  model B (fp32 head sum) 9.687500  truth 9.692801  floor 9.687500
+    |model A - kernel| 0.000e+00 (0 = the kernel did exactly its designed arithmetic here);  |kernel-truth| 5.720e-02 = 0.92 bf16 ulp;  |model B - truth| 5.301e-03;  |floor-truth| 5.301e-03
+
+  ---- DIAG target: pad row 492 @4094 L=2 ----
+  ratios (2x rule)   dQ      dK      dV
+    packed         1.062   0.685   0.427
+    alone(dense)   1.062   0.685   0.427   (same inputs; t0 % 64 = 62 packed, 0 alone)
+  worst dV element (packed): kv head 2, segment token 0, dim 125
+    kernel -5.125000  model A (Vj1d) -5.125000  model B (fp32 head sum) -5.093750  truth -5.102683  floor -5.093750
+    |model A - kernel| 0.000e+00 (0 = the kernel did exactly its designed arithmetic here);  |kernel-truth| 2.232e-02 = 0.71 bf16 ulp;  |model B - truth| 8.933e-03;  |floor-truth| 8.933e-03
+
+  ---- DIAG dQ: row 791, chat at 2998, L=1098 (batch row 7; kernel output row 7, token 2998, row length 4096) ----
+  (a) 3 re-runs of this chat: dQ ratio min 1.121  median 1.121  max 1.121  -> 3 of 3 above 1
+  (b) worst dQ element: head 17, chat token 1, dim 36: kernel -2.171875  truth -2.141064  floor -2.140625
+      |kernel-truth| 3.081e-02 = 1.97 bf16 ulp of the truth;  |floor-truth| there 4.388e-04;  floor max over the chat 1.374e-02
+  (c) row test at head 17 token 1 (keys 0..1): predicted dD = dO.(O_bf16 - O_exact) = -5.5203e-02, fitted from the error = -1.4365e-01
+      kernel error on this row: max 3.081e-02;  predicted coherent error max 1.013e-02;  cosine(error, prediction) 0.7720
+      after removing the prediction: max 2.693e-02   (floor's own max error on this row 1.374e-02)
+  (d) dS arithmetic models on this row (D_O = -5.055099, D_P = -4.999896, sum_j bf16(P_j) = 1.00195312):
+      model 0 Vj1d   (bf16 P, D from O): max |model - kernel| 0.000e+00   max |model - truth| 3.081e-02  (2.24 x the floor's row error)
+      model 1 FA3    (fp32 P, D from O): max |model - kernel| 3.125e-02   max |model - truth| 1.261e-02  (0.92 x the floor's row error)
+      model 2 fp32 P + consistent D   : max |model - kernel| 3.125e-02   max |model - truth| 1.261e-02  (0.92 x the floor's row error)
+  ---- end DIAG ----
+
+  (f) the same chat ALONE through today's dense kernels (same inputs, 3 runs): dQ ratio min 1.121  median 1.121  max 1.121  -> 3 above 1
+      packed vs alone (first runs): max |dQ difference| 3.906e-03
+
+  ---- DIAG target: chat row 791 @2998 L=1098 ----
+  ratios (2x rule)   dQ      dK      dV
+    packed         1.121   0.684   0.500
+    alone(dense)   1.121   0.684   0.500   (same inputs; t0 % 64 = 54 packed, 0 alone)
+  worst dV element (packed): kv head 0, segment token 0, dim 124
+    kernel 8.312500  model A (Vj1d) 8.312500  model B (fp32 head sum) 8.250000  truth 8.281211  floor 8.312500
+    |model A - kernel| 0.000e+00 (0 = the kernel did exactly its designed arithmetic here);  |kernel-truth| 3.129e-02 = 0.50 bf16 ulp;  |model B - truth| 3.121e-02;  |floor-truth| 3.129e-02
+
+  ---- DIAG target: chat row 1102 @3537 L=559 ----
+  ratios (2x rule)   dQ      dK      dV
+    packed         1.096   0.560   0.472
+    alone(dense)   1.096   0.560   0.472   (same inputs; t0 % 64 = 17 packed, 0 alone)
+  worst dV element (packed): kv head 5, segment token 3, dim 122
+    kernel 4.093750  model A (Vj1d) 4.093750  model B (fp32 head sum) 4.125000  truth 4.121719  floor 4.125000
+    |model A - kernel| 0.000e+00 (0 = the kernel did exactly its designed arithmetic here);  |kernel-truth| 2.797e-02 = 0.90 bf16 ulp;  |model B - truth| 3.281e-03;  |floor-truth| 3.281e-03
+
+  ---- DIAG target: chat row 1140 @2283 L=1141 ----
+  ratios (2x rule)   dQ      dK      dV
+    packed         0.531   0.360   1.171
+    alone(dense)   0.531   0.360   1.171   (same inputs; t0 % 64 = 43 packed, 0 alone)
+  worst dV element (packed): kv head 0, segment token 0, dim 103
+    kernel -8.125000  model A (Vj1d) -8.125000  model B (fp32 head sum) -8.187500  truth -8.188409  floor -8.187500
+    |model A - kernel| 0.000e+00 (0 = the kernel did exactly its designed arithmetic here);  |kernel-truth| 6.341e-02 = 1.01 bf16 ulp;  |model B - truth| 9.091e-04;  |floor-truth| 9.091e-04
+
+  ---- DIAG target: chat row 1262 @1005 L=1005 ----
+  ratios (2x rule)   dQ      dK      dV
+    packed         0.268   0.414   1.033
+    alone(dense)   0.268   0.414   1.033   (same inputs; t0 % 64 = 45 packed, 0 alone)
+  worst dV element (packed): kv head 3, segment token 1, dim 88
+    kernel 8.125000  model A (Vj1d) 8.125000  model B (fp32 head sum) 8.062500  truth 8.065626  floor 8.062500
+    |model A - kernel| 0.000e+00 (0 = the kernel did exactly its designed arithmetic here);  |kernel-truth| 5.937e-02 = 0.95 bf16 ulp;  |model B - truth| 3.126e-03;  |floor-truth| 3.126e-03
+
+  ---- DIAG target: chat row 1359 @1714 L=857 ----
+  ratios (2x rule)   dQ      dK      dV
+    packed         0.380   0.459   1.014
+    alone(dense)   0.380   0.459   1.014   (same inputs; t0 % 64 = 50 packed, 0 alone)
+  worst dV element (packed): kv head 4, segment token 0, dim 127
+    kernel 9.500000  model A (Vj1d) 9.500000  model B (fp32 head sum) 9.562500  truth 9.554019  floor 9.562500
+    |model A - kernel| 0.000e+00 (0 = the kernel did exactly its designed arithmetic here);  |kernel-truth| 5.402e-02 = 0.86 bf16 ulp;  |model B - truth| 8.481e-03;  |floor-truth| 8.481e-03
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     O    chats   227  worst ratio   0.457  (err 1.019e-02 vs floor 1.116e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.293 p90 0.350 p99 0.402 max 0.457]
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     LSE  chats   227  worst ratio   0.000  (err 9.878e-07 vs floor 4.318e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     dQ   chats   216  worst ratio   1.121  (err 3.081e-02 vs floor 1.374e-02)  fails 3 (known 0)  nan 0  FAIL  [p50 0.389 p90 0.531 p99 1.062 max 1.121]
+        FAIL:  pad row 492 @4094 L=2 (err 2.125e-02, floor 1.000e-02, nan 0)
+        FAIL:  chat row 791 @2998 L=1098 (err 3.081e-02, floor 1.374e-02, nan 0)
+        FAIL:  chat row 1102 @3537 L=559 (err 3.280e-02, floor 1.496e-02, nan 0)
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     dK   chats   216  worst ratio   0.745  (err 4.211e-02 vs floor 2.828e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.425 p90 0.555 p99 0.685 max 0.745]
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     dV   chats   227  worst ratio   1.171  (err 6.341e-02 vs floor 2.707e-02)  fails 4 (known 0)  nan 0  FAIL  [p50 0.482 p90 0.547 p99 1.031 max 1.171]
+        FAIL:  pad row 455 @4057 L=39 (err 5.720e-02, floor 2.774e-02, nan 0)
+        FAIL:  chat row 1140 @2283 L=1141 (err 6.341e-02, floor 2.707e-02, nan 0)
+        FAIL:  chat row 1262 @1005 L=1005 (err 5.937e-02, floor 2.873e-02, nan 0)
+        FAIL:  chat row 1359 @1714 L=857 (err 5.402e-02, floor 2.665e-02, nan 0)
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     1-token segments: 11 (exact dQ = dK = 0; truth exactly 0 for 11 of them, the rest use the 2x rule)
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     dQ   1-token  segs     11  worst |kernel|/bound 2.529e-03  (max |kernel| 1.311e-06)  fails 0  nan 0  PASS
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     dK   1-token  segs     11  worst |kernel|/bound 1.824e-03  (max |kernel| 1.557e-06)  fails 0  nan 0  PASS
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     227 segments (chats + pad tails), non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (13.8 s)
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     backward q-tile visits (host model): packed 41244 vs dense 116480 = 35.4%
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     56 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 7.812e-03)  PASS
+  G9 D10 stage-0 packed (rows 0-1516) 18/6     isolation incl. dO (7 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.062, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  VARLEN_DIAG_LIST set: repeat, timing and refusals skipped
+
+===== SUMMARY =====
+checks passed 8, failed 2, skipped groups 0   (14 s total)
+  FAIL  G9 D10 stage-0 packed (rows 0-1516) 18/6 dQ
+  FAIL  G9 D10 stage-0 packed (rows 0-1516) 18/6 dV
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    design A (per-chat offsets) forward + backward on the same data loads
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+FAILURES ABOVE (NEW, not on the known list)
+diag exit=1 20:03:43

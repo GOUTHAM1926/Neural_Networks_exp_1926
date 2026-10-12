@@ -1,0 +1,27 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+===== BENCH: ours (dense / B / A), fwd and bwd, interleaved =====
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=fwd med_ms=1.1264 p10_ms=1.0899 p90_ms=1.1400 tflops=188.5
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=bwd med_ms=4.2025 p10_ms=4.0828 p90_ms=4.2332 tflops=126.3
+BENCH layout=real_rows_752-759 impl=ours_B_segstart dir=fwd med_ms=0.5709 p10_ms=0.5514 p90_ms=0.5794 tflops=372.0
+BENCH layout=real_rows_752-759 impl=ours_B_segstart dir=bwd med_ms=1.9940 p10_ms=1.9412 p90_ms=2.0110 tflops=266.2
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=fwd med_ms=0.5351 p10_ms=0.5175 p90_ms=0.5364 tflops=396.9
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=bwd med_ms=1.9163 p10_ms=1.8721 p90_ms=1.9303 tflops=277.1
+  (free clocks; record nvidia-smi clocks next to it)
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (3 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS
+Collecting data...
+Generating '/tmp/nsys-operator/nsys-report-ad4a.qdstrm'
+[1/1] [0%                          ] ours_packed.nsys-rep[1/1] [0%                          ] ours_packed.nsys-rep[1/1] [1%                          ] ours_packed.nsys-rep[1/1] [2%                          ] ours_packed.nsys-rep[1/1] [5%                          ] ours_packed.nsys-rep[1/1] [12%                         ] ours_packed.nsys-rep[1/1] [14%                         ] ours_packed.nsys-rep[1/1] [=15%                        ] ours_packed.nsys-rep[1/1] [=16%                        ] ours_packed.nsys-rep[1/1] [=17%                        ] ours_packed.nsys-rep[1/1] [==18%                       ] ours_packed.nsys-rep[1/1] [==19%                       ] ours_packed.nsys-rep[1/1] [==20%                       ] ours_packed.nsys-rep[1/1] [====26%                     ] ours_packed.nsys-rep[1/1] [========40%                 ] ours_packed.nsys-rep[1/1] [=======================96%  ] ours_packed.nsys-rep[1/1] [========================98% ] ours_packed.nsys-rep[1/1] [========================100%] ours_packed.nsys-rep[1/1] [========================100%] ours_packed.nsys-rep
+Generated:
+	/home/operator/gautam_k/step6/nsys_6b/ours_packed.nsys-rep

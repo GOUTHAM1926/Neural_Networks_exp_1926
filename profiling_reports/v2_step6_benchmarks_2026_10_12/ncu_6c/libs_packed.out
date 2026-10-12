@@ -1,0 +1,21 @@
+==PROF== Connected to process 1851621 (/usr/bin/python3.12)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Memory efficient kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1240.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Memory Efficient attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:600.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Flash attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1242.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: Flash Attention does not support non-null attn_mask. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:281.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: cuDNN attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1244.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/home/operator/gautam_k/step6/bench_step6_libs.py:172: UserWarning: cuDNN attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:922.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "cudnn_generated_fort_native_sdpa_sm90_flash_fprop_wgmma_f16_knob_1_64x128x128_4x1x1_cga1x1x1_kernel0_0": 0%....50%....100% - 40 passes
+==PROF== Profiling "cudnn_generated_fort_native_sdpa_sm90_flash_fprop_wgmma_f16_knob_1_64x128x128_4x1x1_cga1x1x1_kernel0_0": 0%.==ERROR== Failed to profile "cudnn_generated_fort_native_s..." in process 1851621
+==PROF== Trying to shutdown target application
+==ERROR== The application returned an error code (15).
+==PROF== Report: /home/operator/gautam_k/step6/ncu_6c/libs_packed.ncu-repz

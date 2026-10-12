@@ -1,0 +1,240 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+===== VARLEN_ONLY=G8 (Step 3: design B forward only) =====
+
+===== G8 design B forward: packed rows (seg_start) vs the per-segment reference =====
+  G8 D2 2048+2048 18/6                         O    chats     2  worst ratio   0.351  (err 8.621e-03 vs floor 1.228e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 18/6                         LSE  chats     2  worst ratio   0.000  (err 1.259e-06 vs floor 7.582e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 18/6                         2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (4.2 s)
+  G8 D2 2048+2048 18/6                         2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D2 2048+2048 18/6                         isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D2 2048+2048 12/4                         O    chats     2  worst ratio   0.289  (err 8.211e-03 vs floor 1.418e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 12/4                         LSE  chats     2  worst ratio   0.000  (err 1.305e-06 vs floor 6.174e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 12/4                         2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.0 s)
+  G8 D2 2048+2048 12/4                         2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D2 2048+2048 12/4                         isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D2 2048+2048 8/8                          O    chats     2  worst ratio   0.321  (err 7.306e-03 vs floor 1.139e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 8/8                          LSE  chats     2  worst ratio   0.000  (err 1.157e-06 vs floor 5.968e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 8/8                          2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.0 s)
+  G8 D2 2048+2048 8/8                          2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D2 2048+2048 8/8                          isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D2 2048+2048 32/8                         O    chats     2  worst ratio   0.320  (err 8.630e-03 vs floor 1.350e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 32/8                         LSE  chats     2  worst ratio   0.000  (err 1.254e-06 vs floor 6.541e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 32/8                         2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (3.0 s)
+  G8 D2 2048+2048 32/8                         2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D2 2048+2048 32/8                         isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D2 2048+2048 8/1                          O    chats     2  worst ratio   0.371  (err 8.548e-03 vs floor 1.153e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 8/1                          LSE  chats     2  worst ratio   0.000  (err 1.351e-06 vs floor 6.307e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D2 2048+2048 8/1                          2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (0.5 s)
+  G8 D2 2048+2048 8/1                          2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D2 2048+2048 8/1                          isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D3 1000+3096 18/6                         O    chats     2  worst ratio   0.352  (err 9.490e-03 vs floor 1.349e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 18/6                         LSE  chats     2  worst ratio   0.000  (err 1.460e-06 vs floor 8.532e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 18/6                         2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.6 s)
+  G8 D3 1000+3096 18/6                         1 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D3 1000+3096 18/6                         isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D3 1000+3096 12/4                         O    chats     2  worst ratio   0.282  (err 6.945e-03 vs floor 1.230e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 12/4                         LSE  chats     2  worst ratio   0.000  (err 1.388e-06 vs floor 6.292e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 12/4                         2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.2 s)
+  G8 D3 1000+3096 12/4                         1 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D3 1000+3096 12/4                         isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D3 1000+3096 8/8                          O    chats     2  worst ratio   0.303  (err 7.681e-03 vs floor 1.268e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 8/8                          LSE  chats     2  worst ratio   0.000  (err 1.245e-06 vs floor 8.059e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 8/8                          2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.4 s)
+  G8 D3 1000+3096 8/8                          1 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D3 1000+3096 8/8                          isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D3 1000+3096 32/8                         O    chats     2  worst ratio   0.339  (err 9.145e-03 vs floor 1.350e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 32/8                         LSE  chats     2  worst ratio   0.000  (err 1.377e-06 vs floor 1.021e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 32/8                         2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.9 s)
+  G8 D3 1000+3096 32/8                         1 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D3 1000+3096 32/8                         isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D3 1000+3096 8/1                          O    chats     2  worst ratio   0.357  (err 8.066e-03 vs floor 1.131e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 8/1                          LSE  chats     2  worst ratio   0.000  (err 1.310e-06 vs floor 4.448e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D3 1000+3096 8/1                          2 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (0.6 s)
+  G8 D3 1000+3096 8/1                          1 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D3 1000+3096 8/1                          isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D4 1+4095, 4095+1 18/6                    O    chats     4  worst ratio   0.341  (err 9.283e-03 vs floor 1.362e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 18/6                    LSE  chats     4  worst ratio   0.000  (err 1.453e-06 vs floor 6.322e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 18/6                    4 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (3.5 s)
+  G8 D4 1+4095, 4095+1 18/6                    2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D4 1+4095, 4095+1 18/6                    isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D4 1+4095, 4095+1 12/4                    O    chats     4  worst ratio   0.334  (err 8.069e-03 vs floor 1.210e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 12/4                    LSE  chats     4  worst ratio   0.000  (err 1.552e-06 vs floor 6.920e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 12/4                    4 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (3.2 s)
+  G8 D4 1+4095, 4095+1 12/4                    2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D4 1+4095, 4095+1 12/4                    isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D4 1+4095, 4095+1 8/8                     O    chats     4  worst ratio   0.267  (err 7.161e-03 vs floor 1.343e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 8/8                     LSE  chats     4  worst ratio   0.000  (err 1.346e-06 vs floor 5.717e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 8/8                     4 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.4 s)
+  G8 D4 1+4095, 4095+1 8/8                     2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D4 1+4095, 4095+1 8/8                     isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D4 1+4095, 4095+1 32/8                    O    chats     4  worst ratio   0.335  (err 9.963e-03 vs floor 1.489e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 32/8                    LSE  chats     4  worst ratio   0.000  (err 1.519e-06 vs floor 7.889e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 32/8                    4 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (6.6 s)
+  G8 D4 1+4095, 4095+1 32/8                    2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D4 1+4095, 4095+1 32/8                    isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D4 1+4095, 4095+1 8/1                     O    chats     4  worst ratio   0.400  (err 9.471e-03 vs floor 1.185e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 8/1                     LSE  chats     4  worst ratio   0.000  (err 1.377e-06 vs floor 6.062e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D4 1+4095, 4095+1 8/1                     4 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.9 s)
+  G8 D4 1+4095, 4095+1 8/1                     2 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D4 1+4095, 4095+1 8/1                     isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D5 64x64, 32x128 18/6                     O    chats    96  worst ratio   0.416  (err 9.106e-03 vs floor 1.094e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.300 p90 0.356 p99 0.382 max 0.416]
+  G8 D5 64x64, 32x128 18/6                     LSE  chats    96  worst ratio   0.000  (err 8.463e-07 vs floor 5.425e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D5 64x64, 32x128 18/6                     96 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (6.2 s)
+  G8 D5 64x64, 32x128 18/6                     64 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D5 64x64, 32x128 18/6                     isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D5 64x64, 32x128 12/4                     O    chats    96  worst ratio   0.414  (err 8.915e-03 vs floor 1.078e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.305 p90 0.359 p99 0.383 max 0.414]
+  G8 D5 64x64, 32x128 12/4                     LSE  chats    96  worst ratio   0.000  (err 7.568e-07 vs floor 4.673e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D5 64x64, 32x128 12/4                     96 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (4.6 s)
+  G8 D5 64x64, 32x128 12/4                     64 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D5 64x64, 32x128 12/4                     isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D5 64x64, 32x128 8/8                      O    chats    96  worst ratio   0.457  (err 1.078e-02 vs floor 1.179e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.314 p90 0.407 p99 0.444 max 0.457]
+  G8 D5 64x64, 32x128 8/8                      LSE  chats    96  worst ratio   0.000  (err 6.203e-07 vs floor 3.904e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D5 64x64, 32x128 8/8                      96 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (5.1 s)
+  G8 D5 64x64, 32x128 8/8                      64 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D5 64x64, 32x128 8/8                      isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D5 64x64, 32x128 32/8                     O    chats    96  worst ratio   0.402  (err 1.021e-02 vs floor 1.270e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.287 p90 0.331 p99 0.385 max 0.402]
+  G8 D5 64x64, 32x128 32/8                     LSE  chats    96  worst ratio   0.000  (err 7.430e-07 vs floor 5.826e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D5 64x64, 32x128 32/8                     96 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (5.2 s)
+  G8 D5 64x64, 32x128 32/8                     64 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D5 64x64, 32x128 32/8                     isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D5 64x64, 32x128 8/1                      O    chats    96  worst ratio   0.441  (err 7.738e-03 vs floor 8.779e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.320 p90 0.391 p99 0.438 max 0.441]
+  G8 D5 64x64, 32x128 8/1                      LSE  chats    96  worst ratio   0.000  (err 8.334e-07 vs floor 4.232e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D5 64x64, 32x128 8/1                      96 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (4.6 s)
+  G8 D5 64x64, 32x128 8/1                      64 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D5 64x64, 32x128 8/1                      isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D6q 512 x 1 + pad 18/6                    O    chats   513  worst ratio   0.293  (err 7.688e-03 vs floor 1.311e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.293]
+  G8 D6q 512 x 1 + pad 18/6                    LSE  chats   513  worst ratio   0.000  (err 1.366e-06 vs floor 6.061e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D6q 512 x 1 + pad 18/6                    513 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (4.1 s)
+  G8 D6q 512 x 1 + pad 18/6                    4 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D6q 512 x 1 + pad 18/6                    isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D6q 512 x 1 + pad 12/4                    O    chats   513  worst ratio   0.276  (err 7.340e-03 vs floor 1.330e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.276]
+  G8 D6q 512 x 1 + pad 12/4                    LSE  chats   513  worst ratio   0.000  (err 1.402e-06 vs floor 5.810e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D6q 512 x 1 + pad 12/4                    513 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (6.5 s)
+  G8 D6q 512 x 1 + pad 12/4                    4 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D6q 512 x 1 + pad 12/4                    isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D6q 512 x 1 + pad 8/8                     O    chats   513  worst ratio   0.238  (err 7.297e-03 vs floor 1.532e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.238]
+  G8 D6q 512 x 1 + pad 8/8                     LSE  chats   513  worst ratio   0.000  (err 4.806e-07 vs floor 1.846e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D6q 512 x 1 + pad 8/8                     513 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (5.9 s)
+  G8 D6q 512 x 1 + pad 8/8                     4 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D6q 512 x 1 + pad 8/8                     isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D6q 512 x 1 + pad 32/8                    O    chats   513  worst ratio   0.350  (err 9.470e-03 vs floor 1.353e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.350]
+  G8 D6q 512 x 1 + pad 32/8                    LSE  chats   513  worst ratio   0.000  (err 1.399e-06 vs floor 7.818e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D6q 512 x 1 + pad 32/8                    513 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (4.8 s)
+  G8 D6q 512 x 1 + pad 32/8                    4 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D6q 512 x 1 + pad 32/8                    isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D6q 512 x 1 + pad 8/1                     O    chats   513  worst ratio   0.288  (err 7.625e-03 vs floor 1.322e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.288]
+  G8 D6q 512 x 1 + pad 8/1                     LSE  chats   513  worst ratio   0.000  (err 6.732e-07 vs floor 3.272e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D6q 512 x 1 + pad 8/1                     513 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (4.3 s)
+  G8 D6q 512 x 1 + pad 8/1                     4 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D6q 512 x 1 + pad 8/1                     isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D7 63/65/127/129/255/257 18/6             O    chats    29  worst ratio   0.384  (err 8.085e-03 vs floor 1.054e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.284 p90 0.348 p99 0.384 max 0.384]
+  G8 D7 63/65/127/129/255/257 18/6             LSE  chats    29  worst ratio   0.000  (err 9.443e-07 vs floor 5.900e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D7 63/65/127/129/255/257 18/6             29 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.8 s)
+  G8 D7 63/65/127/129/255/257 18/6             14 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D7 63/65/127/129/255/257 18/6             isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D7 63/65/127/129/255/257 12/4             O    chats    29  worst ratio   0.394  (err 7.768e-03 vs floor 9.857e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.287 p90 0.349 p99 0.394 max 0.394]
+  G8 D7 63/65/127/129/255/257 12/4             LSE  chats    29  worst ratio   0.000  (err 7.746e-07 vs floor 4.168e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D7 63/65/127/129/255/257 12/4             29 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.7 s)
+  G8 D7 63/65/127/129/255/257 12/4             14 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D7 63/65/127/129/255/257 12/4             isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D7 63/65/127/129/255/257 8/8              O    chats    29  worst ratio   0.422  (err 8.718e-03 vs floor 1.033e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.302 p90 0.352 p99 0.422 max 0.422]
+  G8 D7 63/65/127/129/255/257 8/8              LSE  chats    29  worst ratio   0.000  (err 8.129e-07 vs floor 4.477e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D7 63/65/127/129/255/257 8/8              29 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.0 s)
+  G8 D7 63/65/127/129/255/257 8/8              14 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D7 63/65/127/129/255/257 8/8              isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D7 63/65/127/129/255/257 32/8             O    chats    29  worst ratio   0.367  (err 9.316e-03 vs floor 1.269e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.291 p90 0.330 p99 0.367 max 0.367]
+  G8 D7 63/65/127/129/255/257 32/8             LSE  chats    29  worst ratio   0.000  (err 8.445e-07 vs floor 6.259e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D7 63/65/127/129/255/257 32/8             29 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.7 s)
+  G8 D7 63/65/127/129/255/257 32/8             14 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D7 63/65/127/129/255/257 32/8             isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D7 63/65/127/129/255/257 8/1              O    chats    29  worst ratio   0.406  (err 7.654e-03 vs floor 9.429e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.305 p90 0.357 p99 0.406 max 0.406]
+  G8 D7 63/65/127/129/255/257 8/1              LSE  chats    29  worst ratio   0.000  (err 6.713e-07 vs floor 3.975e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D7 63/65/127/129/255/257 8/1              29 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.1 s)
+  G8 D7 63/65/127/129/255/257 8/1              14 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D7 63/65/127/129/255/257 8/1              isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D8 random + pad tails 18/6                O    chats    46  worst ratio   0.441  (err 9.441e-03 vs floor 1.071e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.292 p90 0.359 p99 0.441 max 0.441]
+  G8 D8 random + pad tails 18/6                LSE  chats    46  worst ratio   0.000  (err 1.032e-06 vs floor 5.013e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D8 random + pad tails 18/6                46 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.7 s)
+  G8 D8 random + pad tails 18/6                8 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D8 random + pad tails 18/6                isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D8 random + pad tails 12/4                O    chats    46  worst ratio   0.422  (err 8.047e-03 vs floor 9.523e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.302 p90 0.377 p99 0.422 max 0.422]
+  G8 D8 random + pad tails 12/4                LSE  chats    46  worst ratio   0.000  (err 1.138e-06 vs floor 4.517e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D8 random + pad tails 12/4                46 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.0 s)
+  G8 D8 random + pad tails 12/4                8 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D8 random + pad tails 12/4                isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D8 random + pad tails 8/8                 O    chats    46  worst ratio   0.415  (err 8.804e-03 vs floor 1.062e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.317 p90 0.369 p99 0.415 max 0.415]
+  G8 D8 random + pad tails 8/8                 LSE  chats    46  worst ratio   0.000  (err 9.144e-07 vs floor 4.081e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D8 random + pad tails 8/8                 46 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.6 s)
+  G8 D8 random + pad tails 8/8                 8 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D8 random + pad tails 8/8                 isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D8 random + pad tails 32/8                O    chats    46  worst ratio   0.401  (err 1.100e-02 vs floor 1.372e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.285 p90 0.352 p99 0.401 max 0.401]
+  G8 D8 random + pad tails 32/8                LSE  chats    46  worst ratio   0.000  (err 1.031e-06 vs floor 5.554e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D8 random + pad tails 32/8                46 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (3.1 s)
+  G8 D8 random + pad tails 32/8                8 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D8 random + pad tails 32/8                isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D8 random + pad tails 8/1                 O    chats    46  worst ratio   0.452  (err 9.213e-03 vs floor 1.020e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.297 p90 0.366 p99 0.452 max 0.452]
+  G8 D8 random + pad tails 8/1                 LSE  chats    46  worst ratio   0.000  (err 9.312e-07 vs floor 4.526e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D8 random + pad tails 8/1                 46 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.0 s)
+  G8 D8 random + pad tails 8/1                 8 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D8 random + pad tails 8/1                 isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D9 all pad 18/6                           O    chats     1  worst ratio   0.277  (err 7.907e-03 vs floor 1.427e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 18/6                           LSE  chats     1  worst ratio   0.000  (err 1.561e-06 vs floor 7.612e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 18/6                           1 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.0 s)
+  G8 D9 all pad 12/4                           O    chats     1  worst ratio   0.308  (err 7.909e-03 vs floor 1.284e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 12/4                           LSE  chats     1  worst ratio   0.000  (err 1.435e-06 vs floor 4.994e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 12/4                           1 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.2 s)
+  G8 D9 all pad 8/8                            O    chats     1  worst ratio   0.282  (err 7.551e-03 vs floor 1.341e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 8/8                            LSE  chats     1  worst ratio   0.000  (err 1.441e-06 vs floor 6.904e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 8/8                            1 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (0.5 s)
+  G8 D9 all pad 32/8                           O    chats     1  worst ratio   0.228  (err 7.890e-03 vs floor 1.727e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 32/8                           LSE  chats     1  worst ratio   0.000  (err 1.476e-06 vs floor 7.436e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 32/8                           1 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.6 s)
+  G8 D9 all pad 8/1                            O    chats     1  worst ratio   0.320  (err 7.541e-03 vs floor 1.178e-02)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 8/1                            LSE  chats     1  worst ratio   0.000  (err 1.405e-06 vs floor 6.237e-03)  fails 0 (known 0)  nan 0  PASS
+  G8 D9 all pad 8/1                            1 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (1.8 s)
+  G8 D11 offsets 18/6                          O    chats    22  worst ratio   0.365  (err 9.379e-03 vs floor 1.285e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.276 p90 0.348 p99 0.365 max 0.365]
+  G8 D11 offsets 18/6                          LSE  chats    22  worst ratio   0.000  (err 1.462e-06 vs floor 5.707e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D11 offsets 18/6                          22 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (5.5 s)
+  G8 D11 offsets 18/6                          9 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D11 offsets 18/6                          isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D11 offsets 12/4                          O    chats    22  worst ratio   0.396  (err 9.018e-03 vs floor 1.138e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.308 p90 0.372 p99 0.396 max 0.396]
+  G8 D11 offsets 12/4                          LSE  chats    22  worst ratio   0.000  (err 1.504e-06 vs floor 5.533e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D11 offsets 12/4                          22 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (4.0 s)
+  G8 D11 offsets 12/4                          9 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D11 offsets 12/4                          isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D11 offsets 8/8                           O    chats    22  worst ratio   0.393  (err 7.652e-03 vs floor 9.735e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.326 p90 0.372 p99 0.393 max 0.393]
+  G8 D11 offsets 8/8                           LSE  chats    22  worst ratio   0.000  (err 1.500e-06 vs floor 4.868e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D11 offsets 8/8                           22 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (2.6 s)
+  G8 D11 offsets 8/8                           9 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D11 offsets 8/8                           isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D11 offsets 32/8                          O    chats    22  worst ratio   0.339  (err 9.403e-03 vs floor 1.385e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.280 p90 0.320 p99 0.339 max 0.339]
+  G8 D11 offsets 32/8                          LSE  chats    22  worst ratio   0.000  (err 1.575e-06 vs floor 7.540e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D11 offsets 32/8                          22 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (5.6 s)
+  G8 D11 offsets 32/8                          9 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D11 offsets 32/8                          isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D11 offsets 8/1                           O    chats    22  worst ratio   0.403  (err 8.292e-03 vs floor 1.030e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.315 p90 0.383 p99 0.403 max 0.403]
+  G8 D11 offsets 8/1                           LSE  chats    22  worst ratio   0.000  (err 1.372e-06 vs floor 4.323e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D11 offsets 8/1                           22 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (3.7 s)
+  G8 D11 offsets 8/1                           9 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D11 offsets 8/1                           isolation (1 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 D10 stage-0 packed (rows 0-1516) 18/6     O    chats  5478  worst ratio   0.500  (err 1.548e-02 vs floor 1.548e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.293 p90 0.350 p99 0.414 max 0.500]
+  G8 D10 stage-0 packed (rows 0-1516) 18/6     LSE  chats  5478  worst ratio   0.000  (err 1.159e-06 vs floor 4.128e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G8 D10 stage-0 packed (rows 0-1516) 18/6     5478 segments (chats + pad tails), non-finite/unwritten O+LSE 0 PASS  (740.4 s)
+  G8 D10 stage-0 packed (rows 0-1516) 18/6     1541 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE mismatched elements 0  PASS
+  G8 D10 stage-0 packed (rows 0-1516) 18/6     isolation (190 runs): other segments' O/LSE mismatched elements 0, changed chat unchanged in 0 run(s)  PASS
+  G8 refusal: is_causal = false                  threw: gqa_flash_attn_forward_qkv: seg_start (packed rows) needs the Hopper v62 path: causal, head_dim 128, T % 256 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset  PASS
+  G8 refusal: head_dim 64                        threw: gqa_flash_attn_forward_qkv: seg_start (packed rows) needs the Hopper v62 path: causal, head_dim 128, T % 256 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset  PASS
+  G8 refusal: T = 320 (not a multiple of 256)    threw: gqa_flash_attn_forward_qkv: seg_start (packed rows) needs the Hopper v62 path: causal, head_dim 128, T % 256 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset  PASS
+
+===== SUMMARY =====
+checks passed 223, failed 0, skipped groups 0   (878 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS

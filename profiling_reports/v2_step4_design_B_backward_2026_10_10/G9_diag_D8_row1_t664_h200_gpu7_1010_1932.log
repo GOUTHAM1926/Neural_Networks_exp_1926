@@ -1,0 +1,54 @@
+pre-check GPU 7: processes 0, memory 0 MiB
+19:32:58
+exit=1
+19:33:57
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: yes
+
+stage-0 data: cannot open /home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin (set VARLEN_STAGE0_LABELS)
+
+===== VARLEN_ONLY=G9 (Step 4: design B backward) =====
+
+===== G9 design B backward: packed rows (seg_start) vs the per-segment reference =====
+
+  ---- DIAG dQ: row 1, chat at 664, L=303 (batch row 1; kernel output row 1, token 664, row length 4096) ----
+  (a) 50 re-runs of this chat: dQ ratio min 1.049  median 1.049  max 1.049  -> 50 of 50 above 1
+  (b) worst dQ element: head 0, chat token 2, dim 67: kernel 4.375000  truth 4.405976  floor 4.406250
+      |kernel-truth| 3.098e-02 = 0.99 bf16 ulp of the truth;  |floor-truth| there 2.745e-04;  floor max over the chat 1.476e-02
+  (c) row test at head 0 token 2 (keys 0..2): predicted dD = dO.(O_bf16 - O_exact) = -2.6457e-02, fitted from the error = -6.9000e-02
+      kernel error on this row: max 3.098e-02;  predicted coherent error max 4.538e-03;  cosine(error, prediction) 0.5505
+      after removing the prediction: max 3.014e-02   (floor's own max error on this row 1.339e-02)
+  (d) dS arithmetic models on this row (D_O = 12.908970, D_P = 12.935425, sum_j bf16(P_j) = 0.99902344):
+      model 0 Vj1d   (bf16 P, D from O): max |model - kernel| 0.000e+00   max |model - truth| 3.098e-02  (2.31 x the floor's row error)
+      model 1 FA3    (fp32 P, D from O): max |model - kernel| 3.125e-02   max |model - truth| 9.904e-03  (0.74 x the floor's row error)
+      model 2 fp32 P + consistent D   : max |model - kernel| 3.125e-02   max |model - truth| 9.904e-03  (0.74 x the floor's row error)
+  ---- end DIAG ----
+
+  (f) the same chat ALONE through today's dense kernels (same inputs, 50 runs): dQ ratio min 1.049  median 1.049  max 1.049  -> 50 above 1
+      packed vs alone (first runs): max |dQ difference| 3.906e-03
+  G9 D8 random + pad tails 18/6                O    chats    46  worst ratio   0.410  (err 9.469e-03 vs floor 1.155e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.290 p90 0.338 p99 0.410 max 0.410]
+  G9 D8 random + pad tails 18/6                LSE  chats    46  worst ratio   0.000  (err 9.455e-07 vs floor 5.008e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G9 D8 random + pad tails 18/6                dQ   chats    45  worst ratio   1.049  (err 3.098e-02 vs floor 1.476e-02)  fails 1 (known 0)  nan 0  FAIL  [p50 0.413 p90 0.550 p99 1.049 max 1.049]
+        FAIL:  chat row 1 @664 L=303 (err 3.098e-02, floor 1.476e-02, nan 0)
+  G9 D8 random + pad tails 18/6                dK   chats    45  worst ratio   0.571  (err 2.195e-02 vs floor 1.922e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.436 p90 0.550 p99 0.571 max 0.571]
+  G9 D8 random + pad tails 18/6                dV   chats    46  worst ratio   0.864  (err 4.352e-02 vs floor 2.517e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.485 p90 0.596 p99 0.864 max 0.864]
+  G9 D8 random + pad tails 18/6                1-token segments: 1 (exact dQ = dK = 0; truth exactly 0 for 1 of them, the rest use the 2x rule)
+  G9 D8 random + pad tails 18/6                dQ   1-token  segs      1  worst |kernel|/bound 1.205e-03  (max |kernel| 8.009e-07)  fails 0  nan 0  PASS
+  G9 D8 random + pad tails 18/6                dK   1-token  segs      1  worst |kernel|/bound 1.190e-03  (max |kernel| 1.132e-06)  fails 0  nan 0  PASS
+  G9 D8 random + pad tails 18/6                46 segments (chats + pad tails), non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (47.8 s)
+  G9 D8 random + pad tails 18/6                backward q-tile visits (host model): packed 3904 vs dense 14560 = 26.8%
+  G9 D8 random + pad tails 18/6                8 chats at t0 % 128 == 0: packed vs alone (dense) -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.562e-02)  PASS
+  G9 D8 random + pad tails 18/6                isolation incl. dO (1 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  VARLEN_CASE=D8: D10, repeat, timing and refusals skipped
+
+===== SUMMARY =====
+checks passed 9, failed 1, skipped groups 0   (48 s total)
+  FAIL  G9 D8 random + pad tails 18/6 dQ
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    design A (per-chat offsets) forward + backward on the same data loads
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+FAILURES ABOVE (NEW, not on the known list)

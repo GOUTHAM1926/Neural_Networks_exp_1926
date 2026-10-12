@@ -1,0 +1,58 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+===== BENCH: ours (dense / B / A), fwd and bwd, interleaved =====
+BENCH layout=real_rows_0-7 impl=ours_dense_fullrow dir=fwd med_ms=1.1380 p10_ms=1.1371 p90_ms=1.1381 tflops=492.3
+BENCH layout=real_rows_0-7 impl=ours_dense_fullrow dir=bwd med_ms=4.2207 p10_ms=4.2205 p90_ms=4.2526 tflops=331.8
+BENCH layout=real_rows_0-7 impl=ours_B_segstart dir=fwd med_ms=1.1650 p10_ms=1.1591 p90_ms=1.1689 tflops=480.9
+BENCH layout=real_rows_0-7 impl=ours_B_segstart dir=bwd med_ms=4.1482 p10_ms=4.1377 p90_ms=4.1729 tflops=337.6
+BENCH layout=real_rows_0-7 impl=ours_A_plan dir=fwd med_ms=1.1173 p10_ms=1.1097 p90_ms=1.1187 tflops=501.4
+BENCH layout=real_rows_0-7 impl=ours_A_plan dir=bwd med_ms=3.9254 p10_ms=3.9236 p90_ms=3.9519 tflops=356.8
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=fwd med_ms=1.1356 p10_ms=1.1344 p90_ms=1.1378 tflops=187.0
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=bwd med_ms=4.2511 p10_ms=4.2413 p90_ms=4.2569 tflops=124.9
+BENCH layout=real_rows_752-759 impl=ours_B_segstart dir=fwd med_ms=0.5794 p10_ms=0.5754 p90_ms=0.5796 tflops=366.5
+BENCH layout=real_rows_752-759 impl=ours_B_segstart dir=bwd med_ms=2.0093 p10_ms=2.0061 p90_ms=2.0115 tflops=264.2
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=fwd med_ms=0.5399 p10_ms=0.5390 p90_ms=0.5402 tflops=393.3
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=bwd med_ms=1.9171 p10_ms=1.9167 p90_ms=1.9189 tflops=276.9
+BENCH layout=real_rows_1504-1511 impl=ours_dense_fullrow dir=fwd med_ms=1.1036 p10_ms=1.0826 p90_ms=1.1087 tflops=60.7
+BENCH layout=real_rows_1504-1511 impl=ours_dense_fullrow dir=bwd med_ms=4.1570 p10_ms=4.0443 p90_ms=4.1703 tflops=40.3
+BENCH layout=real_rows_1504-1511 impl=ours_B_segstart dir=fwd med_ms=0.3785 p10_ms=0.3722 p90_ms=0.3790 tflops=177.0
+BENCH layout=real_rows_1504-1511 impl=ours_B_segstart dir=bwd med_ms=1.1340 p10_ms=1.1134 p90_ms=1.1341 tflops=147.7
+BENCH layout=real_rows_1504-1511 impl=ours_A_plan dir=fwd med_ms=0.3188 p10_ms=0.3109 p90_ms=0.3360 tflops=210.1
+BENCH layout=real_rows_1504-1511 impl=ours_A_plan dir=bwd med_ms=1.1627 p10_ms=1.1517 p90_ms=1.1651 tflops=144.0
+BENCH layout=uniform_512 impl=ours_dense_fullrow dir=fwd med_ms=1.1180 p10_ms=1.1102 p90_ms=1.1234 tflops=69.1
+BENCH layout=uniform_512 impl=ours_dense_fullrow dir=bwd med_ms=4.1854 p10_ms=4.1783 p90_ms=4.1950 tflops=46.2
+BENCH layout=uniform_512 impl=ours_B_segstart dir=fwd med_ms=0.3165 p10_ms=0.3160 p90_ms=0.3171 tflops=244.3
+BENCH layout=uniform_512 impl=ours_B_segstart dir=bwd med_ms=1.0928 p10_ms=1.0921 p90_ms=1.0957 tflops=176.9
+BENCH layout=uniform_512 impl=ours_A_plan dir=fwd med_ms=0.2937 p10_ms=0.2915 p90_ms=0.2951 tflops=263.2
+BENCH layout=uniform_512 impl=ours_A_plan dir=bwd med_ms=1.1349 p10_ms=1.1347 p90_ms=1.1360 tflops=170.3
+BENCH layout=uniform_1024 impl=ours_dense_fullrow dir=fwd med_ms=1.1258 p10_ms=1.1222 p90_ms=1.1335 tflops=137.3
+BENCH layout=uniform_1024 impl=ours_dense_fullrow dir=bwd med_ms=4.1915 p10_ms=4.1869 p90_ms=4.2022 tflops=92.2
+BENCH layout=uniform_1024 impl=ours_B_segstart dir=fwd med_ms=0.4378 p10_ms=0.4371 p90_ms=0.4378 tflops=353.2
+BENCH layout=uniform_1024 impl=ours_B_segstart dir=bwd med_ms=1.5637 p10_ms=1.5586 p90_ms=1.5644 tflops=247.2
+BENCH layout=uniform_1024 impl=ours_A_plan dir=fwd med_ms=0.4188 p10_ms=0.4167 p90_ms=0.4189 tflops=369.2
+BENCH layout=uniform_1024 impl=ours_A_plan dir=bwd med_ms=1.5271 p10_ms=1.5265 p90_ms=1.5309 tflops=253.1
+BENCH layout=uniform_2048 impl=ours_dense_fullrow dir=fwd med_ms=1.1368 p10_ms=1.1286 p90_ms=1.1374 tflops=272.0
+BENCH layout=uniform_2048 impl=ours_dense_fullrow dir=bwd med_ms=4.2540 p10_ms=4.2253 p90_ms=4.2604 tflops=181.7
+BENCH layout=uniform_2048 impl=ours_B_segstart dir=fwd med_ms=0.6766 p10_ms=0.6757 p90_ms=0.6821 tflops=457.0
+BENCH layout=uniform_2048 impl=ours_B_segstart dir=bwd med_ms=2.5392 p10_ms=2.5216 p90_ms=2.5412 tflops=304.5
+BENCH layout=uniform_2048 impl=ours_A_plan dir=fwd med_ms=0.6677 p10_ms=0.6602 p90_ms=0.6699 tflops=463.2
+BENCH layout=uniform_2048 impl=ours_A_plan dir=bwd med_ms=2.4273 p10_ms=2.4128 p90_ms=2.4341 tflops=318.5
+BENCH layout=uniform_4096 impl=ours_dense_fullrow dir=fwd med_ms=1.1433 p10_ms=1.1285 p90_ms=1.1724 tflops=541.0
+BENCH layout=uniform_4096 impl=ours_dense_fullrow dir=bwd med_ms=4.2287 p10_ms=4.2230 p90_ms=4.2880 tflops=365.6
+BENCH layout=uniform_4096 impl=ours_B_segstart dir=fwd med_ms=1.1629 p10_ms=1.1536 p90_ms=1.1658 tflops=531.8
+BENCH layout=uniform_4096 impl=ours_B_segstart dir=bwd med_ms=4.4293 p10_ms=4.4291 p90_ms=4.4701 tflops=349.1
+BENCH layout=uniform_4096 impl=ours_A_plan dir=fwd med_ms=1.1358 p10_ms=1.1330 p90_ms=1.1493 tflops=544.5
+BENCH layout=uniform_4096 impl=ours_A_plan dir=bwd med_ms=4.2044 p10_ms=4.2029 p90_ms=4.2368 tflops=367.8
+  (free clocks; record nvidia-smi clocks next to it)
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (6 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS

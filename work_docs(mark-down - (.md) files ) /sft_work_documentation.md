@@ -3425,7 +3425,15 @@ All clones are under `~/Downloads/sft_research/`, except PyTorch, which is at `~
   - the kernel runs a loop over partial blocks (mask applied) and a loop over full blocks (no mask) (`flex_attention.py.jinja:129-180`; `common.py.jinja:67-81`);
   - splitting out the full blocks is "about a 15% speedup" for causal;
   - `BACKEND='FLASH'` passes the same block mask to FA4.
-- **torchtitan:** a chat id from `positions == 0`; the fast causal mask is `kv_idx >= chat_start[chat_id[q_idx]]` (`models/common/attention.py:467-530`). It can also use PyTorch's varlen (`:39-41, 598+`).
+- **torchtitan** uses **both** designs. It picks one per model with a config string (`models/common/config_utils.py:96-115`):
+  - `"varlen"` = design A, PyTorch's `varlen_attn` (`attention.py:39-41, 132+`);
+  - `"flex"` = design B, the Triton kernel;
+  - `"flex_flash"` = design B, FA4, Hopper/Blackwell only;
+  - `"sdpa"` is rejected for language models, because it "cannot consume per-document positions".
+  - Model defaults: varlen for Qwen3 8B and the gpt-oss debug model; flex for DeepSeek-V3, Kimi and muse_glimmer. Kimi needs flex: "Kimi QK clipping requires the FlexInnerAttention backend" (`models/kimi_k2_7/__init__.py:196-198`).
+  - Masks for flex: a chat id from `positions == 0`, and the fast causal mask `kv_idx >= chat_start[chat_id[q_idx]]` (`attention.py:467-530`).
+- **PyTorch itself provides both designs:** `varlen_attn` (A) and FlexAttention (B). torchtitan is a user of PyTorch, not a separate kernel source.
+- torchtitan calls `varlen_attn(..., window_size=...)`, which our PyTorch clone (2025-12-05) does not have. So torchtitan targets a newer PyTorch nightly, and the kernel behind `varlen_attn` there is not visible in our clone. In our clone it is FA2.
 
 **The frameworks only prepare data and call the kernels above:**
 - **Megatron:**
@@ -3620,3 +3628,549 @@ PyTorch has both: `varlen_attn` (A, the FA2 kernels) and FlexAttention (B). A is
 4. Optional: the nsys run for the loss benchmark. Copy `bench_run1.log` back.
 5. The shared doc tab: change "1–5" chats per row to "1–12" (kernel section, Step 5).
 6. Later: benchmark the loss kernel vs PyTorch / Liger / Apple CCE; Q11; Q4, Q5, Q6, Q12, Q13.
+
+## 40. 2026-10-10: v2 steps 0–5 — per-chat RoPE positions, the attention test harness, design B and design A inside our kernels (forward + backward), a backward sync fix, precision findings, speed
+
+### 40.1 What v2 needs, and the decisions taken
+
+- **v1** puts one chat in each 4096-token row and fills the rest with padding: 5000 stage-0 chats = 5000 rows.
+- **v2** packs several whole chats into one row: the same 5000 chats (6,188,911 tokens) fit in **1517 rows** (the minimum possible is 1511), 1–12 chats per row, mean 3.3. That is 3.3x fewer rows per epoch.
+- Only two parts of the model must change:
+  1. **attention:** a token may see only the earlier tokens of its own chat, never another chat in the same row (block-diagonal causal);
+  2. **RoPE positions:** they must restart at 0 at every chat start.
+- The industry has two ways to tell the attention kernel where the chats are (same math, different speed and code):
+  - **design A, per-chat offsets** (the `cu_seqlens` / "varlen" way): the kernel gets a list (row, start, length) and cuts its work per chat;
+  - **design B, packed row + chat mask:** the kernel gets one number per token, the start of that token's chat (`seg_start`), cuts its work per row and masks chat borders.
+- Decisions (user, 10-10):
+  - build **both** inside our own kernels as compile-time variants, test them on the same data, keep the faster one or both (as PyTorch and torchtitan do);
+  - the normal (dense) kernels must stay exactly as they are: proven by comparing compiled SASS before/after;
+  - every change is checked against the reference sources and proven before moving on;
+  - known precision limits of today's backward are kept for now, watched in every run, and decided at the end;
+  - no GPU run without the user's OK, with the expected duration stated first.
+
+### 40.2 Who uses which design (checked in the source, our clones under `~/Downloads/sft_research/`)
+
+| Framework | Packed-SFT attention | Evidence |
+|---|---|---|
+| TRL (SFT trainer) | A. The default packing `bfd` turns on padding-free; positions restart per chat; TRL warns unless the attention is FlashAttention | `trl/trainer/sft_trainer.py:1180-1202`, `489-550` |
+| HF transformers | A on the FlashAttention path (`cu_seqlens` built from positions); B on the SDPA / eager / Flex paths (same-chat mask per token) | `modeling_flash_attention_utils.py:480-517`; `masking_utils.py:183-189, 734-763` |
+| Megatron-LM | A: `PackedSeqParams` with `cu_seqlens_q`, `cu_seqlens_q_padded` | `megatron/core/packed_seq_params.py:10-46` |
+| TransformerEngine (cuDNN) | A: `qkv_format="thd"` + `cu_seqlens` | `dot_product_attention.py:470, 550, 2445` |
+| torchtitan | both: `VarlenInnerAttention` (A) and `FlexInnerAttention` with a document mask (B) | `models/common/attention.py:132, 177, 228, 467, 598` |
+
+- Why A is the common choice: the fast kernels these frameworks call (FlashAttention, cuDNN) take per-sequence offsets. The "B" they get through SDPA is a full mask that computes every tile; the fast B is Flex, which skips fully masked blocks.
+- Our B skips tiles like Flex, so it already gets the speed benefit. A was still built because it is the industry-standard form and it can be faster (no tile shared by two chats, per-chat scheduling).
+
+### 40.3 Step 0: the base
+
+- The user ran `git ls-remote` on the box: `dist_side_merge` = 909ab750 (BluTrain) and d96b991a (Tensor-Implementations), the same as my laptop base.
+- All v2 work is on the laptop in `~/Downloads/BluTrain_sft` (uncommitted; the user commits). The box copy is `~/gautam_k/v2_work` (a separate copy, so the user's own `~/gautam_k/BluTrain_sft` and its running library are untouched). Box build: `export PATH=/usr/local/cuda/bin:$PATH; make -j$(nproc) tensor SM_ARCH=90` (box CUDA 13.4).
+
+### 40.4 Step 1: per-token RoPE positions (done)
+
+- What I changed: the fused RMSNorm+RoPE kernels take an optional per-token `positions` array (template `HAS_POS`), so positions can restart at every chat start. 11 Tensor-Implementations files: `FusedRMSRoPEKernels.h`, `FusedRMSRoPE_{fwd,bwd}_sm90{,_kernel}.cu`, `Normalizations.h/.cpp` (validation helper `fused_rms_rope_positions_ptr`), `NormalizationOps.h/.cpp`, `NormalizationBackward.h/.cpp` (`positions_` member).
+- Proof the old path is unchanged: SASS of 13/13 original kernels identical to the new `HAS_POS=false` instantiations (laptop CUDA 13.0 and the box's real objects, CUDA 13.4). The positions-on versions differ (+16 to +40 instructions, extra loads), so the check is not vacuous.
+- Test `Tests/kernel_tests/test_rope_positions.cu`, 37 cases: 37/37 on the laptop RTX 3060, on H200 GPU 7 (sm90 dispatch) and on H200 with `BLUTRAIN_NO_SM90_QKNORM_ROPE=1` (portable path).
+- Records: `profiling_reports/v2_step1_rope_positions_2026_10_10/`.
+
+### 40.5 Step 2: the attention test harness (done)
+
+File: `Tensor-Implementations/Tests/kernel_tests/test_varlen_attention.cu` (final md5 7c2e5fee). Build + run from `Tensor-Implementations/`: `make run-cuda FILE=Tests/kernel_tests/test_varlen_attention.cu`.
+
+**References** (built from the same bf16 inputs the kernel gets, per segment = per chat or pad tail):
+- **truth:** fp64 attention inside the segment, causal;
+- **floor:** plain PyTorch bf16 math, rounding at the same points as FlashAttention's `attention_ref(upcast=False, reorder_ops=True)`;
+- both are built from tiled GEMMs that add their terms in index order, with every rounding spelled out (the tests compile with `--use_fast_math`, so the references use explicit IEEE intrinsics).
+
+**Pass rule** (per chat, for O, dQ, dK, dV): `max|kernel - truth| <= 2 * max|floor - truth| + 2 * max|(x + 0.3) - 0.3 - x|` — FA3 `hopper/test_flash_attn.py:535-536, 579, 655-660`; PyTorch `test/test_varlen_attention.py:508-516, 583-595`. LSE gets the same rule (my addition; FA does not gate LSE). 1-token chats have an exact dQ = dK = 0, so for them dQ/dK are checked against a derived fp32 rounding bound instead (`one_token_region`, u = 2^-23, c = 1.02).
+
+**Known list (`kKnown`):** explained deviations kept by decision. Each entry matches one exact case, tensor and chat, up to the recorded ratio + 1%; anything else fails as NEW.
+
+**Data loads:** D1 real v1 rows; D2 2048+2048; D3 1000+3096; D4 1+4095 / 4095+1; D5 64x64, 32x128; D6 4096 one-token chats (D6q: 512 + pad); D7 63/65/127/129/255/257 repeated; D8 random lengths with pad tails 0/1/16/63/64/65/255; D9 an all-pad row; D10 the real stage-0 rows packed first-fit decreasing (1517 rows); D11 the same 300-token chat at offsets 0/1/63/64/65/127/128/3796.
+
+**Groups:**
+
+| Group | What it checks |
+|---|---|
+| G1 | the references themselves vs a CPU full-row masked loop (+ a mutant control that must fail) |
+| G2 | today's kernels on dense rows, 3 lengths x 5 head layouts x 3 batch sizes |
+| G3 | v1 SFT rows (chat + pad) |
+| G4 | repeat 1000x (race test): O/LSE/dK/dV bitwise, dQ within FA's atol |
+| G5 | large inputs (FA2's overflow test) |
+| G6 | every chat run alone through today's kernel vs the per-chat reference; G6c filler independence |
+| G7 | timing |
+| G8 | design B forward |
+| G9 | design B backward |
+| G10 | design A forward |
+| G11 | design A backward |
+
+Head layouts: 18/6 (production), 12/4, 8/8, 32/8, 8/1. Quick mode (`VARLEN_QUICK=1`) runs 18/6 only and 16 D10 rows.
+
+**Environment switches:** `VARLEN_QUICK=1`, `VARLEN_ONLY=D10|G7|G8|G9|G10|G11`, `VARLEN_CASE=<layout name part>`, `VARLEN_D10_FIRST`, `VARLEN_D10_ROWS`, `VARLEN_REPEATS`, `VARLEN_DIAG_ROW/T0/REPEAT/CASE`, `VARLEN_DIAG_LIST="row:t0,..."` (G9 per-segment diagnostic), `VARLEN_EXPORT_DIR`, `VARLEN_STAGE0_LABELS` (box: `/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin`).
+
+**Result on today's kernels (v62 forward + Vj1d backward), H200 GPU 7:** full run **614/615** (1242 s). D10 percentiles over 5000 chats: dQ p99 0.68, max 1.156 (1 chat); dV p99 0.74, max 0.956; dK max 0.83; O max 0.54.
+
+Records: `profiling_reports/v2_step2_attention_harness_2026_10_10/`.
+
+### 40.6 The one dQ case on today's kernel: bf16 P in dS (kept, decide at the end)
+
+- The case: D10 row 1022, chat at 2552, length 1276, dQ ratio 1.156 (error 2.87e-2 vs floor 1.24e-2).
+- The cause: Vj1d builds dS from P after rounding P to bf16 (`fuse_dS_ldstsm` re-reads P from shared memory as bf16). FA2 (`flash_bwd_kernel.h:591`), FA3 (`mainloop_bwd_sm90_tma_gmma_ws.hpp:893`), FA4 (`flash_bwd_sm90.py:1569`) and Flex (`flex_backwards.py.jinja:541/775`) use fp32 P there. PyTorch's memory-efficient kernel uses bf16 P like us (`kernel_backward.h:341-351, 1959-1960`).
+- Proof: a model of the kernel's arithmetic with bf16 P reproduces the kernel's dQ row exactly; the fp32-P model gives 1.09x the floor. It hits rows with few keys and a large dP − D.
+- The same chat through the other libraries (`crosslib_row1022_1010_1807.log`):
+
+| Backend | dQ ratio |
+|---|---|
+| ours (Vj1d) | 1.156 |
+| cuDNN | 0.527 |
+| FA2 | 0.450 |
+| PyTorch memory-efficient | 0.637 |
+| PyTorch math | 0.309 |
+| Flex | 0.450 |
+
+- Decision (user): keep Vj1d as it is, watch the issue in every run, decide at the end with the speed cost measured.
+
+### 40.7 Step 3: design B forward (done)
+
+File `src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu` (kernel v62), API `gqa_flash_attn_forward_qkv(..., is_causal, seg_start)`.
+- `seg_start[b*T + t]` = where the segment of token t starts (a chat, or the row's pad tail as its own segment). Contract: `seg_start[t] <= t`, and it is t or `seg_start[t-1]`.
+- What the kernel does differently:
+  - the K/V loop of a 128-row query pair starts at tile `n0 = seg_start[first row of the pair] / 128`; earlier tiles are never loaded (Flex does the same with its block lists);
+  - besides the diagonal tile, a tile is masked when some row's chat starts after the tile's first key (`border`); key < seg_start(row) gets −inf;
+  - the online softmax gets the −inf guard Flex and FA use (a row that has seen no key yet keeps max −inf; the rescale uses 0 instead, so no NaN).
+- The API refuses `seg_start` on any path that would ignore it (non-causal, head_dim ≠ 128, T % 256 ≠ 0, not Hopper, `BLUTRAIN_NO_SM90[_GQA]`).
+- Proof: dense SASS 2304/2304 identical to the original v62 (laptop), 2280/2280 (box CUDA 13.4).
+- G8 quick on H200: **51/51** (47 s): O/LSE of every segment vs the reference, tile-aligned chats bitwise = the chat alone, isolation, refusals.
+
+### 40.8 Step 4: design B backward (done)
+
+File `src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.cu` (kernel Vj1d), API `gqa_flash_attn_backward_qkv(..., is_causal, seg_start)`.
+- **Trip count:** a key tile visits only the query tiles of the chats that touch it. Query tile q has a visible element iff `seg_start[q*64] <= last key of the tile`; this is true for a prefix of q (seg_start never decreases), so the CTA counts it in one `__syncthreads_count` pass.
+- **Mask:** the masked path runs on the diagonal tile and on any tile where the last row's chat start is after the tile's first key; keys before the row's chat start get P = 0.
+- `seg_start` of the current 64 rows rides in shared memory next to LSE and D (+256 B).
+- Cost: 236 registers, 115,472 B shared memory, no spills; still 2 CTAs per SM.
+- Proof: dense SASS 1624/1624 identical (laptop), 1600/1600 (box).
+- The backward refuses `seg_start` on Vj1 (`USE_FLASH=1`), v44 (`USE_DETERMINISTIC_DQ=1`) and every non-Hopper path.
+- G9 quick **93/94**; G9 full **404/406** (574 s; 5 head layouts, all synthetic layouts, all 1517 real rows). Real-row work: the backward visits 40.2% of the dense tiles.
+
+**The 7 over-limit segments of G9 full** (out of ~5,478; diagnostic `G9_diag7_D10_*.log`):
+
+| Segment | Tensor | Packed | Same segment alone, today's dense kernel | Model = kernel | Cause |
+|---|---|---|---|---|---|
+| pad row 492 @4094 L=2 | dQ | 1.062 | 1.062 | yes | bf16 P in dS |
+| chat row 791 @2998 L=1098 | dQ | 1.121 | 1.121 | yes (exact) | bf16 P in dS |
+| chat row 1102 @3537 L=559 | dQ | 1.096 | 1.096 | yes | bf16 P in dS |
+| pad row 455 @4057 L=39 | dV | 1.031 | 1.031 | yes (exact) | per-head bf16 partial |
+| chat row 1140 @2283 L=1141 | dV | 1.171 | 1.171 | yes (exact) | per-head bf16 partial |
+| chat row 1262 @1005 L=1005 | dV | 1.033 | 1.033 | yes (exact) | per-head bf16 partial |
+| chat row 1359 @1714 L=857 | dV | 1.014 | 1.014 | yes (exact) | per-head bf16 partial |
+
+- Packing adds nothing: on identical inputs, packed and alone give the same ratio to 3 decimals.
+- **Second mechanism (new, also in today's kernel):** to make dK/dV bit-reproducible, Vj1d stores each query head's dK/dV as a bf16 partial and then sums the heads in fixed order (`gqa_dkdv_greduce`), so the value is rounded per head and again after the sum. FA3 sums the heads in fp32 and rounds once (`hopper/epilogue_bwd.hpp`, the GQA epilogue). The model of Vj1d's arithmetic reproduces the kernel's worst dV element exactly; summing in fp32 brings the error to the floor's (chat 1140: 6.3e-2 → 9.1e-4).
+- All 7 (and the G9 D8 dQ chat, ratio 1.049, same bf16-P mechanism) are on the known list. **End-decision list:** (1) fp32 P in dS for dQ, (2) fp32 head sum for dK/dV — both after measuring their speed cost.
+
+### 40.9 A sync fix in today's backward (applied, user-approved)
+
+- **The issue:** in Vj1d (and Vj1), the first query tile's LSE values are written into shared memory by threads 0–63 (`issue(0)`) and read by all 4 warps before any barrier. The only wait in between is the TMA mbarrier for Q/dO, and only thread 0 arrives on it (before its own store). Tiles ≥ 1 are covered by the store barrier after `issue(it + 1)`; tile 0 had nothing. SASS of the old kernel: the store at 0x1010, the first read at 0x1ee0, no `BAR.SYNC` between. It worked only because the 256-byte LSE load always lands before the 32-KB Q/dO load plus the first GEMM. v44 orders the same data correctly (`producer_sync` + the `d_ready` mbarrier, `GQA_bwd_sm90.cu:594-596, 622`).
+- **The fix:** one `__syncthreads()` after `issue(0)`, in Vj1d (both instantiations) and Vj1. Once per CTA, not per tile.
+- **Proof:** SASS = +1 `BAR.SYNC` only (the same registers R98–R103 are zeroed, just reordered around it), laptop and box; the packed kernel is identical (it already had the barrier).
+- **Tests:** G quick with the fix **289/289**; G4 1000 repeats at both shapes bitwise for O/LSE/dK/dV.
+- **Overhead:** same-session A/B, 12 rounds, ABBA, the old library (`lib_nofix/`, md5 089f18ef) vs the new one, libraries checked with `ldd`. 12/4 backward −0.04% (t = −0.06). 18/6 backward +1.71% (t = 2.01), but the untouched forward (null control) moved +1.39% (t = 2.02). So no measurable overhead; the method cannot see anything below ~2%.
+
+### 40.10 Vj1 (`USE_FLASH=1`) checked for the first time (not used in training)
+
+- G quick in Vj1 mode: 183/196. Vj1 sums the heads' dK/dV with bf16 atomic adds, so dK/dV differ run to run by one bf16 step (max 3.1e-2 at |x| in [4, 8)) and carry extra rounding: MQA 8/1 dK 1.078, D5/D6 dV over the limit.
+- The harness now gates Vj1's dK/dV in G4/G6c with FA's atol computed on dK/dV (it was the dQ atol, too tight).
+- Keep Vj1 off for SFT.
+
+### 40.11 Step 5: design A (done)
+
+**Plan object** (`include/ops/helpers/AttentionKernels.h`): `GqaChatPlan`, built once per batch with `gqa_chat_plan_build(plan, seg_b, seg_t0, seg_len, n_seg, B, S, Hq)` and freed with `gqa_chat_plan_free`.
+- The segments (chats and each row's pad tail) must cover every token of every row exactly once; the builder throws otherwise, because an uncovered row would keep garbage outputs that the next layers read.
+- Forward work list `{b, t0, L, (cpl << 8) | hq}`: per segment, the query pairs coupled like dense v62 (pair c with pair nP−1−c), longest segment first (as FA3's varlen scheduler orders work).
+- Backward list `{b, t0, L, kt}`: one entry per 64-key tile, most work first.
+- Pass the same plan to `gqa_flash_attn_forward_qkv(..., seg_start = nullptr, chats = &plan)` and `gqa_flash_attn_backward_qkv(..., nullptr, &plan)`.
+
+**Forward** (v62, template mode 0 dense / 1 B / 2 A):
+- rows offset by t0, tile indices relative to the segment, so the diagonal mask is exactly dense causal with S = L;
+- keys past L appear only in diagonal tiles, where causal already hides them;
+- rows past L are computed but not stored (FA3 does the same: `epilogue_fwd.hpp:303, 331, 358`);
+- a query tile entirely past L gets no active tiles and runs only the existing inactive-tail handshake (the first mode to use that path).
+
+**Backward** (Vj1d, same modes):
+- one CTA per (plan key tile, query head);
+- rows past L get LSE = +inf and D = 0, so P = 0 and dS = 0 (FA2 does this, `flash_bwd_kernel.h:411-413`); their dQ rows get exact zeros from the reduce-add;
+- full key tiles keep the TMA store; the segment's last, partial tile stores only rows < L, so it never overwrites the next segment's partials (FA3 stores all varlen dK/dV that way, `epilogue_bwd.hpp:31, 263-268`).
+
+**Refusals:** a plan together with `seg_start`; a plan on paths v62/Vj1d cannot take; a plan built for another (B, T, Hq); the builder's gap / overlap / out-of-row / uncovered-row checks.
+
+**Proofs:**
+
+| Kernel | Dense | B | A |
+|---|---|---|---|
+| forward (v62) | 2304/2304 identical to the original v62 (box 2280/2280) | 2448/2448 identical to the G8/G9-tested B (box 2432/2432) | 2224 instructions, 168 registers, no spills |
+| backward (Vj1d) | 1624/1624 identical to the race-fixed dense (box 1600/1600) | 1776/1776 identical (box 1736/1736) | 219 registers, 115,216 B shared memory, no spills, 2 CTAs/SM |
+
+**Tests on H200:**
+- G10 quick **59/59** (65 s) and G11 quick **95/95** (53 s); mode refusals pass.
+- The key result: **every segment computed by A is bit-identical to the same segment run alone through today's dense kernels** — O, LSE, dK and dV. That covers chats on and off tile edges, 513 one-token chats, odd lengths and pad tails. dQ stays within the atomics atol. A cuts its tiles at the segment start exactly as the dense kernel cuts them at row 0, so it does exactly per-chat attention.
+- Isolation including dO and the 50x repeat are bit-identical.
+- G11 runs exactly G9's inputs (same seeds), so G9's known entries apply to the same segments (the D8 dQ chat shows as KNOWN).
+
+### 40.12 Speed on real packed rows (8 rows each, median of 20, free clocks, H200 GPU 7)
+
+Forward (G10 run):
+
+| Rows | Work vs dense (B / A) | Dense | B | A |
+|---|---|---|---|---|
+| 0–7 (longest chats) | 93.0% / 92.8% | 1.111 ms | 101.9% | 97.6% |
+| 752–759 (middle) | 39.7% / 37.1% | 1.084 ms | 49.4% | 46.5% |
+| 1504–1511 (shortest) | 19.2% / 15.5% | 1.083 ms | 33.6% | 28.5% |
+
+Backward (G11 run):
+
+| Rows | Work vs dense (B / A) | Dense | B | A |
+|---|---|---|---|---|
+| 0–7 | 92.5% / 92.6% | 4.179 ms | 98.4% | 93.2% |
+| 752–759 | 37.1% / 36.1% | 4.190 ms | 47.4% | 45.3% |
+| 1504–1511 | 15.1% / 14.0% | 4.120 ms | 27.4% | 28.2% |
+
+- Forward + backward (the two runs added, so approximate): middle rows B 47.8% / A 45.6%; shortest B 28.7% / A 28.3%; longest B 99.1% / A 94.1%.
+- So packed attention is about 2x faster on typical rows and about 3.5x on short-chat rows. A is slightly ahead overall; B wins only the shortest-chat backward.
+- Time falls more slowly than work when there are many short chats: each work unit pays a fixed cost (Q load, pipeline fill, epilogue). A also gives every tiny chat its own tile (D6q's 512 one-token chats cost 101% of the dense backward work). To profile in Step 6.
+- These numbers come from single sessions at free clocks; Step 6 repeats them properly.
+
+### 40.13 Files changed (laptop, uncommitted; the user commits)
+
+Tensor-Implementations:
+- Step 1: the 11 RoPE/normalization files in 40.4; new test `Tests/kernel_tests/test_rope_positions.cu`.
+- Steps 3–5 and the sync fix: `include/ops/helpers/AttentionKernels.h` (md5 5470501b), `src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu` (698d2705), `GQA_fwd_generic.cu` (b71b6dc5), `GQA_bwd_vj1d_sm90.cu` (deadc500), `GQA_bwd_generic.cu` (04255500), `GQA_bwd_vj1_sm90.cu` (26f6468c).
+- New test `Tests/kernel_tests/test_varlen_attention.cu` (7c2e5fee).
+- The box copy `~/gautam_k/v2_work` has the same files. Its library has A + B + the sync fix; `lib_nofix/` keeps the pre-fix library for A/B timing. Backups: `backup_pre_step3_4_1010/`, `backup_pre_racefix_1010/`, `backup_pre_A_fwd_1010/`, `backup_pre_A_bwd_1010/`. Test binaries: `tva_step34` (harness 7c2e5fee), `tva_diag`.
+- The trainer (BluTrain) is not changed yet.
+
+### 40.14 Records
+
+- `profiling_reports/v2_step1_rope_positions_2026_10_10/`
+- `profiling_reports/v2_step2_attention_harness_2026_10_10/` (G-series logs, diagnostics, cross-library scripts and logs)
+- `profiling_reports/v2_step3_design_B_forward_2026_10_10/` (SASS laptop + box)
+- `profiling_reports/v2_step4_design_B_backward_2026_10_10/` (G9 logs, the 7-segment diagnostic, `racefix/` with the A/B timing, SASS)
+- `profiling_reports/v2_step5_design_A_2026_10_10/` (G10/G11 logs, SASS, final sources)
+
+### 40.15 Next
+
+1. **Step 6, benchmarks** (needs the environment decision): A vs B in one session, plus cuDNN, FA3, FA4, FA2, PyTorch SDPA and Flex on the same data and the same GPU; nsys/ncu to see why time falls more slowly than work on short chats. Proposed environment: `~/envv` read-only for torch / cuDNN / Flex / `varlen_attn`, and our own env for FA3/FA4/TE.
+2. Choose A or B, or keep both.
+3. **Step 7:** packing script (whole chats, first-fit decreasing, shuffled rows), loader output (tokens, labels, positions, `seg_start` or the plan), the attention autograd node passing it to forward and backward, then a real packed SFT run against v1. Open decision: leftover rows (proposed: endless stream reshuffled every epoch; validation scores all rows).
+4. End decisions: fp32 P in dS, fp32 head sum for dK/dV.
+5. Small: the G11 mode-refusal lines print a "G10" label (cosmetic).
+
+## 41. 2026-10-12: v2 Step 6 — benchmarks against every library, nsys/ncu profiling, the coverage audit, and the full test suite
+
+Details, all tables and the method: `profiling_reports/v2_step6_benchmarks_2026_10_12/STEP6_ANALYSIS.md`. All runs on H200 GPU 7 at a steady 1980 MHz.
+
+### 41.1 Environment
+
+- `~/envv` (read-only, not ours): torch 2.14.1+cu130, cuDNN 9.24, Triton 3.8, Flex attention, `varlen_attn`. No FA2/FA3/FA4/TE.
+- My env `~/gautam_k/benv` reuses envv's torch read-only through a `.pth` file. FA3 is built from FlashAttention `94e22c9` `hopper/` for bf16 + head_dim 128 + sm90, with every feature for that configuration kept (4.5 min build). FA4 = `flash-attn-4` from the same commit. FA2 needs no build: PyTorch's SDPA flash backend and `varlen_attn` use FA2 kernels.
+- Note: torch 2.14's `varlen_attn` has no `is_causal`; causal = `window_size=(-1, 0)`, GQA needs `enable_gqa=True`.
+
+### 41.2 What I measured
+
+1. **Packed attention** on 7 layouts (3 sets of 8 real packed rows, and rows of equal 512/1024/2048/4096 chats), forward and backward, 50 interleaved rounds: ours dense / B / A vs FA3, FA3-deterministic, FA4, PyTorch `varlen_attn` (FA2), Flex with a document mask, SDPA with a block-diagonal mask (cuDNN and memory-efficient backends), and SDPA over the full row. All packed contenders agree with FA3 to bf16 noise on the same inputs.
+2. **Dense attention at the colleagues' shapes** (B 2/4/8 x 12/4, 16/4, 24/8, 32/8 heads, plus 18/6 B8).
+3. **nsys** kernel traces and **ncu `--set full`** on the main forward and backward kernels (ours, FA3, FA4, cuDNN), dense and packed.
+
+### 41.3 Results
+
+- **A vs B:** A is equal or faster almost everywhere (its forward always), so A is the main path.
+- **Packed, forward + backward:** ours is fastest on short chats (real shortest rows 1.49 ms vs FA3 1.60, FA4 1.62). FA3/FA4 are faster on middle and long chats (real middle rows: ours A 2.44 vs FA3 2.10; one 4096 chat per row: 5.43 vs 4.06).
+- **Dense at the colleagues' shapes:** our forward beats cuDNN on 11 of 13 shapes; our backward is slower than cuDNN on all 13 (1.05–1.24x), than FA3 by 1.32–1.42x and than FA3-deterministic by 1.05–1.17x. This does not match the colleagues' earlier backward table; their measurement method is unknown to me.
+- **Kernel level (nsys, dense B8 18/6):** forward ours 1075 us vs FA3 890; backward main kernel ours 3633 us vs FA3 2495, FA3-det 3283, FA4 2482, cuDNN 2836.
+- **Why (ncu):** our backward executes 42% more instructions than FA3 (888M vs 625M) and moves 58% more data through shared memory (662M vs 419M wavefronts). About 16% of its stall samples sit in the fences before each dQ TMA reduce, plus the dQ staging stores. With 64-key tiles, this per-tile dQ work happens twice as often per key as in FA3 (128-key tiles), and P makes a round trip through shared memory. Our forward has 17% more instructions than FA3; its large long-scoreboard stall is mostly the idle producer warpgroup spinning (harmless).
+- **Packed (real middle rows), kernel level:** forward ours A 501 us vs FA3 432; backward 1466 vs 1086 (FA3-det 1362), with +35% instructions and +57% shared-memory traffic, the same pattern as dense.
+- **What would close the backward gap:** FA3's structure: 128-key tiles with a producer plus 2 consumer warpgroups, P kept in registers (this also removes the bf16-P precision issue), warp-specialised loads. That is a new backward kernel version. Not done; decision pending.
+
+### 41.4 Test-coverage audit and the full suite
+
+New groups:
+- **G12:** packed rows at T 1024, 2048 and 8192; a 16384-token chat (the first test of the 2nd pass of B's backward prefix loop); a row of 4096 one-token chats, for A and B.
+- **G13:** large inputs (q*5, k*3, v*3) on packed rows, gated like G5 with FA2's rule; 60 packed rows in one call.
+- New modes: `VARLEN_ONLY=CLASSIC` (G1–G7), `BENCH`, `BENCHDENSE`; `VARLEN_CASE` filters one layout for profiling.
+
+Full suite, every group at full size (5 head setups, all 1517 real rows, 1000x repeats), run as parallel processes on GPU 7 (`suite_1012_1319/`):
+
+| Group | Checks |
+|---|---|
+| CLASSIC (G1–G7) | 605/605 |
+| G8 (B forward) | 223/223 |
+| G9 (B backward) | 406/406 |
+| G10 (A forward) | 235/235 |
+| G11 (A backward) | 411/411 |
+| G12 (new edge cases) | 134/134 |
+| G13 (large inputs, 60 rows) | 76/76 |
+
+- Known items observed: exactly the listed ones. G6 D10 row 1022 dQ; the 7 D10 segments in G9; the same 7 in G11, with identical ratios.
+- CLASSIC has 605 checks where the 10-10 run had 615. The 10 missing lines were vacuous: D6's regular dQ/dK checks with 0 chats (all its chats are 1-token and are checked by the 1-token bound, which is present: 4096 chats per head setup, all within 0.5% of the bound). The harness has skipped empty checks since the G8 work.
+- The timing lines inside these groups ran with 6 processes sharing the GPU and are not used; the real timings are the exclusive Step 6 runs.
+- Still not covered: two streams at once (Vj1d uses static scratch buffers, so it is not safe on two streams at once; this predates v2), cuDNN varlen (measured the same evening, see 41.7; it does not need Transformer Engine), and the end-to-end model-gradient test (Step 7).
+
+### 41.5 Traps hit (and avoided next time)
+
+- ncu 2026.3 saves `.ncu-repz`, not `.ncu-rep`.
+- `/usr/local/cuda/bin/ncu` is a wrapper: killing its PID leaves the real ncu running, and it restarted the target. Stop the whole process tree by PID.
+- Status text and a tar archive on the same ssh stdout corrupt the tar: send text to stderr, or fetch files separately.
+- The scratch folder in /tmp was cleaned over the weekend; keep everything needed in records.
+- `nsys stats` never overwrites an existing CSV ("SKIPPED: output file ... exists"), so a re-run silently shows the old capture. Always pass `--force-overwrite=true`.
+- `nsys --capture-range=cudaProfilerApi` on the torch script recorded no kernels at all. NVTX ranges around the timed calls (`nvtx_kern_sum`) work.
+- A name filter that is too clever can silently drop the thing under test: after each capture, print how many lines and kernels of it were recorded.
+
+### 41.6 Next
+
+1. Decision: rework the backward (FA3 structure) before Step 7, or after the trainer works.
+2. Step 7: packing script, loader output (tokens, labels, positions, the A plan), the attention autograd node, the end-to-end gradient test (packed batch vs the same chats as v1 rows), then a real packed SFT run vs v1.
+3. Open: leftover-rows policy; the two precision items (the backward rework fixes the first).
+
+### 41.7 cuDNN packed attention (evening)
+
+**Why it was missing.** I first thought cuDNN's packed (varlen) attention was only reachable through Transformer Engine. That was wrong: torch 2.14 calls it directly with per-chat offsets (`torch.ops.aten._cudnn_attention_forward` / `_cudnn_attention_backward`). But torch's public `varlen_attn` never uses it for causal attention: it turns causal into a window, and any window, or any GQA, goes to FA2 (`torch/nn/attention/varlen.py:62-65, 336`). So I called the op exactly the way torch's own code does (`varlen.py:118-134, 559-576`).
+
+**How I checked it.** On every layout, before timing, cuDNN's O, dQ, dK and dV were compared with FA3 (relative error limit 2e-2):
+- cuDNN errors were about 1e-3 on O and 5–8e-3 on the gradients, and all 21 checks passed. For comparison, FA4 vs FA3 is 0.4e-3 to 2.7e-3.
+- A deliberately wrong head mapping failed on all 7 layouts (errors around 1.2–1.5), so the check can catch that mistake.
+- Passing our 6 KV heads straight into cuDNN works: cuDNN sums the heads itself with its own `fmha_reduce_head_ragged` kernel. I ran it first in a separate process because torch never sends GQA down this path.
+- The kernel names prove cuDNN ran.
+
+**Results** (8 rows × 4096, 18/6 heads; ms per call; "cuDNN" = 6 KV heads passed directly, the real GQA number):
+
+| layout | fwd ours A | fwd cuDNN | fwd FA3 | bwd ours A | bwd cuDNN | bwd FA3 |
+|---|---|---|---|---|---|---|
+| real rows, longest chats | 1.126 | 1.165 | 1.009 | 3.977 | 3.446 | 3.074 |
+| real rows, middle | 0.540 | 0.534 | 0.533 | 1.927 | 1.724 | 1.586 |
+| real rows, shortest chats | 0.326 | 0.341 | 0.342 | 1.171 | 1.149 | 1.227 |
+| one 4096 chat per row | 1.169 | 1.227 | 1.087 | 4.312 | 3.711 | 3.182 |
+
+- **Forward:** ours and cuDNN are within 5% of each other on all 7 layouts.
+- **Backward:** equal on short chats. cuDNN is 9–16% faster on middle and long chats.
+- **Backward order on middle/long chats:** FA3 ≈ FA4 < cuDNN < FA3 deterministic < ours A < ours B.
+- **Kernel time only** (nsys, real middle rows): forward ours A 519 µs vs cuDNN 457 vs FA3 451; backward ours A 1825 vs cuDNN 1547 vs FA3 1509. At the API level the forward looks equal, because cuDNN's Python call adds about 0.08 ms.
+
+This matches the dense picture: our forward is competitive, our backward is the gap. The FA3-style backward rework (41.6 item 1) is the fix.
+
+Records: `profiling_reports/v2_step6_benchmarks_2026_10_12/cudnn_varlen_1012/` (`CUDNN_RESULTS.md`, `tables.txt`, all logs and nsys CSVs). Scripts: `bench_step6_libs.py`, `run_cudnn_varlen.sh`.
+
+Three mistakes in my scripts were caught and fixed before any number was used: the empty capture-range report, the cuDNN filter that dropped cuDNN from one capture, and stale nsys CSVs. All three are listed in 41.5. The main timing run was not affected.
+
+## 42. 2026-10-12 (evening): A/B decision, who calls which kernel, why our backward is slower, the new backward kernel Vj2, scope, and one bug found
+
+Records: `profiling_reports/v2_bwd_rework_research_2026_10_12/`.
+- `RESEARCH.md`: the evidence behind 42.3 to 42.5.
+- `DESIGN_VJ2.md`: the design, proofs and results of 42.6 to 42.8.
+- `gpu_runs/`: every log and profile CSV.
+- `code_snapshot/`: today's code, with md5.
+
+### 42.1 Design A or B: both kept, picked per call
+
+**Measured on our own kernels (same code, 7 packed layouts):**
+- Forward: A is faster on all 7 layouts, by 2-16%.
+- Backward: A is faster on middle and long chats by 3-5%; B is faster by 2-4% only when chats are very short.
+- Kernel time on real middle rows: forward A 501 µs vs B 538 µs; backward A 1466 µs vs B 1537 µs.
+
+**Why A wins on real rows:**
+- In B, a 128-row tile that holds the end of one chat and the start of the next computes both, and then masks half away.
+- In A, every chat starts its own tiles, so no tile mixes two chats.
+- When chats end exactly on tile edges (all 512 / 1024 / 2048 long), that difference disappears.
+
+**Decision:** keep both, with A as the default.
+
+**How one is picked:**
+- No compiler flag. Both versions are compiled into the library.
+- Each call picks by its arguments: nothing = normal causal, `seg_start` = B, a `GqaChatPlan` = A, both = refused.
+- In Step 7 this becomes one training-config setting (for example `attn_pack_mode: A | B | none`). The loader builds the plan or `seg_start` that goes with it.
+- Switching then needs no rebuild, and A and B can be compared in the same binary.
+
+### 42.2 Who calls which attention kernel, and what I measured
+
+The training frameworks do not have their own attention kernels; they call these:
+
+| framework | how it packs | kernel inside | measured? |
+|---|---|---|---|
+| Hugging Face, `flash_attention_2` | A (cu_seqlens) | FlashAttention 2 varlen | yes, through PyTorch's copy of FA2 (`varlen_attn`), not the `flash-attn` package |
+| Hugging Face, Flex | B (document mask) | PyTorch FlexAttention | yes |
+| Hugging Face, SDPA + mask | full mask | cuDNN / memory-efficient | yes: 6-10× slower than all others |
+| TRL (padding-free) | uses Hugging Face's attention | FA2 | through the FA2 numbers; TRL itself not run |
+| Transformer Engine / Megatron | A (THD) | cuDNN fused attention | through cuDNN packed called from PyTorch; TE not installed |
+
+PyTorch's public `varlen_attn` never uses cuDNN for causal attention (`varlen.py:62-65, 336`), so cuDNN was called directly (41.7). FA1 was not run, since FA2 replaced it.
+
+Packed rows (8 × 4096, 18/6 heads), ms per call. Ours, FA2, FA3, FA4 and Flex are from the morning run; cuDNN from the evening run (ours repeated within about 1%):
+
+| | ours A | ours B | FA3 | FA4 | cuDNN packed | Flex | FA2 |
+|---|---|---|---|---|---|---|---|
+| forward, short chats | 0.325 | 0.385 | 0.360 | 0.452 | 0.341 | 0.648 | 0.675 |
+| forward, middle | 0.533 | 0.573 | 0.532 | 0.605 | 0.534 | 0.958 | 0.921 |
+| forward, long | 1.119 | 1.170 | 0.980 | 1.074 | 1.165 | 1.780 | 1.864 |
+| backward, short | 1.169 | 1.143 | 1.244 | 1.166 | 1.149 | 1.382 | 1.752 |
+| backward, middle | 1.907 | 1.996 | 1.569 | 1.552 | 1.724 | 2.183 | 2.807 |
+| backward, long | 3.951 | 4.162 | 2.909 | 2.846 | 3.446 | 4.187 | 5.668 |
+
+- **Against Flex and FA2 (what HF and TRL use):** we win everywhere. Forward 1.6-2× faster; backward 6-18% (Flex) and 1.4-1.5× (FA2) faster.
+- **Against cuDNN packed (TE's backend):** forward is a tie; backward is a tie on short chats and takes 11-15% longer on middle and long chats.
+- **Against FA3 / FA4:** forward wins on short chats, ties on middle, and takes 14% longer on long. The backward takes 22-39% longer on middle and long chats.
+
+### 42.3 Why our backward (Vj1d) is slower than FA3: measured, not guessed
+
+ncu on dense B8 18/6 (10-12 captures):
+
+| | Vj1d | FA3 | cuDNN |
+|---|---|---|---|
+| kernel time | 3.626 ms | 2.494 ms | 2.788 ms |
+| tensor-core busy time | 1.66 ms | 1.74 ms | 1.73 ms |
+| L2 read requests | 81.0M | 40.9M | 41.9M |
+| dQ add-back requests | 76.7M | 43.6M | 77.9M |
+| shared-memory stores | 41.9M | 10.9M | 10.3M |
+| instructions | 888M | 625M | 809M |
+
+**What the numbers show:**
+- The tensor-core work is the same in all three, so the whole gap is time when our tensor cores sit idle.
+- Our L2 reads are 1.98× FA3's. That matches the loop count exactly: 64-key blocks visit the 64-query tiles 299,520 times, FA3's 128-key blocks 152,064 times.
+- cuDNN does as many dQ add-backs as we do and is still 23% faster. So the waiting around the add-backs costs more than their volume.
+
+**Where our kernel waits (per-instruction samples):**
+- ~14%: `__syncthreads` + fences before the dQ add-back (`GQA_bwd_vj1d_sm90.cu:609-611, 621-627`);
+- ~10%: waiting for GEMMs;
+- ~7%: the P/dS round trip through shared memory;
+- ~4%: LSE/D loads;
+- ~4%: dQ staging stores;
+- ~14%: the softmax math itself.
+
+**What FA3 does differently (from its code):**
+- 128 keys per block, 1 loader warpgroup plus 2 compute warpgroups, registers 24/240 (`flash_bwd_launch_template.h:351`, `flash_bwd_kernel_sm90.h:64-65`);
+- loads issued ahead of time (`mainloop_bwd…:511-555`);
+- a separate dQ-writer warp (`:645-654, :953-957`);
+- P kept in registers (`:279`).
+
+128 keys need 256 registers per thread for dK/dV alone in one warpgroup, over the 255 limit. That is why the larger block size needs FA3's 3-group layout.
+
+### 42.4 Precision: what dS from fp32 P changes (CPU emulation)
+
+**Setup:** `bwd_precision_sim.py`, one KV head shared by 3 query heads, causal, T = 2048. The fp64 truth was checked against finite differences (error ≤ 1.5e-9).
+
+**Result (RMS error as a multiple of the unavoidable bf16 rounding):**
+- Normal inputs, ours today vs FA3's arithmetic: dQ 1.74-1.81 → 1.44-1.48; dK 2.05-2.07 → 1.45-1.47; dV 1.71-1.77 → 1.40-1.41.
+- Large inputs: about 4-23% lower.
+
+The gain is real but modest. Most of what remains comes from rounding P and dS to bf16 before the GEMMs, which every library does.
+
+### 42.5 Scope: what the backward kernel serves
+
+- **Trainer path:** `AttentionBackward.cpp:237` calls `gqa_flash_attn_backward_qkv`. The fast Hopper path is taken when the call is causal, head dim is 128, T % 64 == 0, the GPU is an H100/H200 and `BLUTRAIN_NO_SM90` is unset (`GQA_bwd_generic.cu`).
+- **Same path for both kinds of training:** pretraining and SFT use the same path, so any backward speedup helps both.
+- **Head ratio does not matter:**
+  - G is a run-time number; the only rule is that query heads are a multiple of KV heads.
+  - The test suite covers 18/6, 12/4, 8/8, 32/8 and 8/1.
+  - The gap to FA3 was 1.32-1.42× on all 13 dense shapes (G = 3 and 4).
+- **Head dim:** only 128 has the fast kernel.
+- **Sequence length in practice:** the forward needs T % 256 == 0 (`gqa_v62_shape_ok`), so training always sends multiples of 256.
+- **B300 is not affected:** head dim 128 causal is refused there (`GQA_bwd_generic.cu`, the `is_causal` throw).
+
+### 42.6 The new backward kernel Vj2 (FA3 layout)
+
+**File and switch:**
+- New file `src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.cu`. Vj1d is unchanged and stays the default.
+- Opt-in with `USE_VJ2=1`, a new mode in `GQA_bwd_generic.cu`.
+- Dense only; packed rows still go to Vj1d. S % 128 != 0 also goes to Vj1d (training never sends it, and the forward+backward tests cannot reach it).
+
+**Design (FA3's layout, built only from pieces already proven in our code):**
+- 128 keys per block and 384 threads. Warp 0 of the loader issues TMA loads of K/V once and Q/dO/LSE/D two steps ahead. Warp 1 is the dQ writer. Two compute warpgroups own 64 keys each. `setmaxnreg` 24/240.
+- The score GEMMs are swapped (Sᵀ = K·Qᵀ), so P and dS stay in registers for the dV and dK GEMMs. Only dS goes to shared memory, for the dQ GEMM.
+- dS is computed from fp32 P.
+- The compute groups hand dQ to the writer warp with named barriers; there is no block-wide barrier in the loop.
+
+**Kept from Vj1d:**
+- the TMA maps and swizzle;
+- the fp32 dQ reduce-add;
+- the one-writer bf16 dK/dV partials and the fixed-order head sum, so dK/dV stay bit-identical every run;
+- the dQ convert.
+
+**Proofs before the GPU:**
+- 0 spills on both CUDA 13.0 and 13.4.
+- SASS has exactly 40 HGMMA per step (16 Sᵀ/dPᵀ, 8 dQ, 16 register-A dV/dK) and exactly the 5 fences and 4 waits that were written.
+- Vj1d, Vj1 and the forward files are md5-identical. The router's other kernels have identical SASS, 9,360 lines.
+- Harness: `bwd_mode_name` knows `USE_VJ2`, and G4 checks Vj2's dK/dV bitwise.
+
+**Results (H200, GPU 7):**
+- Correctness: quick 144/144; full CLASSIC **605/605**, the same checks Vj1d passes. G9/G11 correctly refuse packed rows under `USE_VJ2=1`. dK/dV are bit-identical over all repeats.
+- Precision against Vj1d on identical inputs (worst ratio per check):
+  - dQ is lower in 57 of 84 checks, higher in 16, median 0.91×;
+  - dK is lower in 61 of 84, higher in 16, median 0.91×;
+  - the one known over-limit case (G6 D10 row 1022 dQ, 1.156) is now 0.891.
+- Speed: the backward per call, run Vj1d/Vj2/Vj1d/Vj2 in the same session, then the libraries:
+
+| backward, ms | Vj1d | Vj2 | FA3 | FA3 deterministic | cuDNN |
+|---|---|---|---|---|---|
+| B2 12/4 | 0.764 | 0.695 | 0.580 | 0.726 | 0.729 |
+| B8 18/6 (our SFT model) | 4.326 | 3.852 | 3.079 | 3.717 | 3.468 |
+| B8 32/8 | 7.549 | 6.744 | 5.365 | 6.533 | 6.117 |
+
+- Across all 13 shapes:
+  - Vj2 is 5.2-13.0% faster than Vj1d (mean 10.6%);
+  - against FA3 it is 1.20-1.28× (was 1.32-1.43×);
+  - against FA3 deterministic it is 0.96-1.05×;
+  - against cuDNN it is 0.95-1.11×.
+- Kernel time alone (nsys, B8 18/6): 3197 µs vs Vj1d 3615 µs (−11.6%). FA3 is 2495 µs. The helpers are about 0.3 ms in all three.
+- The provisional bar (at least 10% on every shape) is met on 9 of 13. It misses on the small ones: B2 12/4, B2 16/4, B2 24/8, B4 12/4.
+
+### 42.7 Profiling of Vj2 and the fix (not yet measured on the GPU)
+
+**What ncu showed:**
+- Data movement now matches FA3: L2 reads 42.7M (FA3 40.9M), dQ reduce 38.9M, L2 busy 48%.
+- The block-wide waits are gone.
+- What is left is instruction count: 1,096M vs FA3's 625M. It has two causes in the code:
+  1. Every shared-memory read and write except stmatrix compiled to generic LD/ST (0 LDS/STS, `lg_throttle` stalls, ~11% of samples). The base was rounded to 1024 B through an integer cast, so the compiler lost the address space.
+  2. GEMM descriptors were rebuilt from pointers for every wgmma: 5.4 extra instructions per HGMMA, 23% of all instructions.
+
+**The fix:**
+- the base is rounded by pointer arithmetic;
+- base descriptors are made once, and siblings come from constant adds (the forward's `desc_add_lo`).
+
+**SASS after the fix:**
+- 2520 → 1816 lines; generic LD/ST 161 → 0; LDS/STS 0 → 96;
+- IMAD 219 → 89, LOP3 433 → 233;
+- the same 40 HGMMA, 0 spills.
+
+It is built into the box library (file md5 `bbd977be`) but has not run on the GPU yet.
+
+### 42.8 Bug found: causal head dim 64 on H100/H200 runs without the causal mask
+
+- **Forward:** causal + head dim 64 + not B300 goes to `gqa_v2`, which is documented as non-causal (`GQA_fwd_generic.cu:59, 279-286`; the `_qkv` path at `:374-387`).
+- **Backward:** it goes to `launch_gqa_backward`, which has no mask (`GQA_bwd_sm103.cu:400`). Only the B300 kernels mask.
+- **Reachable:** yes. `bluscript.cpp:73` defaults to `head_dim = 64`. The guard at `:588` and `Config.h:270` assume head dim 64 has a causal fallback, which is true only on B300.
+- **Production today:** the yaml sets 128 (`bluscript_config.yaml:14`), so production is fine. The GPT-2 trainer uses a different kernel.
+- **Status:** not yet proven on the GPU. The fix is to refuse that case, as head dim 128 already is.
+
+### 42.9 Where the SFT preprocessing lives
+
+- **Script:** `~/Downloads/BluTrain_sft/sft/prepare_sft_data.py`, on the laptop only. It takes ultrachat_200k (pinned revision), uses the tulu-plain-v1 template and GPT-2 tiktoken, and writes `inputs.bin`, `labels.bin` (65535 = ignore), `valid_counts.bin` and `meta.json`.
+- **Loader:** `sft/SftDataLoader.h`, and its test `sft/test_sft_dataloader.cpp`.
+- **Data:** `~/Downloads/sft_data/stage0_ultrachat_5k_T4096/` on the laptop and `~/gautam_k/sft_data/...` on the box. The box `meta.json` script hash equals the laptop script's SHA-256 (`2add2080…`).
+- **Risk:** `sft/` is untracked in git, so it exists on the laptop only.
+
+### 42.10 Files changed today
+
+All in the laptop `~/Downloads/BluTrain_sft/Tensor-Implementations`, uncommitted, plus the 10-10 v2 files:
+
+| file | md5 | what |
+|---|---|---|
+| `src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.cu` (new) | bbd977be | the Vj2 kernel |
+| `src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu` | 9274489e | the `USE_VJ2` mode; S % 128 != 0 goes to Vj1d |
+| `Tests/kernel_tests/test_varlen_attention.cu` | 5a988de0 | Vj2 mode label; G4 checks Vj2 bitwise |
+
+The box `~/gautam_k/v2_work` has the same files, and its library was rebuilt at 21:00. Backups of the files they replaced are in `backup_pre_vj2_1012/`.
+
+### 42.11 Next
+
+1. Run Vj2 with the fix: quick correctness, then speed (Vj1d/Vj2 alternating) plus nsys/ncu. Then decide on the full 605-check run.
+2. Port design A and B to Vj2 (Stage 3), test them with G8-G13, and benchmark the packed layouts again.
+3. The head-dim-64 bug: a 1-minute proof test, then the refusal fix.
+4. Step 7: the packing script, the loader, the attention node, the end-to-end gradient test, and a real packed SFT run vs v1.

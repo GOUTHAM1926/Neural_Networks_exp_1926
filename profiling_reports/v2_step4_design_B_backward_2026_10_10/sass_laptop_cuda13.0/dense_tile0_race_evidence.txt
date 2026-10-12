@@ -1,0 +1,17 @@
+Dense Vj1d tile-0 sLSE: STS at 0x1010/0x1020 (issue(0)), first LDS at 0x1ee0/0x1ef0 (fused_p_stsm). Between them: TRYWAIT on mbar_qo, MEMBAR.ALL.CTA, HGMMAs -- no BAR.SYNC.
+0120                   SYNCS.EXCH.64 URZ, [UR7], UR4 ;                                       0x00000004073f75b2 */
+0130                   SYNCS.EXCH.64 URZ, [UR8], UR4 ;                                       0x00000004083f75b2 */
+0170                   BAR.SYNC.DEFER_BLOCKING 0x0 ;                                         0x0000000000007b1d */
+0420                   SYNCS.ARRIVE.TRANS64 RZ, [UR9], R0 ;                                  0x00000000ffff79a7 */
+04c0                   UTMALDG.2D [UR8], [UR20] ;                                            0x00000008140075b4 */
+0560                   UTMALDG.2D [UR12], [UR20] ;                                           0x0000000c140075b4 */
+0600                   UTMALDG.2D [UR8], [UR12] ;                                            0x000000080c0075b4 */
+0680                   UTMALDG.2D [UR8], [UR12] ;                                            0x000000080c0075b4 */
+0780                   SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [UR9], R0 ;                        0x00000000ff0075a7 */
+0860                   SYNCS.ARRIVE.TRANS64 RZ, [UR9], R0 ;                                  0x00000000ffff79a7 */
+08c0                   UTMALDG.2D [UR8], [UR16] ;                                            0x00000008100075b4 */
+0960                   UTMALDG.2D [UR12], [UR16] ;                                           0x0000000c100075b4 */
+0a00                   UTMALDG.2D [UR8], [UR12] ;                                            0x000000080c0075b4 */
+0a80                   UTMALDG.2D [UR8], [UR12] ;                                            0x000000080c0075b4 */
+0f90                   LDG.E.CONSTANT R2, desc[UR10][R2.64] ;                                0x0000000a02027981 */
+0fa0                   LDG.E.CONSTANT R4, desc[UR10][R4.64] ;                                0x0000000a04047981 */

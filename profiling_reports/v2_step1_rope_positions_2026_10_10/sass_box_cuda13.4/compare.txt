@@ -1,0 +1,15 @@
+IDENTICAL  520 vs  520 instr  fused_qknorm_rope_backward<(bool)0> -> <..., false>
+IDENTICAL  616 vs  616 instr  fused_qknorm_rope_backward<(bool)1> -> <..., false>
+IDENTICAL  200 vs  200 instr  fused_qk_norm_rope_bwd_kernel_sm90<(bool)0, (int)128> -> <..., false>
+IDENTICAL  272 vs  272 instr  fused_qk_norm_rope_bwd_kernel_sm90<(bool)0, (int)64> -> <..., false>
+IDENTICAL  192 vs  192 instr  fused_qk_norm_rope_bwd_kernel_sm90<(bool)1, (int)128> -> <..., false>
+IDENTICAL  280 vs  280 instr  fused_qk_norm_rope_bwd_kernel_sm90<(bool)1, (int)64> -> <..., false>
+IDENTICAL  200 vs  200 instr  reduce_dgamma_kernel(const float *, float *, int, int)<> -> <..., false>
+IDENTICAL  440 vs  440 instr  fused_qknorm_rope_forward<(bool)0> -> <..., false>
+IDENTICAL  432 vs  432 instr  fused_qknorm_rope_forward<(bool)1> -> <..., false>
+IDENTICAL  288 vs  288 instr  fused_qknorm_rope_forward_t_sm90<(bool)0, (int)128, (int)4, (int)8> -> <..., false>
+IDENTICAL  216 vs  216 instr  fused_qknorm_rope_forward_t_sm90<(bool)0, (int)64, (int)4, (int)8> -> <..., false>
+IDENTICAL  344 vs  344 instr  fused_qknorm_rope_forward_t_sm90<(bool)1, (int)128, (int)4, (int)8> -> <..., false>
+IDENTICAL  272 vs  272 instr  fused_qknorm_rope_forward_t_sm90<(bool)1, (int)64, (int)4, (int)8> -> <..., false>
+
+13/13 original kernels have byte-for-byte identical SASS in the new HAS_POS=false instantiation

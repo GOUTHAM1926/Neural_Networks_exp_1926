@@ -1,0 +1,10 @@
+18:35:55 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:35:56 pinned CUDA_VISIBLE_DEVICES=7 (GPU-37329774-592c-b7f0-a41a-dad821224d7c)
+18:35:56 nsys nsys_libs_exp start (BENCH_ONLY=fa3_varlen,cudnn_varlen_exp CUDNN_GQA=0)
+18:37:23 nsys nsys_libs_exp exit=0 | BENCH lines: 8 total, 4 cuDNN
+18:37:30 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:37:30 nsys nsys_libs_gqa start (BENCH_ONLY=cudnn_varlen_gqa CUDNN_GQA=1)
+18:39:13 nsys nsys_libs_gqa exit=0 | BENCH lines: 2 total, 2 cuDNN
+18:39:17 nsys_libs_exp: rep 662631 bytes, kern csv 15 lines (0 cuDNN attention kernels), nvtx csv 30 lines
+18:39:20 nsys_libs_gqa: rep 603650 bytes, kern csv 7 lines (0 cuDNN attention kernels), nvtx csv 0 lines
+18:39:20 nsys libs ALLDONE

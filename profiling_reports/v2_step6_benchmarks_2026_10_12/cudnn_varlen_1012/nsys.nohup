@@ -1,0 +1,12 @@
+18:26:03 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:26:05 pinned CUDA_VISIBLE_DEVICES=7 (GPU-37329774-592c-b7f0-a41a-dad821224d7c)
+18:26:05 nsys libs start (CUDNN_GQA=1)
+18:27:27 nsys libs exit=0
+18:27:33 GPU 7: 0 process(es), 0 MiB used, 0% busy
+18:27:33 ours: libtensor.so 62bf5359, tva_step6 169fad10
+18:27:33 nsys ours start
+18:28:54 nsys ours exit=0
+18:28:56 nsys_libs_packed: rep 448979 bytes, kern csv 0 lines
+18:28:58 nsys_ours_packed: rep 560207 bytes, kern csv 11 lines
+18:29:01 nvtx per-contender csv 0 lines
+18:29:01 nsys ALLDONE

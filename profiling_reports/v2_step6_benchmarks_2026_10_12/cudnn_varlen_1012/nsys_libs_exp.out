@@ -1,0 +1,23 @@
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+gpu NVIDIA H200 uuid 37329774-592c-b7f0-a41a-dad821224d7c | expected GPU-37329774-592c-b7f0-a41a-dad821224d7c
+MEM layout=real_rows_752-759 fa3_varlen fwd+bwd peak extra 905 MiB
+GATE layout=real_rows_752-759 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.29e+00 dQ 1.13e+00 dK 1.36e+00 dV 1.16e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_752-759 cudnn_varlen_exp: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_exp fwd+bwd peak extra 905 MiB
+GATE layout=real_rows_752-759 cudnn_varlen_expsum: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_expsum fwd+bwd peak extra 1193 MiB
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=fwd med_ms=0.5536 p10_ms=0.5478 p90_ms=0.6151 tflops=383.6
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=bwd med_ms=1.6112 p10_ms=1.6031 p90_ms=1.6185 tflops=329.5
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=fwd med_ms=0.5293 p10_ms=0.5276 p90_ms=0.5400 tflops=401.2
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=bwd med_ms=1.8942 p10_ms=1.8671 p90_ms=1.9012 tflops=280.3
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_exp dir=fwd med_ms=0.6120 p10_ms=0.6027 p90_ms=0.6331 tflops=347.0
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_exp dir=bwd med_ms=1.6764 p10_ms=1.6534 p90_ms=1.6837 tflops=316.7
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_expsum dir=fwd med_ms=0.8462 p10_ms=0.8300 p90_ms=0.8524 tflops=251.0
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_expsum dir=bwd med_ms=1.9139 p10_ms=1.9093 p90_ms=1.9167 tflops=277.4
+AGREE layout=real_rows_752-759 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+Collecting data...
+Generating '/tmp/nsys-operator/nsys-report-ecca.qdstrm'
+[1/1] [0%                          ] nsys_libs_exp.nsys-rep[1/1] [0%                          ] nsys_libs_exp.nsys-rep[1/1] [1%                          ] nsys_libs_exp.nsys-rep[1/1] [2%                          ] nsys_libs_exp.nsys-rep[1/1] [5%                          ] nsys_libs_exp.nsys-rep[1/1] [10%                         ] nsys_libs_exp.nsys-rep[1/1] [11%                         ] nsys_libs_exp.nsys-rep[1/1] [12%                         ] nsys_libs_exp.nsys-rep[1/1] [13%                         ] nsys_libs_exp.nsys-rep[1/1] [14%                         ] nsys_libs_exp.nsys-rep[1/1] [=15%                        ] nsys_libs_exp.nsys-rep[1/1] [==19%                       ] nsys_libs_exp.nsys-rep[1/1] [==20%                       ] nsys_libs_exp.nsys-rep[1/1] [=======39%                  ] nsys_libs_exp.nsys-rep[1/1] [==========49%               ] nsys_libs_exp.nsys-rep[1/1] [=======================96%  ] nsys_libs_exp.nsys-rep[1/1] [========================98% ] nsys_libs_exp.nsys-rep[1/1] [========================100%] nsys_libs_exp.nsys-rep[1/1] [========================100%] nsys_libs_exp.nsys-rep
+Generated:
+	/home/operator/gautam_k/step6/cudnn_varlen_1012/nsys_libs_exp.nsys-rep

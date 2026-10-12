@@ -1,0 +1,75 @@
+VARIANT nofix loads /home/operator/gautam_k/v2_work/Tensor-Implementations/lib_nofix/libtensor.so md5 089f18ef (expected /home/operator/gautam_k/v2_work/Tensor-Implementations/lib_nofix/libtensor.so)
+VARIANT fix loads /home/operator/gautam_k/v2_work/Tensor-Implementations/lib/libtensor.so md5 aee7d24a (expected /home/operator/gautam_k/v2_work/Tensor-Implementations/lib/libtensor.so)
+=== ROUND 1 VARIANT nofix 19:59:45 1980 MHz, 38, 135.90 W
+  B=8 T=4096 18/6  fwd median 1.0862 ms (mean 1.1143, min 1.0817) = 569.4 TFLOP/s | bwd median 3.9847 ms (mean 4.1241, min 3.9415) = 388.0 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7391 ms (mean 0.7352, min 0.7242) = 557.8 TFLOP/s | bwd median 2.7857 ms (mean 2.7590, min 2.6893) = 370.0 TFLOP/s
+=== ROUND 1 VARIANT fix 19:59:54 1980 MHz, 37, 195.75 W
+  B=8 T=4096 18/6  fwd median 1.1362 ms (mean 1.1276, min 1.0812) = 544.4 TFLOP/s | bwd median 4.2748 ms (mean 4.2006, min 3.9727) = 361.7 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7273 ms (mean 0.7372, min 0.7247) = 566.9 TFLOP/s | bwd median 2.7659 ms (mean 2.7673, min 2.6885) = 372.7 TFLOP/s
+=== ROUND 2 VARIANT fix 20:00:02 1980 MHz, 36, 184.26 W
+  B=8 T=4096 18/6  fwd median 1.1153 ms (mean 1.1203, min 1.0802) = 554.6 TFLOP/s | bwd median 4.1815 ms (mean 4.1824, min 3.9668) = 369.8 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7303 ms (mean 0.7435, min 0.7268) = 564.6 TFLOP/s | bwd median 2.7316 ms (mean 2.7967, min 2.7089) = 377.4 TFLOP/s
+=== ROUND 2 VARIANT nofix 20:00:11 1980 MHz, 36, 189.35 W
+  B=8 T=4096 18/6  fwd median 1.1175 ms (mean 1.1177, min 1.0810) = 553.4 TFLOP/s | bwd median 4.1828 ms (mean 4.1750, min 3.9692) = 369.7 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7290 ms (mean 0.7354, min 0.7262) = 565.6 TFLOP/s | bwd median 2.7173 ms (mean 2.7486, min 2.7081) = 379.3 TFLOP/s
+=== ROUND 3 VARIANT nofix 20:00:20 1980 MHz, 35, 134.11 W
+  B=8 T=4096 18/6  fwd median 1.1375 ms (mean 1.1265, min 1.0817) = 543.7 TFLOP/s | bwd median 4.2560 ms (mean 4.2039, min 3.9884) = 363.3 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7529 ms (mean 0.7483, min 0.7261) = 547.6 TFLOP/s | bwd median 2.8435 ms (mean 2.8142, min 2.7068) = 362.5 TFLOP/s
+=== ROUND 3 VARIANT fix 20:00:29 1980 MHz, 35, 133.99 W
+  B=8 T=4096 18/6  fwd median 1.1302 ms (mean 1.1280, min 1.0804) = 547.2 TFLOP/s | bwd median 4.2186 ms (mean 4.1999, min 3.9678) = 366.5 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7298 ms (mean 0.7393, min 0.7254) = 565.0 TFLOP/s | bwd median 2.7716 ms (mean 2.7800, min 2.7076) = 371.9 TFLOP/s
+=== ROUND 4 VARIANT fix 20:00:38 1980 MHz, 35, 212.18 W
+  B=8 T=4096 18/6  fwd median 1.1408 ms (mean 1.1154, min 1.0804) = 542.1 TFLOP/s | bwd median 4.2688 ms (mean 4.1451, min 3.9638) = 362.2 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7383 ms (mean 0.7362, min 0.7281) = 558.5 TFLOP/s | bwd median 2.7764 ms (mean 2.7623, min 2.7077) = 371.3 TFLOP/s
+=== ROUND 4 VARIANT nofix 20:00:46 1980 MHz, 35, 174.85 W
+  B=8 T=4096 18/6  fwd median 1.1364 ms (mean 1.1305, min 1.0844) = 544.2 TFLOP/s | bwd median 4.2518 ms (mean 4.2176, min 3.9617) = 363.7 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7275 ms (mean 0.7278, min 0.7258) = 566.8 TFLOP/s | bwd median 2.7154 ms (mean 2.7154, min 2.7010) = 379.6 TFLOP/s
+=== ROUND 5 VARIANT nofix 20:00:55 1980 MHz, 35, 133.48 W
+  B=8 T=4096 18/6  fwd median 1.1177 ms (mean 1.1234, min 1.0809) = 553.4 TFLOP/s | bwd median 4.2849 ms (mean 4.1649, min 3.9637) = 360.8 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7294 ms (mean 0.7394, min 0.7266) = 565.3 TFLOP/s | bwd median 2.7227 ms (mean 2.7741, min 2.7084) = 378.6 TFLOP/s
+=== ROUND 5 VARIANT fix 20:01:04 1980 MHz, 35, 234.71 W
+  B=8 T=4096 18/6  fwd median 1.1450 ms (mean 1.1201, min 1.0801) = 540.2 TFLOP/s | bwd median 4.2845 ms (mean 4.1531, min 3.9631) = 360.9 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7560 ms (mean 0.7470, min 0.7262) = 545.4 TFLOP/s | bwd median 2.8463 ms (mean 2.7969, min 2.7059) = 362.2 TFLOP/s
+=== ROUND 6 VARIANT fix 20:01:12 1980 MHz, 34, 188.12 W
+  B=8 T=4096 18/6  fwd median 1.1386 ms (mean 1.1275, min 1.0824) = 543.2 TFLOP/s | bwd median 4.2534 ms (mean 4.2054, min 3.9695) = 363.5 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7358 ms (mean 0.7404, min 0.7255) = 560.4 TFLOP/s | bwd median 2.7684 ms (mean 2.7846, min 2.7061) = 372.3 TFLOP/s
+=== ROUND 6 VARIANT nofix 20:01:21 1980 MHz, 34, 191.61 W
+  B=8 T=4096 18/6  fwd median 1.1329 ms (mean 1.1208, min 1.0794) = 545.9 TFLOP/s | bwd median 4.2731 ms (mean 4.1810, min 3.9701) = 361.8 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7393 ms (mean 0.7475, min 0.7262) = 557.7 TFLOP/s | bwd median 2.7881 ms (mean 2.8082, min 2.7057) = 369.7 TFLOP/s
+=== ROUND 7 VARIANT nofix 20:01:29 1980 MHz, 34, 192.19 W
+  B=8 T=4096 18/6  fwd median 1.1191 ms (mean 1.1151, min 1.0817) = 552.7 TFLOP/s | bwd median 4.1808 ms (mean 4.1547, min 3.9736) = 369.8 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7270 ms (mean 0.7384, min 0.7236) = 567.1 TFLOP/s | bwd median 2.7216 ms (mean 2.7752, min 2.7029) = 378.7 TFLOP/s
+=== ROUND 7 VARIANT fix 20:01:38 1980 MHz, 34, 187.61 W
+  B=8 T=4096 18/6  fwd median 1.1325 ms (mean 1.1235, min 1.0809) = 546.1 TFLOP/s | bwd median 4.2258 ms (mean 4.1923, min 3.9993) = 365.9 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7356 ms (mean 0.7378, min 0.7251) = 560.5 TFLOP/s | bwd median 2.7968 ms (mean 2.7784, min 2.7049) = 368.6 TFLOP/s
+=== ROUND 8 VARIANT fix 20:01:48 1980 MHz, 34, 189.93 W
+  B=8 T=4096 18/6  fwd median 1.1441 ms (mean 1.1269, min 1.0810) = 540.6 TFLOP/s | bwd median 4.2730 ms (mean 4.1987, min 3.9668) = 361.8 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7263 ms (mean 0.7265, min 0.7241) = 567.7 TFLOP/s | bwd median 2.7104 ms (mean 2.7128, min 2.7015) = 380.3 TFLOP/s
+=== ROUND 8 VARIANT nofix 20:01:56 1980 MHz, 34, 132.99 W
+  B=8 T=4096 18/6  fwd median 1.1409 ms (mean 1.1288, min 1.0795) = 542.1 TFLOP/s | bwd median 4.2559 ms (mean 4.2074, min 3.9749) = 363.3 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7413 ms (mean 0.7434, min 0.7269) = 556.2 TFLOP/s | bwd median 2.8029 ms (mean 2.8022, min 2.7217) = 367.8 TFLOP/s
+=== ROUND 9 VARIANT nofix 20:02:05 1980 MHz, 34, 162.45 W
+  B=8 T=4096 18/6  fwd median 1.0852 ms (mean 1.1092, min 1.0813) = 569.9 TFLOP/s | bwd median 4.0086 ms (mean 4.1230, min 3.9761) = 385.7 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7434 ms (mean 0.7406, min 0.7262) = 554.6 TFLOP/s | bwd median 2.8131 ms (mean 2.7917, min 2.7044) = 366.4 TFLOP/s
+=== ROUND 9 VARIANT fix 20:02:15 1980 MHz, 34, 140.96 W
+  B=8 T=4096 18/6  fwd median 1.1386 ms (mean 1.1205, min 1.0802) = 543.2 TFLOP/s | bwd median 4.2671 ms (mean 4.1549, min 3.9641) = 362.4 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7278 ms (mean 0.7358, min 0.7263) = 566.5 TFLOP/s | bwd median 2.7185 ms (mean 2.7515, min 2.7093) = 379.2 TFLOP/s
+=== ROUND 10 VARIANT fix 20:02:24 1980 MHz, 34, 191.75 W
+  B=8 T=4096 18/6  fwd median 1.1394 ms (mean 1.1237, min 1.0812) = 542.8 TFLOP/s | bwd median 4.2641 ms (mean 4.1901, min 3.9690) = 362.6 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7271 ms (mean 0.7375, min 0.7245) = 567.1 TFLOP/s | bwd median 2.7204 ms (mean 2.7646, min 2.7029) = 378.9 TFLOP/s
+=== ROUND 10 VARIANT nofix 20:02:34 1980 MHz, 34, 132.90 W
+  B=8 T=4096 18/6  fwd median 1.1196 ms (mean 1.1167, min 1.0798) = 552.4 TFLOP/s | bwd median 4.1903 ms (mean 4.1741, min 3.9720) = 369.0 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7275 ms (mean 0.7333, min 0.7255) = 566.8 TFLOP/s | bwd median 2.7193 ms (mean 2.7405, min 2.6996) = 379.1 TFLOP/s
+=== ROUND 11 VARIANT nofix 20:02:42 1980 MHz, 34, 190.27 W
+  B=8 T=4096 18/6  fwd median 1.1446 ms (mean 1.1285, min 1.0812) = 540.3 TFLOP/s | bwd median 4.2812 ms (mean 4.2067, min 3.9688) = 361.2 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7493 ms (mean 0.7478, min 0.7258) = 550.3 TFLOP/s | bwd median 2.8380 ms (mean 2.8149, min 2.6996) = 363.2 TFLOP/s
+=== ROUND 11 VARIANT fix 20:02:51 1980 MHz, 34, 132.68 W
+  B=8 T=4096 18/6  fwd median 1.1100 ms (mean 1.1157, min 1.0810) = 557.2 TFLOP/s | bwd median 4.2418 ms (mean 4.1553, min 3.9704) = 364.5 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7372 ms (mean 0.7347, min 0.7270) = 559.3 TFLOP/s | bwd median 2.7727 ms (mean 2.7581, min 2.7077) = 371.8 TFLOP/s
+=== ROUND 12 VARIANT fix 20:03:00 1980 MHz, 34, 176.12 W
+  B=8 T=4096 18/6  fwd median 1.1323 ms (mean 1.1297, min 1.0812) = 546.2 TFLOP/s | bwd median 4.2243 ms (mean 4.2069, min 3.9760) = 366.0 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7392 ms (mean 0.7369, min 0.7260) = 557.8 TFLOP/s | bwd median 2.7807 ms (mean 2.7687, min 2.7039) = 370.7 TFLOP/s
+=== ROUND 12 VARIANT nofix 20:03:10 1980 MHz, 34, 193.02 W
+  B=8 T=4096 18/6  fwd median 1.0840 ms (mean 1.1082, min 1.0812) = 570.6 TFLOP/s | bwd median 4.0044 ms (mean 4.1035, min 3.9688) = 386.1 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7275 ms (mean 0.7379, min 0.7246) = 566.7 TFLOP/s | bwd median 2.7186 ms (mean 2.7702, min 2.7045) = 379.2 TFLOP/s
+DONE 20:03:19

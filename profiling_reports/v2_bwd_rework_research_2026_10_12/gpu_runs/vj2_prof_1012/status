@@ -1,0 +1,8 @@
+nsys_vj1d exit=0
+nsys_vj2 exit=0
+nsys_vj1d kern csv 7 lines
+nsys_vj2 kern csv 7 lines
+ncu exit=0
+ncu report: /home/operator/gautam_k/v2_work/logs/vj2_prof_1012/ncu_vj2.ncu-repz 9003216 bytes
+exports: raw 3 details 102 source 2450 lines
+ALLDONE

@@ -1,0 +1,4 @@
+13:25:26 waiting for G12 pid 1861196
+13:25:30 G13 start (GPU 7 memory 91344 MiB)
+13:27:21 G13 exit=0
+13:49:08 suite + G13 done; GPU 7 procs 0

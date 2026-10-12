@@ -1,0 +1,12 @@
+functions in original: 4 | in new: 5
+  _ZN9OwnTensor4cuda12gqa_bwd_vj1d16gqa_dkdv_greduceEPK13__nv_ IDENTICAL (224 instr)
+  _ZN9OwnTensor4cuda12gqa_bwd_vj1d19compute_drowsum_v22EPK13__ IDENTICAL (120 instr)
+  _ZN9OwnTensor4cuda12gqa_bwd_vj1d27convert_dq_accum_to_bf16_v IDENTICAL (32 instr)
+original Vj1d        : 1600 instructions
+new <false> (dense)  : 1600 instructions -> IDENTICAL to the original
+new <true> (packed)  : 1736 instructions -> DIFFERENT to the original (must differ)
+  LDG  : original    4  dense    4  packed    7
+  BAR  : original    9  dense    9  packed   11
+  VOTE : original    0  dense    0  packed    0
+  LDS  : original    8  dense    8  packed   11
+  STS  : original  112  dense  112  packed  114
