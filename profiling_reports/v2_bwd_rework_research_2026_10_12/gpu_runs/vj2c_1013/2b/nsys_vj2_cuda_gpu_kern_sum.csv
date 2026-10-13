@@ -1,0 +1,7 @@
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+64.6,41845890,15,2789726.0,2761094.0,2757223,3032743,77293.6,"OwnTensor::cuda::gqa_bwd_vj2::gqa_bwd_vj2_kernel(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const float *, const float *, int, int, int, int, int, float)"
+25.1,16241449,15,1082763.3,1077794.0,1072739,1155459,20308.6,"void OwnTensor::cuda::gqa62::gqa_v62_sm90<(int)0>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int, int, int, int, float, const int *, const int4 *, int)"
+3.2,2045573,4,511393.3,510929.0,264833,758882,284594.2,"k_fill_normal(__nv_bfloat16 *, unsigned long, unsigned long, float)"
+2.5,1595938,15,106395.9,106240.0,106080,107009,309.8,"OwnTensor::cuda::gqa_bwd_vj2::convert_dq_vj2(const float4 *, uint2 *, long)"
+2.4,1565959,30,52198.6,52368.5,49984,54240,1418.1,"OwnTensor::cuda::gqa_bwd_vj2::gqa_dkdv_greduce_vj2(const __nv_bfloat16 *, __nv_bfloat16 *, int, int, int, int)"
+2.4,1525216,15,101681.1,101440.0,100416,104288,1032.2,"OwnTensor::cuda::gqa_bwd_vj2::bwd_prep_vj2(const __nv_bfloat16 *, const __nv_bfloat16 *, const float *, float *, float *, long)"

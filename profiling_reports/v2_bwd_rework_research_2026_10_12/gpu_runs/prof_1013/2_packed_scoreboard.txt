@@ -1,0 +1,49 @@
+ours impls: ['ours_A_plan', 'ours_B_segstart', 'ours_dense_fullrow'] | libs: ['cudnn_varlen_gqa', 'fa3_varlen', 'fa3_varlen_det', 'fa4_varlen', 'flex_docmask', 'torch_varlen']
+
+FORWARD ms, packed rows 8 x 4096, 18/6 heads (GPU 2, 18:51)
+layout                  A_plan  gstart  ullrow |     FA3  FA3det     FA4   cuDNN    Flex     FA2 | best ours / FA3, cuDNN
+real_rows_0-7            1.115   1.169   1.138 |   0.988   0.945   1.089   1.159   1.827   1.930 | 1.129, 0.962
+real_rows_752-759        0.535   0.573   1.127 |   0.532   0.495   0.613   0.587   0.960   0.928 | 1.006, 0.911
+real_rows_1504-1511      0.324   0.385   1.121 |   0.356   0.319   0.456   0.408   0.639   0.673 | 0.910, 0.794
+uniform_512              0.296   0.314   1.120 |   0.355   0.318   0.445   0.372   0.557   0.615 | 0.836, 0.796
+uniform_1024             0.422   0.437   1.137 |   0.451   0.414   0.533   0.483   0.741   0.777 | 0.935, 0.872
+uniform_2048             0.666   0.680   1.139 |   0.651   0.612   0.740   0.726   1.127   1.153 | 1.024, 0.918
+uniform_4096             1.149   1.169   1.146 |   1.062   1.024   1.176   1.239   1.945   2.093 | 1.079, 0.925
+   best ours / FA3    min 0.836 max 1.129 mean 0.988  ours faster on 3/7
+   best ours / FA3det min 0.933 max 1.180 mean 1.062  ours faster on 1/7
+   best ours / FA4    min 0.666 max 1.024 mean 0.848  ours faster on 6/7
+   best ours / cuDNN  min 0.794 max 0.962 mean 0.883  ours faster on 7/7
+   best ours / Flex   min 0.507 max 0.610 mean 0.565  ours faster on 7/7
+   best ours / FA2    min 0.481 max 0.578 mean 0.541  ours faster on 7/7
+
+BACKWARD (ours = Vj1d) ms, packed rows 8 x 4096, 18/6 heads (GPU 2, 18:51)
+layout                  A_plan  gstart  ullrow |     FA3  FA3det     FA4   cuDNN    Flex     FA2 | best ours / FA3, cuDNN
+real_rows_0-7            3.942   4.149   4.235 |   2.923   3.458   2.835   3.306   4.360   5.859 | 1.349, 1.192
+real_rows_752-759        1.908   1.998   4.218 |   1.561   1.825   1.543   1.740   2.233   2.854 | 1.222, 1.096
+real_rows_1504-1511      1.168   1.144   4.194 |   1.232   1.369   1.162   1.208   1.405   1.767 | 0.928, 0.947
+uniform_512              1.135   1.094   4.193 |   1.168   1.300   1.098   1.176   1.140   1.714 | 0.936, 0.930
+uniform_1024             1.538   1.580   4.245 |   1.366   1.583   1.321   1.475   1.617   2.329 | 1.126, 1.042
+uniform_2048             2.430   2.540   4.257 |   1.887   2.240   1.877   2.153   2.602   3.609 | 1.288, 1.129
+uniform_4096             4.259   4.469   4.269 |   3.051   3.641   3.030   3.567   4.661   6.263 | 1.396, 1.194
+   best ours / FA3    min 0.928 max 1.396 mean 1.178  ours faster on 2/7
+   best ours / FA3det min 0.836 max 1.170 mean 1.013  ours faster on 3/7
+   best ours / FA4    min 0.984 max 1.406 mean 1.210  ours faster on 2/7
+   best ours / cuDNN  min 0.930 max 1.194 mean 1.076  ours faster on 2/7
+   best ours / Flex   min 0.814 max 0.960 mean 0.905  ours faster on 7/7
+   best ours / FA2    min 0.638 max 0.680 mean 0.663  ours faster on 7/7
+
+FORWARD + BACKWARD ms, packed rows 8 x 4096, 18/6 heads (GPU 2, 18:51)
+layout                  A_plan  gstart  ullrow |     FA3  FA3det     FA4   cuDNN    Flex     FA2 | best ours / FA3, cuDNN
+real_rows_0-7            5.057   5.318   5.373 |   3.910   4.402   3.924   4.465   6.188   7.788 | 1.293, 1.133
+real_rows_752-759        2.443   2.571   5.345 |   2.092   2.320   2.156   2.327   3.192   3.782 | 1.168, 1.050
+real_rows_1504-1511      1.492   1.529   5.315 |   1.588   1.688   1.618   1.616   2.044   2.440 | 0.940, 0.924
+uniform_512              1.431   1.408   5.313 |   1.523   1.617   1.543   1.549   1.697   2.329 | 0.924, 0.909
+uniform_1024             1.960   2.017   5.382 |   1.817   1.997   1.854   1.959   2.358   3.106 | 1.079, 1.000
+uniform_2048             3.097   3.220   5.396 |   2.538   2.852   2.618   2.878   3.729   4.762 | 1.220, 1.076
+uniform_4096             5.409   5.638   5.415 |   4.113   4.665   4.206   4.806   6.606   8.356 | 1.315, 1.125
+   best ours / FA3    min 0.924 max 1.315 mean 1.134  ours faster on 2/7
+   best ours / FA3det min 0.871 max 1.159 mean 1.026  ours faster on 3/7
+   best ours / FA4    min 0.912 max 1.289 mean 1.112  ours faster on 2/7
+   best ours / cuDNN  min 0.909 max 1.133 mean 1.031  ours faster on 2/7
+   best ours / Flex   min 0.730 max 0.831 mean 0.803  ours faster on 7/7
+   best ours / FA2    min 0.604 max 0.650 mean 0.634  ours faster on 7/7

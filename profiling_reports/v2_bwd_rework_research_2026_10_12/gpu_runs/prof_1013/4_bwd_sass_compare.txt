@@ -1,0 +1,64 @@
+executed warp-instructions (M) | stall-sample share %
+family                      ours_bwd_f5.source.csv  ncu_libs_bwd.source.cs  ncu_libs_bwd.source.cs  ncu_libs_bwd.source.cs
+(all)                           812.54     100.0%        624.33     100.0%        562.87     100.0%        826.72     100.0%  
+uniform (U*)                    136.53       5.6%        203.46      10.4%        146.45      14.7%        121.14       5.5%  
+FMUL                             80.25       2.5%         41.29       1.3%         38.93       1.9%        116.79       2.4%  
+IMAD                             73.98       3.6%          8.06       0.6%         11.84       0.4%         73.89       6.5%  
+R2UR                             59.13       1.8%          1.96       1.3%          0.04       0.0%         43.76       1.3%  
+other                            48.06      14.0%         18.55      18.6%         12.96       9.5%         58.96       5.5%  
+HGMMA                            48.66      23.3%         38.93      20.6%         38.93      20.0%         34.06       7.0%  
+LOP3                             45.81       1.9%          0.56       0.0%          2.11       1.9%         17.09       3.6%  
+FSEL                             38.93       2.3%         38.93       1.9%         38.93       1.7%         43.57       1.9%  
+ISETP                            23.44       1.0%         41.93       1.9%         43.13       1.7%         20.79       1.3%  
+F2FP (cvt bf16)                  41.29       1.3%         38.93       2.4%         38.93       2.9%         41.29       1.5%  
+MUFU (exp)                       39.15       4.4%         38.93       1.8%         38.93       2.5%         38.94       3.9%  
+FADD                             38.93       1.0%         38.93       2.5%         38.93       2.2%         38.93       0.7%  
+FFMA                             38.93      12.2%         38.93       2.7%         38.93       3.0%         38.93       0.8%  
+FSETP                             0.00       0.0%          0.00       0.0%          0.00       0.0%         38.93       6.4%  
+LDS                              19.46       1.0%         19.46       1.3%         19.46       1.1%         19.51       1.3%  
+SYNCS (mbarrier)                 11.13       0.2%          6.29       1.7%          8.62       0.6%         17.24       3.2%  
+BRA                              13.23      11.6%          5.74      15.5%          6.31      18.2%         14.14      22.5%  
+LEA                              13.55       0.6%          3.56       0.3%          1.63       0.1%          5.07       0.4%  
+WARPGROUP (arrive/depbar)        10.95       4.2%         12.17       5.5%         12.17       7.0%         10.95      17.9%  
+STS                              12.09       4.8%         10.91       5.7%         10.91       6.4%         10.35       2.0%  
+SHF                               8.81       0.4%          2.04       0.2%          1.88       0.2%          6.02       0.4%  
+STSM                              4.87       0.1%          4.87       0.4%          4.87       0.5%          5.46       1.3%  
+BAR                               4.39       2.1%          4.50       2.9%          4.46       3.5%          2.87       1.8%  
+SEL                               0.00       0.0%          2.45       0.2%          2.44       0.0%          4.15       0.2%  
+IADD3                             0.00       0.0%          1.70       0.2%          0.12       0.0%          2.32       0.2%  
+TMA load                          0.63       0.0%          0.63       0.1%          0.63       0.0%          0.63       0.1%  
+LDG                               0.00       0.0%          0.00       0.0%          0.00       0.0%          0.61       0.1%  
+SHFL                              0.02       0.0%          0.31       0.0%          0.04       0.0%          0.05       0.1%  
+bulk copy                         0.30       0.0%          0.30       0.0%          0.30       0.0%          0.00       0.0%  
+
+ours_bwd_f5.source.csv:0: OwnTensor::cuda::gqa_bwd_vj2::gqa_bwd_vj2_kernel(CUtensorMap_st, CUtensorMap_st, CUtensorM
+   HGMMA                       23.3%  [wait 5.0, mio 4.3, barrier 2.4]
+   other                       14.0%  [long_sb 9.5, barrier 1.5, wait 1.1]
+   FFMA                        12.2%  [short_sb 10.9, selected 0.7, not_selected 0.3]
+   BRA                         11.6%  [long_sb 7.8, barrier 3.0, wait 0.6]
+   uniform (U*)                 5.6%  [selected 2.4, wait 1.1, dispatch 0.6]
+   STS                          4.8%  [barrier 4.1, wait 0.4, selected 0.2]
+
+ncu_libs_bwd.source.csv:1: void cutlass::device_kernel<flash::enable_sm90<flash::FlashAttnBwdSm90<flash::CollectiveMa
+   HGMMA                       20.6%  [wait 3.7, mio 2.8, barrier 2.0]
+   other                       18.6%  [long_sb 13.2, short_sb 2.1, sleep 1.4]
+   BRA                         15.5%  [long_sb 13.7, barrier 1.4, wait 0.2]
+   uniform (U*)                10.4%  [selected 3.8, barrier 2.1, wait 1.8]
+   STS                          5.7%  [barrier 4.3, mio 0.6, wait 0.5]
+   WARPGROUP (arrive/depbar)    5.5%  [barrier 5.0, wait 0.3, selected 0.2]
+
+ncu_libs_bwd.source.csv:3: kernel_cutlass_kernel_flash_attncuteflash_bwd_sm90FlashAttentionBackwardSm90_object_at__te
+   HGMMA                       20.0%  [mio 3.6, wait 3.2, barrier 1.3]
+   BRA                         18.2%  [long_sb 17.6, wait 0.3, barrier 0.1]
+   uniform (U*)                14.7%  [barrier 5.4, selected 2.7, long_sb 2.7]
+   other                        9.5%  [long_sb 8.2, wait 0.4, short_sb 0.4]
+   WARPGROUP (arrive/depbar)    7.0%  [barrier 6.5, wait 0.3, selected 0.2]
+   STS                          6.4%  [barrier 5.1, wait 0.6, mio 0.4]
+
+ncu_libs_bwd.source.csv:0: cudnn_generated_fort_native_sdpa_sm90_flash_bprop_wgmma_f16_knob_2_64x64x128_1x4x1_cga1x1x
+   BRA                         22.5%  [barrier 11.1, long_sb 10.8, wait 0.3]
+   WARPGROUP (arrive/depbar)   17.9%  [barrier 17.6, selected 0.2, wait 0.0]
+   HGMMA                        7.0%  [wait 3.4, selected 0.6, mio 0.3]
+   IMAD                         6.5%  [short_sb 2.7, wait 1.3, selected 1.2]
+   FSETP                        6.4%  [short_sb 4.5, not_selected 0.8, selected 0.6]
+   uniform (U*)                 5.5%  [selected 2.0, long_sb 1.8, wait 1.0]

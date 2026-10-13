@@ -1,0 +1,24 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj2 (USE_VJ2=1)  |  quick: no
+
+stage-0 data: cannot open /home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin (set VARLEN_STAGE0_LABELS)
+
+===== BENCHDENSE: ours dense causal, colleagues' shapes =====
+BENCH layout=dense_B8_H18x6 impl=ours_dense dir=fwd med_ms=1.0890 p10_ms=1.0879 p90_ms=1.1643 tflops=568.0
+BENCH layout=dense_B8_H18x6 impl=ours_dense dir=bwd med_ms=3.1644 p10_ms=3.1595 p90_ms=3.4346 tflops=488.6
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (4 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS
+Collecting data...
+Generating '/tmp/nsys-operator/nsys-report-9dd3.qdstrm'
+[1/1] [0%                          ] nsys_vj2.nsys-rep[1/1] [0%                          ] nsys_vj2.nsys-rep[1/1] [1%                          ] nsys_vj2.nsys-rep[1/1] [2%                          ] nsys_vj2.nsys-rep[1/1] [5%                          ] nsys_vj2.nsys-rep[1/1] [12%                         ] nsys_vj2.nsys-rep[1/1] [14%                         ] nsys_vj2.nsys-rep[1/1] [=15%                        ] nsys_vj2.nsys-rep[1/1] [=16%                        ] nsys_vj2.nsys-rep[1/1] [=17%                        ] nsys_vj2.nsys-rep[1/1] [==18%                       ] nsys_vj2.nsys-rep[1/1] [==19%                       ] nsys_vj2.nsys-rep[1/1] [==20%                       ] nsys_vj2.nsys-rep[1/1] [===22%                      ] nsys_vj2.nsys-rep[1/1] [=======36%                  ] nsys_vj2.nsys-rep[1/1] [=======================96%  ] nsys_vj2.nsys-rep[1/1] [========================98% ] nsys_vj2.nsys-rep[1/1] [========================100%] nsys_vj2.nsys-rep[1/1] [========================100%] nsys_vj2.nsys-rep
+Generated:
+	/home/operator/gautam_k/v2_work/logs/vj2c_1013_2b_1434/nsys_vj2.nsys-rep

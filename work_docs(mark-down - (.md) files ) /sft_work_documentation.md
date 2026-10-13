@@ -3972,8 +3972,8 @@ Records: `profiling_reports/v2_bwd_rework_research_2026_10_12/`.
 ### 42.1 Design A or B: both kept, picked per call
 
 **Measured on our own kernels (same code, 7 packed layouts):**
-- Forward: A is faster on all 7 layouts, by 2-16%.
-- Backward: A is faster on middle and long chats by 3-5%; B is faster by 2-4% only when chats are very short.
+- Forward: A is 2-16% faster than B on all 7 layouts.
+- Backward: A is 3-5% faster than B on middle and long chats; B is 2-4% faster than A only when chats are very short.
 - Kernel time on real middle rows: forward A 501 µs vs B 538 µs; backward A 1466 µs vs B 1537 µs.
 
 **Why A wins on real rows:**
@@ -4168,9 +4168,250 @@ All in the laptop `~/Downloads/BluTrain_sft/Tensor-Implementations`, uncommitted
 
 The box `~/gautam_k/v2_work` has the same files, and its library was rebuilt at 21:00. Backups of the files they replaced are in `backup_pre_vj2_1012/`.
 
-### 42.11 Next
+### 42.11 Where the backward work stands, and the task list for 2026-10-13
 
-1. Run Vj2 with the fix: quick correctness, then speed (Vj1d/Vj2 alternating) plus nsys/ncu. Then decide on the full 605-check run.
-2. Port design A and B to Vj2 (Stage 3), test them with G8-G13, and benchmark the packed layouts again.
-3. The head-dim-64 bug: a 1-minute proof test, then the refusal fix.
-4. Step 7: the packing script, the loader, the attention node, the end-to-end gradient test, and a real packed SFT run vs v1.
+| step | done? | result |
+|---|---|---|
+| 1. profile the old backward (Vj1d) to find where it lags | yes | the tensor cores sit idle. 64-key blocks reload Q/dO and add back dQ twice as often as FA3; one thread group does everything and waits around the dQ add-back |
+| 2. first optimization: new backward Vj2 (FA3 layout) | yes, tested on the GPU | 605/605; 5-13% faster than Vj1d. Against cuDNN: faster on the 2 smallest dense shapes, 5-11% slower on the other 11. Against FA3: 20-28% slower. Within about 5% of FA3's deterministic mode |
+| 3. profile Vj2 | yes | data movement now matches FA3. What is left is extra instructions (generic memory path, descriptors rebuilt for every wgmma) |
+| 4. second optimization: fix those two | built on the box (md5 `bbd977be`) | 28% fewer instructions in the compiled kernel. **Not tested on the GPU yet** |
+
+Tasks for 2026-10-13, in order. Every GPU run happens only after the user's OK, on GPU 7, with absolute paths in the scripts.
+
+1. **Run 1:** quick correctness (CLASSIC quick) of the fixed Vj2, ~3.5 min.
+2. **Run 2:** only if run 1 passes. Dense speed with Vj1d/Vj2 alternating on the 13 shapes, plus nsys and ncu on B8 18/6 (~5 min), to see whether the instruction cut turns into time.
+3. **Ask the user about run 3:** the full CLASSIC, 605 checks, ~23 min.
+4. **Stage 3:** move design A and B onto Vj2. A's plan needs 128-key backward tiles. Test with G8-G13. If Vj2 loses on short chats, keep Vj1d's 64-key path for them.
+5. **Benchmark again** on the packed layouts and the dense shapes against FA2, FA3, FA4, cuDNN (packed and masked), PyTorch (varlen, Flex, SDPA) and **Meta xFormers**: its own packed mode, forward and backward, installed into `~/gautam_k/benv` only after the user's OK.
+6. **The head-dim-64 bug (42.8):** a 1-minute proof test, then the refusal fix.
+7. **Step 7:** the `attn_pack_mode` config setting, the packing script, the loader, the attention node, the end-to-end gradient test, and a real packed SFT run vs v1.
+8. **Chat template decision (option A now, option B later):** give `<|system|>`, `<|user|>`, `<|assistant|>` and possibly a separate end-of-turn token their own ids in the 47 spare vocab rows. To be written up as a decision; the background is in the SFT report §3.2-3.4 (Tülu 3 Table 13: 51.6-53.0 across templates).
+
+## 43. 2026-10-13: the fixed Vj2 tested, Phase 1.5 (one fix at a time), FA3/FA4/cuDNN compared line by line, the G-series, and the SFT pipeline walkthrough
+
+All GPU runs were on the H200 box, one test at a time and each only after the user's OK: GPU 7 until 18:40, then GPU 2.
+Unless a line says otherwise, numbers are for our model's attention shape (batch 8, 18 query heads, 6 KV heads, 4096
+tokens, head dim 128 = "B8 18/6"). "Same session" means the versions were run alternately (A, B, A, B) in one sitting,
+so clock changes hit both; every speed ratio below names what it is compared against.
+
+Records: `profiling_reports/v2_bwd_rework_research_2026_10_12/gpu_runs/{vj2c_1013, prof_1013, g2_1013, g12_1013, g123_1013}/`
+(each holds the run scripts, logs, CSV exports and a RESULT/RESULTS file); the analysis is in
+`gpu_runs/vj2c_1013/PHASE15_ANALYSIS.md`; every kernel version is in `code_snapshot/`; the SFT proofs are in
+`profiling_reports/sft_walkthrough_2026_10_13/`.
+
+### 43.1 Testing the fixed Vj2 (yesterday's second optimization, file md5 `bbd977be`)
+
+| test | what it checks | result |
+|---|---|---|
+| quick CLASSIC (144 checks) | forward + backward values against the reference | 144/144; all 88 error values identical to the first Vj2's run of 10-12, so the fix changed no math |
+| compute-sanitizer memcheck / synccheck / racecheck, new driver `sanitize_vj2.cu` (B1, 6/2 heads, T256) | out-of-bounds, barrier misuse, shared-memory races | 0 / 0 / 0. nsys of the same program shows `gqa_bwd_vj2_kernel` really ran. Racecheck does not see TMA or wgmma accesses; those are covered by the value checks |
+| speed, 13 dense shapes, Vj1d / Vj2 alternating + libraries | | Vj2 takes 18-22% less time than Vj1d (mean 20%); 1.05-1.15x FA3's time (mean 1.11x); faster than cuDNN on 12 of 13; faster than FA3 deterministic on 13 of 13 |
+| nsys, B8 18/6 | kernel time | 2761 us (first Vj2 3197, Vj1d 3623, FA3 2486) |
+| ncu, B8 18/6 | instructions, stalls | instructions 1,096M -> 840M; generic loads/stores 44.9M -> 0; tensor cores busy 51.4% -> 59.6% |
+| full CLASSIC (605 checks) | adds G6 = all 5000 real chats alone, G4 = 1000 repeats, G5 = large inputs | 605/605; all 435 error values identical to the first Vj2's full run |
+
+FA3 and FA3 deterministic differ in one template flag (`Deterministic`, the 5th bool of `CollectiveMainloopBwdSm90`,
+proven from the kernel names in our nsys). With it on, the blocks add their dQ (and, for GQA, dK/dV) in a fixed order, so
+the output is bit-identical every run but slower (B8 18/6: 3.28 ms vs 2.50 ms). Our Vj2 is in between: dK/dV bitwise
+(one writer + fixed-order head sum), dQ by fp32 atomic adds. Plain FA3 is the fair speed target.
+
+### 43.2 Phase 1.5: why the fixed Vj2 still lost to FA3 (research before any code)
+
+Sources: our ncu of the fixed Vj2, FA3's ncu from 10-12 (same shape), and the FA3 source (commit `94e22c9`, the one
+we benchmark; local clone `~/Downloads/sft_research/flash-attention`). FA3's kernel name shows it uses the same work
+split as Vj2 (64 queries x 128 keys, swapped score GEMM, 2 compute warpgroups of 64 keys, dQ split by head columns,
+P/dS in registers), so a line-by-line comparison is fair.
+
+| | FA3 | fixed Vj2 |
+|---|---|---|
+| kernel time | 2.494 ms | 2.778 ms |
+| shared-memory loads | 19,464,192 | 19,464,192 (identical) |
+| shared-memory stores | 10.9M | 21.8M |
+| store bank conflicts | 1.8M | 56.3M |
+| tensor cores busy | 68.8% | 59.6% |
+| stall samples above FA3 | | +36k, of which "shared-memory queue full" +24k and "waiting for a shared-memory result" +16k |
+
+1. **dQ staging stores (root cause):** 16 `STS.64` per thread per step in the SW128 layout of the 2-D TMA reduce; in each
+   half-warp rows r and r^1 hit the same 8 banks, so 4 wavefronts instead of 2. Checked exactly: 19,464,192 x 4 +
+   2,359,296 x 8 = 96,731,136 wavefronts = ncu's number. FA3 (`mainloop_bwd_sm90_tma_gmma_ws.hpp:195-198, 645-654,
+   951-957`) writes dQ in thread order with 128-bit stores (no conflicts) and sends 16 KB with one 1-D bulk reduce-add.
+2. **LSE values arrive late:** the first FFMA that uses each loaded LSE value stalls (9.7% of samples).
+3. **dQ hand-off:** the fence and barrier after the dQ stores wait for those stores (7%).
+4. **Block order (tail):** SMs busy 96.9% of elapsed cycles (FA3 98.6%); FA3 uses `SingleTileBwdLPTScheduler`
+   (`tile_scheduler.hpp:368-469`): heaviest key blocks first, 8 heads per L2 section.
+5. **Epilogue staging:** the bf16 dK/dV staging writes plain 128-B rows: 8-way bank conflicts (2.2% of samples).
+
+### 43.3 Phase 1.5 fixes, one at a time (each built on the one before, measured against it in the same session)
+
+| fix | what I changed | correctness | speed vs the version before (13 shapes) | profile change (B8 18/6, ncu) | kept? |
+|---|---|---|---|---|---|
+| 1 dQ path | FA3's scheme: thread-order 128-bit stores (8 `STS.128` instead of 16 `STS.64`), one 1-D `cp.reduce.async.bulk` per group, a global fp32 accumulator in fragment order, and a new convert kernel `convert_dq_frag_vj2` (padded shared memory, coalesced writes) | 144/144, identical | 0.932-0.968, mean 0.943, faster on 13/13 | 2.778 -> 2.599 ms; store conflicts 56.3M -> 18.3M; tensor busy 59.6 -> 65.2%; convert kernel 106.2 -> 105.9 us | yes |
+| 2 LSE order | LSE loads moved between the S and dP GEMM issues | 144/144, identical | mean 1.003 (4/13) | the wait did not move | no, removed (solved later by G3) |
+| 4 block order | 1-D grid, heaviest key blocks first, 8 (batch, head) pairs per L2 section (FA3's sizing: 40 MB / 4 MB per head); a script checked every block runs exactly once on 336 shapes | 144/144, identical | 0.904-1.010, mean 0.967, faster on 10/13 (batch 2: -5 to -10%; batch 8 about flat) | SMs busy 96.9 -> 98.8%; DRAM 713 -> 745 MB | yes |
+| 5 epilogue | bf16 dK/dV staging in the 128-B swizzle, dK/dV TMA store maps `SWIZZLE_128B` | 144/144, identical | 0.962-1.023, mean 0.989, faster on 12/13 | 2.590 -> 2.545 ms; store conflicts 18.3M -> 1.79M (FA3 1.81M); tensor busy 66.7% | yes |
+| 4-pair sections | fix 4 with a 20 MB budget | (not needed) | mean 0.994, batch 8 flat | DRAM 745 -> 724 MB | no |
+
+Full CLASSIC on the result (snapshot f5, Vj2 `826ae057`): **605/605**, all 435 error values identical to the 15:17 full
+run. The block order made dQ's run-to-run differences larger (G4 B8: max 4.9e-4 -> 2.0e-3, 1.9% of elements differ;
+limit 1.56e-2), because more blocks now add into the same dQ tile at the same time. dK/dV stay bitwise.
+
+### 43.4 FA3, FA4, cuDNN, FA2: who makes them and what runs on the H200 (proofs)
+
+- **FA3:** `Dao-AILab/flash-attention`, folder `hopper/`, C++ on NVIDIA CUTLASS, BSD-3, built from commit `94e22c9`.
+  Paper arXiv 2407.08608 (Shah, Bikshandi, Zhang, Thakkar, Ramani, Dao).
+- **FA4:** same repository, folder `flash_attn/cute/`, package `flash-attn-4` (author: Tri Dao), written in Python CuTe
+  DSL. Its README says "for Hopper and Blackwell GPUs". On compute capability 9.x it picks its own Hopper kernels
+  (`interface.py:1629-1631` forward, `:2883` backward). Its Blackwell features are only in the sm100 files: `tcgen05`
+  (20 / 15 uses in the forward / backward sm100 files, 0 in sm90), tensor memory (117 / 143 vs 0), 2-CTA MMA, and the
+  software exp2 (`flash_fwd_sm100.py:104-109`). So on the H200 FA4 runs a Hopper version of FA3's design.
+- **On the H200 FA4 loses to FA3:** forward 1.12-1.17x FA3's time on all 13 shapes; backward about equal (mean 1.01).
+- **FA4's software exp2 would not help us on Hopper:** the exp unit is busy 14% (our backward), 34% (our forward) and
+  43% (FA3's forward) of the time, nowhere near its limit.
+- **cuDNN:** NVIDIA's own closed library (9.24), called through PyTorch SDPA; its kernels are named
+  `cudnn_generated_fort_native_sdpa_sm90_flash_bprop/fprop_wgmma...`, not FA code.
+- **FA2:** PyTorch's built-in copy (`pytorch_flash::...` kernels).
+
+### 43.5 Profiling round against every library (GPU 2, 18:48-19:38)
+
+**Dense, 13 shapes, same session** (`prof_1013/1_dense_scoreboard.txt`; ours = v62 forward + Vj2 f5):
+
+| ours / library, time ratio | FA3 | FA4 | cuDNN | FA3 det | FA2 |
+|---|---|---|---|---|---|
+| forward, mean (we win on) | 1.08 (4/13) | 0.96 (6/13) | 0.93 (7/13) | 1.16 (2/13) | 0.54 (13/13) |
+| forward, B8 18/6 | 1.21 | 1.08 | 1.03 | 1.25 | 0.57 |
+| backward, mean | 1.01 (5/13) | 1.00 (5/13) | 0.85 (13/13) | 0.83 (13/13) | 0.47 (13/13) |
+| backward, B8 18/6 | 1.04 | 1.05 | 0.92 | 0.86 | 0.48 |
+| forward + backward, mean | 1.03 (4/13) | 0.99 (5/13) | 0.87 (13/13) | 0.90 (13/13) | 0.48 (13/13) |
+| forward + backward, B8 18/6 | 1.08 | 1.06 | 0.95 | 0.94 | 0.50 |
+
+**SFT packed rows, 7 layouts of `segments_1012.txt`, same session** (`prof_1013/2_packed_scoreboard.txt`; best of our A/B;
+our packed backward is still Vj1d because Vj2 refuses packed calls):
+
+| best ours / library | FA3 varlen | FA4 varlen | cuDNN varlen | Flex | torch varlen (FA2) |
+|---|---|---|---|---|---|
+| forward, mean | 0.99 (3/7) | 0.85 (6/7) | 0.88 (7/7) | 0.57 (7/7) | 0.54 (7/7) |
+| backward (Vj1d), mean | 1.18 (2/7) | 1.21 (2/7) | 1.08 (2/7) | 0.91 (7/7) | 0.66 (7/7) |
+| forward + backward, mean | 1.13 (2/7) | 1.11 (2/7) | 1.03 (2/7) | 0.80 (7/7) | 0.63 (7/7) |
+
+At the API level the packed forward looks level with FA3, but kernel to kernel (ncu, typical real rows `real_rows_752`)
+ours (design A) is 502 us vs FA3's 430 us: FA3's Python call adds about 0.1 ms per call.
+
+**Per-instruction profiles (ncu, B8 18/6):**
+
+| | ours v62 fwd | FA3 fwd | FA4 fwd | cuDNN fwd | ours Vj2 bwd (f5) | FA3 bwd | FA4 bwd | cuDNN bwd |
+|---|---|---|---|---|---|---|---|---|
+| time (us) | 1079 | 877 | 952 | 1009 | 2545 | 2481 | 2478 | 2770 |
+| instructions | 360M | 306M | 316M | 369M | 796M | 625M | 555M | 809M |
+| tensor cores busy | 64.4% | 82.9% | 74.4% | 67.9% | 66.7% | 68.3% | 68.9% | 60.0% |
+| SMs busy (of elapsed) | 95.7% | 99.6% | 99.0% | 96.5% | 98.8% | 98.4% | 96.9% | 97.0% |
+
+Trap: ncu reports DRAM bytes in Mbyte for some kernels and Gbyte for others (FA3's backward reads 983 MB, ours 744 MB),
+and the packed run reports time in us instead of ms. Every table above is converted.
+
+**Gap list (each from SASS or source):**
+
+| # | kernel | gap | proof | fix |
+|---|---|---|---|---|
+| G1 | fwd + bwd | register-A GEMMs half width: forward P.V and backward dV/dK as 2 x `m64n64k16` | fwd 16 per key block vs 8 `m64n128k16` in FA3/FA4/cuDNN (`GQA_fwd_sm90.cu:305-330`); bwd 16 per step vs 8 | one `m64n128k16` with a B descriptor spanning both head halves |
+| G2 | fwd + bwd | GEMM descriptors built in per-thread registers | R2UR fwd 40.2M vs 0.7M, bwd 59M vs 2M | warpgroup index broadcast with `__shfl_sync` (FA3 `warp_uniform`, `hopper/utils.h:621-623`) |
+| G3 | bwd | LSE loads queued behind GEMM instructions | our exp FFMAs wait 11.8% vs FA3 5.5%; FA3 issues them after its first S HGMMA | load LSE before the S GEMM |
+| G4 | bwd | dQ scaled every step | FMUL 80M vs 41M; FA3 scales in its convert kernel | scale once at the end (parked: only removes instructions) |
+| G5 | fwd | tail | SMs busy 95.7% dense / 93.7% packed vs 99.6% / 98.3%; v62 runs 2304 equal units on 132 SMs = 17.45 rounds | smaller units, heaviest first |
+| G6 | fwd | output written with per-thread global stores | 2.1% (dense) / 4.2% (packed) of stall samples | shared memory + TMA store |
+| G7 | packed bwd | still Vj1d | 1.18x FA3 | packed A/B modes in Vj2 (Phase 2) |
+
+### 43.6 The G-series so far (backward; each measured against the version before it)
+
+| step | change | correctness | speed (mean of 13 / B8 18/6) | ncu B8 18/6 | kept? |
+|---|---|---|---|---|---|
+| G2 | `c = __shfl_sync(0xffffffff, threadIdx.x / 128, 0) - 1` in v62 and Vj2 | 144/144 identical | fwd 0.990 / 0.993, bwd 0.999 / 1.008 | bwd R2UR 59.1M -> 0.66M, IMAD 74 -> 41M, but uniform-datapath instructions 137 -> 212M and time 2545 -> 2547 us | yes (removes real work, no cost) |
+| G1 | dV and dK as one `m64n128k16` per k-step; B descriptor LBO = 8192 B (CUTLASS `Major::MN` B128 layout) | 144/144 identical (dK/dV bitwise) | 0.997 / 0.997 | 2547 -> 2532 us; 8 + 24 HGMMA per step = FA3's mix | yes |
+| G3 | the 8 LSE `LDS.64` before the first S HGMMA | 144/144 identical | 0.994 (9/13) / 0.995 | 2532 -> 2512.5 us; LSE wait 11.3% -> 3.1% (FA3 5.5%); tensor busy 67.0% | yes |
+
+What G2 proved: removing 59M instructions changed nothing in time, so neither kernel is limited by instruction issue;
+the time is lost while the tensor cores wait. After G3 the largest wait in the backward is on the tensor cores
+themselves ("warpgroup arrive" 16.8%).
+
+### 43.7 Where the backward started today and where it is now
+
+Backward kernel, step by step (ncu at fixed clocks, B8 18/6):
+
+| step | kernel time (us) | x FA3 (2481 us) | speed vs the step before (same session, mean of 13 shapes) |
+|---|---|---|---|
+| Vj1d, old default (10-12) | 3626 | 1.46 | - |
+| first Vj2 (10-12) | 3195 | 1.29 | 0.89 of Vj1d's time |
+| + address / descriptor fix | 2778 | 1.12 | 0.80 of Vj1d's time |
+| + fix 1 dQ path | 2599 | 1.05 | 0.943 |
+| + fix 4 block order | 2590 | 1.04 | 0.967 |
+| + fix 5 epilogue | 2545 | 1.03 | 0.989 |
+| + G2 | 2547 | 1.03 | 0.999 |
+| + G1 | 2532 | 1.02 | 0.997 |
+| + G3 (current) | 2512 | 1.01 | 0.994 |
+| FA4 / cuDNN | 2478 / 2770 | 1.00 / 1.12 | |
+
+Start of day vs now (API time per call, ms, same-session runs; "now" = 18:48, before the G-series):
+
+| case | start of day | now | FA3 | cuDNN | now / FA3 | now / cuDNN |
+|---|---|---|---|---|---|---|
+| dense backward, B8 18/6 | 4.330 (Vj1d) | 3.185 | 3.076 | 3.466 | 1.04 | 0.92 |
+| dense backward, mean of 13 (ratios) | 1.38 x FA3, 1.19 x cuDNN | | | | 1.01 | 0.85 |
+| dense forward, B8 18/6 (unchanged code) | 1.166 | 1.197 | 0.993 | 1.158 | 1.21 | 1.03 |
+| dense forward + backward, B8 18/6 | 5.495 | 4.382 | 4.069 | 4.623 | 1.08 | 0.95 |
+| dense forward + backward, mean of 13 (ratios) | 1.30 x FA3, 1.11 x cuDNN | | | | 1.03 | 0.87 |
+| packed forward, real_rows_752 (unchanged) | 0.535 | 0.535 | 0.532 | 0.587 | 1.01 | 0.91 |
+| packed backward, real_rows_752 (Vj1d, unchanged) | 1.908 | 1.908 | 1.561 | 1.740 | 1.22 | 1.10 |
+| packed forward + backward, real_rows_752 | 2.443 | 2.443 | 2.092 | 2.327 | 1.17 | 1.05 |
+
+### 43.8 SFT pipeline walkthrough (morning, before the GPU was free)
+
+- **Flow:** `sft/prepare_sft_data.py` downloads ultrachat_200k (pinned revision) with Hugging Face `datasets` (its own
+  Arrow cache), applies the `tulu-plain-v1` template, tokenizes with tiktoken GPT-2, builds 4096-token rows in memory
+  and writes `inputs.bin`, `labels.bin` (uint16), `valid_counts.bin` (uint32) and `meta.json` with `.tofile()`
+  (`:192-194`). There are no pickle files anywhere in the SFT path. The C++ loader (`sft/SftDataLoader.h:150-158`)
+  memory-maps the `.bin` files and copies one batch to the GPU per step (`:81-83`). Python reads the same files with
+  `np.memmap` (Kathir's `sft.py:81` does).
+- **Labels:** `labels = where(mask[1:], ids[1:], 65535)`; inputs = `ids[:-1]` then padding with 50256 (GPT-2's only
+  special token). 65535 is not a token id (vocab 50257, rows padded to 50304); the loss kernel counts the valid labels
+  for the denominator, skips the softmax for ignored rows in the forward and writes zero gradient rows for them in the
+  backward. The end-of-text after the answer appears only as a label (the target of the last answer token).
+- **Padding id does not matter (proof, `pad_grad_proof.py`, float64, tiny 2-layer causal transformer):** pad = EOS vs pad =
+  a separate id: max gradient difference over all weights 0.0 (single and two-turn rows); pad vs no padding: <= 1.8e-15.
+  Reason: padding is on the right, attention is causal, and padded positions have ignored labels.
+- **Prompt tokens and the answer loss (`prompt_grad_check.py`, `prompt_seeds.py`):** the answer loss changes the
+  embeddings of the prompt words too (e.g. 1.22 vs 1.90 under an all-token loss), because the answer attends to them. It
+  does not teach predicting the prompt: over 20 seeds, one SFT step lowered the probability of the next prompt word in 14
+  of 20 seeds (mean change -0.032 and -0.040 at two positions) and raised the first answer word in 18 of 20 (mean +0.35);
+  an all-token step raised the next prompt word in 16 and 13 of 20.
+
+### 43.9 Methods used today
+
+- **Library snapshots on the box** (`~/gautam_k/v2_work/snapshots/<name>/lib/libtensor.so`): the test binary uses
+  RUNPATH, so `LD_LIBRARY_PATH` picks the snapshot (`ldd` checked each time). Same-session A/B = two snapshots alternated.
+- **Rule from the user (G2):** keep a change that removes real redundant work when it is correct and not slower; revert
+  only if it is slower, wrong, or adds complexity. Every change is still measured alone, built on top of the kept one.
+- **Library profiling:** `BENCH_WARM=0 BENCH_ITERS=1`, `--kernel-name-base demangled`, regex per kernel family; ncu
+  replays each kernel ~40 times, so a library capture takes 8-9 minutes.
+
+### 43.10 Code state (laptop `~/Downloads/BluTrain_sft/Tensor-Implementations` = box `~/gautam_k/v2_work`, uncommitted)
+
+| file | md5 | change today |
+|---|---|---|
+| `src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.cu` | a956e789 | fixes 1, 4, 5 + G2 + G1 + G3 (from `bbd977be`) |
+| `src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu` | 060e6946 | G2 (from `698d2705`) |
+| `Tests/kernel_tests/sanitize_vj2.cu` (new) | d23c09e3 | compute-sanitizer driver |
+| `src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu` | 9274489e | unchanged today |
+| `Tests/kernel_tests/test_varlen_attention.cu` | 5a988de0 | unchanged today |
+
+Box snapshots: `v2_bbd977be`, `f1`, `f2`, `f4`, `f4s4`, `f5`, `g2`, `g12`, `g123` (current). The full 605 check has not
+run on g123 yet (it passed on f5; g2, g12, g123 passed the quick 144 with identical errors).
+
+### 43.11 Next
+
+1. Full CLASSIC (605) on g123.
+2. Forward, where the gap is (1.21x FA3 on B8 18/6): G1 for P.V (`m64n128k16`, V descriptor LBO = 16384 B), G5 tail,
+   G6 output through shared memory + TMA store; same method (quick check, same-session speed, ncu, keep what is correct
+   and not slower).
+3. G7 / Phase 2: design A and B in Vj2, tests G8-G13, packed benchmark incl. xFormers (install only with OK).
+4. Later: the head-dim-64 bug (42.8), Step 7 (training config switch, packing script, loader, packed SFT run), chat
+   template option B, and FA4's Blackwell methods for our B300 kernels.

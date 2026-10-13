@@ -1,0 +1,25 @@
+18:48:39 t1 start | GPU 2 uuid GPU-2da7696c-f238-86df-5ae2-3d7dccd4141b | f5 lib a07ca28b | bench 4d667815
+18:48:57 t1 ours_r1 exit=0 (26 lines)
+18:49:41 t1 libs exit=0 (130 lines)
+18:50:00 t1 ours_r2 exit=0 (26 lines)
+18:50:00 T1 DONE
+18:51:04 t2 start | segments 93367592
+18:51:22 t2 ours exit=0 (42 lines) | segments same as 10-12: YES
+18:51:55 t2 libs exit=0 (84 lines, 14 gate PASS, 0 INVALID)
+18:51:55 T2 DONE
+19:07:01 t3 start
+19:09:08 t3 ours fwd exit=0
+19:16:56 t3 libs fwd exit=0 | kernels captured: 5
+19:17:02 t3 ncu_ours_fwd exports: raw 3 lines, source 2282 lines
+19:17:17 t3 ncu_libs_fwd exports: raw 7 lines, source 11954 lines
+19:17:17 T3 DONE
+19:18:49 t4 start
+19:27:41 t4 libs bwd exit=0 | kernels captured: 5
+19:28:12 t4 exports: raw 7 lines, source 8594 lines
+19:28:12 T4 DONE
+19:31:13 t5 start
+19:34:06 t5 ours A fwd exit=0 | captured 1
+19:38:19 t5 FA3 varlen fwd exit=0 | captured 2
+19:38:23 t5 ncu_ours_packed_fwd exports: raw 3 lines, source 2210 lines
+19:38:29 t5 ncu_fa3_packed_fwd exports: raw 4 lines, source 8564 lines
+19:38:29 T5 DONE

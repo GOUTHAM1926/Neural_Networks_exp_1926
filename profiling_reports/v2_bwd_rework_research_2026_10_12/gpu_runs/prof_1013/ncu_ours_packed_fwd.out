@@ -1,0 +1,30 @@
+==PROF== Connected to process 3731177 (/home/operator/gautam_k/v2_work/Tensor-Implementations/tva_vj2)
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "_ZN9OwnTensor4cuda5gqa6212gqa_v62_sm90ILi2EEEv14CUtensorMap_stS3_S3_PK13__nv_bfloat16PS4_PfiiiifPKiPK4int4i": 0%....50%....100% - 40 passes
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (default)  |  quick: no
+
+===== BENCH: ours (dense / B / A), fwd and bwd, interleaved =====
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=fwd med_ms=1.4062 p10_ms=1.4062 p90_ms=1.4062 tflops=151.0
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=bwd med_ms=4.5134 p10_ms=4.5134 p90_ms=4.5134 tflops=117.6
+BENCH layout=real_rows_752-759 impl=ours_B_segstart dir=fwd med_ms=0.6715 p10_ms=0.6715 p90_ms=0.6715 tflops=316.3
+BENCH layout=real_rows_752-759 impl=ours_B_segstart dir=bwd med_ms=2.0029 p10_ms=2.0029 p90_ms=2.0029 tflops=265.1
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=fwd med_ms=123322.1797 p10_ms=123322.1797 p90_ms=123322.1797 tflops=0.0
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=bwd med_ms=1.9129 p10_ms=1.9129 p90_ms=1.9129 tflops=277.5
+  (free clocks; record nvidia-smi clocks next to it)
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (138 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS
+==PROF== Disconnected from process 3731177
+==WARNING== No source files were imported. Check that the target application was compiled with -lineinfo.
+==PROF== Report: /home/operator/gautam_k/v2_work/logs/prof_1013/ncu_ours_packed_fwd.ncu-repz

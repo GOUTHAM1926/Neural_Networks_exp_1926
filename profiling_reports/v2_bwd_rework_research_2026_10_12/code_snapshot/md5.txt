@@ -1,4 +1,15 @@
 9274489e9c952d3a497677832e21c209  GQA_bwd_generic.cu
 bbd977be6b8f72e0f9111bfdda1e562a  GQA_bwd_vj2_sm90.cu
+a4f7d5f6530efeccf351415222a393af  GQA_bwd_vj2_sm90.f1_a4f7d5f6.cu
+ab6e5cbb3b52dcfc2ceb4bc807e0e491  GQA_bwd_vj2_sm90.f2_ab6e5cbb_reverted.cu
+22c0a1e56ae1d2ffb23c114362fd7514  GQA_bwd_vj2_sm90.f4_22c0a1e5.cu
+826ae05768351e18ec764a29ee6be29e  GQA_bwd_vj2_sm90.f5_826ae057.cu
+22f130e2b162049e66e9c4b19ca86160  GQA_bwd_vj2_sm90.g12_22f130e2.cu
+a956e789e59581ebc725f8949aaa79d2  GQA_bwd_vj2_sm90.g123_a956e789.cu
+cf3a87b5f768ba05f83c62222c4e8ab2  GQA_bwd_vj2_sm90.g1b_cf3a87b5.cu
+bed7731fb0f3e69abb5fc8431b80aafe  GQA_bwd_vj2_sm90.g2.cu
 e704664b1dca44022836533ce2d207a3  GQA_bwd_vj2_sm90.v1_before_fixes.cu
+060e6946aef206eb67871f2ba3f82bd9  GQA_fwd_sm90.g2.cu
+698d270558c0b61102b11ce492a50fab  GQA_fwd_sm90.v62_698d2705.cu
+d23c09e313b56b049ecb63e0b36cd72a  sanitize_vj2.cu
 5a988de024d30d72a48124070d27ea16  test_varlen_attention.cu

@@ -1,0 +1,16 @@
+backward median ms, mean of 2 runs each, same session (f4 and f5 alternated A B A B)
+shape                  f4       f5     f5/f4   spread f4  spread f5
+dense_B2_H12x4      0.519    0.511     0.984        0.1%       0.0%
+dense_B4_H12x4      1.025    1.023     0.998        3.4%       6.0%
+dense_B8_H12x4      2.138    2.134     0.998        2.1%       0.0%
+dense_B2_H16x4      0.680    0.669     0.984        0.2%       0.4%
+dense_B4_H16x4      1.373    1.405     1.023        6.9%       0.2%
+dense_B8_H16x4      2.868    2.848     0.993        0.7%       0.3%
+dense_B2_H24x8      1.057    1.017     0.962        0.2%       4.8%
+dense_B4_H24x8      2.151    2.109     0.980        2.4%       0.8%
+dense_B8_H24x8      4.333    4.288     0.990        0.5%       0.4%
+dense_B2_H32x8      1.382    1.363     0.986        4.4%       7.9%
+dense_B4_H32x8      2.879    2.838     0.986        0.1%       0.3%
+dense_B8_H32x8      5.772    5.672     0.983        0.1%       0.7%
+dense_B8_H18x6      3.262    3.237     0.992        0.8%       0.0%
+f5/f4: min 0.962 max 1.023 mean 0.989 | f5 faster on 12/13

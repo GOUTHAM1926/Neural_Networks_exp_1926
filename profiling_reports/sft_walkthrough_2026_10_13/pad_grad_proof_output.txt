@@ -1,0 +1,8 @@
+single turn: loss 2.889333952082051 / 2.889333952082051 / 2.889333952082051 (pad=EOS / pad=separate / no pad)
+   max |grad difference| over ALL weights: pad=EOS vs pad=separate 0.000e+00 ; pad=EOS vs no pad 1.776e-15
+   embedding row of the separate pad id: max |grad| 0.000e+00
+   embedding row of EOS (input side): max |grad| 0.000e+00 ; output-head column of EOS: max |grad| 7.270e-01
+two turns  : loss 3.514349055917519 / 3.514349055917519 / 3.514349055917519 (pad=EOS / pad=separate / no pad)
+   max |grad difference| over ALL weights: pad=EOS vs pad=separate 0.000e+00 ; pad=EOS vs no pad 5.551e-16
+   embedding row of the separate pad id: max |grad| 0.000e+00
+   embedding row of EOS (input side): max |grad| 8.624e-02 ; output-head column of EOS: max |grad| 1.072e+00

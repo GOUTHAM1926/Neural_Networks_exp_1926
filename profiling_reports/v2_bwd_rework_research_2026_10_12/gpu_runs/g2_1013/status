@@ -1,0 +1,13 @@
+19:46:47 t1 start g2 lib 1a00c378
+19:53:09 t1 exit=0 | checks passed 144, failed 0, skipped groups 0   (367 s total) | 1 all-pass
+T1 DONE
+19:53:59 t2 start f5 a07ca28b g2 1a00c378
+19:54:29 t2 f5_r1 exit=0 (26 lines)
+19:54:59 t2 g2_r1 exit=0 (26 lines)
+19:55:27 t2 f5_r2 exit=0 (26 lines)
+19:55:58 t2 g2_r2 exit=0 (26 lines)
+T2 DONE
+19:56:57 t3 start
+19:58:40 t3 ncu fwd exit=0
+19:59:56 t3 ncu bwd exit=0
+20:00:02 T3 DONE

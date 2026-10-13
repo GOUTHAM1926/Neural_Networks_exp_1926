@@ -1,0 +1,664 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj2 (USE_VJ2=1)  |  quick: no
+
+===== VARLEN_ONLY=CLASSIC (G1-G7) =====
+
+===== G1 reference self-test: GPU per-segment vs CPU full-row explicit mask =====
+  GQA G=2, T=320     truth O    max|gpu-cpu|/max|cpu| = 1.799e-16   uncovered 0   PASS
+  GQA G=2, T=320     truth LSE  max|gpu-cpu|/max|cpu| = 1.319e-16   uncovered 0   PASS
+  GQA G=2, T=320     truth dQ   max|gpu-cpu|/max|cpu| = 1.403e-16   uncovered 0   PASS
+  GQA G=2, T=320     truth dK   max|gpu-cpu|/max|cpu| = 1.863e-16   uncovered 0   PASS
+  GQA G=2, T=320     truth dV   max|gpu-cpu|/max|cpu| = 1.161e-16   uncovered 0   PASS
+  GQA G=2, T=320     floor O    mismatches 0 / 655360  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  GQA G=2, T=320     floor LSE  mismatches 0 / 5120  worst rel 0.000e+00   uncovered 0   PASS
+  GQA G=2, T=320     floor dQ   mismatches 0 / 655360  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  GQA G=2, T=320     floor dK   mismatches 0 / 327680  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  GQA G=2, T=320     floor dV   mismatches 0 / 327680  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  (5.2 s)
+  MQA G=3, T=192     truth O    max|gpu-cpu|/max|cpu| = 1.215e-16   uncovered 0   PASS
+  MQA G=3, T=192     truth LSE  max|gpu-cpu|/max|cpu| = 1.451e-16   uncovered 0   PASS
+  MQA G=3, T=192     truth dQ   max|gpu-cpu|/max|cpu| = 1.895e-16   uncovered 0   PASS
+  MQA G=3, T=192     truth dK   max|gpu-cpu|/max|cpu| = 1.872e-16   uncovered 0   PASS
+  MQA G=3, T=192     truth dV   max|gpu-cpu|/max|cpu| = 1.136e-16   uncovered 0   PASS
+  MQA G=3, T=192     floor O    mismatches 0 / 147456  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  MQA G=3, T=192     floor LSE  mismatches 0 / 1152  worst rel 0.000e+00   uncovered 0   PASS
+  MQA G=3, T=192     floor dQ   mismatches 0 / 147456  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  MQA G=3, T=192     floor dK   mismatches 0 / 49152  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  MQA G=3, T=192     floor dV   mismatches 0 / 49152  worst bf16-ulp 0.000e+00   uncovered 0   PASS
+  (0.3 s)
+
+===== G2 dense rows: today's kernels vs per-row reference (outputs NaN-filled first) =====
+  G2 B=1 T=256 18/6                            O    chats     1  worst ratio   0.287  (err 7.958e-03 vs floor 1.385e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 18/6                            LSE  chats     1  worst ratio   0.000  (err 8.444e-07 vs floor 8.448e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 18/6                            dQ   chats     1  worst ratio   0.435  (err 1.187e-02 vs floor 1.364e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 18/6                            dK   chats     1  worst ratio   0.329  (err 1.778e-02 vs floor 2.705e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 18/6                            dV   chats     1  worst ratio   0.537  (err 3.051e-02 vs floor 2.842e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 18/6                            non-finite/unwritten outputs: 0  PASS  (0.9 s)
+  G2 B=2 T=256 18/6                            O    chats     2  worst ratio   0.320  (err 8.129e-03 vs floor 1.270e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 18/6                            LSE  chats     2  worst ratio   0.000  (err 8.585e-07 vs floor 6.181e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 18/6                            dQ   chats     2  worst ratio   0.500  (err 1.481e-02 vs floor 1.481e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 18/6                            dK   chats     2  worst ratio   0.492  (err 2.199e-02 vs floor 2.233e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 18/6                            dV   chats     2  worst ratio   0.488  (err 2.923e-02 vs floor 2.995e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 18/6                            non-finite/unwritten outputs: 0  PASS  (0.1 s)
+  G2 B=8 T=256 18/6                            O    chats     8  worst ratio   0.354  (err 8.294e-03 vs floor 1.172e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 18/6                            LSE  chats     8  worst ratio   0.000  (err 9.768e-07 vs floor 5.469e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 18/6                            dQ   chats     8  worst ratio   0.478  (err 1.237e-02 vs floor 1.295e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 18/6                            dK   chats     8  worst ratio   0.433  (err 2.097e-02 vs floor 2.421e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 18/6                            dV   chats     8  worst ratio   0.501  (err 2.842e-02 vs floor 2.835e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 18/6                            non-finite/unwritten outputs: 0  PASS  (0.4 s)
+  G2 B=1 T=256 12/4                            O    chats     1  worst ratio   0.267  (err 7.309e-03 vs floor 1.368e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 12/4                            LSE  chats     1  worst ratio   0.000  (err 7.480e-07 vs floor 5.249e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 12/4                            dQ   chats     1  worst ratio   0.266  (err 8.925e-03 vs floor 1.676e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 12/4                            dK   chats     1  worst ratio   0.325  (err 1.469e-02 vs floor 2.257e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 12/4                            dV   chats     1  worst ratio   0.438  (err 2.365e-02 vs floor 2.699e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 12/4                            non-finite/unwritten outputs: 0  PASS  (0.0 s)
+  G2 B=2 T=256 12/4                            O    chats     2  worst ratio   0.317  (err 7.800e-03 vs floor 1.229e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 12/4                            LSE  chats     2  worst ratio   0.000  (err 7.807e-07 vs floor 6.827e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 12/4                            dQ   chats     2  worst ratio   0.367  (err 8.973e-03 vs floor 1.222e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 12/4                            dK   chats     2  worst ratio   0.354  (err 1.510e-02 vs floor 2.131e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 12/4                            dV   chats     2  worst ratio   0.386  (err 2.591e-02 vs floor 3.352e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 12/4                            non-finite/unwritten outputs: 0  PASS  (0.0 s)
+  G2 B=8 T=256 12/4                            O    chats     8  worst ratio   0.347  (err 7.605e-03 vs floor 1.096e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 12/4                            LSE  chats     8  worst ratio   0.000  (err 7.475e-07 vs floor 5.464e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 12/4                            dQ   chats     8  worst ratio   0.630  (err 2.054e-02 vs floor 1.631e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 12/4                            dK   chats     8  worst ratio   0.701  (err 2.852e-02 vs floor 2.034e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 12/4                            dV   chats     8  worst ratio   0.648  (err 3.461e-02 vs floor 2.671e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 12/4                            non-finite/unwritten outputs: 0  PASS  (0.2 s)
+  G2 B=1 T=256 8/8                             O    chats     1  worst ratio   0.308  (err 7.497e-03 vs floor 1.216e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/8                             LSE  chats     1  worst ratio   0.000  (err 8.160e-07 vs floor 4.889e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/8                             dQ   chats     1  worst ratio   0.363  (err 1.043e-02 vs floor 1.438e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/8                             dK   chats     1  worst ratio   0.357  (err 1.157e-02 vs floor 1.619e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/8                             dV   chats     1  worst ratio   0.361  (err 1.441e-02 vs floor 1.995e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/8                             non-finite/unwritten outputs: 0  PASS  (0.4 s)
+  G2 B=2 T=256 8/8                             O    chats     2  worst ratio   0.357  (err 8.088e-03 vs floor 1.134e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/8                             LSE  chats     2  worst ratio   0.000  (err 7.569e-07 vs floor 4.351e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/8                             dQ   chats     2  worst ratio   0.380  (err 9.455e-03 vs floor 1.243e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/8                             dK   chats     2  worst ratio   0.377  (err 1.359e-02 vs floor 1.801e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/8                             dV   chats     2  worst ratio   0.544  (err 1.628e-02 vs floor 1.497e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/8                             non-finite/unwritten outputs: 0  PASS  (0.0 s)
+  G2 B=8 T=256 8/8                             O    chats     8  worst ratio   0.369  (err 8.506e-03 vs floor 1.154e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/8                             LSE  chats     8  worst ratio   0.000  (err 7.905e-07 vs floor 4.385e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/8                             dQ   chats     8  worst ratio   0.403  (err 9.859e-03 vs floor 1.223e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/8                             dK   chats     8  worst ratio   0.388  (err 9.710e-03 vs floor 1.253e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/8                             dV   chats     8  worst ratio   0.500  (err 1.729e-02 vs floor 1.729e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/8                             non-finite/unwritten outputs: 0  PASS  (0.3 s)
+  G2 B=1 T=256 32/8                            O    chats     1  worst ratio   0.281  (err 8.259e-03 vs floor 1.472e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 32/8                            LSE  chats     1  worst ratio   0.000  (err 8.296e-07 vs floor 7.959e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 32/8                            dQ   chats     1  worst ratio   0.572  (err 1.404e-02 vs floor 1.227e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 32/8                            dK   chats     1  worst ratio   0.385  (err 2.037e-02 vs floor 2.649e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 32/8                            dV   chats     1  worst ratio   0.612  (err 5.001e-02 vs floor 4.087e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 32/8                            non-finite/unwritten outputs: 0  PASS  (0.4 s)
+  G2 B=2 T=256 32/8                            O    chats     2  worst ratio   0.274  (err 8.167e-03 vs floor 1.492e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 32/8                            LSE  chats     2  worst ratio   0.000  (err 8.331e-07 vs floor 7.379e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 32/8                            dQ   chats     2  worst ratio   0.269  (err 1.316e-02 vs floor 2.448e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 32/8                            dK   chats     2  worst ratio   0.489  (err 2.084e-02 vs floor 2.132e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 32/8                            dV   chats     2  worst ratio   0.500  (err 3.219e-02 vs floor 3.219e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 32/8                            non-finite/unwritten outputs: 0  PASS  (0.3 s)
+  G2 B=8 T=256 32/8                            O    chats     8  worst ratio   0.370  (err 8.886e-03 vs floor 1.202e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 32/8                            LSE  chats     8  worst ratio   0.000  (err 8.740e-07 vs floor 6.980e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 32/8                            dQ   chats     8  worst ratio   0.402  (err 1.364e-02 vs floor 1.697e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 32/8                            dK   chats     8  worst ratio   0.500  (err 3.304e-02 vs floor 3.304e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 32/8                            dV   chats     8  worst ratio   0.643  (err 4.670e-02 vs floor 3.633e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 32/8                            non-finite/unwritten outputs: 0  PASS  (0.3 s)
+  G2 B=1 T=256 8/1                             O    chats     1  worst ratio   0.340  (err 7.856e-03 vs floor 1.154e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/1                             LSE  chats     1  worst ratio   0.000  (err 7.475e-07 vs floor 7.596e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/1                             dQ   chats     1  worst ratio   0.309  (err 9.228e-03 vs floor 1.495e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/1                             dK   chats     1  worst ratio   0.414  (err 2.002e-02 vs floor 2.416e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/1                             dV   chats     1  worst ratio   0.484  (err 3.472e-02 vs floor 3.586e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=256 8/1                             non-finite/unwritten outputs: 0  PASS  (0.0 s)
+  G2 B=2 T=256 8/1                             O    chats     2  worst ratio   0.334  (err 7.698e-03 vs floor 1.152e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/1                             LSE  chats     2  worst ratio   0.000  (err 7.214e-07 vs floor 5.096e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/1                             dQ   chats     2  worst ratio   0.341  (err 1.132e-02 vs floor 1.662e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/1                             dK   chats     2  worst ratio   0.500  (err 2.677e-02 vs floor 2.677e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/1                             dV   chats     2  worst ratio   0.395  (err 3.312e-02 vs floor 4.189e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=256 8/1                             non-finite/unwritten outputs: 0  PASS  (0.0 s)
+  G2 B=8 T=256 8/1                             O    chats     8  worst ratio   0.358  (err 7.163e-03 vs floor 9.992e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/1                             LSE  chats     8  worst ratio   0.000  (err 7.715e-07 vs floor 4.750e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/1                             dQ   chats     8  worst ratio   0.617  (err 1.433e-02 vs floor 1.161e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/1                             dK   chats     8  worst ratio   0.448  (err 2.189e-02 vs floor 2.445e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/1                             dV   chats     8  worst ratio   0.758  (err 4.926e-02 vs floor 3.248e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=256 8/1                             non-finite/unwritten outputs: 0  PASS  (0.1 s)
+  G2 B=1 T=1024 18/6                           O    chats     1  worst ratio   0.398  (err 9.426e-03 vs floor 1.184e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 18/6                           LSE  chats     1  worst ratio   0.000  (err 9.690e-07 vs floor 7.738e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 18/6                           dQ   chats     1  worst ratio   0.264  (err 1.779e-02 vs floor 3.365e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 18/6                           dK   chats     1  worst ratio   0.441  (err 2.009e-02 vs floor 2.278e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 18/6                           dV   chats     1  worst ratio   0.390  (err 2.375e-02 vs floor 3.047e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 18/6                           non-finite/unwritten outputs: 0  PASS  (1.0 s)
+  G2 B=2 T=1024 18/6                           O    chats     2  worst ratio   0.327  (err 8.376e-03 vs floor 1.281e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 18/6                           LSE  chats     2  worst ratio   0.000  (err 9.618e-07 vs floor 6.326e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 18/6                           dQ   chats     2  worst ratio   0.386  (err 1.184e-02 vs floor 1.532e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 18/6                           dK   chats     2  worst ratio   0.575  (err 2.444e-02 vs floor 2.125e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 18/6                           dV   chats     2  worst ratio   0.500  (err 3.443e-02 vs floor 3.443e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 18/6                           non-finite/unwritten outputs: 0  PASS  (0.5 s)
+  G2 B=8 T=1024 18/6                           O    chats     8  worst ratio   0.350  (err 8.632e-03 vs floor 1.233e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 18/6                           LSE  chats     8  worst ratio   0.000  (err 9.764e-07 vs floor 4.945e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 18/6                           dQ   chats     8  worst ratio   0.373  (err 1.234e-02 vs floor 1.655e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 18/6                           dK   chats     8  worst ratio   0.475  (err 2.279e-02 vs floor 2.400e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 18/6                           dV   chats     8  worst ratio   0.574  (err 3.647e-02 vs floor 3.175e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 18/6                           non-finite/unwritten outputs: 0  PASS  (0.5 s)
+  G2 B=1 T=1024 12/4                           O    chats     1  worst ratio   0.267  (err 7.761e-03 vs floor 1.451e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 12/4                           LSE  chats     1  worst ratio   0.000  (err 9.157e-07 vs floor 7.691e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 12/4                           dQ   chats     1  worst ratio   0.393  (err 1.013e-02 vs floor 1.287e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 12/4                           dK   chats     1  worst ratio   0.484  (err 1.845e-02 vs floor 1.905e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 12/4                           dV   chats     1  worst ratio   0.424  (err 2.463e-02 vs floor 2.907e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 12/4                           non-finite/unwritten outputs: 0  PASS  (0.3 s)
+  G2 B=2 T=1024 12/4                           O    chats     2  worst ratio   0.328  (err 8.354e-03 vs floor 1.272e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 12/4                           LSE  chats     2  worst ratio   0.000  (err 1.023e-06 vs floor 9.162e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 12/4                           dQ   chats     2  worst ratio   0.356  (err 1.074e-02 vs floor 1.507e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 12/4                           dK   chats     2  worst ratio   0.426  (err 1.947e-02 vs floor 2.284e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 12/4                           dV   chats     2  worst ratio   0.642  (err 2.948e-02 vs floor 2.296e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 12/4                           non-finite/unwritten outputs: 0  PASS  (0.4 s)
+  G2 B=8 T=1024 12/4                           O    chats     8  worst ratio   0.439  (err 9.932e-03 vs floor 1.132e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 12/4                           LSE  chats     8  worst ratio   0.000  (err 1.052e-06 vs floor 5.346e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 12/4                           dQ   chats     8  worst ratio   0.473  (err 1.416e-02 vs floor 1.496e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 12/4                           dK   chats     8  worst ratio   0.490  (err 2.139e-02 vs floor 2.183e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 12/4                           dV   chats     8  worst ratio   0.527  (err 2.731e-02 vs floor 2.593e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 12/4                           non-finite/unwritten outputs: 0  PASS  (0.4 s)
+  G2 B=1 T=1024 8/8                            O    chats     1  worst ratio   0.314  (err 7.774e-03 vs floor 1.239e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/8                            LSE  chats     1  worst ratio   0.000  (err 9.393e-07 vs floor 4.648e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/8                            dQ   chats     1  worst ratio   0.350  (err 9.588e-03 vs floor 1.371e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/8                            dK   chats     1  worst ratio   0.340  (err 9.193e-03 vs floor 1.350e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/8                            dV   chats     1  worst ratio   0.377  (err 1.640e-02 vs floor 2.178e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/8                            non-finite/unwritten outputs: 0  PASS  (0.5 s)
+  G2 B=2 T=1024 8/8                            O    chats     2  worst ratio   0.371  (err 7.935e-03 vs floor 1.069e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/8                            LSE  chats     2  worst ratio   0.000  (err 9.683e-07 vs floor 5.395e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/8                            dQ   chats     2  worst ratio   0.409  (err 1.502e-02 vs floor 1.835e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/8                            dK   chats     2  worst ratio   0.742  (err 2.050e-02 vs floor 1.382e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/8                            dV   chats     2  worst ratio   0.502  (err 1.657e-02 vs floor 1.650e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/8                            non-finite/unwritten outputs: 0  PASS  (0.4 s)
+  G2 B=8 T=1024 8/8                            O    chats     8  worst ratio   0.371  (err 8.705e-03 vs floor 1.172e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/8                            LSE  chats     8  worst ratio   0.000  (err 9.267e-07 vs floor 4.113e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/8                            dQ   chats     8  worst ratio   0.474  (err 1.584e-02 vs floor 1.671e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/8                            dK   chats     8  worst ratio   0.486  (err 1.535e-02 vs floor 1.578e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/8                            dV   chats     8  worst ratio   0.549  (err 1.603e-02 vs floor 1.461e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/8                            non-finite/unwritten outputs: 0  PASS  (0.2 s)
+  G2 B=1 T=1024 32/8                           O    chats     1  worst ratio   0.279  (err 8.651e-03 vs floor 1.551e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 32/8                           LSE  chats     1  worst ratio   0.000  (err 9.563e-07 vs floor 9.343e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 32/8                           dQ   chats     1  worst ratio   0.344  (err 1.228e-02 vs floor 1.786e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 32/8                           dK   chats     1  worst ratio   0.421  (err 2.180e-02 vs floor 2.587e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 32/8                           dV   chats     1  worst ratio   0.524  (err 3.349e-02 vs floor 3.196e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 32/8                           non-finite/unwritten outputs: 0  PASS  (1.0 s)
+  G2 B=2 T=1024 32/8                           O    chats     2  worst ratio   0.336  (err 9.724e-03 vs floor 1.446e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 32/8                           LSE  chats     2  worst ratio   0.000  (err 1.117e-06 vs floor 7.148e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 32/8                           dQ   chats     2  worst ratio   0.293  (err 1.380e-02 vs floor 2.354e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 32/8                           dK   chats     2  worst ratio   0.412  (err 1.930e-02 vs floor 2.341e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 32/8                           dV   chats     2  worst ratio   0.426  (err 4.166e-02 vs floor 4.890e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 32/8                           non-finite/unwritten outputs: 0  PASS  (0.2 s)
+  G2 B=8 T=1024 32/8                           O    chats     8  worst ratio   0.347  (err 8.617e-03 vs floor 1.240e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 32/8                           LSE  chats     8  worst ratio   0.000  (err 1.048e-06 vs floor 6.721e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 32/8                           dQ   chats     8  worst ratio   0.460  (err 1.445e-02 vs floor 1.570e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 32/8                           dK   chats     8  worst ratio   0.500  (err 2.625e-02 vs floor 2.625e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 32/8                           dV   chats     8  worst ratio   0.548  (err 4.112e-02 vs floor 3.753e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 32/8                           non-finite/unwritten outputs: 0  PASS  (0.6 s)
+  G2 B=1 T=1024 8/1                            O    chats     1  worst ratio   0.236  (err 7.127e-03 vs floor 1.509e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/1                            LSE  chats     1  worst ratio   0.000  (err 9.286e-07 vs floor 5.380e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/1                            dQ   chats     1  worst ratio   0.437  (err 1.242e-02 vs floor 1.420e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/1                            dK   chats     1  worst ratio   0.312  (err 2.425e-02 vs floor 3.888e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/1                            dV   chats     1  worst ratio   0.376  (err 3.096e-02 vs floor 4.113e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=1024 8/1                            non-finite/unwritten outputs: 0  PASS  (0.1 s)
+  G2 B=2 T=1024 8/1                            O    chats     2  worst ratio   0.304  (err 7.636e-03 vs floor 1.254e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/1                            LSE  chats     2  worst ratio   0.000  (err 9.270e-07 vs floor 7.057e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/1                            dQ   chats     2  worst ratio   0.500  (err 1.296e-02 vs floor 1.296e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/1                            dK   chats     2  worst ratio   0.390  (err 2.128e-02 vs floor 2.726e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/1                            dV   chats     2  worst ratio   0.500  (err 3.316e-02 vs floor 3.316e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=1024 8/1                            non-finite/unwritten outputs: 0  PASS  (0.1 s)
+  G2 B=8 T=1024 8/1                            O    chats     8  worst ratio   0.391  (err 7.774e-03 vs floor 9.942e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/1                            LSE  chats     8  worst ratio   0.000  (err 9.406e-07 vs floor 4.705e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/1                            dQ   chats     8  worst ratio   0.552  (err 1.330e-02 vs floor 1.205e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/1                            dK   chats     8  worst ratio   0.500  (err 3.816e-02 vs floor 3.816e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/1                            dV   chats     8  worst ratio   0.788  (err 5.152e-02 vs floor 3.269e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=1024 8/1                            non-finite/unwritten outputs: 0  PASS  (0.4 s)
+  G2 B=1 T=4096 18/6                           O    chats     1  worst ratio   0.354  (err 9.112e-03 vs floor 1.287e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 18/6                           LSE  chats     1  worst ratio   0.000  (err 1.361e-06 vs floor 8.963e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 18/6                           dQ   chats     1  worst ratio   0.313  (err 1.290e-02 vs floor 2.058e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 18/6                           dK   chats     1  worst ratio   0.388  (err 1.834e-02 vs floor 2.363e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 18/6                           dV   chats     1  worst ratio   0.496  (err 2.684e-02 vs floor 2.708e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 18/6                           non-finite/unwritten outputs: 0  PASS  (1.8 s)
+  G2 B=2 T=4096 18/6                           O    chats     2  worst ratio   0.313  (err 7.614e-03 vs floor 1.217e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 18/6                           LSE  chats     2  worst ratio   0.000  (err 1.462e-06 vs floor 6.473e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 18/6                           dQ   chats     2  worst ratio   0.720  (err 2.889e-02 vs floor 2.007e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 18/6                           dK   chats     2  worst ratio   0.424  (err 2.135e-02 vs floor 2.516e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 18/6                           dV   chats     2  worst ratio   0.946  (err 5.382e-02 vs floor 2.845e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 18/6                           non-finite/unwritten outputs: 0  PASS  (0.9 s)
+  G2 B=8 T=4096 18/6                           O    chats     8  worst ratio   0.371  (err 8.478e-03 vs floor 1.142e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 18/6                           LSE  chats     8  worst ratio   0.000  (err 1.341e-06 vs floor 5.274e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 18/6                           dQ   chats     8  worst ratio   0.496  (err 2.359e-02 vs floor 2.380e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 18/6                           dK   chats     8  worst ratio   0.518  (err 2.307e-02 vs floor 2.226e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 18/6                           dV   chats     8  worst ratio   0.871  (err 4.514e-02 vs floor 2.591e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 18/6                           non-finite/unwritten outputs: 0  PASS  (2.6 s)
+  G2 B=1 T=4096 12/4                           O    chats     1  worst ratio   0.217  (err 6.414e-03 vs floor 1.480e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 12/4                           LSE  chats     1  worst ratio   0.000  (err 1.445e-06 vs floor 5.459e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 12/4                           dQ   chats     1  worst ratio   0.271  (err 1.060e-02 vs floor 1.953e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 12/4                           dK   chats     1  worst ratio   0.400  (err 1.838e-02 vs floor 2.297e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 12/4                           dV   chats     1  worst ratio   0.587  (err 3.376e-02 vs floor 2.874e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 12/4                           non-finite/unwritten outputs: 0  PASS  (0.4 s)
+  G2 B=2 T=4096 12/4                           O    chats     2  worst ratio   0.419  (err 9.301e-03 vs floor 1.110e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 12/4                           LSE  chats     2  worst ratio   0.000  (err 1.363e-06 vs floor 5.766e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 12/4                           dQ   chats     2  worst ratio   0.350  (err 9.608e-03 vs floor 1.371e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 12/4                           dK   chats     2  worst ratio   0.445  (err 1.743e-02 vs floor 1.961e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 12/4                           dV   chats     2  worst ratio   0.651  (err 2.832e-02 vs floor 2.174e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 12/4                           non-finite/unwritten outputs: 0  PASS  (0.7 s)
+  G2 B=8 T=4096 12/4                           O    chats     8  worst ratio   0.423  (err 9.372e-03 vs floor 1.108e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 12/4                           LSE  chats     8  worst ratio   0.000  (err 1.357e-06 vs floor 5.037e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 12/4                           dQ   chats     8  worst ratio   0.516  (err 1.230e-02 vs floor 1.191e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 12/4                           dK   chats     8  worst ratio   0.495  (err 2.287e-02 vs floor 2.311e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 12/4                           dV   chats     8  worst ratio   0.553  (err 3.459e-02 vs floor 3.130e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 12/4                           non-finite/unwritten outputs: 0  PASS  (2.0 s)
+  G2 B=1 T=4096 8/8                            O    chats     1  worst ratio   0.266  (err 7.464e-03 vs floor 1.401e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/8                            LSE  chats     1  worst ratio   0.000  (err 1.355e-06 vs floor 5.423e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/8                            dQ   chats     1  worst ratio   0.431  (err 1.147e-02 vs floor 1.330e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/8                            dK   chats     1  worst ratio   0.376  (err 1.190e-02 vs floor 1.584e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/8                            dV   chats     1  worst ratio   0.332  (err 1.445e-02 vs floor 2.177e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/8                            non-finite/unwritten outputs: 0  PASS  (1.2 s)
+  G2 B=2 T=4096 8/8                            O    chats     2  worst ratio   0.293  (err 7.331e-03 vs floor 1.252e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/8                            LSE  chats     2  worst ratio   0.000  (err 1.398e-06 vs floor 8.887e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/8                            dQ   chats     2  worst ratio   0.470  (err 1.139e-02 vs floor 1.210e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/8                            dK   chats     2  worst ratio   0.427  (err 1.138e-02 vs floor 1.332e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/8                            dV   chats     2  worst ratio   0.460  (err 1.392e-02 vs floor 1.515e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/8                            non-finite/unwritten outputs: 0  PASS  (0.6 s)
+  G2 B=8 T=4096 8/8                            O    chats     8  worst ratio   0.360  (err 9.165e-03 vs floor 1.272e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/8                            LSE  chats     8  worst ratio   0.000  (err 1.319e-06 vs floor 4.034e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/8                            dQ   chats     8  worst ratio   0.399  (err 1.186e-02 vs floor 1.486e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/8                            dK   chats     8  worst ratio   0.308  (err 1.474e-02 vs floor 2.392e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/8                            dV   chats     8  worst ratio   0.500  (err 2.045e-02 vs floor 2.045e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/8                            non-finite/unwritten outputs: 0  PASS  (1.4 s)
+  G2 B=1 T=4096 32/8                           O    chats     1  worst ratio   0.336  (err 9.495e-03 vs floor 1.415e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 32/8                           LSE  chats     1  worst ratio   0.000  (err 1.473e-06 vs floor 6.328e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 32/8                           dQ   chats     1  worst ratio   0.347  (err 1.507e-02 vs floor 2.169e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 32/8                           dK   chats     1  worst ratio   0.293  (err 2.022e-02 vs floor 3.447e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 32/8                           dV   chats     1  worst ratio   0.389  (err 3.112e-02 vs floor 3.999e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 32/8                           non-finite/unwritten outputs: 0  PASS  (1.6 s)
+  G2 B=2 T=4096 32/8                           O    chats     2  worst ratio   0.302  (err 9.495e-03 vs floor 1.572e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 32/8                           LSE  chats     2  worst ratio   0.000  (err 1.555e-06 vs floor 7.928e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 32/8                           dQ   chats     2  worst ratio   0.372  (err 1.323e-02 vs floor 1.778e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 32/8                           dK   chats     2  worst ratio   0.466  (err 2.328e-02 vs floor 2.498e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 32/8                           dV   chats     2  worst ratio   0.488  (err 4.027e-02 vs floor 4.130e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 32/8                           non-finite/unwritten outputs: 0  PASS  (1.3 s)
+  G2 B=8 T=4096 32/8                           O    chats     8  worst ratio   0.327  (err 8.660e-03 vs floor 1.325e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 32/8                           LSE  chats     8  worst ratio   0.000  (err 1.630e-06 vs floor 7.322e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 32/8                           dQ   chats     8  worst ratio   0.461  (err 1.654e-02 vs floor 1.793e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 32/8                           dK   chats     8  worst ratio   0.460  (err 2.449e-02 vs floor 2.662e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 32/8                           dV   chats     8  worst ratio   0.523  (err 3.187e-02 vs floor 3.044e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 32/8                           non-finite/unwritten outputs: 0  PASS  (4.3 s)
+  G2 B=1 T=4096 8/1                            O    chats     1  worst ratio   0.320  (err 7.582e-03 vs floor 1.183e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/1                            LSE  chats     1  worst ratio   0.000  (err 1.481e-06 vs floor 4.879e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/1                            dQ   chats     1  worst ratio   0.425  (err 1.071e-02 vs floor 1.261e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/1                            dK   chats     1  worst ratio   0.467  (err 2.524e-02 vs floor 2.702e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/1                            dV   chats     1  worst ratio   0.360  (err 3.004e-02 vs floor 4.173e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=1 T=4096 8/1                            non-finite/unwritten outputs: 0  PASS  (0.5 s)
+  G2 B=2 T=4096 8/1                            O    chats     2  worst ratio   0.316  (err 8.269e-03 vs floor 1.308e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/1                            LSE  chats     2  worst ratio   0.000  (err 1.587e-06 vs floor 5.671e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/1                            dQ   chats     2  worst ratio   0.506  (err 1.303e-02 vs floor 1.287e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/1                            dK   chats     2  worst ratio   0.348  (err 2.616e-02 vs floor 3.754e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/1                            dV   chats     2  worst ratio   0.526  (err 3.300e-02 vs floor 3.135e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=2 T=4096 8/1                            non-finite/unwritten outputs: 0  PASS  (0.4 s)
+  G2 B=8 T=4096 8/1                            O    chats     8  worst ratio   0.360  (err 8.093e-03 vs floor 1.123e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/1                            LSE  chats     8  worst ratio   0.000  (err 1.560e-06 vs floor 5.727e-03)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/1                            dQ   chats     8  worst ratio   0.618  (err 1.518e-02 vs floor 1.229e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/1                            dK   chats     8  worst ratio   0.446  (err 2.579e-02 vs floor 2.893e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/1                            dV   chats     8  worst ratio   0.606  (err 4.336e-02 vs floor 3.580e-02)  fails 0 (known 0)  nan 0  PASS
+  G2 B=8 T=4096 8/1                            non-finite/unwritten outputs: 0  PASS  (1.2 s)
+
+===== G3 v1 SFT rows: real chat + pad (dO = 0 on pads), 18/6 =====
+  G3 v1 rows 0-7 (a) whole rows                O    chats     8  worst ratio   0.336  (err 8.335e-03 vs floor 1.239e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 0-7 (a) whole rows                LSE  chats     8  worst ratio   0.000  (err 1.518e-06 vs floor 5.803e-03)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 0-7 (a) whole rows                dQ   chats     8  worst ratio   0.493  (err 1.476e-02 vs floor 1.496e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 0-7 (a) whole rows                dK   chats     8  worst ratio   0.464  (err 1.806e-02 vs floor 1.948e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 0-7 (a) whole rows                dV   chats     8  worst ratio   0.572  (err 3.076e-02 vs floor 2.689e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 0-7 (b) chat rows = per-chat      O    chats     8  worst ratio   0.336  (err 8.335e-03 vs floor 1.239e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 0-7 (b) chat rows = per-chat      LSE  chats     8  worst ratio   0.000  (err 1.016e-06 vs floor 5.650e-03)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 0-7 (b) chat rows = per-chat      dQ   chats     8  worst ratio   0.493  (err 1.476e-02 vs floor 1.496e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 0-7 (b) chat rows = per-chat      dK   chats     8  worst ratio   0.464  (err 1.806e-02 vs floor 1.948e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 0-7 (b) chat rows = per-chat      dV   chats     8  worst ratio   0.572  (err 3.076e-02 vs floor 2.689e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (a) whole rows               O    chats     8  worst ratio   0.389  (err 1.055e-02 vs floor 1.356e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (a) whole rows               LSE  chats     8  worst ratio   0.000  (err 1.592e-06 vs floor 6.634e-03)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (a) whole rows               dQ   chats     8  worst ratio   0.422  (err 1.276e-02 vs floor 1.511e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (a) whole rows               dK   chats     8  worst ratio   0.455  (err 2.337e-02 vs floor 2.565e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (a) whole rows               dV   chats     8  worst ratio   0.580  (err 3.361e-02 vs floor 2.896e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (b) chat rows = per-chat     O    chats     8  worst ratio   0.389  (err 1.055e-02 vs floor 1.356e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (b) chat rows = per-chat     LSE  chats     8  worst ratio   0.000  (err 1.297e-06 vs floor 6.151e-03)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (b) chat rows = per-chat     dQ   chats     8  worst ratio   0.422  (err 1.276e-02 vs floor 1.511e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (b) chat rows = per-chat     dK   chats     8  worst ratio   0.455  (err 2.337e-02 vs floor 2.565e-02)  fails 0 (known 0)  nan 0  PASS
+  G3 v1 rows 8-15 (b) chat rows = per-chat     dV   chats     8  worst ratio   0.580  (err 3.361e-02 vs floor 2.896e-02)  fails 0 (known 0)  nan 0  PASS
+
+===== G4 repeat (race) test: O, LSE, dK, dV bitwise; dQ within FA's atol =====
+  G4 B=8 T=4096 18/6 x1000           O/LSE mismatched elements 0/0 PASS | dK/dV 0/0 (max 0.000e+00) PASS | dQ max diff 1.953e-03 vs atol 1.562e-02 (1451773 elems differ) PASS  (6.0 s)
+  G4 B=60 T=1024 18/6 x250           O/LSE mismatched elements 0/0 PASS | dK/dV 0/0 (max 0.000e+00) PASS | dQ max diff 9.766e-04 vs atol 3.125e-02 (34412 elems differ) PASS  (1.8 s)
+
+===== G5 large inputs: q*5, k*3, v*3 (grads gated 5x + 1e-3 as in FA2; 2x printed too) =====
+  G5 B=2 T=256 18/6 [gate]                     O    chats     2  worst ratio   0.023  (err 3.348e-02 vs floor 7.290e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 18/6 [gate]                     LSE  chats     2  worst ratio   0.000  (err 1.913e-05 vs floor 2.278e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 18/6 [gate]                     dQ   chats     2  worst ratio   0.015  (err 1.582e-01 vs floor 2.117e+00)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 18/6 [gate]                     dK   chats     2  worst ratio   0.022  (err 3.395e-01 vs floor 3.080e+00)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 18/6 [gate]                     dV   chats     2  worst ratio   0.051  (err 5.878e-02 vs floor 2.319e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 18/6                            O    2x-rule worst ratio 0.023 (info)
+  G5 B=2 T=256 18/6                            LSE  2x-rule worst ratio 0.000 (info)
+  G5 B=2 T=256 18/6                            dQ   2x-rule worst ratio 0.037 (info)
+  G5 B=2 T=256 18/6                            dK   2x-rule worst ratio 0.055 (info)
+  G5 B=2 T=256 18/6                            dV   2x-rule worst ratio 0.127 (info)
+  G5 B=2 T=256 8/1 [gate]                      O    chats     2  worst ratio   0.022  (err 3.132e-02 vs floor 6.968e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 8/1 [gate]                      LSE  chats     2  worst ratio   0.000  (err 1.903e-05 vs floor 2.560e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 8/1 [gate]                      dQ   chats     2  worst ratio   0.018  (err 1.581e-01 vs floor 1.787e+00)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 8/1 [gate]                      dK   chats     2  worst ratio   0.025  (err 4.930e-01 vs floor 3.942e+00)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 8/1 [gate]                      dV   chats     2  worst ratio   0.045  (err 6.687e-02 vs floor 2.961e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=256 8/1                             O    2x-rule worst ratio 0.022 (info)
+  G5 B=2 T=256 8/1                             LSE  2x-rule worst ratio 0.000 (info)
+  G5 B=2 T=256 8/1                             dQ   2x-rule worst ratio 0.044 (info)
+  G5 B=2 T=256 8/1                             dK   2x-rule worst ratio 0.063 (info)
+  G5 B=2 T=256 8/1                             dV   2x-rule worst ratio 0.113 (info)
+  G5 B=2 T=512 18/6 [gate]                     O    chats     2  worst ratio   0.017  (err 3.367e-02 vs floor 9.721e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 18/6 [gate]                     LSE  chats     2  worst ratio   0.000  (err 1.702e-05 vs floor 2.710e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 18/6 [gate]                     dQ   chats     2  worst ratio   0.016  (err 2.149e-01 vs floor 2.645e+00)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 18/6 [gate]                     dK   chats     2  worst ratio   0.023  (err 3.920e-01 vs floor 3.371e+00)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 18/6 [gate]                     dV   chats     2  worst ratio   0.036  (err 5.809e-02 vs floor 3.227e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 18/6                            O    2x-rule worst ratio 0.017 (info)
+  G5 B=2 T=512 18/6                            LSE  2x-rule worst ratio 0.000 (info)
+  G5 B=2 T=512 18/6                            dQ   2x-rule worst ratio 0.041 (info)
+  G5 B=2 T=512 18/6                            dK   2x-rule worst ratio 0.058 (info)
+  G5 B=2 T=512 18/6                            dV   2x-rule worst ratio 0.090 (info)
+  G5 B=2 T=512 8/1 [gate]                      O    chats     2  worst ratio   0.020  (err 3.227e-02 vs floor 7.980e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 8/1 [gate]                      LSE  chats     2  worst ratio   0.000  (err 1.670e-05 vs floor 2.235e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 8/1 [gate]                      dQ   chats     2  worst ratio   0.015  (err 1.840e-01 vs floor 2.522e+00)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 8/1 [gate]                      dK   chats     2  worst ratio   0.027  (err 5.056e-01 vs floor 3.695e+00)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 8/1 [gate]                      dV   chats     2  worst ratio   0.049  (err 8.665e-02 vs floor 3.570e-01)  fails 0 (known 0)  nan 0  PASS
+  G5 B=2 T=512 8/1                             O    2x-rule worst ratio 0.020 (info)
+  G5 B=2 T=512 8/1                             LSE  2x-rule worst ratio 0.000 (info)
+  G5 B=2 T=512 8/1                             dQ   2x-rule worst ratio 0.036 (info)
+  G5 B=2 T=512 8/1                             dK   2x-rule worst ratio 0.068 (info)
+  G5 B=2 T=512 8/1                             dV   2x-rule worst ratio 0.121 (info)
+
+===== G6 chat alone: each chat through today's kernel alone vs the packed per-chat reference =====
+  G6 D2 2048+2048 18/6                         O    chats     2  worst ratio   0.297  (err 7.950e-03 vs floor 1.337e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 18/6                         LSE  chats     2  worst ratio   0.000  (err 1.277e-06 vs floor 7.752e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 18/6                         dQ   chats     2  worst ratio   0.509  (err 1.936e-02 vs floor 1.902e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 18/6                         dK   chats     2  worst ratio   0.389  (err 2.175e-02 vs floor 2.792e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 18/6                         dV   chats     2  worst ratio   0.500  (err 3.303e-02 vs floor 3.303e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 18/6                         2 chats alone, non-finite outputs 0 PASS  (1.1 s)
+  G6 D2 2048+2048 18/6                         G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 9.766e-04 (smallest atol 1.562e-02)  PASS
+  G6 D2 2048+2048 12/4                         O    chats     2  worst ratio   0.306  (err 7.987e-03 vs floor 1.305e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 12/4                         LSE  chats     2  worst ratio   0.000  (err 1.218e-06 vs floor 6.263e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 12/4                         dQ   chats     2  worst ratio   0.308  (err 9.573e-03 vs floor 1.555e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 12/4                         dK   chats     2  worst ratio   0.385  (err 1.757e-02 vs floor 2.283e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 12/4                         dV   chats     2  worst ratio   0.496  (err 3.016e-02 vs floor 3.038e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 12/4                         2 chats alone, non-finite outputs 0 PASS  (0.9 s)
+  G6 D2 2048+2048 12/4                         G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.562e-02)  PASS
+  G6 D2 2048+2048 8/8                          O    chats     2  worst ratio   0.297  (err 8.017e-03 vs floor 1.349e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/8                          LSE  chats     2  worst ratio   0.000  (err 1.172e-06 vs floor 7.007e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/8                          dQ   chats     2  worst ratio   0.298  (err 1.002e-02 vs floor 1.679e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/8                          dK   chats     2  worst ratio   0.486  (err 1.319e-02 vs floor 1.357e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/8                          dV   chats     2  worst ratio   0.500  (err 1.909e-02 vs floor 1.909e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/8                          2 chats alone, non-finite outputs 0 PASS  (1.1 s)
+  G6 D2 2048+2048 8/8                          G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 9.766e-04 (smallest atol 1.562e-02)  PASS
+  G6 D2 2048+2048 32/8                         O    chats     2  worst ratio   0.335  (err 8.750e-03 vs floor 1.305e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 32/8                         LSE  chats     2  worst ratio   0.000  (err 1.237e-06 vs floor 6.089e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 32/8                         dQ   chats     2  worst ratio   0.367  (err 1.082e-02 vs floor 1.473e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 32/8                         dK   chats     2  worst ratio   0.415  (err 2.449e-02 vs floor 2.951e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 32/8                         dV   chats     2  worst ratio   0.500  (err 3.638e-02 vs floor 3.638e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 32/8                         2 chats alone, non-finite outputs 0 PASS  (1.2 s)
+  G6 D2 2048+2048 32/8                         G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 9.766e-04 (smallest atol 1.562e-02)  PASS
+  G6 D2 2048+2048 8/1                          O    chats     2  worst ratio   0.358  (err 7.570e-03 vs floor 1.057e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/1                          LSE  chats     2  worst ratio   0.000  (err 1.386e-06 vs floor 5.392e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/1                          dQ   chats     2  worst ratio   0.334  (err 8.195e-03 vs floor 1.226e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/1                          dK   chats     2  worst ratio   0.500  (err 2.637e-02 vs floor 2.637e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/1                          dV   chats     2  worst ratio   0.638  (err 3.728e-02 vs floor 2.921e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D2 2048+2048 8/1                          2 chats alone, non-finite outputs 0 PASS  (0.8 s)
+  G6 D2 2048+2048 8/1                          G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.562e-02)  PASS
+  G6 D3 1000+3096 18/6                         O    chats     2  worst ratio   0.271  (err 7.551e-03 vs floor 1.394e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 18/6                         LSE  chats     2  worst ratio   0.000  (err 1.284e-06 vs floor 8.221e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 18/6                         dQ   chats     2  worst ratio   0.313  (err 1.429e-02 vs floor 2.283e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 18/6                         dK   chats     2  worst ratio   0.456  (err 2.559e-02 vs floor 2.806e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 18/6                         dV   chats     2  worst ratio   0.449  (err 2.699e-02 vs floor 3.008e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 18/6                         2 chats alone, non-finite outputs 0 PASS  (1.6 s)
+  G6 D3 1000+3096 18/6                         G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.562e-02)  PASS
+  G6 D3 1000+3096 12/4                         O    chats     2  worst ratio   0.336  (err 8.189e-03 vs floor 1.219e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 12/4                         LSE  chats     2  worst ratio   0.000  (err 1.293e-06 vs floor 7.279e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 12/4                         dQ   chats     2  worst ratio   0.457  (err 1.295e-02 vs floor 1.418e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 12/4                         dK   chats     2  worst ratio   0.444  (err 1.823e-02 vs floor 2.053e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 12/4                         dV   chats     2  worst ratio   0.500  (err 3.818e-02 vs floor 3.818e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 12/4                         2 chats alone, non-finite outputs 0 PASS  (1.4 s)
+  G6 D3 1000+3096 12/4                         G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.562e-02)  PASS
+  G6 D3 1000+3096 8/8                          O    chats     2  worst ratio   0.323  (err 8.188e-03 vs floor 1.267e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/8                          LSE  chats     2  worst ratio   0.000  (err 9.384e-07 vs floor 7.733e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/8                          dQ   chats     2  worst ratio   0.371  (err 1.332e-02 vs floor 1.793e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/8                          dK   chats     2  worst ratio   0.516  (err 1.618e-02 vs floor 1.569e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/8                          dV   chats     2  worst ratio   0.527  (err 1.808e-02 vs floor 1.715e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/8                          2 chats alone, non-finite outputs 0 PASS  (1.7 s)
+  G6 D3 1000+3096 8/8                          G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 2.441e-04 (smallest atol 1.562e-02)  PASS
+  G6 D3 1000+3096 32/8                         O    chats     2  worst ratio   0.266  (err 7.754e-03 vs floor 1.458e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 32/8                         LSE  chats     2  worst ratio   0.000  (err 1.411e-06 vs floor 8.529e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 32/8                         dQ   chats     2  worst ratio   0.353  (err 1.376e-02 vs floor 1.951e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 32/8                         dK   chats     2  worst ratio   0.436  (err 2.215e-02 vs floor 2.538e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 32/8                         dV   chats     2  worst ratio   0.483  (err 3.134e-02 vs floor 3.247e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 32/8                         2 chats alone, non-finite outputs 0 PASS  (1.8 s)
+  G6 D3 1000+3096 32/8                         G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 9.766e-04 (smallest atol 1.562e-02)  PASS
+  G6 D3 1000+3096 8/1                          O    chats     2  worst ratio   0.269  (err 7.737e-03 vs floor 1.437e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/1                          LSE  chats     2  worst ratio   0.000  (err 1.301e-06 vs floor 5.263e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/1                          dQ   chats     2  worst ratio   0.418  (err 9.814e-03 vs floor 1.175e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/1                          dK   chats     2  worst ratio   0.397  (err 2.323e-02 vs floor 2.928e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/1                          dV   chats     2  worst ratio   0.500  (err 4.187e-02 vs floor 4.187e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D3 1000+3096 8/1                          2 chats alone, non-finite outputs 0 PASS  (0.8 s)
+  G6 D3 1000+3096 8/1                          G6c 2 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.562e-02)  PASS
+  G6 D4 1+4095, 4095+1 18/6                    O    chats     4  worst ratio   0.253  (err 7.742e-03 vs floor 1.532e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 18/6                    LSE  chats     4  worst ratio   0.000  (err 1.400e-06 vs floor 6.594e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 18/6                    dQ   chats     2  worst ratio   0.502  (err 1.782e-02 vs floor 1.775e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 18/6                    dK   chats     2  worst ratio   0.440  (err 1.965e-02 vs floor 2.231e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 18/6                    dV   chats     4  worst ratio   0.501  (err 2.900e-02 vs floor 2.896e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 18/6                    1-token chats: 2 (exact dQ = dK = 0; truth exactly 0 for 2 of them, the rest use the 2x rule)
+  G6 D4 1+4095, 4095+1 18/6                    dQ   1-token  chats     2  worst |kernel|/bound 1.536e-03  (max |kernel| 8.494e-07)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 18/6                    dK   1-token  chats     2  worst |kernel|/bound 1.374e-03  (max |kernel| 8.605e-07)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 18/6                    4 chats alone, non-finite outputs 0 PASS  (1.9 s)
+  G6 D4 1+4095, 4095+1 18/6                    G6c 4 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.565e-03)  PASS
+  G6 D4 1+4095, 4095+1 12/4                    O    chats     4  worst ratio   0.336  (err 8.105e-03 vs floor 1.206e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 12/4                    LSE  chats     4  worst ratio   0.000  (err 1.382e-06 vs floor 5.678e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 12/4                    dQ   chats     2  worst ratio   0.600  (err 2.036e-02 vs floor 1.697e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 12/4                    dK   chats     2  worst ratio   0.502  (err 1.830e-02 vs floor 1.822e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 12/4                    dV   chats     4  worst ratio   0.500  (err 3.015e-02 vs floor 3.015e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 12/4                    1-token chats: 2 (exact dQ = dK = 0; truth exactly 0 for 2 of them, the rest use the 2x rule)
+  G6 D4 1+4095, 4095+1 12/4                    dQ   1-token  chats     2  worst |kernel|/bound 1.576e-03  (max |kernel| 1.304e-06)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 12/4                    dK   1-token  chats     2  worst |kernel|/bound 1.300e-03  (max |kernel| 9.686e-07)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 12/4                    4 chats alone, non-finite outputs 0 PASS  (1.4 s)
+  G6 D4 1+4095, 4095+1 12/4                    G6c 4 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.565e-03)  PASS
+  G6 D4 1+4095, 4095+1 8/8                     O    chats     4  worst ratio   0.375  (err 8.641e-03 vs floor 1.153e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/8                     LSE  chats     4  worst ratio   0.000  (err 1.437e-06 vs floor 5.435e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/8                     dQ   chats     2  worst ratio   0.373  (err 8.674e-03 vs floor 1.162e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/8                     dK   chats     2  worst ratio   0.328  (err 1.054e-02 vs floor 1.604e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/8                     dV   chats     4  worst ratio   0.482  (err 1.660e-02 vs floor 1.723e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/8                     1-token chats: 2 (exact dQ = dK = 0; truth exactly 0 for 2 of them, the rest use the 2x rule)
+  G6 D4 1+4095, 4095+1 8/8                     dQ   1-token  chats     2  worst |kernel|/bound 1.477e-03  (max |kernel| 1.051e-06)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/8                     dK   1-token  chats     2  worst |kernel|/bound 1.478e-03  (max |kernel| 1.043e-06)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/8                     4 chats alone, non-finite outputs 0 PASS  (1.7 s)
+  G6 D4 1+4095, 4095+1 8/8                     G6c 4 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 2.441e-04 (smallest atol 1.565e-03)  PASS
+  G6 D4 1+4095, 4095+1 32/8                    O    chats     4  worst ratio   0.347  (err 8.873e-03 vs floor 1.277e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 32/8                    LSE  chats     4  worst ratio   0.000  (err 1.564e-06 vs floor 6.101e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 32/8                    dQ   chats     2  worst ratio   0.388  (err 1.252e-02 vs floor 1.613e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 32/8                    dK   chats     2  worst ratio   0.374  (err 1.831e-02 vs floor 2.446e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 32/8                    dV   chats     4  worst ratio   0.500  (err 1.562e-02 vs floor 1.562e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 32/8                    1-token chats: 2 (exact dQ = dK = 0; truth exactly 0 for 2 of them, the rest use the 2x rule)
+  G6 D4 1+4095, 4095+1 32/8                    dQ   1-token  chats     2  worst |kernel|/bound 1.965e-03  (max |kernel| 1.177e-06)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 32/8                    dK   1-token  chats     2  worst |kernel|/bound 1.598e-03  (max |kernel| 1.341e-06)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 32/8                    4 chats alone, non-finite outputs 0 PASS  (2.4 s)
+  G6 D4 1+4095, 4095+1 32/8                    G6c 4 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.565e-03)  PASS
+  G6 D4 1+4095, 4095+1 8/1                     O    chats     4  worst ratio   0.410  (err 7.479e-03 vs floor 9.110e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/1                     LSE  chats     4  worst ratio   0.000  (err 1.416e-06 vs floor 5.935e-03)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/1                     dQ   chats     2  worst ratio   0.391  (err 8.469e-03 vs floor 1.084e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/1                     dK   chats     2  worst ratio   0.389  (err 2.181e-02 vs floor 2.800e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/1                     dV   chats     4  worst ratio   0.881  (err 5.208e-02 vs floor 2.954e-02)  fails 0 (known 0)  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/1                     1-token chats: 2 (exact dQ = dK = 0; truth exactly 0 for 2 of them, the rest use the 2x rule)
+  G6 D4 1+4095, 4095+1 8/1                     dQ   1-token  chats     2  worst |kernel|/bound 7.821e-04  (max |kernel| 4.061e-07)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/1                     dK   1-token  chats     2  worst |kernel|/bound 4.350e-04  (max |kernel| 6.743e-07)  fails 0  nan 0  PASS
+  G6 D4 1+4095, 4095+1 8/1                     4 chats alone, non-finite outputs 0 PASS  (1.7 s)
+  G6 D4 1+4095, 4095+1 8/1                     G6c 4 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 4.883e-04 (smallest atol 1.565e-03)  PASS
+  G6 D5 64x64, 32x128 18/6                     O    chats    96  worst ratio   0.404  (err 9.974e-03 vs floor 1.235e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.285 p90 0.336 p99 0.396 max 0.404]
+  G6 D5 64x64, 32x128 18/6                     LSE  chats    96  worst ratio   0.000  (err 7.143e-07 vs floor 4.925e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D5 64x64, 32x128 18/6                     dQ   chats    96  worst ratio   0.571  (err 1.436e-02 vs floor 1.257e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.323 p90 0.419 p99 0.513 max 0.571]
+  G6 D5 64x64, 32x128 18/6                     dK   chats    96  worst ratio   0.763  (err 2.952e-02 vs floor 1.936e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.373 p90 0.455 p99 0.630 max 0.763]
+  G6 D5 64x64, 32x128 18/6                     dV   chats    96  worst ratio   0.720  (err 3.639e-02 vs floor 2.527e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.582 p99 0.685 max 0.720]
+  G6 D5 64x64, 32x128 18/6                     96 chats alone, non-finite outputs 0 PASS  (6.1 s)
+  G6 D5 64x64, 32x128 18/6                     G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 1.562e-02)  PASS
+  G6 D5 64x64, 32x128 12/4                     O    chats    96  worst ratio   0.434  (err 9.505e-03 vs floor 1.096e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.300 p90 0.354 p99 0.431 max 0.434]
+  G6 D5 64x64, 32x128 12/4                     LSE  chats    96  worst ratio   0.000  (err 6.401e-07 vs floor 3.723e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D5 64x64, 32x128 12/4                     dQ   chats    96  worst ratio   0.585  (err 2.064e-02 vs floor 1.765e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.328 p90 0.479 p99 0.576 max 0.585]
+  G6 D5 64x64, 32x128 12/4                     dK   chats    96  worst ratio   0.581  (err 2.429e-02 vs floor 2.091e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.383 p90 0.536 p99 0.576 max 0.581]
+  G6 D5 64x64, 32x128 12/4                     dV   chats    96  worst ratio   0.810  (err 4.352e-02 vs floor 2.687e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.579 p99 0.802 max 0.810]
+  G6 D5 64x64, 32x128 12/4                     96 chats alone, non-finite outputs 0 PASS  (6.0 s)
+  G6 D5 64x64, 32x128 12/4                     G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 1.562e-02)  PASS
+  G6 D5 64x64, 32x128 8/8                      O    chats    96  worst ratio   0.489  (err 9.469e-03 vs floor 9.690e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.308 p90 0.362 p99 0.411 max 0.489]
+  G6 D5 64x64, 32x128 8/8                      LSE  chats    96  worst ratio   0.000  (err 7.656e-07 vs floor 4.286e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D5 64x64, 32x128 8/8                      dQ   chats    96  worst ratio   0.599  (err 1.421e-02 vs floor 1.186e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.324 p90 0.421 p99 0.501 max 0.599]
+  G6 D5 64x64, 32x128 8/8                      dK   chats    96  worst ratio   0.874  (err 2.131e-02 vs floor 1.218e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.330 p90 0.480 p99 0.602 max 0.874]
+  G6 D5 64x64, 32x128 8/8                      dV   chats    96  worst ratio   0.684  (err 1.850e-02 vs floor 1.352e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.457 p90 0.556 p99 0.644 max 0.684]
+  G6 D5 64x64, 32x128 8/8                      96 chats alone, non-finite outputs 0 PASS  (6.1 s)
+  G6 D5 64x64, 32x128 8/8                      G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 7.812e-03)  PASS
+  G6 D5 64x64, 32x128 32/8                     O    chats    96  worst ratio   0.436  (err 9.921e-03 vs floor 1.139e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.295 p90 0.353 p99 0.407 max 0.436]
+  G6 D5 64x64, 32x128 32/8                     LSE  chats    96  worst ratio   0.000  (err 9.086e-07 vs floor 6.451e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D5 64x64, 32x128 32/8                     dQ   chats    96  worst ratio   0.615  (err 1.710e-02 vs floor 1.391e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.324 p90 0.448 p99 0.566 max 0.615]
+  G6 D5 64x64, 32x128 32/8                     dK   chats    96  worst ratio   0.554  (err 2.478e-02 vs floor 2.236e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.389 p90 0.473 p99 0.539 max 0.554]
+  G6 D5 64x64, 32x128 32/8                     dV   chats    96  worst ratio   0.870  (err 4.947e-02 vs floor 2.842e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.491 p90 0.574 p99 0.779 max 0.870]
+  G6 D5 64x64, 32x128 32/8                     96 chats alone, non-finite outputs 0 PASS  (7.1 s)
+  G6 D5 64x64, 32x128 32/8                     G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 1.562e-02)  PASS
+  G6 D5 64x64, 32x128 8/1                      O    chats    96  worst ratio   0.440  (err 9.604e-03 vs floor 1.091e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.313 p90 0.369 p99 0.400 max 0.440]
+  G6 D5 64x64, 32x128 8/1                      LSE  chats    96  worst ratio   0.000  (err 1.079e-06 vs floor 4.153e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D5 64x64, 32x128 8/1                      dQ   chats    96  worst ratio   0.527  (err 1.075e-02 vs floor 1.020e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.342 p90 0.458 p99 0.524 max 0.527]
+  G6 D5 64x64, 32x128 8/1                      dK   chats    96  worst ratio   0.715  (err 2.832e-02 vs floor 1.979e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.392 p90 0.494 p99 0.624 max 0.715]
+  G6 D5 64x64, 32x128 8/1                      dV   chats    96  worst ratio   0.832  (err 5.609e-02 vs floor 3.373e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.463 p90 0.645 p99 0.758 max 0.832]
+  G6 D5 64x64, 32x128 8/1                      96 chats alone, non-finite outputs 0 PASS  (5.5 s)
+  G6 D5 64x64, 32x128 8/1                      G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 7.812e-03)  PASS
+  G6 D6 4096 x 1 18/6                          O    chats  4096  worst ratio   0.000  (err 0.000e+00 vs floor 0.000e+00)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 18/6                          LSE  chats  4096  worst ratio   0.000  (err 5.724e-07 vs floor 2.325e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 18/6                          dV   chats  4096  worst ratio   0.500  (err 1.562e-02 vs floor 1.562e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.500 p99 0.500 max 0.500]
+  G6 D6 4096 x 1 18/6                          1-token chats: 4096 (exact dQ = dK = 0; truth exactly 0 for 4096 of them, the rest use the 2x rule)
+  G6 D6 4096 x 1 18/6                          dQ   1-token  chats  4096  worst |kernel|/bound 4.640e-03  (max |kernel| 3.472e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 18/6                          dK   1-token  chats  4096  worst |kernel|/bound 4.504e-03  (max |kernel| 2.742e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 18/6                          4096 chats alone, non-finite outputs 0 PASS  (146.9 s)
+  G6 D6 4096 x 1 18/6                          G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 1.565e-03)  PASS
+  G6 D6 4096 x 1 12/4                          O    chats  4096  worst ratio   0.000  (err 0.000e+00 vs floor 0.000e+00)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 12/4                          LSE  chats  4096  worst ratio   0.000  (err 8.061e-07 vs floor 3.242e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 12/4                          dV   chats  4096  worst ratio   0.500  (err 1.562e-02 vs floor 1.562e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.500 p99 0.500 max 0.500]
+  G6 D6 4096 x 1 12/4                          1-token chats: 4096 (exact dQ = dK = 0; truth exactly 0 for 4096 of them, the rest use the 2x rule)
+  G6 D6 4096 x 1 12/4                          dQ   1-token  chats  4096  worst |kernel|/bound 4.447e-03  (max |kernel| 2.891e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 12/4                          dK   1-token  chats  4096  worst |kernel|/bound 4.202e-03  (max |kernel| 2.339e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 12/4                          4096 chats alone, non-finite outputs 0 PASS  (155.3 s)
+  G6 D6 4096 x 1 12/4                          G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 1.564e-03)  PASS
+  G6 D6 4096 x 1 8/8                           O    chats  4096  worst ratio   0.000  (err 0.000e+00 vs floor 0.000e+00)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 8/8                           LSE  chats  4096  worst ratio   0.000  (err 4.517e-07 vs floor 1.387e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 8/8                           dV   chats  4096  worst ratio   0.000  (err 0.000e+00 vs floor 0.000e+00)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 8/8                           1-token chats: 4096 (exact dQ = dK = 0; truth exactly 0 for 4096 of them, the rest use the 2x rule)
+  G6 D6 4096 x 1 8/8                           dQ   1-token  chats  4096  worst |kernel|/bound 3.971e-03  (max |kernel| 2.354e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 8/8                           dK   1-token  chats  4096  worst |kernel|/bound 3.969e-03  (max |kernel| 2.533e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 8/8                           4096 chats alone, non-finite outputs 0 PASS  (154.6 s)
+  G6 D6 4096 x 1 8/8                           G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 1.564e-03)  PASS
+  G6 D6 4096 x 1 32/8                          O    chats  4096  worst ratio   0.000  (err 0.000e+00 vs floor 0.000e+00)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 32/8                          LSE  chats  4096  worst ratio   0.000  (err 7.786e-07 vs floor 2.644e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 32/8                          dV   chats  4096  worst ratio   0.500  (err 1.562e-02 vs floor 1.562e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.500 p99 0.500 max 0.500]
+  G6 D6 4096 x 1 32/8                          1-token chats: 4096 (exact dQ = dK = 0; truth exactly 0 for 4096 of them, the rest use the 2x rule)
+  G6 D6 4096 x 1 32/8                          dQ   1-token  chats  4096  worst |kernel|/bound 4.752e-03  (max |kernel| 3.040e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 32/8                          dK   1-token  chats  4096  worst |kernel|/bound 4.010e-03  (max |kernel| 2.816e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 32/8                          4096 chats alone, non-finite outputs 0 PASS  (155.7 s)
+  G6 D6 4096 x 1 32/8                          G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 1.565e-03)  PASS
+  G6 D6 4096 x 1 8/1                           O    chats  4096  worst ratio   0.000  (err 0.000e+00 vs floor 0.000e+00)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 8/1                           LSE  chats  4096  worst ratio   0.000  (err 5.543e-07 vs floor 1.688e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D6 4096 x 1 8/1                           dV   chats  4096  worst ratio   0.500  (err 3.125e-02 vs floor 3.125e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.500 p99 0.500 max 0.500]
+  G6 D6 4096 x 1 8/1                           1-token chats: 4096 (exact dQ = dK = 0; truth exactly 0 for 4096 of them, the rest use the 2x rule)
+  G6 D6 4096 x 1 8/1                           dQ   1-token  chats  4096  worst |kernel|/bound 5.068e-03  (max |kernel| 2.101e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 8/1                           dK   1-token  chats  4096  worst |kernel|/bound 2.598e-03  (max |kernel| 2.593e-06)  fails 0  nan 0  PASS
+  G6 D6 4096 x 1 8/1                           4096 chats alone, non-finite outputs 0 PASS  (102.2 s)
+  G6 D6 4096 x 1 8/1                           G6c 64 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 1.564e-03)  PASS
+  G6 D7 63/65/127/129/255/257 18/6             O    chats    28  worst ratio   0.382  (err 1.354e-02 vs floor 1.771e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.313 p90 0.336 p99 0.382 max 0.382]
+  G6 D7 63/65/127/129/255/257 18/6             LSE  chats    28  worst ratio   0.000  (err 1.322e-06 vs floor 7.629e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D7 63/65/127/129/255/257 18/6             dQ   chats    28  worst ratio   0.687  (err 1.922e-02 vs floor 1.399e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.368 p90 0.489 p99 0.687 max 0.687]
+  G6 D7 63/65/127/129/255/257 18/6             dK   chats    28  worst ratio   0.588  (err 2.574e-02 vs floor 2.190e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.390 p90 0.481 p99 0.588 max 0.588]
+  G6 D7 63/65/127/129/255/257 18/6             dV   chats    28  worst ratio   0.860  (err 4.796e-02 vs floor 2.790e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.489 p90 0.543 p99 0.860 max 0.860]
+  G6 D7 63/65/127/129/255/257 18/6             28 chats alone, non-finite outputs 0 PASS  (3.3 s)
+  G6 D7 63/65/127/129/255/257 18/6             G6c 28 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 1.562e-02)  PASS
+  G6 D7 63/65/127/129/255/257 12/4             O    chats    28  worst ratio   0.482  (err 1.134e-02 vs floor 1.177e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.324 p90 0.389 p99 0.482 max 0.482]
+  G6 D7 63/65/127/129/255/257 12/4             LSE  chats    28  worst ratio   0.000  (err 7.481e-07 vs floor 4.929e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D7 63/65/127/129/255/257 12/4             dQ   chats    28  worst ratio   0.434  (err 1.299e-02 vs floor 1.497e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.363 p90 0.409 p99 0.434 max 0.434]
+  G6 D7 63/65/127/129/255/257 12/4             dK   chats    28  worst ratio   0.802  (err 3.134e-02 vs floor 1.953e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.384 p90 0.489 p99 0.802 max 0.802]
+  G6 D7 63/65/127/129/255/257 12/4             dV   chats    28  worst ratio   0.625  (err 3.040e-02 vs floor 2.432e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.565 p99 0.625 max 0.625]
+  G6 D7 63/65/127/129/255/257 12/4             28 chats alone, non-finite outputs 0 PASS  (2.9 s)
+  G6 D7 63/65/127/129/255/257 12/4             G6c 28 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 7.812e-03)  PASS
+  G6 D7 63/65/127/129/255/257 8/8              O    chats    28  worst ratio   0.370  (err 9.319e-03 vs floor 1.260e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.309 p90 0.350 p99 0.370 max 0.370]
+  G6 D7 63/65/127/129/255/257 8/8              LSE  chats    28  worst ratio   0.000  (err 7.300e-07 vs floor 4.176e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D7 63/65/127/129/255/257 8/8              dQ   chats    28  worst ratio   0.531  (err 1.328e-02 vs floor 1.251e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.340 p90 0.455 p99 0.531 max 0.531]
+  G6 D7 63/65/127/129/255/257 8/8              dK   chats    28  worst ratio   0.520  (err 1.390e-02 vs floor 1.335e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.328 p90 0.479 p99 0.520 max 0.520]
+  G6 D7 63/65/127/129/255/257 8/8              dV   chats    28  worst ratio   0.529  (err 1.402e-02 vs floor 1.325e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.427 p90 0.500 p99 0.529 max 0.529]
+  G6 D7 63/65/127/129/255/257 8/8              28 chats alone, non-finite outputs 0 PASS  (3.1 s)
+  G6 D7 63/65/127/129/255/257 8/8              G6c 28 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 7.812e-03)  PASS
+  G6 D7 63/65/127/129/255/257 32/8             O    chats    28  worst ratio   0.386  (err 1.092e-02 vs floor 1.413e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.296 p90 0.335 p99 0.386 max 0.386]
+  G6 D7 63/65/127/129/255/257 32/8             LSE  chats    28  worst ratio   0.000  (err 8.106e-07 vs floor 5.580e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D7 63/65/127/129/255/257 32/8             dQ   chats    28  worst ratio   0.653  (err 1.799e-02 vs floor 1.377e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.333 p90 0.424 p99 0.653 max 0.653]
+  G6 D7 63/65/127/129/255/257 32/8             dK   chats    28  worst ratio   0.504  (err 2.528e-02 vs floor 2.510e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.376 p90 0.457 p99 0.504 max 0.504]
+  G6 D7 63/65/127/129/255/257 32/8             dV   chats    28  worst ratio   0.662  (err 4.389e-02 vs floor 3.316e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.494 p90 0.564 p99 0.662 max 0.662]
+  G6 D7 63/65/127/129/255/257 32/8             28 chats alone, non-finite outputs 0 PASS  (3.2 s)
+  G6 D7 63/65/127/129/255/257 32/8             G6c 28 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 3.815e-06 (smallest atol 1.562e-02)  PASS
+  G6 D7 63/65/127/129/255/257 8/1              O    chats    28  worst ratio   0.424  (err 8.079e-03 vs floor 9.534e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.316 p90 0.372 p99 0.424 max 0.424]
+  G6 D7 63/65/127/129/255/257 8/1              LSE  chats    28  worst ratio   0.000  (err 6.640e-07 vs floor 4.222e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D7 63/65/127/129/255/257 8/1              dQ   chats    28  worst ratio   0.558  (err 1.157e-02 vs floor 1.036e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.336 p90 0.433 p99 0.558 max 0.558]
+  G6 D7 63/65/127/129/255/257 8/1              dK   chats    28  worst ratio   0.543  (err 2.414e-02 vs floor 2.221e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.393 p90 0.477 p99 0.543 max 0.543]
+  G6 D7 63/65/127/129/255/257 8/1              dV   chats    28  worst ratio   0.825  (err 5.766e-02 vs floor 3.495e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.493 p90 0.563 p99 0.825 max 0.825]
+  G6 D7 63/65/127/129/255/257 8/1              28 chats alone, non-finite outputs 0 PASS  (2.2 s)
+  G6 D7 63/65/127/129/255/257 8/1              G6c 28 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 0.000e+00 (smallest atol 7.812e-03)  PASS
+  G6 D8 random + pad tails 18/6                O    chats    40  worst ratio   0.384  (err 1.072e-02 vs floor 1.396e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.290 p90 0.343 p99 0.384 max 0.384]
+  G6 D8 random + pad tails 18/6                LSE  chats    40  worst ratio   0.000  (err 9.500e-07 vs floor 4.903e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D8 random + pad tails 18/6                dQ   chats    40  worst ratio   0.641  (err 1.941e-02 vs floor 1.514e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.317 p90 0.476 p99 0.641 max 0.641]
+  G6 D8 random + pad tails 18/6                dK   chats    40  worst ratio   0.568  (err 2.406e-02 vs floor 2.116e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.370 p90 0.452 p99 0.568 max 0.568]
+  G6 D8 random + pad tails 18/6                dV   chats    40  worst ratio   0.620  (err 3.459e-02 vs floor 2.791e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.463 p90 0.554 p99 0.620 max 0.620]
+  G6 D8 random + pad tails 18/6                40 chats alone, non-finite outputs 0 PASS  (5.4 s)
+  G6 D8 random + pad tails 18/6                G6c 40 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 1.953e-03 (smallest atol 1.562e-02)  PASS
+  G6 D8 random + pad tails 12/4                O    chats    40  worst ratio   0.429  (err 9.487e-03 vs floor 1.107e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.296 p90 0.345 p99 0.429 max 0.429]
+  G6 D8 random + pad tails 12/4                LSE  chats    40  worst ratio   0.000  (err 1.059e-06 vs floor 5.993e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D8 random + pad tails 12/4                dQ   chats    40  worst ratio   0.691  (err 2.005e-02 vs floor 1.452e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.317 p90 0.414 p99 0.691 max 0.691]
+  G6 D8 random + pad tails 12/4                dK   chats    40  worst ratio   0.515  (err 2.743e-02 vs floor 2.663e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.391 p90 0.470 p99 0.515 max 0.515]
+  G6 D8 random + pad tails 12/4                dV   chats    40  worst ratio   0.569  (err 2.859e-02 vs floor 2.514e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.479 p90 0.527 p99 0.569 max 0.569]
+  G6 D8 random + pad tails 12/4                40 chats alone, non-finite outputs 0 PASS  (5.1 s)
+  G6 D8 random + pad tails 12/4                G6c 40 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 9.766e-04 (smallest atol 1.562e-02)  PASS
+  G6 D8 random + pad tails 8/8                 O    chats    40  worst ratio   0.428  (err 9.911e-03 vs floor 1.159e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.304 p90 0.376 p99 0.428 max 0.428]
+  G6 D8 random + pad tails 8/8                 LSE  chats    40  worst ratio   0.000  (err 9.584e-07 vs floor 3.639e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D8 random + pad tails 8/8                 dQ   chats    40  worst ratio   0.509  (err 1.358e-02 vs floor 1.335e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.341 p90 0.421 p99 0.509 max 0.509]
+  G6 D8 random + pad tails 8/8                 dK   chats    40  worst ratio   0.493  (err 1.357e-02 vs floor 1.375e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.331 p90 0.454 p99 0.493 max 0.493]
+  G6 D8 random + pad tails 8/8                 dV   chats    40  worst ratio   0.707  (err 2.035e-02 vs floor 1.440e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.459 p90 0.581 p99 0.707 max 0.707]
+  G6 D8 random + pad tails 8/8                 40 chats alone, non-finite outputs 0 PASS  (4.4 s)
+  G6 D8 random + pad tails 8/8                 G6c 40 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 1.953e-03 (smallest atol 7.812e-03)  PASS
+  G6 D8 random + pad tails 32/8                O    chats    40  worst ratio   0.362  (err 8.854e-03 vs floor 1.222e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.270 p90 0.326 p99 0.362 max 0.362]
+  G6 D8 random + pad tails 32/8                LSE  chats    40  worst ratio   0.000  (err 1.018e-06 vs floor 5.170e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D8 random + pad tails 32/8                dQ   chats    40  worst ratio   0.492  (err 1.508e-02 vs floor 1.531e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.328 p90 0.404 p99 0.492 max 0.492]
+  G6 D8 random + pad tails 32/8                dK   chats    40  worst ratio   0.507  (err 2.846e-02 vs floor 2.805e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.395 p90 0.464 p99 0.507 max 0.507]
+  G6 D8 random + pad tails 32/8                dV   chats    40  worst ratio   0.799  (err 5.054e-02 vs floor 3.163e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.607 p99 0.799 max 0.799]
+  G6 D8 random + pad tails 32/8                40 chats alone, non-finite outputs 0 PASS  (5.6 s)
+  G6 D8 random + pad tails 32/8                G6c 40 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 9.766e-04 (smallest atol 1.562e-02)  PASS
+  G6 D8 random + pad tails 8/1                 O    chats    40  worst ratio   0.419  (err 9.261e-03 vs floor 1.105e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.319 p90 0.384 p99 0.419 max 0.419]
+  G6 D8 random + pad tails 8/1                 LSE  chats    40  worst ratio   0.000  (err 9.854e-07 vs floor 4.303e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D8 random + pad tails 8/1                 dQ   chats    40  worst ratio   0.598  (err 1.479e-02 vs floor 1.237e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.361 p90 0.487 p99 0.598 max 0.598]
+  G6 D8 random + pad tails 8/1                 dK   chats    40  worst ratio   0.645  (err 3.624e-02 vs floor 2.808e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.390 p90 0.473 p99 0.645 max 0.645]
+  G6 D8 random + pad tails 8/1                 dV   chats    40  worst ratio   0.731  (err 4.263e-02 vs floor 2.916e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.470 p90 0.560 p99 0.731 max 0.731]
+  G6 D8 random + pad tails 8/1                 40 chats alone, non-finite outputs 0 PASS  (4.5 s)
+  G6 D8 random + pad tails 8/1                 G6c 40 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 9.766e-04 (smallest atol 7.812e-03)  PASS
+  G6 D9 all pad 18/6                           no chats (all-pad rows): nothing to run alone; the kernels see this case in Steps 3-5
+  G6 D9 all pad 12/4                           no chats (all-pad rows): nothing to run alone; the kernels see this case in Steps 3-5
+  G6 D9 all pad 8/8                            no chats (all-pad rows): nothing to run alone; the kernels see this case in Steps 3-5
+  G6 D9 all pad 32/8                           no chats (all-pad rows): nothing to run alone; the kernels see this case in Steps 3-5
+  G6 D9 all pad 8/1                            no chats (all-pad rows): nothing to run alone; the kernels see this case in Steps 3-5
+  D10 data: 5000 chats, 6188911 real tokens, 1517 packed rows (pack_sim.py: 5000 / 6,188,911 / 1517)  MATCH
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     O    chats  5000  worst ratio   0.538  (err 1.137e-02 vs floor 1.057e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.293 p90 0.351 p99 0.410 max 0.538]
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     LSE  chats  5000  worst ratio   0.000  (err 1.560e-06 vs floor 5.486e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     dQ   chats  5000  worst ratio   0.891  (err 2.746e-02 vs floor 1.541e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.327 p90 0.437 p99 0.557 max 0.891]
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     dK   chats  5000  worst ratio   0.746  (err 3.742e-02 vs floor 2.508e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.381 p90 0.492 p99 0.599 max 0.746]
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     dV   chats  5000  worst ratio   0.956  (err 5.023e-02 vs floor 2.627e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.482 p90 0.560 p99 0.739 max 0.956]
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     5000 chats alone, non-finite outputs 0 PASS  (520.4 s)
+  G6 D10 stage-0 packed (rows 0-1516) 18/6     G6c 16 chats: alone@4096 vs alone@roundup -- O/LSE/dK/dV mismatched elements 0, dQ max diff 9.766e-04 (smallest atol 1.562e-02)  PASS
+
+===== G7 timing: today's kernels, 5 warm-up + 20 timed, cudaEvent =====
+  B=8 T=4096 18/6  fwd median 1.1583 ms (mean 1.1392, min 1.0818) = 534.0 TFLOP/s | bwd median 3.0819 ms (mean 3.0387, min 2.9083) = 501.7 TFLOP/s
+  B=8 T=4096 12/4  fwd median 0.7276 ms (mean 0.7464, min 0.7256) = 566.7 TFLOP/s | bwd median 1.9528 ms (mean 2.0020, min 1.9499) = 527.8 TFLOP/s
+  (timing is reported, not gated; record nvidia-smi clocks next to it)
+
+===== SUMMARY =====
+checks passed 605, failed 0, skipped groups 0   (1395 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS

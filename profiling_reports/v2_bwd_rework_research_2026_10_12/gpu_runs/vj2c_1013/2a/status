@@ -1,0 +1,8 @@
+14:24:49 start lib d2659657 vj2.cu bbd977be tva_vj2 a68c366b
+14:26:35 reach: 6 csv lines | vj2 kernel lines: 1
+14:26:56 vj1d_r1 exit=0
+14:27:19 vj2_r1 exit=0
+14:27:42 vj1d_r2 exit=0
+14:28:05 vj2_r2 exit=0
+14:28:56 libs exit=0
+14:28:56 DONE

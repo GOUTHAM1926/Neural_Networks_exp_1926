@@ -1,0 +1,12 @@
+20:06:07 t1 start g12 lib 41dda051
+20:13:22 t1 exit=0 | checks passed 144, failed 0, skipped groups 0   (420 s total) | 1 all-pass
+T1 DONE
+20:14:17 t2 start g2 1a00c378 g12 41dda051
+20:14:50 t2 g2_r1 exit=0 (26 lines)
+20:15:21 t2 g12_r1 exit=0 (26 lines)
+20:15:53 t2 g2_r2 exit=0 (26 lines)
+20:16:28 t2 g12_r2 exit=0 (26 lines)
+T2 DONE
+20:17:25 t3 start
+20:19:39 t3 ncu exit=0
+T3 DONE

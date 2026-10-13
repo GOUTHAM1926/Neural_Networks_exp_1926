@@ -1,0 +1,38 @@
+metric                              first Vj2 (10-12)  fixed Vj2 (10-13)  new/old
+kernel time (ms)                                3.195              2.778    0.869
+instructions executed               1,095,552,703.000    840,318,999.000    0.767
+registers per thread                          168.000            168.000    1.000
+L2 read requests                       42,693,225.000     42,692,405.000    1.000
+DRAM read (MB)                                713.305            713.240    1.000
+tensor pipe busy (% of elapsed)                51.449             59.602    1.158
+
+warp stall samples, share of all samples
+  long_scoreboard          22.4% ->   19.5%
+  wait                     17.9% ->   12.4%
+  selected                 15.5% ->   13.9%
+  barrier                  10.7% ->   14.1%
+  dispatch_stall            7.0% ->    4.2%
+  lg_throttle               6.3% ->    0.0%
+  not_selected              5.9% ->    5.7%
+  math_pipe_throttle        4.8% ->    2.0%
+  warpgroup_arrive          4.8% ->    6.2%
+  mio_throttle              3.8% ->   11.4%
+  short_scoreboard          0.6% ->   10.1%
+
+SASS: static lines and executed warp-instructions per opcode family
+  family             lines old lines new    executed old    executed new
+  (all)                   2448      1768   1,138,015,814     859,769,080
+  LD (generic)              16         0      19,464,192               0
+  ST (generic)             145         0      25,399,296               0
+  LDS (shared)               0        16               0      19,464,192
+  STS (shared)               0        80               0      21,823,488
+  LDG (global)               0         0               0               0
+  STG (global)               0         0               0               0
+  HGMMA                     40        40      48,660,480      48,660,480
+  R2UR                      60        60      58,516,992      58,516,992
+  UIADD3                   192       152      54,005,472      55,148,256
+  IMAD                     238        86     115,045,632      85,876,992
+  FFMA                      32        32      38,928,384      38,928,384
+  MUFU                      33        33      38,932,992      38,932,992
+  BAR                       26        26       4,386,816       4,386,816
+  SYNCS (mbarrier)          16        16      23,954,505      12,426,078

@@ -1,0 +1,11 @@
+16:14:53 start base lib d2659657 f1 lib 84c91617 tva_vj2 a68c366b
+16:18:58 1 quick f1 exit=0 | checks passed 144, failed 0, skipped groups 0   (235 s total)
+16:19:20 2 base_r1 exit=0
+16:19:40 2 f1_r1 exit=0
+16:20:01 2 base_r2 exit=0
+16:20:23 2 f1_r2 exit=0
+16:22:05 3 nsys f1 exit=0
+16:22:07 3 kern csv 7 lines
+16:23:27 4 ncu exit=0
+16:23:31 4 ncu exports: raw 3 source 1674 lines
+16:23:31 DONE

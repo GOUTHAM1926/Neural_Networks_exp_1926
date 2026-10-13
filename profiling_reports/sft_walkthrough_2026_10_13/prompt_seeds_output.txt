@@ -1,0 +1,6 @@
+sft | next prompt word, pos 0   | mean change -0.0321 | went up in  6/20, down in 14/20
+sft | next prompt word, pos 1   | mean change -0.0399 | went up in  6/20, down in 14/20
+sft | first answer word, pos 3  | mean change +0.3475 | went up in 18/20, down in  2/20
+all | next prompt word, pos 0   | mean change +0.0913 | went up in 16/20, down in  4/20
+all | next prompt word, pos 1   | mean change +0.0740 | went up in 13/20, down in  7/20
+all | first answer word, pos 3  | mean change +0.2771 | went up in 18/20, down in  2/20

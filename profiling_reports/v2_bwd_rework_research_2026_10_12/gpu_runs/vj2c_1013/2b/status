@@ -1,0 +1,8 @@
+15:09:52 start lib d2659657 vj2.cu bbd977be tva_vj2 a68c366b
+15:09:54 nsys_vj1d (14:3x report) kern csv 7 lines
+15:09:58 nsys_vj2 (14:3x report) kern csv 7 lines
+15:12:31 nsys_fa3 exit=0
+15:12:32 nsys_fa3 kern csv 26 lines
+15:14:22 ncu exit=0
+15:14:26 ncu exports: raw 3 source 1770 lines
+15:14:26 DONE

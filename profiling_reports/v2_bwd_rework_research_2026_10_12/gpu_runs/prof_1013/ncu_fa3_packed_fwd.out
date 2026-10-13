@@ -1,0 +1,14 @@
+==PROF== Connected to process 3755031 (/usr/bin/python3.12)
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+gpu NVIDIA H200 uuid 2da7696c-f238-86df-5ae2-3d7dccd4141b | expected (not given)
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "void cutlass::device_kernel<flash::enable_sm90<flash::FlashAttnFwdSm90<flash::CollectiveMainloopFwdSm90<(int)2, cute::tuple<cute::C<(int)1>, cute::C<(int)1>, cute::C<(int)1>>, cute::tuple<cute::C<(int)128>, cute::C<(int)128>, cute::C<(int)128>>, (int)128, cutlass::bfloat16_t, float, cutlass::arch::Sm90, (bool)1, (bool)0, (bool)0, (bool)1, (bool)0, (bool)0, (bool)0, (bool)1, (bool)1, (bool)1, (bool)0, (bool)0>, flash::CollectiveEpilogueFwd<cute::tuple<cute::C<(int)128>, cute::C<(int)128>, cute::C<(int)128>>, cute::tuple<cute::C<(int)1>, cute::C<(int)1>, cute::C<(int)1>>, cutlass::bfloat16_t, cutlass::arch::Sm90, (int)256, (bool)1, (bool)1, (bool)0, (bool)0>, flash::VarlenDynamicPersistentTileScheduler<(int)128, (int)128, (int)256, (int)128, (bool)0, (bool)1, (bool)1, (bool)1, (bool)1, (bool)1>>>>(T1::Params)": 0%....50%....100% - 40 passes
+==PROF== Profiling "void cutlass::device_kernel<flash::enable_sm90<flash::FlashAttnFwdSm90<flash::CollectiveMainloopFwdSm90<(int)2, cute::tuple<cute::C<(int)1>, cute::C<(int)1>, cute::C<(int)1>>, cute::tuple<cute::C<(int)128>, cute::C<(int)128>, cute::C<(int)128>>, (int)128, cutlass::bfloat16_t, float, cutlass::arch::Sm90, (bool)1, (bool)0, (bool)0, (bool)1, (bool)0, (bool)0, (bool)0, (bool)1, (bool)1, (bool)1, (bool)0, (bool)0>, flash::CollectiveEpilogueFwd<cute::tuple<cute::C<(int)128>, cute::C<(int)128>, cute::C<(int)128>>, cute::tuple<cute::C<(int)1>, cute::C<(int)1>, cute::C<(int)1>>, cutlass::bfloat16_t, cutlass::arch::Sm90, (int)256, (bool)1, (bool)1, (bool)0, (bool)0>, flash::VarlenDynamicPersistentTileScheduler<(int)128, (int)128, (int)256, (int)128, (bool)0, (bool)1, (bool)1, (bool)1, (bool)1, (bool)1>>>>(T1::Params)": 0%....50%....100% - 40 passes
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=fwd med_ms=116187.5078 p10_ms=116187.5078 p90_ms=116187.5078 tflops=0.0
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=bwd med_ms=159.4813 p10_ms=159.4813 p90_ms=159.4813 tflops=3.3
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=fwd med_ms=81842.8984 p10_ms=81842.8984 p90_ms=81842.8984 tflops=0.0
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=bwd med_ms=3.6220 p10_ms=3.6220 p90_ms=3.6220 tflops=146.6
+==PROF== Disconnected from process 3755031
+==PROF== Report: /home/operator/gautam_k/v2_work/logs/prof_1013/ncu_fa3_packed_fwd.ncu-repz

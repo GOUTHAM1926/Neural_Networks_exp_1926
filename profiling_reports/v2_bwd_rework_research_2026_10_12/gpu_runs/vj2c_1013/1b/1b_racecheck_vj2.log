@@ -1,0 +1,3 @@
+========= COMPUTE-SANITIZER
+sanitize_vj2: backward Vj2 (USE_VJ2=1) | B=1 6/2 T=256 | sum|dQ| 24113.202817 sum|dK| 11743.220281 sum|dV| 13210.190357 | outputs all finite
+========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)

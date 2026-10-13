@@ -1,0 +1,6 @@
+sanitize_vj2: backward Vj2 (USE_VJ2=1) | B=1 6/2 T=256 | sum|dQ| 24113.202817 sum|dK| 11743.220281 sum|dV| 13210.190357 | outputs all finite
+Collecting data...
+Generating '/tmp/nsys-operator/nsys-report-a661.qdstrm'
+[1/1] [0%                          ] reach_vj2.nsys-rep[1/1] [0%                          ] reach_vj2.nsys-rep[1/1] [1%                          ] reach_vj2.nsys-rep[1/1] [2%                          ] reach_vj2.nsys-rep[1/1] [5%                          ] reach_vj2.nsys-rep[1/1] [13%                         ] reach_vj2.nsys-rep[1/1] [=15%                        ] reach_vj2.nsys-rep[1/1] [=16%                        ] reach_vj2.nsys-rep[1/1] [=17%                        ] reach_vj2.nsys-rep[1/1] [==18%                       ] reach_vj2.nsys-rep[1/1] [==19%                       ] reach_vj2.nsys-rep[1/1] [==20%                       ] reach_vj2.nsys-rep[1/1] [======34%                   ] reach_vj2.nsys-rep[1/1] [=======================96%  ] reach_vj2.nsys-rep[1/1] [========================98% ] reach_vj2.nsys-rep[1/1] [========================100%] reach_vj2.nsys-rep[1/1] [========================100%] reach_vj2.nsys-rep
+Generated:
+	/home/operator/gautam_k/v2_work/logs/vj2c_1013_2a_1424/reach_vj2.nsys-rep

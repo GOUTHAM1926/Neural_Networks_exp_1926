@@ -1,0 +1,50 @@
+metric                                 base (10-13)       fix 1          new/old
+kernel time (ms)                                2.778              2.599    0.936
+instructions executed                 840,318,999.000    795,338,933.000    0.946
+registers per thread                          168.000            168.000    1.000
+L2 read requests                       42,692,405.000     42,692,205.000    1.000
+DRAM read (MB)                                713.240            713.053    1.000
+tensor pipe busy (% of elapsed)                59.602             65.195    1.094
+
+warp stall samples, share of all samples
+  long_scoreboard          19.5% ->   20.7%
+  barrier                  14.1% ->   12.0%
+  selected                 13.9% ->   14.4%
+  wait                     12.4% ->   12.5%
+  mio_throttle             11.4% ->    8.0%
+  short_scoreboard         10.1% ->   10.9%
+  warpgroup_arrive          6.2% ->    8.8%
+  not_selected              5.7% ->    5.8%
+  dispatch_stall            4.2% ->    4.6%
+  math_pipe_throttle        2.0% ->    1.5%
+
+SASS: static lines and executed warp-instructions per opcode family
+  family             lines old lines new    executed old    executed new
+  (all)                   1768      1672     859,769,080     812,196,124
+  LD (generic)               0         0               0               0
+  ST (generic)               0         0               0               0
+  LDS (shared)              16        16      19,464,192      19,464,192
+  STS (shared)              80        72      21,823,488      12,091,392
+  LDG (global)               0         0               0               0
+  STG (global)               0         0               0               0
+  HGMMA                     40        40      48,660,480      48,660,480
+  R2UR                      60        60      58,516,992      58,516,992
+  UIADD3                   152       140      55,148,256      54,723,888
+  IMAD                      86        75      85,876,992      72,495,360
+  FFMA                      32        32      38,928,384      38,928,384
+  MUFU                      33        33      38,932,992      38,932,992
+  BAR                       26        26       4,386,816       4,386,816
+  SYNCS (mbarrier)          16        16      12,426,078      11,125,914
+
+l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum     base       56,278,644  f1       18,277,067
+l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum         base      145,713,213  f1      104,650,931
+smsp__sass_inst_executed_op_shared_st.sum                    base       21,823,488  f1       12,091,392
+sm__cycles_active.avg                                        base        4,794,218  f1        4,382,002
+sm__cycles_elapsed.avg                                       base        4,947,993  f1        4,523,516
+
+stall share of all samples, loop lines (base -> f1):
+  BAR.ARV (all in loop)                 3.10% ->  1.23%
+  FENCE (all in loop)                   4.36% ->  5.04%
+  FFMA waiting on LSE (short_sb>1%)     9.70% -> 10.44%
+  MEMBAR (all in loop)                  0.44% ->  0.04%
+  STS (loop)                            6.54% ->  3.48%

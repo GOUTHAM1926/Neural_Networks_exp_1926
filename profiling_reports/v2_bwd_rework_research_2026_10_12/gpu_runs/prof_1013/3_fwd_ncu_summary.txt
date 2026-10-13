@@ -1,0 +1,26 @@
+                          ours v62       cuDNN         FA3       FA3#2         FA4       cuDNN
+time us                     1078.9      1009.5       877.4       877.4       952.4      1009.1
+instructions M               360.3       368.5       306.5       306.5       316.2       368.5
+regs/thread                  168.0       168.0       168.0       168.0       168.0       168.0
+grid                         132.0       132.0       132.0       132.0      4608.0       132.0
+block                        384.0       384.0       384.0       384.0       384.0       384.0
+smem KB                      229.5       232.4       166.9       166.9       164.9       232.4
+tensor busy %                 64.4        67.9        82.9        82.9        74.4        67.9
+exp unit (XU) %               33.9        36.5        43.0        43.0        38.8        36.5
+SM busy %                     95.7        96.5        99.6        99.6        99.0        96.5
+L2 read req M                 38.6        38.9        35.5        36.3        39.5        38.8
+DRAM read MB                 253.1       251.7       368.0       366.2       442.2       251.7
+smem st conflicts M            0.0         1.2         0.0         0.0         0.0         1.2
+smem ld conflicts M            0.0         0.0         0.0         0.0         0.0         0.0
+stall share % of samples:
+  long_scoreboard             33.2         8.7         5.2         5.2        13.7         8.9
+  barrier                      8.0        27.4        11.1        10.9         9.3        27.1
+  wait                        24.1        18.1        24.7        24.5        24.8        18.1
+  selected                    12.6        18.8        18.7        18.8        17.2        18.9
+  short_scoreboard             3.2         4.9         4.4         4.4         5.0         4.9
+  mio_throttle                 2.0         0.9         1.8         1.7         2.3         0.9
+  warpgroup_arrive             1.2         1.4         8.6         8.6         7.9         1.4
+  not_selected                 4.9         5.7         6.9         7.1         6.2         5.7
+  dispatch_stall               6.2        10.2        12.5        12.5         9.5        10.4
+  math_pipe_throttle           1.5         0.9         0.6         0.7         0.9         0.9
+  lg_throttle                  1.2         0.0         0.0         0.0         0.0         0.0

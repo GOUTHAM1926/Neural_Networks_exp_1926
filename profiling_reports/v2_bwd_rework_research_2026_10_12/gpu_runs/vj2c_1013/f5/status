@@ -1,0 +1,20 @@
+17:03:36 t1 start f5 lib a07ca28b
+17:07:36 t1 exit=0 | checks passed 144, failed 0, skipped groups 0   (232 s total) | 1 all-pass
+T1 DONE
+17:08:10 t2 start libs f4 521a9718 f5 a07ca28b f4s4 2f23ad6c
+17:08:28 t2 f4_r1 exit=0 (26 BENCH lines)
+17:08:52 t2 f5_r1 exit=0 (26 BENCH lines)
+17:09:11 t2 f4s4_r1 exit=0 (26 BENCH lines)
+17:09:28 t2 f4_r2 exit=0 (26 BENCH lines)
+17:09:54 t2 f5_r2 exit=0 (26 BENCH lines)
+17:10:13 t2 f4s4_r2 exit=0 (26 BENCH lines)
+T2 DONE
+17:10:55 ncu f5 start lib a07ca28b
+17:12:19 ncu f5 exit=0
+T3 DONE
+17:12:22 ncu f4s4 start lib 2f23ad6c
+17:13:29 ncu f4s4 exit=0
+T4 DONE
+17:14:19 t6 start f5 lib a07ca28b
+17:37:44 t6 exit=0 | checks passed 605, failed 0, skipped groups 0   (1395 s total) | 1 all-pass
+T6 DONE

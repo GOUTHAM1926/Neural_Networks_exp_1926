@@ -1,0 +1,10 @@
+embedding row of id 1 (prompt word  ): change from SFT loss 1.223e+00 | from all-token loss 1.903e+00
+embedding row of id 2 (prompt word  ): change from SFT loss 6.057e-01 | from all-token loss 4.535e-01
+embedding row of id 3 (prompt word  ): change from SFT loss 7.747e-01 | from all-token loss 4.283e-01
+embedding row of id 4 (answer marker): change from SFT loss 1.054e+00 | from all-token loss 5.271e-01
+embedding row of id 5 (answer word  ): change from SFT loss 1.390e+00 | from all-token loss 6.948e-01
+embedding row of id 6 (answer word  ): change from SFT loss 3.437e-01 | from all-token loss 1.719e-01
+output column of id 2 (a prompt word as a GUESS): SFT 7.168e-02 | all-token 2.767e-01
+P(next prompt word) pos 0: before 0.0790 | after SFT step 0.2996 | after all-token step 0.2072
+P(next prompt word) pos 1: before 0.0190 | after SFT step 0.0185 | after all-token step 0.3232
+P(first answer word) pos 3: before 0.3778 | after SFT step 0.6743 | after all-token step 0.7470
