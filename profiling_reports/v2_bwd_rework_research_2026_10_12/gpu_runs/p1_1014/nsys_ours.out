@@ -1,0 +1,24 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj2 (USE_VJ2=1)  |  quick: no
+
+stage-0 data: cannot open /home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin (set VARLEN_STAGE0_LABELS)
+
+===== BENCHDENSE: ours dense causal, colleagues' shapes =====
+BENCH layout=dense_B8_H18x6 impl=ours_dense dir=fwd med_ms=1.1106 p10_ms=1.1055 p90_ms=1.1215 tflops=556.9
+BENCH layout=dense_B8_H18x6 impl=ours_dense dir=bwd med_ms=2.9259 p10_ms=2.9240 p90_ms=2.9294 tflops=528.4
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (3 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS
+Collecting data...
+Generating '/tmp/nsys-operator/nsys-report-a94b.qdstrm'
+[1/1] [0%                          ] nsys_ours.nsys-rep[1/1] [0%                          ] nsys_ours.nsys-rep[1/1] [1%                          ] nsys_ours.nsys-rep[1/1] [2%                          ] nsys_ours.nsys-rep[1/1] [5%                          ] nsys_ours.nsys-rep[1/1] [12%                         ] nsys_ours.nsys-rep[1/1] [=15%                        ] nsys_ours.nsys-rep[1/1] [=16%                        ] nsys_ours.nsys-rep[1/1] [=17%                        ] nsys_ours.nsys-rep[1/1] [==18%                       ] nsys_ours.nsys-rep[1/1] [==19%                       ] nsys_ours.nsys-rep[1/1] [==20%                       ] nsys_ours.nsys-rep[1/1] [===22%                      ] nsys_ours.nsys-rep[1/1] [=======37%                  ] nsys_ours.nsys-rep[1/1] [=======================96%  ] nsys_ours.nsys-rep[1/1] [========================98% ] nsys_ours.nsys-rep[1/1] [========================100%] nsys_ours.nsys-rep[1/1] [========================100%] nsys_ours.nsys-rep
+Generated:
+	/home/operator/gautam_k/v2_work/logs/p1_1014/nsys_ours.nsys-rep

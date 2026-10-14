@@ -1,0 +1,145 @@
+== whole kernel, dense B8 18/6, one launch under ncu ==
+                                     before g123     after b2a           FA3
+kernel time (us)                          2526.3        2478.0        2481.4
+tensor pipe busy (% of time)                67.0          68.9          68.3
+SM clock (GHz)                             1.742         1.727         1.740
+stall samples (raw counter)               280078        272958        273185
+
+== stall reasons: share of samples / us-equivalent (share x kernel time) ==
+long_scoreboard                     20.6%  519.4  22.2%  549.2  30.5%  757.1
+warpgroup_arrive                    16.7%  422.4  12.2%  302.6  10.4%  258.8
+barrier                             13.1%  331.8  16.3%  404.3  14.9%  369.2
+selected                            13.3%  334.9  13.5%  335.3  11.8%  292.9
+wait                                 9.6%  242.8   9.7%  241.2  10.8%  267.9
+mio_throttle                         9.4%  237.1   7.7%  191.8   4.0%   98.8
+dispatch_stall                       6.2%  155.9   5.5%  136.8   3.5%   86.2
+short_scoreboard                     3.1%   78.7   5.8%  142.6   5.5%  137.1
+not_selected                         5.6%  141.3   4.9%  120.2   4.2%  103.6
+math_pipe_throttle                   1.8%   46.6   1.5%   36.4   1.1%   28.3
+sleeping                             0.0%    0.0   0.0%    0.0   1.6%   39.2
+branch_resolving                     0.2%    5.1   0.3%    6.2   1.1%   27.7
+no_instructions                      0.3%    8.1   0.4%    8.9   0.5%   13.2
+
+== before g123: GEMM issue (HGMMA), GEMM wait (DEPBAR), warpgroup ARRIVE; us-equiv = samples / all x 2526 us ==
+addr    executed   all us unexpl us  top exported reason   instruction
+bd0a0    1216512     17.0      13.4  wait            2.6  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], RZ, !UPT
+bd0f0    1216512      4.3       0.0  wait            3.6  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd140    1216512      5.2       0.0  wait            3.8  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd1a0    1216512      5.6       0.0  wait            2.8  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd1f0    1216512     10.4       0.0  mio             6.3  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd240    1216512      8.5       0.0  wait            4.0  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd290    1216512      7.9       0.0  mio             3.8  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd340    1216512     12.2       0.0  mio             9.1  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184.gsb0
+bd3a0    1216512    102.0      96.8  mio             4.3  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], RZ, !UPT
+bd3f0    1216512      9.0       0.0  mio             4.7  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd440    1216512     10.2       0.0  mio             5.8  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd490    1216512      9.8       0.0  mio             5.7  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd4e0    1216512      9.3       0.0  mio             5.2  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd530    1216512     10.5       0.0  mio             6.1  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd580    1216512      7.8       0.0  wait            3.7  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd5e0    1216512      8.6       0.0  mio             3.1  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152.gsb0
+bd600    1216512     84.4       0.0  barrier        67.7  WARPGROUP.DEPBAR.LE gsb0, 0x1
+bdfc0    1216512      3.7       0.0  barrier         2.8  WARPGROUP.DEPBAR.LE gsb0, 0x0
+be960    1216512     99.8      96.8  not_selected    2.0  HGMMA.64x128x16.F32.BF16 R24, R200, gdesc[UR8].tnspB, R24
+be9b0    1216512      9.2       0.0  not_selected    3.1  HGMMA.64x128x16.F32.BF16 R24, R204, gdesc[UR8].tnspB, R24
+be9f0    1216512      4.0       0.0  wait            3.0  HGMMA.64x128x16.F32.BF16 R24, R208, gdesc[UR8].tnspB, R24
+bea20    1216512      1.3       0.0  wait            0.7  HGMMA.64x128x16.F32.BF16 R24, R212, gdesc[UR16].tnspB, R24.gsb0
+bea60    1216512      3.4       0.0  wait            2.8  WARPGROUP.ARRIVE
+bea70    1216512     55.5       0.0  barrier        54.0  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, RZ, !UPT
+beac0    1216512     14.8       0.0  mio             9.2  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+beb10    1216512     17.2       0.0  mio            12.9  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+beb60    1216512     16.1       0.0  mio            11.4  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+bebb0    1216512     10.5       0.0  mio             6.2  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+bec00    1216512     10.2       0.0  mio             5.9  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+bec50    1216512     10.8       0.0  mio             6.3  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+beca0    1216512     10.5       0.0  mio             6.1  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152.gsb0
+bed00    1216512    222.4     215.5  mio             6.0  HGMMA.64x128x16.F32.BF16 R88, R184, gdesc[UR8].tnspB, R88
+bed50    1216512      7.9       0.0  mio             5.9  HGMMA.64x128x16.F32.BF16 R88, R188, gdesc[UR8].tnspB, R88
+bed90    1216512     11.7       0.0  mio             6.3  HGMMA.64x128x16.F32.BF16 R88, R192, gdesc[UR8].tnspB, R88
+bee00    1216512     13.6       0.0  mio             7.0  HGMMA.64x128x16.F32.BF16 R88, R196, gdesc[UR8].tnspB, R88.gsb0
+bee10    1216512     86.2       0.0  barrier        76.3  WARPGROUP.DEPBAR.LE gsb0, 0x1
+bf120    1216512      3.8       0.0  wait            2.8  WARPGROUP.DEPBAR.LE gsb0, 0x0
+unexplained total 16.7% of samples = 422.4 us-equiv (raw warpgroup_arrive 16.7%)
+
+== after b2a: GEMM issue (HGMMA), GEMM wait (DEPBAR), warpgroup ARRIVE; us-equiv = samples / all x 2478 us ==
+addr    executed   all us unexpl us  top exported reason   instruction
+bd0a0    1216512     16.3      12.1  wait            2.8  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], RZ, !UPT
+bd0f0    1216512      4.9       0.0  wait            3.9  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd140    1216512      5.8       0.0  wait            3.7  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd1a0    1216512      5.9       0.0  wait            3.0  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd1f0    1216512      9.5       0.0  wait            4.2  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd240    1216512      8.6       0.0  wait            4.0  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd290    1216512      8.2       0.0  wait            3.9  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+bd340    1216512      8.8       0.0  mio             6.0  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184.gsb0
+bd3a0    1216512     98.0      87.2  mio             4.6  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], RZ, !UPT
+bd3f0    1216512      8.9       0.0  mio             4.5  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd440    1216512      9.6       0.0  mio             4.5  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd490    1216512      9.6       0.0  mio             4.6  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd4e0    1216512      8.8       0.0  wait            3.5  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd530    1216512      8.4       0.0  wait            3.7  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd580    1216512      7.9       0.0  wait            3.6  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+bd5e0    1216512      7.2       0.0  mio             3.3  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152.gsb0
+bd600    1216512     58.7       0.0  barrier        52.8  WARPGROUP.DEPBAR.LE gsb0, 0x1
+bdfc0    1216512     10.0       0.0  barrier         8.6  WARPGROUP.DEPBAR.LE gsb0, 0x0
+be960    1216512     56.0      54.7  not_selected    0.7  HGMMA.64x128x16.F32.BF16 R24, R200, gdesc[UR8].tnspB, R24
+be9b0    1216512      8.5       0.0  not_selected    3.8  HGMMA.64x128x16.F32.BF16 R24, R204, gdesc[UR8].tnspB, R24
+be9f0    1216512      4.4       0.0  wait            3.1  HGMMA.64x128x16.F32.BF16 R24, R208, gdesc[UR8].tnspB, R24
+bea20    1216512      1.9       0.0  wait            0.6  HGMMA.64x128x16.F32.BF16 R24, R212, gdesc[UR16].tnspB, R24.gsb0
+bea60    1216512      3.5       0.0  wait            2.7  WARPGROUP.ARRIVE
+bea70    1216512     76.9       0.3  barrier        71.7  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, RZ, !UPT
+beac0    1216512     11.1       0.0  mio             4.8  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+beb10    1216512     12.2       0.0  mio             7.9  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+beb60    1216512     14.8       0.0  mio            10.4  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+bebb0    1216512     12.1       0.0  mio             7.5  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+bec00    1216512     10.9       0.0  mio             6.8  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+bec50    1216512     10.6       0.0  mio             6.1  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152
+beca0    1216512     10.8       0.0  mio             6.5  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, R152.gsb0
+becc0    1216512     50.1       0.0  barrier        49.3  WARPGROUP.DEPBAR.LE gsb0, 0x1
+becd0    1216512      1.3       0.0  wait            0.6  WARPGROUP.ARRIVE
+bed10    1216512    156.5     148.2  mio             6.1  HGMMA.64x128x16.F32.BF16 R88, R184, gdesc[UR8].tnspB, R88
+bed60    1216512      9.1       0.0  mio             7.0  HGMMA.64x128x16.F32.BF16 R88, R188, gdesc[UR8].tnspB, R88
+beda0    1216512     12.1       0.0  mio             6.4  HGMMA.64x128x16.F32.BF16 R88, R192, gdesc[UR8].tnspB, R88
+bee10    1216512     11.7       0.0  mio             5.4  HGMMA.64x128x16.F32.BF16 R88, R196, gdesc[UR8].tnspB, R88.gsb0
+bee20    1216512     91.2       0.0  barrier        85.2  WARPGROUP.DEPBAR.LE gsb0, 0x1
+bf130    1216512      7.3       0.0  barrier         3.9  WARPGROUP.DEPBAR.LE gsb0, 0x0
+unexplained total 12.2% of samples = 302.6 us-equiv (raw warpgroup_arrive 12.2%)
+
+== FA3: GEMM issue (HGMMA), GEMM wait (DEPBAR), warpgroup ARRIVE; us-equiv = samples / all x 2481 us ==
+addr    executed   all us unexpl us  top exported reason   instruction
+353e0    1216512      1.8       1.1  selected        0.6  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], RZ, !UPT
+354e0    1216512      4.8       0.0  wait            3.5  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+35530    1216512      5.3       0.0  wait            3.8  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+35580    1216512      5.5       0.0  wait            3.6  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+355d0    1216512      6.3       0.0  wait            3.6  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+35620    1216512      6.0       0.0  wait            3.4  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184
+35670    1216512      6.5       0.0  wait            4.0  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], R184.gsb0
+357b0    1216512     78.5      76.8  not_selected    0.8  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], RZ, !UPT
+35800    1216512      6.7       0.0  wait            3.6  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+35850    1216512      7.9       0.0  wait            3.9  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+358a0    1216512      6.6       0.0  wait            4.0  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+358f0    1216512      6.3       0.0  wait            4.0  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+35940    1216512      5.7       0.0  wait            3.9  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+35990    1216512      6.0       0.0  wait            4.1  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152
+35a90    1216512      1.4       0.0  selected        0.7  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], R152.gsb0
+35ab0    1216512      1.7       0.0  wait            0.7  WARPGROUP.DEPBAR.LE gsb0, 0x1
+36290    1216512      1.4       0.0  barrier         0.8  WARPGROUP.DEPBAR.LE gsb0, 0x0
+36a50    1216512     44.6      39.5  wait            3.0  HGMMA.64x128x16.F32.BF16 R24, R184, gdesc[UR8].tnspB, R24
+36a90    1216512      5.7       0.0  wait            4.3  HGMMA.64x128x16.F32.BF16 R24, R188, gdesc[UR8].tnspB, R24
+36ad0    1216512      4.2       0.0  wait            2.9  HGMMA.64x128x16.F32.BF16 R24, R192, gdesc[UR8].tnspB, R24
+36b70    1216512      4.2       0.0  wait            3.3  WARPGROUP.ARRIVE
+36b80    1216512     51.8       0.3  barrier        50.4  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspB, RZ, !UPT
+36bd0    1216512      7.1       0.0  wait            4.1  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspB, R152
+36c20    1216512     11.8       0.0  mio             7.4  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspB, R152
+36c70    1216512     14.3       0.0  mio            10.0  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspB, R152
+36cc0    1216512     10.7       0.0  mio             5.8  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspB, R152
+36d10    1216512      9.2       0.0  mio             5.3  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspB, R152
+36d60    1216512      9.7       0.0  mio             5.5  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspB, R152
+36e40    1216512      5.1       0.0  mio             4.4  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspB, R152.gsb0
+36e70    1216512     22.6       0.0  barrier        21.9  WARPGROUP.DEPBAR.LE gsb0, 0x1
+36eb0    1216512    149.8     141.1  mio             5.9  HGMMA.64x128x16.F32.BF16 R88, R196, gdesc[UR8].tnspB, R88
+36ef0    1216512     10.0       0.0  wait            4.9  HGMMA.64x128x16.F32.BF16 R88, R200, gdesc[UR8].tnspB, R88
+36f30    1216512     10.7       0.0  mio             5.1  HGMMA.64x128x16.F32.BF16 R88, R204, gdesc[UR8].tnspB, R88
+36f80    1216512      9.2       0.0  mio             6.1  HGMMA.64x128x16.F32.BF16 R88, R208, gdesc[UR8].tnspB, R88.gsb0
+36f90    1216512     87.7       0.0  barrier        86.5  WARPGROUP.DEPBAR.LE gsb0, 0x1
+37070    1216512     17.6       0.0  barrier        15.1  WARPGROUP.DEPBAR.LE gsb0, 0x0
+unexplained total 10.4% of samples = 258.8 us-equiv (raw warpgroup_arrive 10.4%)

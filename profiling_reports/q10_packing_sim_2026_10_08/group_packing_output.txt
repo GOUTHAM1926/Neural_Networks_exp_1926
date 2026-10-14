@@ -1,0 +1,4 @@
+chats 5000, real tokens 6,188,911, minimum rows 1511
+groups of   100 chats: 1556 rows, real tokens 97.11%
+groups of  1000 chats: 1521 rows, real tokens 99.34%
+groups of  5000 chats: 1517 rows, real tokens 99.60%

@@ -13,3 +13,4 @@ e704664b1dca44022836533ce2d207a3  GQA_bwd_vj2_sm90.v1_before_fixes.cu
 698d270558c0b61102b11ce492a50fab  GQA_fwd_sm90.v62_698d2705.cu
 d23c09e313b56b049ecb63e0b36cd72a  sanitize_vj2.cu
 5a988de024d30d72a48124070d27ea16  test_varlen_attention.cu
+85eb2d0f85203844373880999cce1a5f  GQA_bwd_vj2_sm90.b2a_85eb2d0f.cu

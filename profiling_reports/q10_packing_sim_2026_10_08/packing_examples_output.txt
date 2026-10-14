@@ -1,0 +1,99 @@
+
+E1 why pack
+  T = 8, chats [6, 3, 5, 2], sum 16, minimum rows = ceil(16/8) = 2
+  first fit decreasing         2 rows: [6, 2](empty 0)  [5, 3](empty 0)  | real 16/16 = 100.0%
+  best fit decreasing          2 rows: [6, 2](empty 0)  [5, 3](empty 0)  | real 16/16 = 100.0%
+
+E2 user's example
+  T = 4000, chats [4000, 3000, 2500, 300, 200, 100], sum 10100, minimum rows = ceil(10100/4000) = 3
+  first fit decreasing         3 rows: [4000](empty 0)  [3000, 300, 200, 100](empty 400)  [2500](empty 1500)  | real 10100/12000 = 84.2%
+  best fit decreasing          3 rows: [4000](empty 0)  [3000, 300, 200, 100](empty 400)  [2500](empty 1500)  | real 10100/12000 = 84.2%
+
+E3 rules pick different rows, same count
+  T = 4096, chats [3796, 3196, 700, 150], sum 7842, minimum rows = ceil(7842/4096) = 2
+  first fit decreasing         2 rows: [3796, 150](empty 150)  [3196, 700](empty 200)  | real 7842/8192 = 95.7%
+  best fit decreasing          2 rows: [3796](empty 300)  [3196, 700, 150](empty 50)  | real 7842/8192 = 95.7%
+
+E4 best fit needs fewer rows
+  T = 20, chats [15, 9, 7, 4, 3, 2], sum 40, minimum rows = ceil(40/20) = 2
+  first fit decreasing         3 rows: [15, 4](empty 1)  [9, 7, 3](empty 1)  [2](empty 18)  | real 40/60 = 66.7%
+  best fit decreasing          2 rows: [15, 3, 2](empty 0)  [9, 7, 4](empty 0)  | real 40/40 = 100.0%
+
+E5 first fit needs fewer rows
+  T = 20, chats [15, 9, 7, 3, 2, 2, 2], sum 40, minimum rows = ceil(40/20) = 2
+  first fit decreasing         2 rows: [15, 3, 2](empty 0)  [9, 7, 2, 2](empty 0)  | real 40/40 = 100.0%
+  best fit decreasing          3 rows: [15, 2, 2](empty 1)  [9, 7, 3](empty 1)  [2](empty 18)  | real 40/60 = 66.7%
+
+E6 why sort longest first
+  T = 10, chats [3, 3, 3, 7, 7, 7], sum 30, minimum rows = ceil(30/10) = 3
+  first fit decreasing         3 rows: [7, 3](empty 0)  [7, 3](empty 0)  [7, 3](empty 0)  | real 30/30 = 100.0%
+  best fit decreasing          3 rows: [7, 3](empty 0)  [7, 3](empty 0)  [7, 3](empty 0)  | real 30/30 = 100.0%
+  first fit, arrival order     4 rows: [3, 3, 3](empty 1)  [7](empty 3)  [7](empty 3)  [7](empty 3)  | real 30/40 = 75.0%
+
+E7 a chat exactly T long
+  T = 10, chats [10, 5, 5], sum 20, minimum rows = ceil(20/10) = 2
+  first fit decreasing         2 rows: [10](empty 0)  [5, 5](empty 0)  | real 20/20 = 100.0%
+  best fit decreasing          2 rows: [10](empty 0)  [5, 5](empty 0)  | real 20/20 = 100.0%
+
+E8 every chat just over half a row
+  T = 10, chats [6, 6, 6, 6], sum 24, minimum rows = ceil(24/10) = 3
+  first fit decreasing         4 rows: [6](empty 4)  [6](empty 4)  [6](empty 4)  [6](empty 4)  | real 24/40 = 60.0%
+  best fit decreasing          4 rows: [6](empty 4)  [6](empty 4)  [6](empty 4)  [6](empty 4)  | real 24/40 = 60.0%
+
+E9 many one-token chats
+  T = 10, chats [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], sum 25, minimum rows = ceil(25/10) = 3
+  first fit decreasing         3 rows: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1](empty 0)  [1, 1, 1, 1, 1, 1, 1, 1, 1, 1](empty 0)  [1, 1, 1, 1, 1](empty 5)  | real 25/30 = 83.3%
+  best fit decreasing          3 rows: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1](empty 0)  [1, 1, 1, 1, 1, 1, 1, 1, 1, 1](empty 0)  [1, 1, 1, 1, 1](empty 5)  | real 25/30 = 83.3%
+
+E10 equal halves
+  T = 10, chats [5, 5, 5, 5, 5, 5, 5], sum 35, minimum rows = ceil(35/10) = 4
+  first fit decreasing         4 rows: [5, 5](empty 0)  [5, 5](empty 0)  [5, 5](empty 0)  [5](empty 5)  | real 35/40 = 87.5%
+  best fit decreasing          4 rows: [5, 5](empty 0)  [5, 5](empty 0)  [5, 5](empty 0)  [5](empty 5)  | real 35/40 = 87.5%
+
+E12 one chat longer than T
+  T = 10, chats [13, 4, 3], sum 20, minimum rows = ceil(20/10) = 2
+  drop (ours, torchtitan): chats kept [4, 3], lost [13]
+    -> then FFD                1 rows: [4, 3](empty 3)  | real 7/10 = 70.0%
+  bfd (TRL default, cut the end): chats become [10, 4, 3], tokens lost 3
+    -> then BFD                2 rows: [10](empty 0)  [4, 3](empty 3)  | real 17/20 = 85.0%
+  bfd_split (cut into pieces of 10): pieces [10, 3, 4, 3], tokens lost 0
+    -> then BFD                2 rows: [10](empty 0)  [4, 3, 3](empty 0)  | real 20/20 = 100.0%
+  wrapped (one stream in arrival order, cut every 10): AAAAAAAAAA | AAABBBBCCC  (2 rows)
+
+E13 one chat far longer than T
+  T = 10, chats [25, 2], sum 27, minimum rows = ceil(27/10) = 3
+  drop (ours, torchtitan): chats kept [2], lost [25]
+    -> then FFD                1 rows: [2](empty 8)  | real 2/10 = 20.0%
+  bfd (TRL default, cut the end): chats become [10, 2], tokens lost 15
+    -> then BFD                2 rows: [10](empty 0)  [2](empty 8)  | real 12/20 = 60.0%
+  bfd_split (cut into pieces of 10): pieces [10, 10, 5, 2], tokens lost 0
+    -> then BFD                3 rows: [10](empty 0)  [10](empty 0)  [5, 2](empty 3)  | real 27/30 = 90.0%
+  wrapped (one stream in arrival order, cut every 10): AAAAAAAAAA | AAAAAAAAAA | AAAAABB  (3 rows)
+
+E17 five chats, rows of 4096: [('A', 1500), ('B', 800), ('C', 3000), ('D', 500), ('E', 2000)], sum 7800
+  first fit decreasing: 2 rows
+    row 0: C (3000) | B (800) | empty 296  -> 92.8% used
+    row 1: E (2000) | A (1500) | D (500) | empty 96  -> 97.7% used
+  best fit decreasing: 2 rows
+    row 0: C (3000) | B (800) | empty 296  -> 92.8% used
+    row 1: E (2000) | A (1500) | D (500) | empty 96  -> 97.7% used
+  wrapped (arrival order, cut every 4096): 2 rows
+    row 0: A tokens 1-1500 | B tokens 1-800 | C tokens 1-1796 | empty 0
+    row 1: C tokens 1797-3000 | D tokens 1-500 | E tokens 1-2000 | empty 392
+
+E18 same, but C = 5500 (longer than 4096): [('A', 1500), ('B', 800), ('C', 5500), ('D', 500), ('E', 2000)]
+  drop C, then best fit: 2 rows
+    row 0: E (2000) | A (1500) | D (500) | empty 96  -> 97.7% used
+    row 1: B (800) | empty 3296  -> 19.5% used
+  bfd: C cut to 4096 (1404 lost), then best fit: 3 rows
+    row 0: C (4096) | empty 0  -> 100.0% used
+    row 1: E (2000) | A (1500) | D (500) | empty 96  -> 97.7% used
+    row 2: B (800) | empty 3296  -> 19.5% used
+  bfd_split: C -> C1 (4096) + C2 (1404), then best fit: 3 rows
+    row 0: C1 (4096) | empty 0  -> 100.0% used
+    row 1: E (2000) | A (1500) | D (500) | empty 96  -> 97.7% used
+    row 2: C2 (1404) | B (800) | empty 1892  -> 53.8% used
+  wrapped (arrival order, cut every 4096): 3 rows
+    row 0: A tokens 1-1500 | B tokens 1-800 | C tokens 1-1796 | empty 0
+    row 1: C tokens 1797-5500 | D tokens 1-392 | empty 0
+    row 2: D tokens 393-500 | E tokens 1-2000 | empty 1988

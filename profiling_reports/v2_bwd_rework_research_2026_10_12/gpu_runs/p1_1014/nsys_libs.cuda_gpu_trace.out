@@ -1,0 +1,3 @@
+Generating SQLite file /home/operator/gautam_k/v2_work/logs/p1_1014/nsys_libs.sqlite from /home/operator/gautam_k/v2_work/logs/p1_1014/nsys_libs.nsys-rep
+Processing [/home/operator/gautam_k/v2_work/logs/p1_1014/nsys_libs.sqlite] with [/opt/nvidia/nsight-systems/2026.3.2/target-linux-x64/reports/cuda_gpu_trace.py] to [/home/operator/gautam_k/v2_work/logs/p1_1014/nsys_libs_cuda_gpu_trace.csv]... PROCESSED
+

@@ -1,0 +1,43 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj2 (USE_VJ2=1)  |  quick: no
+
+stage-0 data: cannot open /home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin (set VARLEN_STAGE0_LABELS)
+
+===== BENCHDENSE: ours dense causal, colleagues' shapes =====
+BENCH layout=dense_B2_H12x4 impl=ours_dense dir=fwd med_ms=0.1917 p10_ms=0.1911 p90_ms=0.1928 tflops=537.6
+BENCH layout=dense_B2_H12x4 impl=ours_dense dir=bwd med_ms=0.5008 p10_ms=0.4996 p90_ms=0.5022 tflops=514.6
+BENCH layout=dense_B4_H12x4 impl=ours_dense dir=fwd med_ms=0.3763 p10_ms=0.3719 p90_ms=0.3772 tflops=547.9
+BENCH layout=dense_B4_H12x4 impl=ours_dense dir=bwd med_ms=0.9807 p10_ms=0.9748 p90_ms=0.9831 tflops=525.5
+BENCH layout=dense_B8_H12x4 impl=ours_dense dir=fwd med_ms=0.7915 p10_ms=0.7427 p90_ms=0.8220 tflops=520.9
+BENCH layout=dense_B8_H12x4 impl=ours_dense dir=bwd med_ms=2.0533 p10_ms=1.9337 p90_ms=2.1203 tflops=502.0
+BENCH layout=dense_B2_H16x4 impl=ours_dense dir=fwd med_ms=0.2524 p10_ms=0.2517 p90_ms=0.2534 tflops=544.6
+BENCH layout=dense_B2_H16x4 impl=ours_dense dir=bwd med_ms=0.6556 p10_ms=0.6538 p90_ms=0.6571 tflops=524.1
+BENCH layout=dense_B4_H16x4 impl=ours_dense dir=fwd med_ms=0.4934 p10_ms=0.4919 p90_ms=0.5423 tflops=557.1
+BENCH layout=dense_B4_H16x4 impl=ours_dense dir=bwd med_ms=1.2848 p10_ms=1.2817 p90_ms=1.3960 tflops=534.9
+BENCH layout=dense_B8_H16x4 impl=ours_dense dir=fwd med_ms=1.0820 p10_ms=1.0620 p90_ms=1.0874 tflops=508.1
+BENCH layout=dense_B8_H16x4 impl=ours_dense dir=bwd med_ms=2.7787 p10_ms=2.7345 p90_ms=2.7864 tflops=494.6
+BENCH layout=dense_B2_H24x8 impl=ours_dense dir=fwd med_ms=0.3735 p10_ms=0.3725 p90_ms=0.4042 tflops=552.0
+BENCH layout=dense_B2_H24x8 impl=ours_dense dir=bwd med_ms=0.9780 p10_ms=0.9757 p90_ms=1.0539 tflops=527.0
+BENCH layout=dense_B4_H24x8 impl=ours_dense dir=fwd med_ms=0.8142 p10_ms=0.7779 p90_ms=0.8207 tflops=506.4
+BENCH layout=dense_B4_H24x8 impl=ours_dense dir=bwd med_ms=2.1016 p10_ms=2.0205 p90_ms=2.1198 tflops=490.5
+BENCH layout=dense_B8_H24x8 impl=ours_dense dir=fwd med_ms=1.6343 p10_ms=1.6118 p90_ms=1.6378 tflops=504.6
+BENCH layout=dense_B8_H24x8 impl=ours_dense dir=bwd med_ms=4.2127 p10_ms=4.1648 p90_ms=4.2159 tflops=489.4
+BENCH layout=dense_B2_H32x8 impl=ours_dense dir=fwd med_ms=0.5254 p10_ms=0.4915 p90_ms=0.5292 tflops=523.1
+BENCH layout=dense_B2_H32x8 impl=ours_dense dir=bwd med_ms=1.3557 p10_ms=1.2823 p90_ms=1.3609 tflops=506.9
+BENCH layout=dense_B4_H32x8 impl=ours_dense dir=fwd med_ms=1.0889 p10_ms=0.9791 p90_ms=1.0962 tflops=504.9
+BENCH layout=dense_B4_H32x8 impl=ours_dense dir=bwd med_ms=2.7996 p10_ms=2.5448 p90_ms=2.8093 tflops=490.9
+BENCH layout=dense_B8_H32x8 impl=ours_dense dir=fwd med_ms=2.1689 p10_ms=2.1439 p90_ms=2.1867 tflops=506.9
+BENCH layout=dense_B8_H32x8 impl=ours_dense dir=bwd med_ms=5.5782 p10_ms=5.5161 p90_ms=5.6113 tflops=492.8
+BENCH layout=dense_B8_H18x6 impl=ours_dense dir=fwd med_ms=1.2296 p10_ms=1.0907 p90_ms=1.2358 tflops=503.0
+BENCH layout=dense_B8_H18x6 impl=ours_dense dir=bwd med_ms=3.1675 p10_ms=2.8736 p90_ms=3.1834 tflops=488.1
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (19 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS

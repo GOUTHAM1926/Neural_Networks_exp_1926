@@ -1,0 +1,27 @@
+11:35:14 t1 start b2a lib f1213d72
+11:40:49 t1 exit=0 | checks passed 144, failed 0, skipped groups 0   (321 s total) | 1 all-pass
+T1 DONE
+11:42:58 t2 start g123 1b9f444d b2a f1213d72
+11:43:26 t2 g123_r1 exit=0 (26 lines)
+11:43:54 t2 b2a_r1 exit=0 (26 lines)
+11:44:23 t2 g123_r2 exit=0 (26 lines)
+11:44:50 t2 b2a_r2 exit=0 (26 lines)
+11:45:26 t2 g123_r3 exit=0 (26 lines)
+11:45:54 t2 b2a_r3 exit=0 (26 lines)
+11:46:19 t2 g123_r4 exit=0 (26 lines)
+11:46:43 t2 b2a_r4 exit=0 (26 lines)
+11:47:08 t2 g123_r5 exit=0 (26 lines)
+11:47:30 t2 b2a_r5 exit=0 (26 lines)
+11:47:58 t2 g123_r6 exit=0 (26 lines)
+11:48:28 t2 b2a_r6 exit=0 (26 lines)
+T2 DONE
+12:01:25 t3 start | src vj2 85eb2d0f lib f1213d72
+12:01:30 t3 a: lineinfo build exit=0
+12:01:30 t3 a: kernel SASS lines normal 1760 lineinfo 1760 | identical: YES | line-table sections: 10
+12:01:30 t3 a: snapshot b2ali lib fecd9cb2
+12:01:34 t3 a: normal library restored exit=0 lib 754b075f
+14:13:05 t3b start | snapshot b2ali lib fecd9cb2
+14:23:30 t3b start | snapshot b2ali lib fecd9cb2
+14:25:14 t3b: ncu exit=0
+14:25:19 t3b: exports raw 3 sass 1762 cuda 797 cuda+sass 3219 lines
+14:25:19 T3 DONE

@@ -1,0 +1,35 @@
+== stage-0: 5000 chats, 6,188,911 slots of real tokens, 4,771,516 trained (answer) tokens
+   chat length: mean 1237.8, median 1154, shortest 134, longest 4069
+   minimum rows = ceil(6,188,911 / 4096) = 1511; 1511 rows hold 6,189,056 slots, 1510 rows hold 6,184,960
+== first fit decreasing: 1517 rows
+   chats per row -> number of rows: 1: 1, 2: 474, 3: 527, 4: 290, 5: 129, 6: 49, 7: 25, 8: 11, 9: 6, 10: 2, 11: 2, 12: 1
+   empty slots per row -> number of rows: 0-0: 1039, 1-16: 310, 17-64: 48, 65-256: 114, 257-4096: 6
+   empty slots total 24,721 = 6.04 rows' worth; mean 16.3, median 0, largest 3222
+   rows holding a single chat: 1; that chat's length: shortest 4069, longest 4069
+   the 5 longest chats: [4069, 3933, 3923, 3919, 3862]; the 5 shortest: [134, 142, 152, 167, 169]
+== packing per group of G chats (chats shuffled with seed 1234, as TRL shuffles before packing)
+   G =    10:  500 groups | bfd 1813 rows (83.34% real, 878 rows with >256 empty) | wrapped 1763 rows (85.70% real, 500 shorter last rows)
+   G =   100:   50 groups | bfd 1556 rows (97.11% real, 112 rows with >256 empty) | wrapped 1537 rows (98.31% real, 50 shorter last rows)
+   G =  1000:    5 groups | bfd 1521 rows (99.34% real, 30 rows with >256 empty) | wrapped 1513 rows (99.87% real, 5 shorter last rows)
+   G =  5000:    1 groups | bfd 1517 rows (99.60% real, 6 rows with >256 empty) | wrapped 1511 rows (100.00% real, 1 shorter last rows)
+== optimizer steps per epoch (1 GPU, 8 rows per micro-batch)
+   v1 (one chat per row): 5000 rows; 64 rows per step = 8 micro-batches x 8 rows -> 78.125 steps per epoch, 64 chats, ~61,075 trained tokens per step
+   v2 packed, 64 rows per step (8 micro-batches):  23.70 steps per epoch, ~ 210.9 chats and ~201,303 trained tokens per step
+   v2 packed, 32 rows per step (4 micro-batches):  47.41 steps per epoch, ~ 105.5 chats and ~100,652 trained tokens per step
+   v2 packed, 24 rows per step (3 micro-batches):  63.21 steps per epoch, ~  79.1 chats and ~75,489 trained tokens per step
+   v2 packed, 16 rows per step (2 micro-batches):  94.81 steps per epoch, ~  52.7 chats and ~50,326 trained tokens per step
+   v2 packed,  8 rows per step (1 micro-batches): 189.62 steps per epoch, ~  26.4 chats and ~25,163 trained tokens per step
+   v2 packed, ~19.4 rows per step (keeps 64 chats per step): 78.12 steps per epoch
+== what the trainer would run (2 epochs, 1 GPU; max_steps = epochs x micro-batches per epoch / GRAD_ACCUM)
+   v1 today B 8 rows/step 64: 625 micro-batches/epoch (0 rows unused), GRAD_ACCUM 8, 156 steps for 2 epochs, 5 warmup steps, ~64.0 chats per step
+   v2       B 8 rows/step 64: 189 micro-batches/epoch (5 rows unused), GRAD_ACCUM 8, 47 steps for 2 epochs, 1 warmup steps, ~210.9 chats per step
+   v2       B 8 rows/step 24: 189 micro-batches/epoch (5 rows unused), GRAD_ACCUM 3, 126 steps for 2 epochs, 4 warmup steps, ~79.1 chats per step
+   v2       B 8 rows/step 16: 189 micro-batches/epoch (5 rows unused), GRAD_ACCUM 2, 189 steps for 2 epochs, 6 warmup steps, ~52.7 chats per step
+   v2       B 4 rows/step 20: 379 micro-batches/epoch (1 rows unused), GRAD_ACCUM 5, 151 steps for 2 epochs, 5 warmup steps, ~65.9 chats per step
+   v2       B 8 rows/step 20: REFUSED by the trainer (rows per step must be a multiple of B x GPUs = 8)
+== tiny group example, rows of 10, chats 6, 6, 4, 4
+   all four in one group: [[6, 4], [6, 4]]
+   group 1 = [6, 6]: [[6], [6]]   group 2 = [4, 4]: [[4, 4]]
+== gaps smaller than the shortest chat (134 slots): 403 rows, 6,906 empty slots in them; rows with a gap of 134 or more: 75
+== the row holding a single chat: [(4069, 27)] (used, empty)
+== trained tokens per packed row: 3,145.4; per chat 954.3

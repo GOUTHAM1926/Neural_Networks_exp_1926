@@ -28,7 +28,7 @@ for i in range(0, N, B):
     g = s[i:i + B]
     t = int(-(-g.max() // 256) * 256)
     v15 += [(t, [int(x)], False) for x in g]
-bins = []                                                                # v2: best-fit-decreasing packing
+bins = []                                                                # v2: first-fit-decreasing packing (label fixed 10-14)
 for x in s:
     for b in bins:
         if b[0] + x <= T:

@@ -1,0 +1,16 @@
+ours: samples not covered by the exported reasons = 16.7% of all = 422 us-equiv  (raw counter warpgroup_arrive share is the cross-check)
+    8.53%   215.5 us  bed00  HGMMA.64x128x16.F32.BF16 R88, R184, gdesc[UR8].tnspB, R88
+    3.83%    96.8 us  bd3a0  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], RZ, !UPT
+    3.83%    96.8 us  be960  HGMMA.64x128x16.F32.BF16 R24, R200, gdesc[UR8].tnspB, R24
+    0.53%    13.4 us  bd0a0  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], RZ, !UPT
+    0.00%     0.0 us  bea70  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspA.tnspB, RZ, !UPT
+    0.00%     0.0 us  bba00  LDC R1, c[0x0][0x28]
+FA3: samples not covered by the exported reasons = 10.4% of all = 259 us-equiv  (raw counter warpgroup_arrive share is the cross-check)
+    5.69%   141.1 us  36eb0  HGMMA.64x128x16.F32.BF16 R88, R196, gdesc[UR8].tnspB, R88
+    3.09%    76.8 us  357b0  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8], RZ, !UPT
+    1.59%    39.5 us  36a50  HGMMA.64x128x16.F32.BF16 R24, R184, gdesc[UR8].tnspB, R24
+    0.05%     1.1 us  353e0  HGMMA.64x64x16.F32.BF16 R184, gdesc[UR8], RZ, !UPT
+    0.01%     0.3 us  36b80  HGMMA.64x64x16.F32.BF16 R152, gdesc[UR8].tnspB, RZ, !UPT
+    0.00%     0.0 us  33d00  LDC R1, c[0x0][0x28]
+ours raw warpgroup_arrive share: 16.7%
+FA3 raw warpgroup_arrive share: 10.4%

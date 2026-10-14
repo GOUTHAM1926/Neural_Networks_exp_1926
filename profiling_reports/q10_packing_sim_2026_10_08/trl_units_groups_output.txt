@@ -1,0 +1,2 @@
+TRL units (N tokens per chat), Best-Fit, groups of 1,000, no shuffle: 1521 rows, 99.42% real, 18 rows with >256 empty
+TRL units (N tokens per chat), Best-Fit, all 5,000 at once: 1518 rows, 99.62% real, 9 rows with >256 empty

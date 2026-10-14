@@ -1,0 +1,35 @@
+== E1 stage-0 real data: 5000 chats, lower bound 1511 rows
+   fast versions give the same layout as the simple ones: FFD True, BFD True
+   FFD: 1517 rows, 99.60% real | empty per row: 0: 1039, 1-16: 310, 17-64: 48, 65-256: 114, >256: 6 | single-chat rows 1, most chats in a row 12
+        chats per row -> rows: 1:1 2:474 3:527 4:290 5:129 6:49 7:25 8:11 9:6 10:2 11:2 12:1
+        attention work per row (sum of L^2): mean 6.230e+06, largest 1.656e+07, spread (std/mean) 0.384
+   BFD: 1517 rows, 99.60% real | empty per row: 0: 1060, 1-16: 292, 17-64: 45, 65-256: 114, >256: 6 | single-chat rows 4, most chats in a row 12
+        chats per row -> rows: 1:4 2:474 3:529 4:282 5:127 6:53 7:25 8:12 9:6 10:2 11:1 12:2
+        attention work per row (sum of L^2): mean 6.230e+06, largest 1.656e+07, spread (std/mean) 0.384
+   rows that are identical in both layouts: 1395 of 1517
+   simple versions, rows looked at per chat: FFD 915.7, BFD 1034.7 (BFD always looks at every open row)
+== E2 random sets drawn from our real chat lengths (with replacement)
+      100 chats x 300 sets: FFD fewer rows in 0, same in 300, BFD fewer rows in 0 | mean (FFD rows - BFD rows) +0.000 | mean rows above the lower bound 0.40
+     1000 chats x 300 sets: FFD fewer rows in 0, same in 300, BFD fewer rows in 0 | mean (FFD rows - BFD rows) +0.000 | mean rows above the lower bound 1.43
+     5000 chats x  60 sets: FFD fewer rows in 0, same in 60, BFD fewer rows in 0 | mean (FFD rows - BFD rows) +0.000 | mean rows above the lower bound 5.62
+    20000 chats x  10 sets: FFD fewer rows in 0, same in 10, BFD fewer rows in 0 | mean (FFD rows - BFD rows) +0.000 | mean rows above the lower bound 21.40
+== E3 synthetic lengths: uniform 1..4096
+     1000 chats x 200 sets: FFD fewer rows in 0, same in 200, BFD fewer rows in 0 | mean (FFD rows - BFD rows) +0.000 | mean rows above the lower bound 8.60
+== E3 synthetic lengths: uniform 1..2048
+     1000 chats x 200 sets: FFD fewer rows in 0, same in 200, BFD fewer rows in 0 | mean (FFD rows - BFD rows) +0.000 | mean rows above the lower bound 0.13
+== E3 synthetic lengths: uniform 1024..2048
+     1000 chats x 200 sets: FFD fewer rows in 0, same in 200, BFD fewer rows in 0 | mean (FFD rows - BFD rows) +0.000 | mean rows above the lower bound 41.65
+== E3 synthetic lengths: mix: 70% short 100..600, 30% long 2800..4000
+     1000 chats x 200 sets: FFD fewer rows in 0, same in 200, BFD fewer rows in 0 | mean (FFD rows - BFD rows) +0.000 | mean rows above the lower bound 0.67
+== E3 synthetic lengths: hard mix: just over T/2, T/3, T/4
+     1000 chats x 200 sets: FFD fewer rows in 0, same in 200, BFD fewer rows in 0 | mean (FFD rows - BFD rows) +0.000 | mean rows above the lower bound 78.31
+== E4 TRL-style groups of 1,000 chats (stage-0)
+   no shuffle (TRL default, shuffle_dataset=False)  FFD: 1521 rows, 99.34% real, 21 rows with >256 empty
+   no shuffle (TRL default, shuffle_dataset=False)  BFD: 1521 rows, 99.34% real, 21 rows with >256 empty
+   shuffled, seed 1234                              FFD: 1521 rows, 99.34% real, 25 rows with >256 empty
+   shuffled, seed 1234                              BFD: 1521 rows, 99.34% real, 30 rows with >256 empty
+== E5 speed (seconds; pure Python; fast = tree versions; simple = linear scan)
+      5000 chats: fast FFD    0.01 s (1517 rows); fast BFD    0.02 s (1517 rows); simple FFD    0.10 s; simple BFD    0.08 s;
+     50000 chats: fast FFD    0.10 s (15193 rows); fast BFD    0.14 s (15193 rows); simple FFD    9.81 s; simple BFD    7.98 s;
+    200000 chats: fast FFD    0.45 s (60621 rows); fast BFD    0.60 s (60621 rows); simple versions skipped (too slow in Python at this size)
+== v1 (one chat per row): pads are 69.8% of the slots and 72.3% of the work (pack_sim.py's model; attention is 13.4% of v1's work)

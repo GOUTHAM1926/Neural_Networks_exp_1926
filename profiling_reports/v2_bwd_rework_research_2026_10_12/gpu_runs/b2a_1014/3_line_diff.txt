@@ -1,0 +1,48 @@
+per C++ line, all samples us-equiv (before g123 line -> after b2a line), biggest moves:
+   240-> 240   214.8 ->   146.9 ( -68.0)  wait -1.1, selected -0.4 | asm volatile(
+   483-> 483    96.9 ->    52.2 ( -44.8)  not_selected -3.1, dispatch -0.9 | const uint64_t dK_rows  = desc_sw128(sK + 64 * c * 64);
+   519-> 519    77.5 ->    52.4 ( -25.1)  barrier -15.1, dispatch -5.2 | wgmma_wait1();                            // S^T ready, dP^T still run
+   172-> 172   156.7 ->   178.4 ( +21.7)  barrier +34.8, dispatch -7.2 | __device__ __forceinline__ void wgmma_wait1()  { asm volatile(wgmma.wa
+   299-> 299    54.1 ->    71.7 ( +17.5)  barrier +14.4, mio +3.0 | wgmma_fence();
+   169-> 169    72.0 ->    89.0 ( +17.0)  barrier +14.4, mio +3.0 | __device__ __forceinline__ void wgmma_fence()  { asm volatile(wgmma.fe
+   527-> 527   187.5 ->   170.8 ( -16.6)  short_sb +16.3, dispatch -8.5 | float p = ex2_approx(__fmaf_rn(S_[4 * nt + e], scale2, -l2[2 * nt + (e
+   551-> 551    30.4 ->    45.3 ( +14.8)  short_sb +16.4, not_selected -1.9 | const float s2 = S_[4 * nt + 2] * (dP[4 * nt + 2] - d0);
+   550-> 550     9.1 ->    23.2 ( +14.0)  short_sb +13.2, dispatch +1.2 | const float s1 = S_[4 * nt + 1] * (dP[4 * nt + 1] - d1);
+   454-> 454    70.4 ->    58.1 ( -12.3)  barrier -12.5, not_selected +0.2 | if (lane == 0) {
+   314-> 314    92.4 ->    80.7 ( -11.7)  mio -20.6, barrier +16.0 | *reinterpret_cast<float4*>(base + 512 * j + 4 * tid) =
+   130-> 130   139.5 ->   128.6 ( -10.9)  long_sb -10.9, dispatch +0.1 | uint32_t dst = (uint32_t)__cvta_generic_to_shared(smem_dst);
+   554-> 554    34.0 ->    43.2 (  +9.2)  not_selected +5.6, math +4.8 | NV_IF_ELSE_TARGET(NV_PROVIDES_SM_80,
+   171-> 171     6.9 ->    15.5 (  +8.6)  barrier +8.2, not_selected +0.6 | __device__ __forceinline__ void wgmma_wait0()  { asm volatile(wgmma.wa
+lines only in b2a: 593 (44.7: wgmma_wait1();                          )
+
+short_sb: 72.7 -> 127.5 (+54.8); lines that moved it most:
+   551-> 551    12.0 ->    28.4 ( +16.4) | const float s2 = S_[4 * nt + 2] * (dP[4 * nt + 2] - d0);
+   527-> 527    46.6 ->    62.9 ( +16.3) | float p = ex2_approx(__fmaf_rn(S_[4 * nt + e], scale2, -l2[2 * nt + (e & 1)]));
+   550-> 550     0.0 ->    13.2 ( +13.2) | const float s1 = S_[4 * nt + 1] * (dP[4 * nt + 1] - d1);
+   528-> 528     6.4 ->    11.0 (  +4.6) | if (diag) {
+   496-> 496     0.2 ->     3.7 (  +3.5) | const int s = i & 1;
+   549-> 549     2.1 ->     0.0 (  -2.1) | const float s0 = S_[4 * nt + 0] * (dP[4 * nt + 0] - d0);
+
+barrier: 486.5 -> 600.2 (+113.7); lines that moved it most:
+   172-> 172   132.2 ->   167.0 ( +34.8) | __device__ __forceinline__ void wgmma_wait1()  { asm volatile(wgmma.wait_group.s
+   314-> 314     6.2 ->    22.1 ( +16.0) | *reinterpret_cast<float4*>(base + 512 * j + 4 * tid) =
+   519-> 519    62.1 ->    47.0 ( -15.1) | wgmma_wait1();                            // S^T ready, dP^T still running
+   169-> 169    49.6 ->    63.9 ( +14.4) | __device__ __forceinline__ void wgmma_fence()  { asm volatile(wgmma.fence.sync.a
+   299-> 299    49.6 ->    63.9 ( +14.4) | wgmma_fence();
+   454-> 454    69.8 ->    57.2 ( -12.5) | if (lane == 0) {
+
+long_sb: 603.5 -> 629.4 (+25.8); lines that moved it most:
+   130-> 130   138.8 ->   127.9 ( -10.9) | uint32_t dst = (uint32_t)__cvta_generic_to_shared(smem_dst);
+   159-> 159    64.8 ->    75.3 ( +10.5) | __device__ __forceinline__ void bulk_wait_read()  { asm volatile(cp.async.bulk.w
+   161-> 161   113.2 ->   123.0 (  +9.8) | asm volatile(fence.proxy.async.shared::cta;" ::: "memory");"
+   585-> 585    18.9 ->    25.1 (  +6.2) | bar_sync(BAR_PDS, 2 * WGT);               // both groups' dS halves are in sdS[s
+   584-> 584     2.2 ->     6.3 (  +4.1) | fence_proxy_async_shared();               // this thread's dS stores -> visible 
+   153-> 153   145.5 ->   149.4 (  +3.9) | return __nv_cvta_generic_to_shared_impl(p);
+
+mio: 132.5 -> 100.1 (-32.4); lines that moved it most:
+   314-> 314    50.2 ->    29.6 ( -20.6) | *reinterpret_cast<float4*>(base + 512 * j + 4 * tid) =
+   161-> 161    16.5 ->    10.6 (  -5.9) | asm volatile(fence.proxy.async.shared::cta;" ::: "memory");"
+   527-> 527    19.8 ->    14.0 (  -5.8) | float p = ex2_approx(__fmaf_rn(S_[4 * nt + e], scale2, -l2[2 * nt + (e & 1)]));
+   157-> 157     5.3 ->     0.2 (  -5.1) | __device__ __forceinline__ void bulk_commit()     { asm volatile(cp.async.bulk.c
+   619-> 625     5.3 ->     0.2 (  -5.1) | bulk_commit();
+   169-> 169     0.5 ->     3.5 (  +3.0) | __device__ __forceinline__ void wgmma_fence()  { asm volatile(wgmma.fence.sync.a

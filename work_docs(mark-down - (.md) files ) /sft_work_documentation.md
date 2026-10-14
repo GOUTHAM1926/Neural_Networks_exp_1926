@@ -458,7 +458,7 @@ What that 88% does, by function name:
 | `add_eos()` | append the stop token | no — pretraining just streams text |
 | `build_labels()` | **write `-100` on prompt/user tokens** | no — pretraining trains on everything |
 | `truncate()` | keep_start / keep_end | sort of |
-| `pack_dataset()` | best-fit-decreasing bin packing | different problem |
+| `pack_dataset()` | Best-Fit-Decreasing bin packing | different problem |
 | `get_position_ids_from_packed_seq_lengths()` | **reset position IDs at each packed boundary** | no |
 | `prepare_multimodal_messages()` | image handling | no |
 | `DataCollatorForLanguageModeling.torch_call()` | padding, attention masks | different |
@@ -2772,7 +2772,7 @@ CCE from their docs. NeMo, ms-swift and OpenRLHF were not read.
 | lm_head only on answer rows | **default** `loss_type="chunked_nll"` (`sft_trainer.py:122-232`) | no | no | — | §33 |
 | no full logits in memory | chunks of 256 + recompute | no | no | via Liger | no (bf16 logits halve it) |
 | length bucketing | no | no | no | — | v1.5 |
-| packing | `bfd`, `bfd_split`, `wrapped` | concat-then-split, first-fit (`components/data/packing.py`) | per-sample packing (`training/datasets/sft_dataset.py`) | multipack / `neat_packing` | v2 |
+| packing | `bfd`, `bfd_split`, `wrapped` | concat-then-split, First-Fit (`components/data/packing.py`) | per-sample packing (`training/datasets/sft_dataset.py`) | multipack / `neat_packing` | v2 |
 | document mask when packed | FlashAttention varlen via `position_ids` (padding-free) | FlexAttention `block_causal` (`get_document_mask_mod`, `models/common/attention.py:467`) | `cu_seqlens` (`PackedSeqParams`) | FlashAttention varlen | v2 (v62 / Vj1d) |
 | positions reset per document | yes | yes | yes | yes | "optional" (§32.4) |
 | label bounds check | — | "labels must be -100 or in [0, V)" (`components/loss.py:139-142`) | — | — | task 6 |
@@ -3055,7 +3055,7 @@ The file is now at `Neural_Networks_exp_1926/kathir_sft/sft.py`. It was moved ou
 |---|---|---|
 | Same | base step 8000; answer-only loss; summed loss ÷ the whole step's trained tokens; Muon for matrices + AdamW for embeddings and norms; betas (0.9, 0.95), eps 1e-8, weight decay 0.1, clip 1.0 on the AdamW part; 3% warmup; 2 epochs | same |
 | Data | UltraChat, 5,000 chats | OLMo 2 SFT mix, 839,168 chats |
-| Batch | 64 chats per step, fixed [8, 4096] rows (about 70% padding) | 512 chats per step, sorted by length, cut into micro-batches of ≤ 16,384 padded tokens (little padding) |
+| Batch | 64 chats per step, fixed [8, 4096] rows (about 70% padding) | 512 chats per step, sorted by length, cut into micro-batches of ≤ 16,384 padded tokens (little padding). (10-14: the copy we have, `kathir_sft/sft.py:54`, defaults to `global_batch` 128; where 512 came from is not recorded, probably his run config.) |
 | LR, schedule | separate LRs; cosine to 10% | **one** LR (5e-5); linear to 0 (the same recipe as Moonlight) |
 | Logits | all positions | **only trained positions, fp32** (Q11 already done in PyTorch) |
 | Shuffle | the same order every epoch | a new shuffle every epoch |
@@ -3244,7 +3244,7 @@ Script: `profiling_reports/q10_packing_sim_2026_10_08/pack_sim.py`, output saved
 | v1: one chat per row, padded to 4096 | 30.2% | 100% | ×1.00 |
 | v1.5 realistic: shuffle, sort each 64-chat step, pad to the longest ×256 | 79.8% | 35.2% | ×2.84 |
 | v1.5 ideal: whole set sorted (not usable) | 90.5% | 30.7% | ×3.26 |
-| v2: best-fit-decreasing packing + block-diagonal mask | 99.6% | 27.8% | ×3.60 |
+| v2: First-Fit-Decreasing packing + block-diagonal mask (10-14: the code was First-Fit, the label said Best-Fit; Best-Fit gives the same 1,517 rows) | 99.6% | 27.8% | ×3.60 |
 | v2 without the mask | 99.6% | 30.3% | ×3.30, and wrong (chats see each other) |
 
 - **v2:** 1,517 rows, an average of 16.3 pad tokens per row, **1 to 12 chats per row**.
@@ -3445,7 +3445,7 @@ All clones are under `~/Downloads/sft_research/`, except PyTorch, which is at `~
   - builds `cu_seqlens` from `position_ids == 0` and calls FA varlen (`:480-517, 843-847`);
   - for SDPA it builds a dense same-chat + causal mask (`masking_utils.py:183-190, 522`).
 - **TRL:**
-  - best-fit-decreasing packing (`data_utils.py:739`);
+  - Best-Fit-Decreasing packing (`data_utils.py:739`);
   - padding-free collator with positions restarting per chat (`sft_trainer.py:1180, 528-552`);
   - sets the label of each chat's first token to −100 (`:516`), because HF shifts labels inside the loss. Our labels are already shifted per chat, so we don't need this.
 
@@ -3686,7 +3686,7 @@ File: `Tensor-Implementations/Tests/kernel_tests/test_varlen_attention.cu` (fina
 
 **Known list (`kKnown`):** explained deviations kept by decision. Each entry matches one exact case, tensor and chat, up to the recorded ratio + 1%; anything else fails as NEW.
 
-**Data loads:** D1 real v1 rows; D2 2048+2048; D3 1000+3096; D4 1+4095 / 4095+1; D5 64x64, 32x128; D6 4096 one-token chats (D6q: 512 + pad); D7 63/65/127/129/255/257 repeated; D8 random lengths with pad tails 0/1/16/63/64/65/255; D9 an all-pad row; D10 the real stage-0 rows packed first-fit decreasing (1517 rows); D11 the same 300-token chat at offsets 0/1/63/64/65/127/128/3796.
+**Data loads:** D1 real v1 rows; D2 2048+2048; D3 1000+3096; D4 1+4095 / 4095+1; D5 64x64, 32x128; D6 4096 one-token chats (D6q: 512 + pad); D7 63/65/127/129/255/257 repeated; D8 random lengths with pad tails 0/1/16/63/64/65/255; D9 an all-pad row; D10 the real stage-0 rows packed First-Fit-Decreasing (1517 rows); D11 the same 300-token chat at offsets 0/1/63/64/65/127/128/3796.
 
 **Groups:**
 
@@ -3861,7 +3861,7 @@ Tensor-Implementations:
 
 1. **Step 6, benchmarks** (needs the environment decision): A vs B in one session, plus cuDNN, FA3, FA4, FA2, PyTorch SDPA and Flex on the same data and the same GPU; nsys/ncu to see why time falls more slowly than work on short chats. Proposed environment: `~/envv` read-only for torch / cuDNN / Flex / `varlen_attn`, and our own env for FA3/FA4/TE.
 2. Choose A or B, or keep both.
-3. **Step 7:** packing script (whole chats, first-fit decreasing, shuffled rows), loader output (tokens, labels, positions, `seg_start` or the plan), the attention autograd node passing it to forward and backward, then a real packed SFT run against v1. Open decision: leftover rows (proposed: endless stream reshuffled every epoch; validation scores all rows).
+3. **Step 7:** packing script (whole chats, First-Fit-Decreasing, shuffled rows), loader output (tokens, labels, positions, `seg_start` or the plan), the attention autograd node passing it to forward and backward, then a real packed SFT run against v1. Open decision: leftover rows (proposed: endless stream reshuffled every epoch; validation scores all rows).
 4. End decisions: fp32 P in dS, fp32 head sum for dK/dV.
 5. Small: the G11 mode-refusal lines print a "G10" label (cosmetic).
 
@@ -4469,3 +4469,157 @@ column multiplies the races, so every row is against Vj1d.
 3. G7 / Phase 2: design A and B in Vj2, tests G8-G13, packed benchmark incl. xFormers (install only with OK).
 4. Later: the head-dim-64 bug (42.8), Step 7 (training config switch, packing script, loader, packed SFT run), chat
    template option B, and FA4's Blackwell methods for our B300 kernels.
+
+## 44. 2026-10-14
+
+### 44.1 Future task: packing changes how many optimizer steps we take (research + ablation before the first packed SFT run)
+
+**Where it comes from.** A blog a colleague shared (`djdumpling.github.io/2026/01/31/frontier_training.html`, section
+"sequence packing", which cites Hugging Face's SmolLM3 training playbook): packing puts more chats into each optimizer
+step, so the same data gives fewer steps. This hurt small datasets: in SmolLM3 an effective batch of 128 lowered IFEval
+by up to 10%, and above 32 there was an average drop. For large datasets packing was "almost always beneficial".
+
+**What it means for us (stage-0: 5,000 chats in 1,517 packed rows = 3.3 chats per row):**
+
+| | rows per step | chats per step | steps per epoch |
+|---|---|---|---|
+| v1 today (one chat per row) | 64 | 64 | 78 |
+| v2 packed, step kept at 64 rows | 64 | ~211 | ~24 |
+| v2 packed, step kept at ~64 chats | ~19-20 | ~64 | ~78 |
+
+The real runs may use much bigger datasets, where fewer steps matter less; with stage-0 (5,000 chats) it matters now.
+
+**Plan (before the first packed SFT run, Step 7):**
+1. **Research:** how TRL / SmolLM3, Tülu 3, OLMo and Hermes-4 set the step size when packing (chats, tokens or rows per
+   step); what "effective batch" means in each; how the learning rate is set when the batch changes.
+2. **Ablation on stage-0** (same base model and settings, only this changes):
+   - (a) v1, no packing, 64 chats per step;
+   - (b) v2 packed, ~64 chats per step;
+   - (c) v2 packed, 64 rows per step (~211 chats).
+
+   Compare: validation loss on answer tokens, likelihood evals (HellaSwag-style), and base-vs-SFT forgetting checks.
+   IFEval needs text generation, which BluTrain does not have yet.
+3. **Precaution in the loader:** define the step by chats or tokens, not rows (already the plan); log chats and trained
+   tokens per step.
+   - Detail: with 8 rows per micro-batch, ~20 rows per step is not a multiple of 8, so the loader needs a token budget
+     per step or variable micro-batches. Decide in Step 7.
+
+**Exact numbers from the trainer's own formula** (added 2026-10-14; `bluscript_zero_ckpt.cpp:943-958`: steps = epochs x
+micro-batches per epoch / GRAD_ACCUM, warmup = 3% of the steps; the trainer refuses rows per step that are not a multiple
+of B x GPUs, `:947-952`), 1 GPU, 2 epochs, stage-0 packed into 1,517 rows:
+
+| setup | B | rows per step | steps (2 epochs) | warmup | chats per step |
+|---|---|---|---|---|---|
+| v1 today | 8 | 64 | 156 | 5 | 64 |
+| v2, step kept at 64 rows | 8 | 64 | 47 | 1 | ~211 |
+| v2 | 8 | 24 | 126 | 4 | ~79 |
+| v2 | 8 | 16 | 189 | 6 | ~53 |
+| v2 | 4 | 20 | 151 | 5 | ~66 |
+| v2 | 8 | 20 | refused (not a multiple of 8) | - | - |
+
+Full explanation, from zero, with a tiny worked example: `work_docs/sft_packing_algorithms_bfd_ffd.md` section 9
+(script `profiling_reports/q10_packing_sim_2026_10_08/packing_stats_detail.py`).
+
+**What the blog says, and what it does not say** (re-checked word for word on 2026-10-14):
+
+- Section "sequence packing" (`#sequence-packing`): "An effective batch size of 128 hurt evals like IFEval by up to 10%;
+  for effective batch sizes larger than 32, there was an average drop in performance (for SmolLM3 and the dataset)."
+  These are Hugging Face's SmolLM3 results (the blog's figure links to their smol-training-playbook), not a paper. "This
+  especially hurts small datasets where each sample matters more" is a separate, general sentence: the blog does not
+  say the 10% drop was measured on a small dataset.
+- Section "learning rate and epochs" (`#learning-rate-and-epochs`): "When packing is enabled, it's safer to decrease the
+  learning rate further due to the larger effective batch size and getting fewer updates for the same token budget."
+  That is the blog's only advice for packing. **Add to the ablation:** run (d) = packed, 64 rows per step, lower learning
+  rate.
+- The blog does **not** suggest changing the micro-batch, the gradient accumulation or the step size by the number of
+  chats per row. Counting each step in chats or tokens is **our** plan (from 10-08), not the blog's.
+- "Effective batch size" = rows (sequences) per optimizer step = rows per micro-batch x accumulation steps x GPUs (ours
+  64). It is not the number of chats per row (stage-0: 3.3). Chats per step = effective batch size x chats per row.
+
+**Ablation plan, final form (10-14; measured with `profiling_reports/q10_packing_sim_2026_10_08/packing_step_options.py`):**
+run 1 = v1 padding, 64 chats/step, 156 steps; run 2a = pack each step's 64 chats (17-23 rows, 95.9% real, 156 steps);
+run 2b = pack once + fill steps to 61,075 trained tokens (51-82 chats, 18-22 rows, ~150 steps); run 2c = B=4 x 20 rows
+(~66 chats, 151 steps, no trainer change); run 3 = 64 rows (~211 chats, 47 steps); run 4 = run 3 + lower LR. Every run twice (two seeds). Full table: packing doc section 9.6.
+
+### 44.2 Packing rules, over-long chats, TRL's three strategies (full detail: `work_docs/sft_packing_algorithms_bfd_ffd.md`)
+
+- **First-Fit-Decreasing vs Best-Fit-Decreasing.** Both sort the chats longest first. First-Fit puts each chat into the
+  first row that has room; Best-Fit puts it into the row that will have the fewest empty slots left.
+  - Neither always wins. With rows of 20, chats 15, 9, 7, 4, 3, 2 need 2 rows with Best-Fit and 3 with First-Fit;
+    chats 15, 9, 7, 3, 2, 2, 2 need 2 with First-Fit and 3 with Best-Fit.
+  - On stage-0 both give **1,517 rows** (99.60% real tokens); the minimum possible is 1,511 (6,188,911 tokens / 4096,
+    rounded up), and a slower subset-sum method does reach it (1,502 rows completely full; found by a review on
+    10-14, which corrected my earlier claim that 1,511 could not be reached). Sorting longest first matters more than
+    the choice of rule.
+  - **First-Fit vs Best-Fit, measured (packing doc section 13; two studies, ~27,000 random tests + every small input):**
+    on data like ours they always give the same number of rows; where they ever differ (by one row), Best-Fit is the
+    one with fewer rows about 15 times more often (296 vs 19 on all 3.1 million small inputs). Speed with a search tree:
+    First-Fit 1.3-1.9x faster, both under 1 s for 1,000,000 chats; the simple loop takes ~2 minutes at 200,000 chats.
+    Theory: the same worst case, 11/9 x best (+ 6/9 for First-Fit, tight). Either is fine for us; write it with a
+    search tree. Best-Fit has the tiny packing edge (and is TRL's choice); First-Fit is what our tests use.
+- **Which one we use:** First-Fit-Decreasing, in `pack_sim.py` (10-08) and in the attention test data (D10). The 10-08
+  table in §38.5 said "Best-Fit"; the code was First-Fit. Label fixed today.
+- **TRL packs per group of 1,000 chats** (the `datasets` `map` default). On stage-0 that gives 1,521 rows (99.34%) vs 1,517
+  for the whole set at once.
+- **Over-long chats:** we drop them (`prepare_sft_data.py:167`; decided 09-25 in §32.2 because cutting removes the end-token
+  target). torchtitan drops; TRL and Megatron cut the end; TRL `bfd_split` cuts into pieces. Stage-0 dropped 10 of
+  5,010. Not yet measured: the drop rate on long reasoning or agentic datasets. Check `too_long` in `meta.json` first.
+- **TRL strategies:**
+  - `bfd` cuts over-long chats, then Best-Fit; each chat whole in one row; boundaries recorded.
+  - `bfd_split` cuts them into pieces of `max_length`; every piece is packed and attended as its own chat, so pieces of
+    one chat cannot see each other.
+  - `wrapped` writes all chats into one stream and cuts it every `max_length` tokens. No boundaries are recorded, so the
+    attention is plain causal over the row (cross-document attention) and the last token of one chat is trained to
+    predict the first token of the next.
+- **Varlen attention prevents cross-document attention**; it does not do it. TRL uses it for `bfd` and `bfd_split`, not
+  for `wrapped`. Our designs A and B both block it.
+- A second explanation of TRL's strategies and varlen (from another chat) was merged into that doc in full the same day;
+  13 of its statements were wrong or unverified and are corrected in place, listed in the doc's section 12 (main ones:
+  TRL's `wrapped` cannot use varlen; a `bfd_split` row Best-Fit does not produce; the varlen kernel has no row
+  dimension; TRL's packing keeps chats apart with FlashAttention (varlen) and, in this `transformers` version, also with SDPA /
+  eager for models that pass the positions to the mask builder; TRL still warns for non-FlashAttention).
+- The doc also explains, from zero: attention, causal attention, and why **plain causal attention on a packed row causes
+  cross-document attention** (one chat per row: none; 3 chats in a 10-slot row: 33 of 55 pairs cross chats), and what
+  "boundaries kept" means: per chat in `bfd`, per chunk in `bfd_split`, none in `wrapped`, per chat in ours.
+
+### 44.3 LoRA and QLoRA (asked today; we chose full fine-tuning on purpose)
+
+- **LoRA:** the original weight table W is frozen. Two small tables are added, A (r x d) and B (d x r), and the layer
+  computes W·x + s·B·(A·x). Only A and B are trained.
+  - B starts at zero, so the model starts unchanged. A starts random; if both were zero, neither would ever get a
+    gradient.
+  - For one of our 2304 x 2304 tables with r = 16: 73,728 trained numbers instead of 5,308,416 (1.4%).
+  - No gradient or optimizer state for W, and the dW GEMM is skipped. After training, W + s·B·A is computed once.
+- **QLoRA:** the same, with W stored in 4 bits and turned back into bf16 before each GEMM.
+- **Relation to SFT:** SFT decides what we train on (chats, answer-only loss); LoRA decides which weights change.
+- **Why full fine-tuning:** our model (1,588,229,888 numbers) fits on one H200 with full fine-tuning, and full
+  fine-tuning learns more ("LoRA Learns Less and Forgets Less" also shows LoRA forgets less). Already in §6, §14, §15
+  and the "add later" list (item 4). Nothing built so far would be wasted by adding LoRA later.
+
+### 44.4 From the frontier-training blog a colleague shared
+
+- **Document masking:** a packed row with plain causal attention lets one chat see another; intra-document masking stops
+  it. Hugging Face found it mattered little on short tasks and became crucial from 4k to 64k context. Our v2 does it,
+  and positions restart per chat.
+- **General reasoning SFT vs agentic SFT** (Intellect-3's two SFT stages):
+  - General reasoning: math, code, science, chat and instruction data with step-by-step answers written by a stronger
+    model; 9.9B tokens.
+  - Agentic: multi-step tasks with tool calls and tool outputs; the context was raised from 65K to 98K tokens.
+  - Our stage-0 (UltraChat) is plain chat SFT, the step before both.
+- **Upstream vs downstream evals** (the blog uses only "downstream"):
+  - Upstream: the training task on held-out data, i.e. validation loss.
+  - Downstream: task benchmarks. Either scored by likelihood (HellaSwag, ARC, MMLU; we can run these) or by generation
+    (IFEval, GSM8K, MT-Bench; these need text generation, which BluTrain does not have yet).
+
+### 44.5 Backward B-2a: FA3's wait placement between the dQ and dK GEMMs (records `gpu_runs/b2a_1014/RESULT.md`)
+
+- **Change:** one wait before the dK GEMM (wait until dV is done; dQ keeps running), as FA3 does.
+- **Test 1:** 144/144, every error value identical.
+- **Test 2 (6 alternating rounds):** backward 1.9% less time than G1+G2+G3 (t = -8.7, faster on 13/13); forward +
+  backward 1.4% less (13/13).
+- **Test 3 (ncu on our model's shape):** main kernel 2526.3 -> **2478.0 us**, FA3 2481.4 = equal.
+  - Warps waiting for each other at the dK GEMM start: 215.5 -> 148.2 us-equivalent (FA3 141.1). This was the predicted
+    cause, and it is confirmed.
+  - The new wait costs 50; exp and dS lines now wait longer for shared-memory values (+64).
+- **Remaining gaps to FA3:** shared-memory-queue stalls +93 (B-3), dispatch +51, warps waiting at the dP / dV / S
+  starts +44 (B-2b), helper kernels +8 (B-1).

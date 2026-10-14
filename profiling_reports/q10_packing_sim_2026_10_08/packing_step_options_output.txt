@@ -1,0 +1,9 @@
+== (A) Kathir's micro-batches: a small example (lengths sorted, budget 16,384 padded tokens, cost 512 per micro-batch)
+   micro-batch: [3000, 2900, 2800] -> 3 rows padded to 3000 = 9,000 padded tokens, real 8,700
+   micro-batch: [1200, 1100, 1000, 900] -> 4 rows padded to 1200 = 4,800 padded tokens, real 4,200
+   micro-batch: [300, 250, 200] -> 3 rows padded to 300 = 900 padded tokens, real 750
+== (A) Kathir's micro-batches on one real step of 64 stage-0 chats: 12 micro-batches, chats per micro-batch [2, 3, 4, 5, 9, 5, 6, 7, 6, 6, 7, 4], padded tokens 88,734 for 85,031 real (95.8% real); our trainer today: 8 micro-batches x 8 rows x 4,096 = 262,144 slots (32.4% real)
+   over all 78 steps of an epoch: micro-batches per step min 9, mean 11.3, max 14; real share mean 95.5%
+== (B) v1 today: 64 chats per step, 78 full steps per epoch, mean trained tokens per step 61,075
+== (C) pack each step's 64 chats on their own: rows per step min 17, mean 20.2, max 23; real tokens 95.94% (packing all 5,000 at once: 99.60%); 78 steps per epoch; exactly 64 chats per step
+== (D) pack once (1517 rows) + fill each step to >= 61,075 trained tokens: 75 full steps per epoch (19 rows left over); rows per step min 18, mean 20.0, max 22; chats per step min 51, mean 65.9, max 82; trained tokens per step mean 62,816

@@ -1,0 +1,8 @@
+11:20:57 t14 start | src vj2 a956e789 lib 1b9f444d
+11:21:02 t14 a: lineinfo build exit=0
+11:21:02 t14 a: kernel SASS lines normal 1760 lineinfo 1760 | identical: YES | line-table sections: 10
+11:21:02 t14 a: snapshot g123li lib 64e348a8
+11:21:07 t14 a: normal library restored exit=0 lib 94719565
+11:22:55 t14 b: ncu exit=0
+11:23:00 t14 b: exports raw 3 sass 1762 cuda 791 cuda+sass 3221 lines
+11:23:00 T14 DONE

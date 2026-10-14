@@ -1,0 +1,12 @@
+ours HGMMA              lines  32    753.9 us  | mio 146.5, wait 92.8, barrier 54.0, selected 17.8, not_selected 14.3
+ours WARPGROUP.DEPBAR   lines   4    178.1 us  | barrier 147.2, dispatch 12.5, not_selected 12.4, wait 4.0, selected 2.1
+ours WARPGROUP.ARRIVE   lines   5      5.9 us  | selected 2.9, wait 2.8, dispatch 0.2, barrier 0.0, branch_resolving 0.0
+ours  HGMMA A=regs (dV,dK)   lines   8    369.8 us | mio 25.2, wait 18.3, not_selected 6.2, selected 4.3
+ours  HGMMA A=smem (S,dP,dQ) lines  24    384.0 us | mio 121.3, wait 74.5, barrier 54.0, selected 13.4
+
+FA3  HGMMA              lines  32    510.3 us  | wait 91.9, mio 70.3, barrier 50.4, selected 18.2, not_selected 15.7
+FA3  WARPGROUP.DEPBAR   lines   5    131.0 us  | barrier 124.3, wait 3.0, selected 2.8, not_selected 0.6, dispatch 0.3
+FA3  WARPGROUP.ARRIVE   lines   5      6.6 us  | wait 3.3, selected 3.0, dispatch 0.1, not_selected 0.1, no_inst 0.0
+FA3   HGMMA A=regs (dV,dK)   lines   8    234.8 us | wait 24.3, mio 21.6, selected 4.7, not_selected 2.7
+FA3   HGMMA A=smem (S,dP,dQ) lines  24    275.6 us | wait 67.7, barrier 50.4, mio 48.7, selected 13.5
+

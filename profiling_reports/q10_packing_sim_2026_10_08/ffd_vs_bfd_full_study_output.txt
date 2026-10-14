@@ -1,0 +1,219 @@
+========================================================================================================================
+FFD vs BFD, full study (ffd_vs_bfd_full_study.py), run 2026-10-14 16:49:55
+python 3.12.3, numpy 2.5.3, CPU Intel(R) Core(TM) i7-14700K; pinned to CPU 8 (max 5.6 GHz, the highest of the 28 CPUs); load average 1.34
+data /home/blu-bridge016/Downloads/sft_data/stage0_ultrachat_5k_T4096/train: 5,000 chats, rows of T = 4096; slots per chat: shortest 134, longest 4069, mean 1237.8, median 1153.5; chats longer than T/2: 470; distinct lengths 1,969
+real tokens (slots filled) 6,188,911; lower bound on rows ceil(6,188,911 / 4096) = 1,511
+TRL code: /home/blu-bridge016/Downloads/sft_research/trl/trl/data_utils.py at commit 478624d (lines: _SegmentTree 694-736, _check_if_columns_can_be_packed 682-691, _pack_bfd 739-826); pyarrow 25.0.1
+
+========================================================================================================================
+E5a CHECK FIRST: do the fast versions give exactly what the naive versions give? (layouts compared chat by chat)
+  real stage-0, 5,000 chats: naive FFD 1,517 rows, fast FFD 1,517 rows, same layout: YES | naive BFD 1,517, fast BFD 1,517, same layout: YES | TRL's loop 1,517 rows, same rows and same empty-slot list: YES, chats in a different row than naive BFD: 0
+  resampled real lengths, 20,000 chats (seed 98): naive FFD 6,077 rows, fast FFD 6,077 rows, same layout: YES | naive BFD 6,077, fast BFD 6,077, same layout: YES | TRL's loop 6,077 rows, same rows and same empty-slot list: YES, chats in a different row than naive BFD: 0
+  synthetic uniform 1..T, 3,000 chats (seed 90): naive FFD 1,532 rows, fast FFD 1,532 rows, same layout: YES | naive BFD 1,532, fast BFD 1,532, same layout: YES | TRL's loop 1,532 rows, same rows and same empty-slot list: YES, chats in a different row than naive BFD: 23
+  synthetic uniform T/4..T/2, 3,000 chats (seed 91): naive FFD 1,246 rows, fast FFD 1,246 rows, same layout: YES | naive BFD 1,246, fast BFD 1,246, same layout: YES | TRL's loop 1,246 rows, same rows and same empty-slot list: YES, chats in a different row than naive BFD: 0
+  synthetic hard mix just over T/2, T/3, T/4, 3,000 chats (seed 92): naive FFD 1,330 rows, fast FFD 1,330 rows, same layout: YES | naive BFD 1,330, fast BFD 1,330, same layout: YES | TRL's loop 1,330 rows, same rows and same empty-slot list: YES, chats in a different row than naive BFD: 0
+  synthetic 50% 1..256 + 50% 3072..4096, 3,000 chats (seed 93): naive FFD 1,486 rows, fast FFD 1,486 rows, same layout: YES | naive BFD 1,486, fast BFD 1,486, same layout: YES | TRL's loop 1,486 rows, same rows and same empty-slot list: YES, chats in a different row than naive BFD: 4
+  => every check passed: YES
+
+========================================================================================================================
+E1 REAL STAGE-0 DATA, 5,000 chats packed all at once
+  FFD
+    rows 1,517 (lower bound 1,511, +6); real tokens 99.602% of 6,213,632 slots
+    empty slots per row -> rows:  0: 1039  |  1-16: 310  |  17-64: 48  |  65-256: 114  |  >256: 6
+    empty slots: total 24,721 (6.04 rows' worth), mean 16.30, median 0, largest 3222; the 6 largest gaps [264, 270, 283, 284, 288, 3222]
+    gaps smaller than the shortest chat (134): 403 rows, 6,906 slots; gaps of 134 or more: 75 rows, 17,815 slots
+    chats per row -> rows: 1: 1, 2: 474, 3: 527, 4: 290, 5: 129, 6: 49, 7: 25, 8: 11, 9: 6, 10: 2, 11: 2, 12: 1   (maximum 12, mean 3.296)
+    attention work per row (sum of L*L over its chats): mean 6,230,153, largest 16,556,761, smallest 254,628, coefficient of variation (std/mean) 0.3841
+  BFD
+    rows 1,517 (lower bound 1,511, +6); real tokens 99.602% of 6,213,632 slots
+    empty slots per row -> rows:  0: 1060  |  1-16: 292  |  17-64: 45  |  65-256: 114  |  >256: 6
+    empty slots: total 24,721 (6.04 rows' worth), mean 16.30, median 0, largest 3222; the 6 largest gaps [264, 274, 286, 288, 289, 3222]
+    gaps smaller than the shortest chat (134): 382 rows, 6,790 slots; gaps of 134 or more: 75 rows, 17,931 slots
+    chats per row -> rows: 1: 4, 2: 474, 3: 529, 4: 282, 5: 127, 6: 53, 7: 25, 8: 12, 9: 6, 10: 2, 11: 1, 12: 2   (maximum 12, mean 3.296)
+    attention work per row (sum of L*L over its chats): mean 6,230,153, largest 16,556,761, smallest 254,628, coefficient of variation (std/mean) 0.3840
+  BFD, TRL tie rule (first-in-first-out)
+    rows 1,517 (lower bound 1,511, +6); real tokens 99.602% of 6,213,632 slots
+    empty slots per row -> rows:  0: 1060  |  1-16: 292  |  17-64: 45  |  65-256: 114  |  >256: 6
+    empty slots: total 24,721 (6.04 rows' worth), mean 16.30, median 0, largest 3222; the 6 largest gaps [264, 274, 286, 288, 289, 3222]
+    gaps smaller than the shortest chat (134): 382 rows, 6,790 slots; gaps of 134 or more: 75 rows, 17,931 slots
+    chats per row -> rows: 1: 4, 2: 474, 3: 529, 4: 282, 5: 127, 6: 53, 7: 25, 8: 12, 9: 6, 10: 2, 11: 1, 12: 2   (maximum 12, mean 3.296)
+    attention work per row (sum of L*L over its chats): mean 6,230,153, largest 16,556,761, smallest 254,628, coefficient of variation (std/mean) 0.3840
+  FFD layout vs BFD layout (same chats, same sorted order):
+    chats whose row number differs (rows numbered in the order they are opened): 108 of 5,000 (2.2%)
+    chats whose set of row-mates differs (does not depend on row numbers): 534 of 5,000 (10.7%)
+    rows holding exactly the same chats in both layouts: 1,395 (of 1,517 and 1,517)
+    first chat placed differently: sorted position 1806 (length 1362; FFD row 103, BFD row 949); every chat before it in the sorted order is placed the same
+    same empty-slot list (sorted): NO; same chats-per-row histogram: NO
+  BFD layout vs BFD, TRL tie rule (first-in-first-out) layout (same chats, same sorted order):
+    chats whose row number differs (rows numbered in the order they are opened): 0 of 5,000 (0.0%)
+    chats whose set of row-mates differs (does not depend on row numbers): 0 of 5,000 (0.0%)
+    rows holding exactly the same chats in both layouts: 1,517 (of 1,517 and 1,517)
+    same empty-slot list (sorted): YES; same chats-per-row histogram: YES
+  TRL's own _pack_bfd (the real function, run on all 5,000 chats as one group): 1,517 rows, identical layout to the TRL-tie-rule BFD above (same chats, same order in every row): YES; took 0.059 s
+
+========================================================================================================================
+E2 RESAMPLED REAL LENGTHS: each instance draws n chat lengths WITH replacement from the 5,000 real lengths
+  n = 100 chats (seed 100; naive versions re-run on the first 1,000 instances: same layouts): 5,000 instances, mean BFD rows 31.1, mean lower bound 30.7
+     FFD FEWER rows 0 | EQUAL 4,999 | FFD MORE rows 1   (sign test p = 1)
+     mean (FFD - BFD) = +0.0002 rows (+0.00067% of the rows); differences seen -> instances: {0: 4999, 1: 1}
+     mean rows above the lower bound ceil(sum/T): FFD 0.3838, BFD 0.3836; largest: FFD 1, BFD 1; instances AT the lower bound: FFD 3,081, BFD 3,082
+  n = 1,000 chats (seed 1000; naive versions re-run on the first 300 instances: same layouts): 5,000 instances, mean BFD rows 304.1, mean lower bound 302.7
+     FFD FEWER rows 0 | EQUAL 5,000 | FFD MORE rows 0   (sign test p = 1)
+     mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 5000}
+     mean rows above the lower bound ceil(sum/T): FFD 1.4336, BFD 1.4336; largest: FFD 3, BFD 3; instances AT the lower bound: FFD 15, BFD 15
+  n = 5,000 chats (seed 5000; naive versions re-run on the first 20 instances: same layouts): 1,000 instances, mean BFD rows 1,516.5, mean lower bound 1,510.9
+     FFD FEWER rows 0 | EQUAL 1,000 | FFD MORE rows 0   (sign test p = 1)
+     mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 1000}
+     mean rows above the lower bound ceil(sum/T): FFD 5.6170, BFD 5.6170; largest: FFD 8, BFD 8; instances AT the lower bound: FFD 0, BFD 0
+  n = 20,000 chats (seed 20000; fast versions only): 300 instances, mean BFD rows 6,066.1, mean lower bound 6,044.7
+     FFD FEWER rows 0 | EQUAL 300 | FFD MORE rows 0   (sign test p = 1)
+     mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 300}
+     mean rows above the lower bound ceil(sum/T): FFD 21.3600, BFD 21.3600; largest: FFD 25, BFD 25; instances AT the lower bound: FFD 0, BFD 0
+
+========================================================================================================================
+E3 SYNTHETIC LENGTHS (rows of T = 4096; all lengths within 1..T; integers drawn uniformly inside each range)
+  uniform 1..4096 (1..T)
+    n = 1,000 (seed 301): 2,000 instances, mean BFD rows 509.0, mean lower bound 500.7
+       FFD FEWER rows 0 | EQUAL 1,993 | FFD MORE rows 7   (sign test p = 0.0156)
+       mean (FFD - BFD) = +0.0035 rows (+0.00070% of the rows); differences seen -> instances: {0: 1993, 1: 7}
+       mean rows above the lower bound ceil(sum/T): FFD 8.3755, BFD 8.3720; largest: FFD 34, BFD 34; instances AT the lower bound: FFD 0, BFD 0
+    n = 10,000 (seed 302): 200 instances, mean BFD rows 5,031.6, mean lower bound 5,003.4
+       FFD FEWER rows 1 | EQUAL 199 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = -0.0050 rows (-0.00010% of the rows); differences seen -> instances: {-1: 1, 0: 199}
+       mean rows above the lower bound ceil(sum/T): FFD 28.1850, BFD 28.1900; largest: FFD 98, BFD 98; instances AT the lower bound: FFD 0, BFD 0
+  uniform 1..2048 (1..T/2)
+    n = 1,000 (seed 311): 2,000 instances, mean BFD rows 250.9, mean lower bound 250.7
+       FFD FEWER rows 0 | EQUAL 1,994 | FFD MORE rows 6   (sign test p = 0.0312)
+       mean (FFD - BFD) = +0.0030 rows (+0.00121% of the rows); differences seen -> instances: {0: 1994, 1: 6}
+       mean rows above the lower bound ceil(sum/T): FFD 0.1410, BFD 0.1380; largest: FFD 1, BFD 1; instances AT the lower bound: FFD 1,718, BFD 1,724
+    n = 10,000 (seed 312): 200 instances, mean BFD rows 2,501.7, mean lower bound 2,501.6
+       FFD FEWER rows 0 | EQUAL 200 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 200}
+       mean rows above the lower bound ceil(sum/T): FFD 0.0650, BFD 0.0650; largest: FFD 1, BFD 1; instances AT the lower bound: FFD 187, BFD 187
+  uniform 1..1024 (1..T/4)
+    n = 1,000 (seed 321): 2,000 instances, mean BFD rows 125.6, mean lower bound 125.6
+       FFD FEWER rows 0 | EQUAL 2,000 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 2000}
+       mean rows above the lower bound ceil(sum/T): FFD 0.0215, BFD 0.0215; largest: FFD 1, BFD 1; instances AT the lower bound: FFD 1,957, BFD 1,957
+    n = 10,000 (seed 322): 200 instances, mean BFD rows 1,251.6, mean lower bound 1,251.6
+       FFD FEWER rows 0 | EQUAL 200 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 200}
+       mean rows above the lower bound ceil(sum/T): FFD 0.0000, BFD 0.0000; largest: FFD 0, BFD 0; instances AT the lower bound: FFD 200, BFD 200
+  uniform 1024..2048 (T/4..T/2)
+    n = 1,000 (seed 331): 2,000 instances, mean BFD rows 417.0, mean lower bound 375.5
+       FFD FEWER rows 0 | EQUAL 2,000 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 2000}
+       mean rows above the lower bound ceil(sum/T): FFD 41.5035, BFD 41.5035; largest: FFD 45, BFD 45; instances AT the lower bound: FFD 0, BFD 0
+    n = 10,000 (seed 332): 200 instances, mean BFD rows 4,166.2, mean lower bound 3,750.6
+       FFD FEWER rows 0 | EQUAL 200 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 200}
+       mean rows above the lower bound ceil(sum/T): FFD 415.5850, BFD 415.5850; largest: FFD 424, BFD 424; instances AT the lower bound: FFD 0, BFD 0
+  50% very short 1..256 + 50% very long 3072..4096
+    n = 1,000 (seed 341): 2,000 instances, mean BFD rows 500.2, mean lower bound 453.9
+       FFD FEWER rows 0 | EQUAL 2,000 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 2000}
+       mean rows above the lower bound ceil(sum/T): FFD 46.3790, BFD 46.3790; largest: FFD 57, BFD 57; instances AT the lower bound: FFD 0, BFD 0
+    n = 10,000 (seed 342): 200 instances, mean BFD rows 5,001.3, mean lower bound 4,533.8
+       FFD FEWER rows 0 | EQUAL 200 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 200}
+       mean rows above the lower bound ceil(sum/T): FFD 467.5300, BFD 467.5300; largest: FFD 491, BFD 491; instances AT the lower bound: FFD 0, BFD 0
+  80% short 1..512 + 20% long 2049..4096
+    n = 1,000 (seed 351): 2,000 instances, mean BFD rows 201.8, mean lower bound 200.3
+       FFD FEWER rows 0 | EQUAL 2,000 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 2000}
+       mean rows above the lower bound ceil(sum/T): FFD 1.5070, BFD 1.5070; largest: FFD 14, BFD 14; instances AT the lower bound: FFD 1,168, BFD 1,168
+    n = 10,000 (seed 352): 200 instances, mean BFD rows 2,011.5, mean lower bound 2,006.2
+       FFD FEWER rows 0 | EQUAL 200 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 200}
+       mean rows above the lower bound ceil(sum/T): FFD 5.2950, BFD 5.2950; largest: FFD 45, BFD 45; instances AT the lower bound: FFD 114, BFD 114
+  hard mix, thirds just over T/2, T/3, T/4: 2049..2112, 1366..1429, 1025..1088
+    n = 1,000 (seed 361): 2,000 instances, mean BFD rows 444.7, mean lower bound 369.5
+       FFD FEWER rows 0 | EQUAL 2,000 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 2000}
+       mean rows above the lower bound ceil(sum/T): FFD 75.2365, BFD 75.2365; largest: FFD 82, BFD 82; instances AT the lower bound: FFD 0, BFD 0
+    n = 10,000 (seed 362): 200 instances, mean BFD rows 4,447.2, mean lower bound 3,692.1
+       FFD FEWER rows 0 | EQUAL 200 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 200}
+       mean rows above the lower bound ceil(sum/T): FFD 755.1700, BFD 755.1700; largest: FFD 772, BFD 772; instances AT the lower bound: FFD 0, BFD 0
+  hard mix, wider: thirds in 2049..2304, 1366..1621, 1025..1280
+    n = 1,000 (seed 371): 2,000 instances, mean BFD rows 444.9, mean lower bound 393.0
+       FFD FEWER rows 0 | EQUAL 2,000 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 2000}
+       mean rows above the lower bound ceil(sum/T): FFD 51.8605, BFD 51.8605; largest: FFD 60, BFD 60; instances AT the lower bound: FFD 0, BFD 0
+    n = 10,000 (seed 372): 200 instances, mean BFD rows 4,446.0, mean lower bound 3,925.8
+       FFD FEWER rows 0 | EQUAL 200 | FFD MORE rows 0   (sign test p = 1)
+       mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 200}
+       mean rows above the lower bound ceil(sum/T): FFD 520.1750, BFD 520.1750; largest: FFD 542, BFD 542; instances AT the lower bound: FFD 0, BFD 0
+
+E3b EVERY SMALL INSTANCE: rows of T = 20 (the size of examples 4 and 5 in the doc); every multiset of n chat lengths,
+    each length 1..20, counted once; naive versions
+  n = 2: 210 instances | FFD fewer rows 0 (0.000%) | equal 210 | BFD fewer rows 0 (0.000%)
+  n = 3: 1,540 instances | FFD fewer rows 0 (0.000%) | equal 1,540 | BFD fewer rows 0 (0.000%)
+  n = 4: 8,855 instances | FFD fewer rows 0 (0.000%) | equal 8,855 | BFD fewer rows 0 (0.000%)
+  n = 5: 42,504 instances | FFD fewer rows 0 (0.000%) | equal 42,504 | BFD fewer rows 0 (0.000%)
+  n = 6: 177,100 instances | FFD fewer rows 0 (0.000%) | equal 177,088 | BFD fewer rows 12 (0.007%) | first 'BFD fewer' case: [16, 12, 5, 3, 2, 2] -> FFD 3, BFD 2 rows
+  n = 7: 657,800 instances | FFD fewer rows 6 (0.001%) | equal 657,759 | BFD fewer rows 35 (0.005%) | first 'BFD fewer' case: [20, 16, 12, 5, 3, 2, 2] -> FFD 4, BFD 3 rows | first 'FFD fewer' case: [15, 10, 6, 3, 2, 2, 2] -> FFD 2, BFD 3 rows
+  n = 8: 2,220,075 instances | FFD fewer rows 13 (0.001%) | equal 2,219,813 | BFD fewer rows 249 (0.011%) | first 'BFD fewer' case: [20, 20, 16, 12, 5, 3, 2, 2] -> FFD 5, BFD 4 rows | first 'FFD fewer' case: [20, 15, 10, 6, 3, 2, 2, 2] -> FFD 3, BFD 4 rows
+  all n = 2..8: 3,108,084 instances | FFD fewer 19 (0.001%) | equal 3,107,769 (99.990%) | BFD fewer 296 (0.010%)
+
+========================================================================================================================
+E4 TRL-STYLE GROUPS: shuffle the 5,000 real chats, cut into groups of G in that order, pack every group alone
+  seed 1234, G =    10:  500 groups | FFD 1,813 rows (83.34% real, 890 rows with >256 empty) | BFD 1,813 rows (83.34% real, 878 rows with >256 empty) | FFD - BFD = +0
+  seed 1234, G =   100:   50 groups | FFD 1,556 rows (97.11% real, 108 rows with >256 empty) | BFD 1,556 rows (97.11% real, 112 rows with >256 empty) | FFD - BFD = +0
+  seed 1234, G = 1,000:    5 groups | FFD 1,521 rows (99.34% real, 25 rows with >256 empty) | BFD 1,521 rows (99.34% real, 30 rows with >256 empty) | FFD - BFD = +0
+  seed 1234, G = 5,000:    1 groups | FFD 1,517 rows (99.60% real, 6 rows with >256 empty) | BFD 1,517 rows (99.60% real, 6 rows with >256 empty) | FFD - BFD = +0
+  G = 1,000, 1,000 different shuffles (seeds 0..999), total rows per shuffle: 1,000 instances, mean BFD rows 1,520.2, mean lower bound 1,511.0
+     FFD FEWER rows 0 | EQUAL 1,000 | FFD MORE rows 0   (sign test p = 1)
+     mean (FFD - BFD) = +0.0000 rows (+0.00000% of the rows); differences seen -> instances: {0: 1000}
+     mean rows above the lower bound ceil(sum/T): FFD 9.2400, BFD 9.2400; largest: FFD 11, BFD 11; instances AT the lower bound: FFD 0, BFD 0
+  G = 100, 1,000 different shuffles (seeds 0..999), total rows per shuffle: 1,000 instances, mean BFD rows 1,554.5, mean lower bound 1,511.0
+     FFD FEWER rows 0 | EQUAL 989 | FFD MORE rows 11   (sign test p = 0.000977)
+     mean (FFD - BFD) = +0.0110 rows (+0.00071% of the rows); differences seen -> instances: {0: 989, 1: 11}
+     mean rows above the lower bound ceil(sum/T): FFD 43.4690, BFD 43.4580; largest: FFD 49, BFD 49; instances AT the lower bound: FFD 0, BFD 0
+
+========================================================================================================================
+E5b SPEED (one CPU core, pure Python, input already sorted; best of k runs, garbage collector off while timing)
+    naive FFD scans rows from the first and stops at the first fit; naive BFD scans every open row;
+    fast FFD = max-tree over rows (depth log2 n); fast BFD = max-tree over empty-slot values 1..4096 (depth 12) + a heap
+    per value; TRL's loop = TRL's own _SegmentTree class and binning loop (depth 12, deque per value). Every version gets
+    the same Python list of lengths and returns the row of every chat; the sort (shared by both rules) is timed apart.
+  real stage-0, n = 5,000 chats: FFD rows 1,517, BFD rows 1,517 (lower bound 1,511); sort 0.3 ms
+    rows the naive versions look at (exact count): naive FFD 4,578,393, naive BFD 5,173,297 (BFD / FFD = 1.130); per chat: FFD 915.7, BFD 1,034.7
+    naive FFD      :    0.0598 s  (  11.95 us per chat; best of 5)
+    naive BFD      :    0.0768 s  (  15.35 us per chat; best of 5)
+    fast FFD       :    0.0031 s  (   0.61 us per chat; best of 5)
+    fast BFD       :    0.0058 s  (   1.17 us per chat; best of 5)
+    TRL's BFD loop :    0.0085 s  (   1.70 us per chat; best of 5)
+    naive BFD / naive FFD time = 1.28; fast BFD / fast FFD time = 1.90
+  resampled (seed 55), n = 50,000 chats: FFD rows 15,178, BFD rows 15,178 (lower bound 15,123); sort 2.4 ms
+    rows the naive versions look at (exact count): naive FFD 458,442,686, naive BFD 517,306,694 (BFD / FFD = 1.128); per chat: FFD 9,168.9, BFD 10,346.1
+    naive FFD      :    6.3554 s  ( 127.11 us per chat; best of 3)
+    naive BFD      :    8.0495 s  ( 160.99 us per chat; best of 3)
+    fast FFD       :    0.0298 s  (   0.60 us per chat; best of 5)
+    fast BFD       :    0.0459 s  (   0.92 us per chat; best of 5)
+    TRL's BFD loop :    0.0745 s  (   1.49 us per chat; best of 5)
+    naive BFD / naive FFD time = 1.27; fast BFD / fast FFD time = 1.54
+  resampled (seed 55), n = 200,000 chats: FFD rows 60,652, BFD rows 60,652 (lower bound 60,446); sort 10.3 ms
+    rows the naive versions look at (exact count): naive FFD 7,323,029,131, naive BFD 8,277,607,674 (BFD / FFD = 1.130); per chat: FFD 36,615.1, BFD 41,388.0
+    naive FFD      :  102.8452 s  ( 514.23 us per chat; best of 1)
+    naive BFD      :  129.4943 s  ( 647.47 us per chat; best of 1)
+    fast FFD       :    0.1250 s  (   0.63 us per chat; best of 5)
+    fast BFD       :    0.1764 s  (   0.88 us per chat; best of 5)
+    TRL's BFD loop :    0.2901 s  (   1.45 us per chat; best of 5)
+    naive BFD / naive FFD time = 1.26; fast BFD / fast FFD time = 1.41
+  resampled (seed 55), n = 1,000,000 chats: FFD rows 303,246, BFD rows 303,246 (lower bound 302,205); sort 60.3 ms
+    rows the naive versions look at (exact count): naive FFD 183,089,545,948, naive BFD 206,916,491,076 (BFD / FFD = 1.130); per chat: FFD 183,089.5, BFD 206,916.5
+    naive FFD      : NOT RUN: it would look at 183,089,545,948 rows; at the 14.0 ns per row measured at n = 200,000 that is about 43 minutes (projection, not a measurement)
+    naive BFD      : NOT RUN: it would look at 206,916,491,076 rows; at the 15.6 ns per row measured at n = 200,000 that is about 54 minutes (projection, not a measurement)
+    fast FFD       :    0.6688 s  (   0.67 us per chat; best of 3)
+    fast BFD       :    0.8696 s  (   0.87 us per chat; best of 3)
+    TRL's BFD loop :    1.4353 s  (   1.44 us per chat; best of 3)
+    fast BFD / fast FFD time = 1.30
+  summary (seconds; '-' = not run, see the projection above):
+             n  naive FFD  naive BFD   fast FFD   fast BFD   TRL loop
+         5,000     0.0598     0.0768     0.0031     0.0058     0.0085
+        50,000     6.3554     8.0495     0.0298     0.0459     0.0745
+       200,000   102.8452   129.4943     0.1250     0.1764     0.2901
+     1,000,000          -          -     0.6688     0.8696     1.4353
+
+total run time 406 s; load average at the end 1.20
