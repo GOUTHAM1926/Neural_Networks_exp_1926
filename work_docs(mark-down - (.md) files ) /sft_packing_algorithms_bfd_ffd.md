@@ -16,7 +16,7 @@ are in `profiling_reports/q10_packing_sim_2026_10_08/`:
 A few small numbers are plain arithmetic, shown where they appear (for example 1,510 x 4,096 = 6,184,960).
 
 **How to read this document.** Section 0 explains every word. Section 1 says what problem "packing" solves. Section 2
-explains attention from zero, because packing changes what attention sees. Sections 3-6 are the two packing rules with
+explains attention from zero, because packing changes what attention sees, and 2.8 says where document masking is used. Sections 3-6 are the two packing rules with
 17 worked examples. Section 7 is about chats longer than a row. Section 8 is TRL's three packing strategies. Section 9 is
 how packing changes the number of training steps (a future task). Section 10 is how the attention kernel keeps packed
 chats apart. Section 12 lists every correction. Section 13 compares First-Fit and Best-Fit and says which one to use.
@@ -246,6 +246,149 @@ C2     x x x x x x x x x x                     C2                   x x x
   chat looks to the model as if it starts at the beginning of a row.
 
 How this is built in a kernel (varlen attention, `cu_seqlens`) is section 10. Our two designs (A and B) both do it.
+
+### 2.8 Where document masking is used: SFT, pretraining, long-context training, DPO and RL (with sources)
+
+#### 2.8.1 The rule
+
+Document masking is needed **whenever more than one document sits in the same row**. If every row holds exactly one
+document (and pads after it), there is nothing else in the row to read, and plain causal attention is already correct
+(2.4).
+
+| what is in one row | example | plain causal attention gives | document masking needed? |
+| --- | --- | --- | --- |
+| one document + pads after it | `A0 A1 A2 A3 PAD PAD` | A's tokens read only A | no |
+| several whole documents | `A0 A1 A2 A3 B0 B1 B2 C0 C1 C2` | B reads A; C reads A and B | yes, if the documents are unrelated |
+| parts of several documents, cut at the row ends (`wrapped`) | `A7 A8 B0 B1 B2 B3 C0 C1 C2 C3` | B reads the end of A; C reads A and B | yes, if the documents are unrelated |
+
+Whether a training stage uses it therefore depends on how that stage builds its rows. The sections below go stage by
+stage.
+
+#### 2.8.2 SFT
+
+- **Without packing (our v1 today):** one chat per row, pads after it. No document masking is needed or used. Our
+  current SFT runs train this way.
+- **With packing:** document masking is the standard. Every packed-SFT tool we checked keeps the chats of a row apart:
+
+| tool | how it keeps packed chats apart | where (checked in the source) |
+| --- | --- | --- |
+| TRL (`bfd`, `bfd_split`) | positions restart at 0 for every chat; FlashAttention turns that into `cu_seqlens` (varlen); SDPA / eager get a same-chat mask from `transformers` for models that pass the positions | `trl/trainer/sft_trainer.py:1180`; `transformers/modeling_flash_attention_utils.py:480-515`; `transformers/masking_utils.py:734-763, 976-979` (section 8.4) |
+| TRL (`wrapped`) | **none**: no chat starts are recorded, so the chats read each other | `trl/data_utils.py:829-843`; `sft_trainer.py:1180, 1188-1192` (section 8.1) |
+| torchtitan | FlexAttention with a "block_causal" mask: causal AND same document | `torchtitan/models/common/attention.py:467` (`get_document_mask_mod`) |
+| Megatron-LM | the start of every sequence in the pack (`cu_seqlens`, passed as `PackedSeqParams`) | `megatron/core/packed_seq_params.py:10` |
+| ours (v2) | design A (the start of every chat in each row) or design B (a block mask); positions restart at 0 for every chat | our forward v62 and backward kernels (SFT work doc §40) |
+
+Why SFT always needs it when packing: each chat is a separate conversation, and when the model is used, a person's
+conversation is alone, with no other conversation before it (2.6). Training a chat while it can read another chat
+teaches the model to use text that will not be there.
+
+#### 2.8.3 Pretraining
+
+In pretraining, the data is long plain text (web pages, books, code). The usual way to build rows is to join the
+documents one after another, with an end token between them, and cut the stream into rows of the training length.
+That is the same as TRL's `wrapped` (8.1), so a row usually holds the end of one document and the start of the next.
+Real models made different choices here:
+
+**GPT-3 (OpenAI, 2020): no document masking.** From the paper's Appendix B ("Details of Model Training"): *"During
+training we always train on sequences of the full nctx = 2048 token context window, packing multiple documents into a
+single sequence when documents are shorter than 2048, in order to increase computational efficiency. Sequences with
+multiple documents are not masked in any special way but instead documents within a sequence are delimited with a
+special end of text token, giving the language model the information necessary to infer that context separated by the
+end of text token is unrelated. This allows for efficient training without need for any special sequence-specific
+masking."* In plain words: the documents do read each other, and the model is expected to learn that text before an
+end token belongs to a different document.
+
+**Llama 3 (Meta, 2024): document masking used.** From the paper's model architecture section (3.2), among the small
+changes from Llama 2: *"We use an attention mask that prevents self-attention between different documents within the
+same sequence. We find that this change had limited impact during in standard pre-training, but find it to be
+important in continued pre-training on very long sequences."*
+**SmolLM3 (Hugging Face, 2025): document masking used.** From the blog a colleague shared (section "document masking",
+which follows Hugging Face's SmolLM3 training playbook):
+
+- *"Causal masking means that for unrelated files A and B in the same batch, the tokens in B can attend to the tokens
+  in A, which degrades performance. With intra-document masking, the attention mask is modified so tokens can only
+  attend to previous tokens within the same document."*
+- *"When implementing document masking, Hugging Face saw small improvements on PIQA but otherwise no noticeable impact on
+  short context tasks. But in line with aforementioned research, they observed that it became crucial for scaling from
+  4k to 64k tokens."*
+- On model size: *"For smaller models, some implementations choose to omit intra-document masking, finding that the
+  additional complexity and potential reduction in cross-document learning doesn't justify the benefits at those
+  scales. However, for larger models, intra-document masking becomes more critical as the model's capacity to learn
+  from cross-document attention patterns diminishes relative to the benefits of cleaner document boundaries."*
+- SmolLM3 adopted document masking because it *"provides the foundation for long-context handling"*.
+
+**Our BluTrain pretraining: no document masking.**
+
+- Our pretraining shards separate documents with the end token 50256 (`flux_train_000001` has 74,264 end tokens per 100
+  million tokens, one before each document; SFT work doc §32.2), and rows are cut from that stream.
+- Our pretraining attention kernels have no document mask: causality is done by skipping tiles plus a mask on the
+  diagonal tile, with no attention, padding or document mask, no `cu_seqlens` and no position ids (SFT work doc §32,
+  the table of what our kernels do).
+- So our pretraining works the GPT-3 way.
+
+**Why the effect is small at short context and large at long context (as the sources report):**
+
+- At short context (2k-4k rows), a token mostly attends to nearby text. The end token marks the switch to a new
+  document, and the model learns that text before it is usually unrelated (GPT-3's reasoning). Reading a little of the
+  previous document costs little.
+- At long context (the 4k-to-64k step, Llama 3's long continued pretraining), the point of training is to learn real
+  long-distance links inside one long document. If a 64k row is full of unrelated documents and they can all read each
+  other, the model sees many long-distance links that mean nothing. Both Llama 3 and Hugging Face found the mask
+  important there.
+- The blog also lists *"shortening the average context length"* among the effects: with the mask, a token can only
+  read back to the start of its own document, so the stretch of text it learns from is, on average, shorter than the
+  whole row.
+
+#### 2.8.4 Mid-training and long-context extension
+
+This is the stage where the sources found document masking most important: Llama 3's "continued pre-training on very
+long sequences", and Hugging Face's step from 4k to 64k context. A model that is meant to handle long inputs well is
+trained on long rows, and the mask stops unrelated documents in those long rows from reading each other.
+
+#### 2.8.5 Preference tuning (DPO) and RL
+
+The same rule applies: it is needed only if several examples are packed into one row.
+
+- In TRL's DPO trainer today, the padding-free (packed) mode is switched off: *"`padding_free=True` is temporarily
+  unavailable after a refactor and is currently disabled. Falling back to standard padding"*
+  (`trl/trainer/dpo_trainer.py:708-713`). So TRL's DPO trains one example per row with padding, and no document mask is
+  needed there.
+- RL training (for example GRPO) and other trainers follow the same rule. Whether they pack depends on the tool, and we
+  have not checked them.
+
+#### 2.8.6 What document masking costs
+
+- **With a kernel that skips blocked tiles** (FlashAttention varlen, FlexAttention, our designs A and B), it removes work:
+  on stage-0, the packed run is 27.8% of today's work with the mask and 30.3% without it (2.7).
+- **With a full mask table** (PyTorch SDPA given an explicit mask), the GPU still computes every tile and only throws
+  the blocked results away, so there is no saving, and it is slower than a varlen kernel (SFT work doc §40.2).
+
+#### 2.8.7 Summary
+
+| stage | how rows are usually built | document masking | sources |
+| --- | --- | --- | --- |
+| SFT, no packing (our v1) | one chat per row + pads | not needed | 2.4 |
+| SFT, packed | several whole chats per row | **always used** (TRL `bfd`/`bfd_split`, torchtitan, Megatron-LM, ours) | 2.8.2 |
+| SFT, TRL `wrapped` | one stream cut every T tokens | not possible (no chat starts recorded) | 8.1 |
+| pretraining, short context | documents joined with an end token, cut into rows | **a choice:** GPT-3 and our BluTrain do not use it; Llama 3 and SmolLM3 do; small effect at short context | 2.8.3 |
+| long-context training (mid-training) | long rows with many documents | **used, and reported important** (Llama 3, SmolLM3) | 2.8.4 |
+| DPO / RL | depends on the tool | needed only when examples are packed; TRL DPO does not pack today | 2.8.5 |
+
+#### 2.8.8 Sources for this section
+
+- GPT-3, Appendix B: [Brown et al., "Language Models are Few-Shot Learners", arXiv 2005.14165](https://arxiv.org/abs/2005.14165)
+- Llama 3, section 3.2: ["The Llama 3 Herd of Models", arXiv 2407.21783](https://arxiv.org/abs/2407.21783)
+- SmolLM3 / Hugging Face: [the blog, section "document masking"](https://djdumpling.github.io/2026/01/31/frontier_training.html#document-masking),
+  which follows [Hugging Face's smol-training-playbook](https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook)
+- TRL: [`sft_trainer.py:1180-1192`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_trainer.py#L1180-L1192),
+  [`data_utils.py:829-843`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/data_utils.py#L829-L843),
+  [`dpo_trainer.py:708-713`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/dpo_trainer.py#L708-L713)
+- transformers: [`masking_utils.py:734-763`](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/masking_utils.py#L734-L763),
+  [`modeling_flash_attention_utils.py:480-515`](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/modeling_flash_attention_utils.py#L480-L515)
+- torchtitan: [`models/common/attention.py:467`](https://github.com/pytorch/torchtitan/blob/1e4d33de4b02f6a6f2ea8d58e65f4d3ce33f1df8/torchtitan/models/common/attention.py#L467)
+- Megatron-LM: [`core/packed_seq_params.py:10`](https://github.com/NVIDIA/Megatron-LM/blob/8b2f660bb89e38b6210575dea7984fd05899adf0/megatron/core/packed_seq_params.py#L10)
+- Ours: SFT work doc §32 (our attention kernels have no document mask) and §32.2 (end token 50256 between pretraining
+  documents); §40 (our packed designs A and B).
 
 ---
 
@@ -1655,33 +1798,61 @@ varlen causal mask (three documents packed: 1500 + 800 + 1796):
 
 ## 11. Sources
 
-| what | where |
+Every source below was opened and checked on 2026-10-14. Code links point to the exact version (commit) we read, and
+the line numbers match that version, so they keep working even if the projects change later.
+
+### 11.1 Papers, blog and web pages
+
+| what it supports | source (link) |
 | --- | --- |
-| TRL Best-Fit-Decreasing, `bfd` / `bfd_split` | `trl/data_utils.py:739-826` (cut the end `:754-755`, chunks `:756-769`, empty chats removed `:750`) |
-| TRL `wrapped` | `trl/data_utils.py:829-843` |
-| TRL strategy descriptions | `trl/data_utils.py:860-869`; `trl/docs/source/reducing_memory_usage.md:81-88` |
-| TRL default strategy `bfd`; shuffle off by default | `trl/trainer/sft_config.py:230-231` (also `data_utils.py:849`); `sft_config.py:219-221` |
-| TRL packs per `map` batch (1,000 chats) | `trl/data_utils.py:910-925`; `datasets` `Dataset.map(batch_size=1000)` |
-| TRL's SFT trainer passes only `num_proc` and a label to `map` | `trl/trainer/sft_trainer.py:1475-1477, 1681-1682, 1692` |
-| `datasets` cuts the data into one part per worker before grouping | `datasets/arrow_dataset.py:3479, 3546-3553` |
-| TRL padding-free on for `bfd` / `bfd_split` only; warning for `wrapped` | `trl/trainer/sft_trainer.py:1180, 1188-1192` |
-| TRL warning for non-FlashAttention packing ("cross-contamination between samples") | `trl/trainer/sft_trainer.py:1247-1255` |
-| TRL joins a batch into one sequence (padding-free) | `trl/trainer/sft_trainer.py:495-500` |
-| TRL "not a target" at each chat start | `trl/trainer/sft_trainer.py:516` |
-| TRL shuffle before packing | `trl/trainer/sft_trainer.py:1686-1689` |
-| TRL truncation settings | `trl/trainer/sft_config.py:203-216` |
-| transformers: restarting positions -> `cu_seqlens`; packed-batch check | `transformers/modeling_flash_attention_utils.py:480-515, 558-571` |
-| torchtitan drops over-long chats | `torchtitan/hf_datasets/text_datasets.py:145-147, 210-217` |
-| Megatron-LM cuts the end of an overflowing pack | `megatron/training/datasets/sft_dataset.py:163-172` |
-| ours: drop rules, T limit | `sft/prepare_sft_data.py:38-51, 141, 167` |
-| ours: SFT step settings (rows per step, epochs, warmup, multiple-of-B check) | `bluscript_zero_ckpt.cpp:201, 920-966`; schedule `:801-818` |
-| transformers: same-chat mask for SDPA / eager from the positions | `transformers/masking_utils.py:720-727, 734-763, 857-865, 976-979`; `models/llama/modeling_llama.py:380-386` |
-| torchtitan packing: First-Fit, streaming, 8 open rows | `torchtitan/components/data/packing.py:225-279` |
-| ours: micro-batches per epoch, unused rows | `sft/SftDataLoader.h:16, 56` |
-| paper behind `bfd_split` | "Fewer Truncations Improve Language Modeling", arXiv 2404.10830 (TRL `docs/source/paper_index.md:1294`) |
-| First-Fit-Decreasing worst case 11/9 x best + 6/9, tight | Dósa (2007); full proof Dósa, Li, Han, Tuza, Theoretical Computer Science 510 (2013) |
-| Best-Fit-Decreasing worst case 11/9 x best + 1 | Johnson (1973 thesis), as stated in Wikipedia's "Bin packing problem" page |
-| all computed examples | `profiling_reports/q10_packing_sim_2026_10_08/` |
+| the blog a colleague shared: sequence packing, First-Fit vs Best-Fit, the SmolLM3 effective-batch result | [frontier_training, section "sequence packing"](https://djdumpling.github.io/2026/01/31/frontier_training.html#sequence-packing) |
+| the blog: the learning-rate advice for packing | [frontier_training, section "learning rate and epochs"](https://djdumpling.github.io/2026/01/31/frontier_training.html#learning-rate-and-epochs) |
+| the blog: document masking, the SmolLM3 results, small models sometimes skipping it | [frontier_training, section "document masking"](https://djdumpling.github.io/2026/01/31/frontier_training.html#document-masking) |
+| Hugging Face's SmolLM3 training playbook (the blog's source for the SmolLM3 numbers) | [smol-training-playbook](https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook) |
+| GPT-3: packed documents are not masked; an end token separates them (Appendix B, "Details of Model Training") | [Brown et al., "Language Models are Few-Shot Learners", arXiv 2005.14165](https://arxiv.org/abs/2005.14165) |
+| Llama 3: a mask between documents; limited impact in standard pretraining, important in long continued pretraining (section 3.2) | ["The Llama 3 Herd of Models", arXiv 2407.21783](https://arxiv.org/abs/2407.21783) |
+| the idea behind `bfd_split`: Best-Fit-Decreasing on document chunks, fewer cut documents | ["Fewer Truncations Improve Language Modeling", arXiv 2404.10830](https://arxiv.org/abs/2404.10830) |
+| TRL's docs: breaking sequence continuity hurts performance (cited for `wrapped`) | [Qwen3-Coder-Next technical report, arXiv 2603.00729](https://huggingface.co/papers/2603.00729) |
+| First-Fit-Decreasing never uses more than 11/9 x best + 6/9 rows, and this is tight (Dósa 2007; full proof Dósa, Li, Han and Tuza, Theoretical Computer Science 510, 2013) | [Wikipedia: First-fit-decreasing bin packing](https://en.wikipedia.org/wiki/First-fit-decreasing_bin_packing) |
+| Best-Fit-Decreasing has the same 11/9 ratio (Johnson's 1973 thesis) | [Wikipedia: Bin packing problem](https://en.wikipedia.org/wiki/Bin_packing_problem) |
+| the "L2" lower bound used in example 15 | Martello and Toth, "Knapsack Problems: Algorithms and Computer Implementations" (book, 1990) |
+
+### 11.2 Source code of other projects (exact versions)
+
+| what it supports | source (link to the exact lines) |
+| --- | --- |
+| TRL Best-Fit-Decreasing, `bfd` / `bfd_split` | [`trl/data_utils.py:739-826`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/data_utils.py#L739-L826) (empty chats removed [`:750`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/data_utils.py#L750), cut the end [`:754-755`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/data_utils.py#L754-L755), chunks [`:756-769`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/data_utils.py#L756-L769), each chunk's length [`:774-775`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/data_utils.py#L774-L775)) |
+| TRL `wrapped` | [`trl/data_utils.py:829-843`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/data_utils.py#L829-L843) |
+| TRL strategy descriptions | [`trl/data_utils.py:860-869`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/data_utils.py#L860-L869); [`docs/source/reducing_memory_usage.md:81-88`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/docs/source/reducing_memory_usage.md?plain=1#L81-L88) |
+| TRL packs per `map` batch (1,000 chats) | [`trl/data_utils.py:910-925`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/data_utils.py#L910-L925); the `datasets` library 5.1.0, `Dataset.map(batch_size=1000)` |
+| `datasets` cuts the data into one part per worker before grouping | `datasets` 5.1.0 (installed package), `datasets/arrow_dataset.py:3479, 3546-3553` |
+| TRL default strategy `bfd`; shuffle off by default | [`trl/trainer/sft_config.py:230-231`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_config.py#L230-L231); [`:219-221`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_config.py#L219-L221) |
+| TRL truncation settings | [`trl/trainer/sft_config.py:203-216`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_config.py#L203-L216) |
+| TRL joins a batch into one sequence (padding-free) | [`trl/trainer/sft_trainer.py:495-500`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_trainer.py#L495-L500) |
+| TRL "not a target" at each chat start | [`trl/trainer/sft_trainer.py:516`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_trainer.py#L516) |
+| TRL padding-free on for `bfd` / `bfd_split` only; warning for `wrapped` | [`trl/trainer/sft_trainer.py:1180-1192`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_trainer.py#L1180-L1192) |
+| TRL warning for packing without FlashAttention ("cross-contamination between samples") | [`trl/trainer/sft_trainer.py:1247-1255`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_trainer.py#L1247-L1255) |
+| TRL's SFT trainer passes only `num_proc` and a label to `map` | [`trl/trainer/sft_trainer.py:1475-1477`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_trainer.py#L1475-L1477), [`:1681-1692`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_trainer.py#L1681-L1692) |
+| TRL shuffle before packing | [`trl/trainer/sft_trainer.py:1686-1689`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/sft_trainer.py#L1686-L1689) |
+| TRL DPO: packed (padding-free) mode currently disabled | [`trl/trainer/dpo_trainer.py:708-713`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/trainer/dpo_trainer.py#L708-L713) |
+| transformers: restarting positions -> `cu_seqlens` (FlashAttention); packed-batch check | [`modeling_flash_attention_utils.py:480-515`](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/modeling_flash_attention_utils.py#L480-L515), [`:558-571`](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/modeling_flash_attention_utils.py#L558-L571) |
+| transformers: same-chat mask for SDPA / eager from the positions | [`masking_utils.py:720-727`](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/masking_utils.py#L720-L727), [`:734-763`](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/masking_utils.py#L734-L763), [`:857-865`](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/masking_utils.py#L857-L865), [`:976-979`](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/masking_utils.py#L976-L979); Llama passes the positions: [`models/llama/modeling_llama.py:380-386`](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/models/llama/modeling_llama.py#L380-L386) |
+| torchtitan drops over-long chats | [`torchtitan/hf_datasets/text_datasets.py:145-147, 210-217`](https://github.com/pytorch/torchtitan/blob/1e4d33de4b02f6a6f2ea8d58e65f4d3ce33f1df8/torchtitan/hf_datasets/text_datasets.py#L145-L217) |
+| torchtitan packing: First-Fit, streaming, 8 open rows | [`torchtitan/components/data/packing.py:225-279`](https://github.com/pytorch/torchtitan/blob/1e4d33de4b02f6a6f2ea8d58e65f4d3ce33f1df8/torchtitan/components/data/packing.py#L225-L279) |
+| torchtitan block-causal (document) mask | [`torchtitan/models/common/attention.py:467`](https://github.com/pytorch/torchtitan/blob/1e4d33de4b02f6a6f2ea8d58e65f4d3ce33f1df8/torchtitan/models/common/attention.py#L467) |
+| Megatron-LM cuts the end of an overflowing pack | [`megatron/training/datasets/sft_dataset.py:163-172`](https://github.com/NVIDIA/Megatron-LM/blob/8b2f660bb89e38b6210575dea7984fd05899adf0/megatron/training/datasets/sft_dataset.py#L163-L172) |
+| Megatron-LM packed sequence starts (`cu_seqlens`) | [`megatron/core/packed_seq_params.py:10`](https://github.com/NVIDIA/Megatron-LM/blob/8b2f660bb89e38b6210575dea7984fd05899adf0/megatron/core/packed_seq_params.py#L10) |
+| TRL's docs: the paper behind `bfd_split` | [`docs/source/paper_index.md:1294`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/docs/source/paper_index.md?plain=1#L1294) |
+
+### 11.3 Our own code and records
+
+| what it supports | where |
+| --- | --- |
+| our drop rules and row-length limit | `BluTrain_sft/sft/prepare_sft_data.py:38-51, 141, 167-168` |
+| our SFT step settings (rows per step, epochs, warmup, the multiple-of-B check, learning-rate schedule) | `BluTrain_sft/bluscript_zero_ckpt.cpp:201, 920-966, 801-818` |
+| our loader: micro-batches per epoch, unused rows | `BluTrain_sft/sft/SftDataLoader.h:16, 56` |
+| our pretraining: end token 50256 between documents; no document mask in our attention kernels | SFT work doc §32.2 and §32 |
+| every computed example and study in this document (scripts and their outputs) | [`profiling_reports/q10_packing_sim_2026_10_08/`](https://github.com/GOUTHAM1926/Neural_Networks_exp_1926/tree/main/profiling_reports/q10_packing_sim_2026_10_08) |
 
 ---
 

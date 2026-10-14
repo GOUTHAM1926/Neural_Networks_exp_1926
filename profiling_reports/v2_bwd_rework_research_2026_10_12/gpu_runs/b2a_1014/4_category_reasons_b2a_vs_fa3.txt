@@ -1,0 +1,58 @@
+time per instruction category = share of stall samples x kernel time (ours 2478 us, FA3 2481 us)
+category                         ours us    FA3 us  ours - FA3
+GEMM issue (HGMMA)                 652.5     516.9      +135.5
+float math                         306.7     206.9       +99.8
+GEMM wait (DEPBAR)                 217.4     131.0       +86.4
+exp (MUFU)                          76.4      44.8       +31.7
+named barrier                       84.7      70.8       +13.9
+TMA / bulk copy                      6.4       3.2        +3.3
+smem load                           28.5      31.4        -2.9
+address / descriptor / int         162.8     171.2        -8.4
+fence                              153.4     163.0        -9.6
+bf16 pack                           30.4      60.7       -30.3
+mbarrier wait/arrive                 4.8      43.3       -38.5
+other                               77.7     119.3       -41.7
+uniform datapath (U*)              205.5     257.0       -51.4
+smem store                          83.3     151.6       -68.3
+branch / reconverge                387.3     510.2      -122.9
+TOTAL                             2478.0    2481.4        -3.4
+
+float math: executed instructions ours 197.0M, FA3 158.1M | stall us-eq ours 306.7, FA3 206.9
+   short_sb         ours   131.1  FA3    53.4  diff   +77.7
+   wait             ours     4.7  FA3    23.2  diff   -18.5
+   selected         ours    90.5  FA3    73.9  diff   +16.6
+   dispatch         ours    50.3  FA3    34.1  diff   +16.2
+   not_selected     ours    24.2  FA3    18.4  diff    +5.8
+   math             ours     5.9  FA3     3.8  diff    +2.1
+
+GEMM issue (HGMMA): executed instructions ours 45.0M, FA3 45.0M | stall us-eq ours 652.5, FA3 516.9
+   mio              ours   130.5  FA3    70.3  diff   +60.2
+   (arrive)         ours   302.6  FA3   258.8  diff   +43.8
+   barrier          ours    71.7  FA3    50.4  diff   +21.3
+   wait             ours   100.1  FA3    95.2  diff    +4.8
+   dispatch         ours     9.1  FA3     5.3  diff    +3.9
+   not_selected     ours    18.1  FA3    15.8  diff    +2.3
+
+GEMM wait (DEPBAR): executed instructions ours 6.1M, FA3 6.1M | stall us-eq ours 217.4, FA3 131.0
+   barrier          ours   199.8  FA3   124.3  diff   +75.5
+   not_selected     ours     6.0  FA3     0.6  diff    +5.4
+   dispatch         ours     5.0  FA3     0.3  diff    +4.7
+   wait             ours     3.7  FA3     3.0  diff    +0.7
+   selected         ours     2.9  FA3     2.8  diff    +0.1
+   (arrive)         ours     0.0  FA3     0.0  diff    +0.0
+
+exp (MUFU): executed instructions ours 39.2M, FA3 38.9M | stall us-eq ours 76.4, FA3 44.8
+   mio              ours    20.0  FA3     7.2  diff   +12.8
+   not_selected     ours    17.1  FA3     4.7  diff   +12.5
+   dispatch         ours    11.0  FA3     4.7  diff    +6.3
+   selected         ours    17.2  FA3    18.3  diff    -1.0
+   short_sb         ours     0.7  FA3     0.0  diff    +0.7
+   wait             ours    10.4  FA3     9.9  diff    +0.4
+
+named barrier: executed instructions ours 4.4M, FA3 4.5M | stall us-eq ours 84.7, FA3 70.8
+   long_sb          ours    78.4  FA3    61.5  diff   +17.0
+   branch_resolving ours     0.0  FA3     2.6  diff    -2.6
+   not_selected     ours     0.5  FA3     1.1  diff    -0.6
+   wait             ours     3.5  FA3     2.9  diff    +0.5
+   dispatch         ours     0.3  FA3     0.6  diff    -0.4
+   selected         ours     2.0  FA3     2.1  diff    -0.1

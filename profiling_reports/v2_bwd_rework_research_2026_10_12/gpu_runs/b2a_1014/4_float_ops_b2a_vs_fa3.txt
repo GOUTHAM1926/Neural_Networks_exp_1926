@@ -1,0 +1,15 @@
+== ours b2a: float-type instructions, executed (M, warp-level) | short_sb us-eq | total 277.5M
+   FMUL.FTZ                          80.3M   short_sb    0.0
+   F2FP.BF16.F32.PACK_AB             41.3M   short_sb    2.3
+   FFMA.FTZ                          38.9M   short_sb   70.0
+   MUFU.EX2                          38.9M   short_sb    0.5
+   FSEL                              38.9M   short_sb   12.3
+   FADD.FTZ                          38.9M   short_sb   48.8
+   MUFU.RCP                           0.2M   short_sb    0.2
+== FA3: float-type instructions, executed (M, warp-level) | short_sb us-eq | total 235.9M
+   FMUL.FTZ                          41.3M   short_sb    3.8
+   FSEL                              38.9M   short_sb    0.2
+   FFMA.FTZ                          38.9M   short_sb   12.5
+   MUFU.EX2                          38.9M   short_sb    0.0
+   FADD.FTZ                          38.9M   short_sb   37.0
+   F2FP.BF16.F32.PACK_AB             38.9M   short_sb    2.5

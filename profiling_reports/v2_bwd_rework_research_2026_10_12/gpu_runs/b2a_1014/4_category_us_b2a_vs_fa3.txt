@@ -1,0 +1,18 @@
+time per instruction category = share of stall samples x kernel time (ours 2478 us, FA3 2481 us)
+category                         ours us    FA3 us  ours - FA3
+GEMM issue (HGMMA)                 652.5     516.9      +135.5
+float math                         306.7     206.9       +99.8
+GEMM wait (DEPBAR)                 217.4     131.0       +86.4
+exp (MUFU)                          76.4      44.8       +31.7
+named barrier                       84.7      70.8       +13.9
+TMA / bulk copy                      6.4       3.2        +3.3
+smem load                           28.5      31.4        -2.9
+address / descriptor / int         162.8     171.2        -8.4
+fence                              153.4     163.0        -9.6
+bf16 pack                           30.4      60.7       -30.3
+mbarrier wait/arrive                 4.8      43.3       -38.5
+other                               77.7     119.3       -41.7
+uniform datapath (U*)              205.5     257.0       -51.4
+smem store                          83.3     151.6       -68.3
+branch / reconverge                387.3     510.2      -122.9
+TOTAL                             2478.0    2481.4        -3.4
