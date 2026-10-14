@@ -4335,20 +4335,27 @@ themselves ("warpgroup arrive" 16.8%).
 
 ### 43.7 Where the backward started today and where it is now
 
-Backward kernel, step by step (ncu at fixed clocks, B8 18/6):
+Backward kernel, step by step (B8 18/6). The kernel-time columns are the main kernel alone, measured by ncu at fixed
+clocks; FA3 appears only in the "x FA3" column. The same-session column says which version of OUR kernel each row was
+raced against (alternating runs, mean over 13 shapes); the last column multiplies those races together, so every row
+is against Vj1d:
 
-| step | kernel time (us) | x FA3 (2481 us) | speed vs the step before (same session, mean of 13 shapes) |
-|---|---|---|---|
-| Vj1d, old default (10-12) | 3626 | 1.46 | - |
-| first Vj2 (10-12) | 3195 | 1.29 | 0.89 of Vj1d's time |
-| + address / descriptor fix | 2778 | 1.12 | 0.80 of Vj1d's time |
-| + fix 1 dQ path | 2599 | 1.05 | 0.943 |
-| + fix 4 block order | 2590 | 1.04 | 0.967 |
-| + fix 5 epilogue | 2545 | 1.03 | 0.989 |
-| + G2 | 2547 | 1.03 | 0.999 |
-| + G1 | 2532 | 1.02 | 0.997 |
-| + G3 (current) | 2512 | 1.01 | 0.994 |
-| FA4 / cuDNN | 2478 / 2770 | 1.00 / 1.12 | |
+| step | kernel time (us) | x FA3's time (2481 us) | same-session race (mean of 13 shapes) | running total vs Vj1d's time |
+|---|---|---|---|---|
+| Vj1d, old default (measured 10-12) | 3626 | 1.46x | - | 1.00x |
+| first Vj2 (10-12) | 3195 | 1.29x | 0.89x Vj1d's time | 0.89x |
+| + memory path and descriptor fixes (43.1) | 2778 | 1.12x | 0.80x Vj1d's time | 0.80x |
+| + fix 1 dQ path | 2599 | 1.05x | 0.943x the 43.1 version's time | 0.757x |
+| + fix 4 block order | 2590 | 1.04x | 0.967x the fix-1 version's time | 0.732x |
+| + fix 5 epilogue | 2545 | 1.03x | 0.989x the fix-4 version's time | 0.724x |
+| + G2 | 2547 | 1.03x | 0.999x the fix-5 version's time | 0.723x |
+| + G1 | 2532 | 1.02x | 0.997x the G2 version's time | 0.721x |
+| + G3 (current) | **2512** | **1.01x** | 0.994x the G1 version's time | **0.717x** |
+| FA4 / cuDNN | 2478 / 2770 | 1.00x / 1.12x | - | - |
+
+Rows 2 and 3 are raced against Vj1d because that is how those runs were done: the fixed Vj2 was never raced against the
+first Vj2 in one session. The kernel-time column is our model's shape only; the race columns are means over 13 shapes and
+include the small helper kernels, so the two differ a little.
 
 Start of day vs now (API time per call, ms, same-session runs; "now" = 18:48, before the G-series):
 
@@ -4406,7 +4413,54 @@ Start of day vs now (API time per call, ms, same-session runs; "now" = 18:48, be
 Box snapshots: `v2_bbd977be`, `f1`, `f2`, `f4`, `f4s4`, `f5`, `g2`, `g12`, `g123` (current). The full 605 check has not
 run on g123 yet (it passed on f5; g2, g12, g123 passed the quick 144 with identical errors).
 
-### 43.11 Next
+### 43.11 Clarifications asked today (names, what applies where, how to read the tables)
+
+**Two different "v2"s.** "v2" (our SFT plan) = packing several chats into one 4096-token row. "Vj2" = the name of a
+backward kernel version (the Vj series). They are unrelated names.
+
+**The backward kernels for H200** (`GQA_bwd_generic.cu`, the mode list and the comments above it):
+
+| kernel | file | chosen by | design | repeat-exactness | packed SFT rows |
+|---|---|---|---|---|---|
+| v44 | `GQA_bwd_sm90.cu` | `USE_DETERMINISTIC_DQ=1` | one block per (batch, KV head, 64-key tile); the block sums the G query heads itself | dQ bit-identical (slowest) | no |
+| Vj1 | `GQA_bwd_vj1_sm90.cu` | `USE_FLASH=1` | one block per (batch, query head, 64-key tile), 128 threads, 2 blocks per SM; dK/dV of the G query heads summed by atomic TMA reduce-adds in global memory | dK/dV change by ~1 bf16 ULP run to run | no |
+| Vj1d | `GQA_bwd_vj1d_sm90.cu` | default | Vj1's design, but each query head writes its dK/dV once and a small kernel sums the G heads in a fixed order | dK/dV bit-identical (as cuDNN) | yes (A and B since 10-10) |
+| Vj2 | `GQA_bwd_vj2_sm90.cu` | `USE_VJ2=1` | FA3 layout: 128 keys per block, 384 threads, 1 loader + 2 compute warpgroups | as Vj1d | not yet (G7) |
+
+Order they were made: v44 -> Vj1 (3x more blocks, so small batches fill the GPU) -> Vj1d (dK/dV made repeat-exact, made
+the default) -> Vj2 (10-12). The forward is one kernel, v62, with modes 0 (normal), B and A (packed).
+
+**What today's work applies to.** Every backward fix of today is inside Vj2, so it speeds up the backward of normal
+causal rows: pretraining, and SFT v1 (one chat per row + padding, which is a normal causal row). It does not reach SFT v2
+packed rows yet: Vj2 refuses them and they run Vj1d. G7 adds modes A and B to Vj2 (packing only changes where each chat
+starts and adds the chat-border masks; the main loop is the same), after which the fixes apply to packed rows too and Vj2
+can replace v44, Vj1 and Vj1d. Today's benchmarks covered both normal and packed rows (43.5). Vj2 is still opt-in
+(`USE_VJ2=1`); making it the default is a later step.
+
+**Fix (b) of 43.1 and G2 are two different things.** Fix (b) changed how many instructions make a descriptor; G2 changed
+in which kind of register it is made. The tensor-core instruction reads its descriptor only from a uniform register (one
+value per warp), so a descriptor made in normal per-thread registers needs a copy (`R2UR`) before every multiplication.
+Counts are executed instructions per backward run, B8 18/6:
+
+| version | how the descriptor is made | made in | instructions spent making descriptors | copies before each multiplication | total instructions |
+|---|---|---|---|---|---|
+| first Vj2 (10-12) | rebuilt from a pointer, ~5.4 instructions per multiplication | normal registers | ~250M (23% of all) | 58.5M | 1096M |
+| after fix (b) (made 10-12, tested 10-13) | base made once, then 1 add per multiplication | normal registers | ~5.4 -> 1 per multiplication | still 58.5M | 840M (fix a + fix b) |
+| after fixes 1, 4, 5 (before G2) | same | normal registers | same | 59.1M | 796M |
+| after G2 | same | uniform registers (once per warp) | same | 0.7M | 743M |
+
+G2 also cut IMAD 74M -> 41M; part of the work moved to the uniform unit (137M -> 212M), so the total fell by 53M.
+
+**LSE and exp.** exp(x) = e^x (e = 2.718). LSE (log-sum-exp) is one number per query row that the forward saves: the log
+of that row's softmax sum. The backward rebuilds every probability as p = exp(score - LSE) without re-adding the row; each
+thread reads the LSE of its 16 query rows per step (8 x `LDS.64`). The GPU's exp unit computes 2^x, so the scores are
+multiplied by log2(e) = 1.4427 first and the saved LSE values are pre-multiplied by 1.4427 (one multiply fewer per score).
+
+**How to read the step table in 43.7.** FA3 appears only in the "x FA3" column. The same-session column names which version
+of our kernel each row was raced against (rows 2-3 against Vj1d, from row 4 against the version in the row above); the last
+column multiplies the races, so every row is against Vj1d.
+
+### 43.12 Next
 
 1. Full CLASSIC (605) on g123.
 2. Forward, where the gap is (1.21x FA3 on B8 18/6): G1 for P.V (`m64n128k16`, V descriptor LBO = 16384 B), G5 tail,
