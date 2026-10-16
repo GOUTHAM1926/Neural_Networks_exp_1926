@@ -1109,6 +1109,8 @@ option 5 (a long-context stage first, then a bigger T).
 
 ## 8. TRL's three packing strategies in detail
 
+**Future task (2026-10-15):** the user wants TRL's `bfd_split` behaviour later: cut a chat longer than the row into pieces of at most T tokens and pack each piece as its own segment (own start, positions from 0, own end), instead of dropping it. For now we keep dropping. Open points (where to cut, the missing end token in every piece but the last, targets in a piece that starts inside an answer, the context lost between pieces, an ablation drop vs split): SFT work doc §45.4.
+
 ### 8.1 `wrapped` - exactly how it works
 
 `wrapped` is the simplest strategy. It has two steps and nothing else.

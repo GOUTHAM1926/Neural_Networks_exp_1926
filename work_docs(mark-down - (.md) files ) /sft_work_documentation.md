@@ -4623,3 +4623,1146 @@ run 2b = pack once + fill steps to 61,075 trained tokens (51-82 chats, 18-22 row
   - The new wait costs 50; exp and dS lines now wait longer for shared-memory values (+64).
 - **Remaining gaps to FA3:** shared-memory-queue stalls +93 (B-3), dispatch +51, warps waiting at the dP / dV / S
   starts +44 (B-2b), helper kernels +8 (B-1).
+
+### 44.6 Future task, FIRST THING on 2026-10-15 morning: special tokens or plain-text role markers, and chat templates
+
+The user asked to start 2026-10-15 with this, in parallel with the attention-kernel work. Nothing below is decided yet.
+Everything marked **(checked 10-14)** was run or read today; everything marked **(to check)** must be confirmed from a
+source (paper, model card, tokenizer file or source code at an exact commit) before it goes into a decision.
+
+#### 44.6.1 The questions to answer
+
+1. **Add or not:** should the role markers (`<|system|>`, `<|user|>`, `<|assistant|>`) and the end-of-turn marker be
+   added to the tokenizer as new special tokens (one id each), or should we keep writing them as plain text that the
+   GPT-2 BPE splits into pieces (`<|assistant|>` -> `<`, `|`, `ass`, `istant`, `|`, `>`)?
+2. **If we do not add them:** how does the model learn where a chat, a turn and an answer start and end? (What is
+   learned from the plain-text pieces, what is learned from the end token, and what the inference code must do.)
+3. **If we do add them:** when (at pretraining, at SFT, or in a separate short stage between them), and what is the
+   full process (tokenizer, embedding rows, output rows, their starting values, which steps train them, every tool
+   that must know the new ids)?
+4. **How others do it, and how it is going for them:** which models use plain-text markers, which use real special
+   tokens, which ones reserved the ids at pretraining, and what problems people reported (for example new rows that
+   were never trained).
+5. **Chat templates:** what a chat template is, where it lives, how it is applied for training and for generation,
+   how it decides which tokens get loss, and what ours should be.
+
+#### 44.6.2 What we do today (checked 10-14)
+
+- **Tokenizer:** GPT-2 BPE through `tiktoken.get_encoding("gpt2")`. `n_vocab` = 50,257. The only special token is
+  `<|endoftext|>` = id **50256** (`enc.special_tokens_set` = {'<|endoftext|>'}).
+- **Model vocab rows:** 50,304 (`VOCAB_ROWS = 50304`, `sft/prepare_sft_data.py:32`; 50,257 rounded up). So ids
+  **50,257 to 50,303 (47 ids) exist as rows in the model but are not used by the tokenizer**.
+- **Template "tulu-plain-v1"** (`sft/prepare_sft_data.py:10-14, 33`):
+  `<|system|>\n{system}\n<|user|>\n{user}\n<|assistant|>\n{answer}<|endoftext|><|user|>\n ...`
+  - Each piece is encoded on its own with `enc.encode_ordinary(...)` (`:52-63`): the marker, then the content, then
+    either the end id (after an answer) or `"\n"` (after a user or system turn). So BPE never merges a marker with the
+    words next to it.
+  - After each answer the real id 50256 is appended (`ids.append(PAD_ID)`, `:60`) and it is a **target** (the model
+    must learn to stop). Marker tokens are not targets (`mask += [False] * len(marker)`, `:54`).
+  - Text that looks like `<|endoftext|>` inside a message is encoded as plain text (7 pieces), never as id 50256
+    (asserted at `:114-115`). So a user message cannot fake an end token.
+  - Rows are padded with 50256 too (`PAD_ID = 50256`, `:30`); pads are not targets.
+- **How the markers split today** (tiktoken gpt2, `encode_ordinary`, run 10-14):
+
+| text | tokens | ids | pieces |
+| --- | --- | --- | --- |
+| `<\|system\|>\n` | 6 | 27, 91, 10057, 91, 29, 198 | `<` `\|` `system` `\|` `>` `\n` |
+| `<\|user\|>\n` | 6 | 27, 91, 7220, 91, 29, 198 | `<` `\|` `user` `\|` `>` `\n` |
+| `<\|assistant\|>\n` | 7 | 27, 91, 562, 10167, 91, 29, 198 | `<` `\|` `ass` `istant` `\|` `>` `\n` |
+| `assistant` (no space) | 2 | 562, 10167 | `ass` `istant` |
+| ` assistant` (with a space) | 1 | 8796 | ` assistant` |
+| `<\|endoftext\|>` as plain text | 7 | 27, 91, 437, 1659, 5239, 91, 29 | `<` `\|` `end` `of` `text` `\|` `>` |
+| `<\|endoftext\|>` as the special id | 1 | 50256 | (one token) |
+| `<\|im_start\|>assistant\n` (ChatML, for comparison) | 10 | 27, 91, 320, 62, 9688, 91, 29, 562, 10167, 198 | `<` `\|` `im` `_` `start` `\|` `>` `ass` `istant` `\n` |
+
+  The markers cost about 20 tokens per chat, against an average chat of 1,238 tokens on stage-0.
+- **Tülu 3 does the same as us (checked 10-14** in `allenai/Llama-3.1-Tulu-3-8B`, `tokenizer_config.json`):
+  - `<|user|>`, `<|assistant|>`, `<|system|>` are **not** registered tokens; they appear only as plain text inside the
+    chat template, which starts `{% for message in messages %}{% if message['role'] == 'system' %}{{ '<|system|>\n' +
+    message['content'] + '\n' }}` and adds `<|assistant|>` as the generation prompt.
+  - `eos_token` = `<|end_of_text|>` (128001), `bos_token` = `<|begin_of_text|>`, `pad_token` = `<pad>` (128256).
+  - The only registered tokens are Llama 3's own (`<|begin_of_text|>`, `<|end_of_text|>`, `<|finetune_right_pad_id|>`,
+    `<|start_header_id|>`, `<|end_header_id|>`, `<|eom_id|>`, `<|eot_id|>`, `<|python_tag|>`, the
+    `<|reserved_special_token_N|>` ids) plus `<pad>` (128256), which Tülu added.
+  - So our "tulu-plain-v1" follows Tülu 3: plain-text role markers + the tokenizer's real end token after each answer.
+
+#### 44.6.3 What changes if we add special tokens (to check, step by step, tomorrow)
+
+1. **Tokenizer:** register the new strings with fixed ids. With tiktoken this means building a new `Encoding` from the
+   GPT-2 ranks plus extra `special_tokens` (for example ids 50257, 50258, ...), and encoding with those strings
+   allowed. The tokenizer then finds the exact string `<|assistant|>` first and gives it one id; BPE only runs on the
+   text between such strings. The word "assistant" in normal text still splits as before. (to check: the exact
+   tiktoken API, and what Hugging Face's `add_special_tokens` + `resize_token_embeddings` do.)
+2. **Embedding rows (input side):** the new ids need rows. We have 47 unused rows (50,257-50,303), so no resize is
+   needed. But these rows were **never an input in pretraining**, so they hold their starting values (plus whatever
+   weight decay did). Options to check: leave them, set them to the mean of all trained rows, or set them to the mean
+   of the pieces they replace (for `<|assistant|>`: the rows of `<`, `|`, `ass`, `istant`, `|`, `>`).
+3. **Output rows (prediction side):** if the new ids are targets (for example a new end-of-turn token), the output
+   layer's rows for them matter too. (to check in our code: is the output layer tied to the embedding table? Does our
+   softmax / loss cover all 50,304 rows or only 50,257? If it covers all 50,304, pretraining pushed the scores of the
+   47 unused ids down on every step, so a new target id starts with a very low score.)
+4. **Which steps train them:** in full fine-tuning every row trains, so SFT learns them. (With LoRA the embedding and
+   output layers are usually frozen and must be listed as trainable; we use full fine-tuning, §44.3.)
+5. **Every tool that touches ids must know the new ids:** `prepare_sft_data.py`, the label mask, the converter to
+   Hugging Face format, the eval scripts, and any generation / chat code later.
+6. **Risk to measure:** new rows start untrained, so the first SFT steps may be noisier; with plain text, every piece
+   already has a trained row.
+
+#### 44.6.4 How others do it (to check tomorrow, with exact sources)
+
+| model / tool | role markers | end of turn | ids reserved at pretraining? | status |
+| --- | --- | --- | --- | --- |
+| Tülu 3 (on Llama 3.1) | plain text `<\|user\|>` ... | the real `<\|end_of_text\|>` | n/a (plain text) | **checked 10-14** (44.6.2) |
+| ours ("tulu-plain-v1") | plain text | the real 50256 | n/a | **checked 10-14** |
+| Llama 3 instruct | `<\|start_header_id\|>user<\|end_header_id\|>` (special ids) | `<\|eot_id\|>` | reserved in the tokenizer (`<\|reserved_special_token_N\|>`) | to check: were these rows trained in the base model, or only in instruct tuning? (reports exist that some were untrained in the base model) |
+| Qwen (ChatML) | `<\|im_start\|>user` ... (special ids) | `<\|im_end\|>` | to check | to check |
+| Zephyr / HF alignment-handbook | plain text `<\|user\|>` ... (the format Tülu copied) | `</s>` | n/a | to check |
+| TRL | `setup_chat_format` / `clone_chat_template` (adds ChatML-style tokens and resizes the embeddings) | | | to check in TRL at our pinned commit `478624d` |
+| SmolLM / SmolLM3, OLMo 2, Mistral, Gemma, DeepSeek | | | | to check |
+
+Also to check: what problems were reported when tokens were added at SFT time (untrained rows, wrong eos in generation
+configs, a template's eos differing from the model's eos), and how people solved them.
+
+#### 44.6.5 Chat templates (to cover tomorrow)
+
+- What a chat template is: the rule that turns a list of messages (`system`, `user`, `assistant`, later `tool`) into
+  one text / one token list. In Hugging Face it is a Jinja string stored in `tokenizer_config.json` (`chat_template`),
+  applied with `tokenizer.apply_chat_template(messages, add_generation_prompt=...)`. (to check exact behaviour.)
+- The **generation prompt:** at inference the template ends with the assistant marker (`<|assistant|>\n` for Tülu)
+  so the model starts writing an answer; it stops when it writes the end token.
+- **Which tokens get loss:** only the assistant answers and their end token (ours: §44.6.2; TRL: "assistant only loss"
+  with `{% generation %}` blocks in the template, to check).
+- Multi-turn, system prompts, tool calls (agentic SFT, §44.4), and whether the training template and the inference
+  template are exactly the same (a mismatch is a known source of bad generations, to check).
+- Ours: "tulu-plain-v1" is written in Python inside `prepare_sft_data.py`; there is no Jinja template file yet. To
+  decide: do we also store it as a Hugging Face `chat_template` when we convert the model, so that eval / chat tools use
+  exactly the same format?
+
+#### 44.6.6 Plan for 2026-10-15 morning
+
+1. Read the sources for 44.6.4 and 44.6.5 (model cards, `tokenizer_config.json` files, papers, TRL / transformers
+   source at exact commits) and fill the table with checked facts and links.
+2. Check our own code for 44.6.3 step 3 (tied output layer? loss over 50,304 or 50,257 rows?).
+3. Write the answer to each question in 44.6.1 in simple English, with a recommendation: keep plain text (today) or add
+   special tokens, and if adding, when and how.
+4. If the answer is "add", plan an ablation (plain text vs special tokens, same data, same steps) before changing the
+   real SFT data.
+
+---
+
+## 45. 2026-10-15
+
+### 45.1 The chat template: what Tülu 3 really uses, what we use, and the decision (answers the chat-template part of §44.6)
+
+The special-tokens part of §44.6 (questions 1-4 of 44.6.1) is still open; this section answers question 5 (chat
+templates) and records the decision taken today.
+
+#### 45.1.1 What a chat template is (from zero)
+
+- An SFT example is a list of messages. Each message has a role (`system`, `user` or `assistant`) and its text.
+- The model does not read a list. It reads one row of tokens.
+- The **chat template** is the fixed rule that turns the list into one text (and then tokens): which marker goes
+  before each turn, where the newlines go, and where the end token goes.
+- The model learns this exact layout during SFT. Later, every place that gives the model a chat (evaluation, DPO, RL,
+  a chat program) must build the text with the same rule, or the model sees a layout it was never trained on.
+
+#### 45.1.2 What the Tülu 3 paper measured (Section 4.3.1, Table 13)
+
+Source: [Tülu 3 paper, arXiv 2411.15124](https://arxiv.org/abs/2411.15124), Section 4.3.1 "Chat Template Variation",
+Table 13. They trained the same early SFT setup (Llama 3.0 base, an intermediate SFT mix) with 5 templates:
+
+| chat template (row name in Table 13) | average score |
+| --- | --- |
+| Tülu (replace `\n` w/ eos) | 53.0 |
+| Zephyr | 52.9 |
+| Tülu 3 (no `\n`) - the one they used | 52.8 |
+| Tülu 2 template | 52.6 |
+| Llama 3 template | 51.6 |
+
+Their words (quoted exactly):
+
+- Text: *"We made a small change to the chat template used in previous Tülu versions, specifically removing the new
+  line at the end of the template (before the model response)."*
+- Text: *"We found that replacing the newlines at the end of assistant messages with an eos token resulted in the best
+  performance, but we opted not to use this to avoid generation inconsistency with later steps in our post-training
+  pipeline."*
+- Table 13 caption: *"While replacing the newline does best, we instead opted for simply removing the newline to
+  avoid complexity."*
+
+What the table shows:
+
+1. **Which template you pick matters only a little.** All 5 are within 1.4 points (53.0 - 51.6). This is 1.4
+   points of an average score, not 1.4%.
+2. **They took the 3rd-best one (52.8) on purpose, so that it matched their later stages** (DPO and RL). They gave up
+   0.2 points for that.
+3. The paper does not say "use the same template and no problem will come". It says consistency with the later stages
+   mattered more to them than the best score.
+
+#### 45.1.3 Figure 27 (Appendix B.3) is cut off in the PDF: the full template, line by line
+
+In the PDF, every line of Figure 27 that shows only `"{%` is a Jinja control line (`for` / `if` / `else` / `endif`)
+whose text was cut off. The full template is in Tülu 3's `tokenizer_config.json` (field `chat_template`), downloaded
+and printed on 2026-10-15 from
+[allenai/Llama-3.1-Tulu-3-8B at 6669437](https://huggingface.co/allenai/Llama-3.1-Tulu-3-8B/blob/666943798adbde0b1aff34626007e26986a3c107/tokenizer_config.json).
+It has exactly the 16 lines of Figure 27:
+
+```
+ 1  {% for message in messages %}
+ 2  {% if message['role'] == 'system' %}
+ 3  {{ '<|system|>\n' + message['content'] + '\n' }}
+ 4  {% elif message['role'] == 'user' %}
+ 5  {{ '<|user|>\n' + message['content'] + '\n' }}
+ 6  {% elif message['role'] == 'assistant' %}
+ 7  {% if not loop.last %}                                                  <- this answer is NOT the last message
+ 8  {{ '<|assistant|>\n' + message['content'] + eos_token + '\n' }}         <- end token, then \n
+ 9  {% else %}                                                              <- this answer IS the last message
+10  {{ '<|assistant|>\n' + message['content'] + eos_token }}                <- end token, NO \n
+11  {% endif %}
+12  {% endif %}
+13  {% if loop.last and add_generation_prompt %}
+14  {{ '<|assistant|>\n' }}
+15  {% endif %}
+16  {% endfor %}
+```
+
+`allenai/Llama-3.1-Tulu-3-8B-SFT` (the SFT-stage model) has exactly the same `chat_template` string (compared
+2026-10-15).
+
+#### 45.1.4 What "no `\n`" means: only ONE newline was removed
+
+"No `\n`" does **not** mean "no newline anywhere". All these newlines stay in Tülu 3:
+
+- after each marker: `<|system|>\n`, `<|user|>\n`, `<|assistant|>\n`;
+- after system and user text (lines 3 and 5);
+- after the end token of an earlier answer (line 8).
+
+**Only the newline after the end token of the LAST answer was removed** (line 10 compared with line 8). Tülu 2 had
+only line 8's form, so every answer, the last one too, ended with end token + `\n`. Tülu 3 added lines 7, 9 and 10.
+
+The code change is
+[open-instruct PR 376, "Remove newline at the end of tulu template"](https://github.com/allenai/open-instruct/pull/376)
+(merged 2024-10-10). Its diff, exactly:
+
+```
+         "{% elif message['role'] == 'assistant' %}"
++        "{% if not loop.last %}"
+         "{{ '<|assistant|>\n'  + message['content'] + eos_token + '\n' }}"
++        "{% else %}"
++        "{{ '<|assistant|>\n'  + message['content'] + eos_token }}"
++        "{% endif %}"
+         "{% endif %}"
+```
+
+The paper's own phrase "(before the model response)" does not match this code clearly; the code above is what they
+actually used.
+
+On a real chat (`<eos>` = the end token):
+
+| | one turn |
+| --- | --- |
+| Tülu 2 | `<\|user\|>\nWhat is the capital of France?\n<\|assistant\|>\nParis.<eos>\n` |
+| Tülu 3 | `<\|user\|>\nWhat is the capital of France?\n<\|assistant\|>\nParis.<eos>` |
+
+| | two turns |
+| --- | --- |
+| Tülu 2 | `...<\|assistant\|>\nA1<eos>\n<\|user\|>\nU2\n<\|assistant\|>\nA2<eos>\n` |
+| Tülu 3 | `...<\|assistant\|>\nA1<eos>\n<\|user\|>\nU2\n<\|assistant\|>\nA2<eos>` |
+
+The only difference is the final `\n`.
+
+#### 45.1.5 The `\n` between turns in Tülu 3: in the text, read by attention, never trained
+
+In a multi-turn chat, Tülu 3 keeps the `\n` after an earlier answer's end token. That `\n` is an **input** token
+(later tokens attend to it), but it is **never a target** (the model is never asked to write it).
+
+Each position has an input token and a target (the next token). "Trained" = the loss is computed on that target.
+The boundary between answer 1 and user turn 2:
+
+**Tülu 3:**
+
+| input token | target | trained? |
+| --- | --- | --- |
+| `Paris.` (last word of answer 1) | `<eos>` | **yes**: the model learns to stop |
+| `<eos>` | `\n` | **no** (masked) |
+| `\n` | `<` (start of `<\|user\|>`) | no |
+| ... user turn 2 ... | ... | no |
+| `<\|assistant\|>\n` | first word of answer 2 | yes |
+
+**Ours:**
+
+| input token | target | trained? |
+| --- | --- | --- |
+| `Paris.` | `<eos>` | **yes** |
+| `<eos>` | `<` (start of `<\|user\|>`) | no |
+| ... user turn 2 ... | ... | no |
+| `<\|assistant\|>\n` | first word of answer 2 | yes |
+
+So in Tülu 3 the model never learns to write `\n` after `<eos>`; it only learns to read past it (answer 2's tokens
+attend to it). In both formats the only thing learned at the boundary is "after the answer, write `<eos>`".
+
+**Why that `\n` is not trained in Tülu 3.** PR 376's description: *"we can stick with the original tulu chat template
+that doesn't have a newline in the end. Meanwhile, this also masks the loss of newlines for intermediate assistant
+messages."* In simple words:
+
+- First sentence: the chat text now ends right after the last answer's end token, with nothing after it.
+- Second sentence: a side effect - the `\n` after an earlier answer's end token now gets no loss either. Before this
+  change it was trained.
+- How the side effect happens (their `mask_labels`,
+  [open-instruct `dataset_transformation.py:1307-1368` at 95a84bb](https://github.com/allenai/open-instruct/blob/95a84bb5781c69e58ba5a4f9b265f4b504ce4f2b/open_instruct/dataset_transformation.py#L1307-L1368)):
+  to find where user turn 2 starts, the code renders the chat only up to answer 1. In that shorter text answer 1 is
+  the last message, so it is rendered with line 10 (`<eos>`, no `\n`). So user turn 2's masked span starts right after
+  `<eos>`, and in the full chat the `\n` that sits there falls inside user turn 2's span and gets label -100 (no loss).
+  Before PR 376, line 8's form (`<eos>\n`) was used even in the shorter text, so the `\n` belonged to the answer and
+  `<eos> -> \n` was a trained target.
+
+| | `\n` after an earlier answer's `<eos>` | is `<eos> -> \n` trained? |
+| --- | --- | --- |
+| Tülu 2 | yes, in the text | yes |
+| Tülu 3 | yes, in the text | **no** (masked, as above) |
+| ours | **not in the text** | n/a |
+
+#### 45.1.6 Our template, and which of the 5 it is
+
+Ours ("tulu-plain-v1", `sft/prepare_sft_data.py`) on a 2-turn chat:
+
+```
+<|system|>\nSYS\n<|user|>\nU1\n<|assistant|>\nA1<eos><|user|>\nU2\n<|assistant|>\nA2<eos>
+```
+
+All the `\n` of Tülu 2's text, numbered:
+
+```
+<|system|>\n  SYS \n  <|user|>\n  U1 \n  <|assistant|>\n  A1<eos>\n  <|user|>\n  U2 \n  <|assistant|>\n  A2<eos>\n
+          (1)     (2)        (3)    (4)             (5)          (6)        (7)    (8)             (9)         (10)
+```
+
+| `\n` | where it is | Tülu 2 | Tülu 3 | 53.0 variant | ours |
+| --- | --- | --- | --- | --- | --- |
+| 1, 3, 5, 7, 9 | after a role marker | yes | yes | yes | yes |
+| 2, 4, 8 | after system or user text | yes | yes | yes | yes |
+| **6** | after an earlier answer's end token | yes | yes | **no** | **no** |
+| **10** | after the last answer's end token | yes | **no** | **no** | **no** |
+| inside the text | a user's or answer's own line breaks | yes | yes | yes | yes |
+
+- Tülu 3 removed only (10). The 53.0 variant ("the newlines at the end of assistant messages" replaced) removed (6)
+  and (10). Ours has neither (6) nor (10). **So on a literal reading, ours is the 53.0 format.**
+- It is NOT "replace every `\n` with eos": the newlines after markers and inside the text are part of the prompt and
+  the answers; an end token there would mean "stop" in the middle of a turn.
+- **Why "most likely" and not certain:** their exact 53.0 template was never published - not in the paper (one
+  sentence only), not in open-instruct's code, and not in open-instruct's commit history (searched 2026-10-15: the only
+  change to this newline is PR 376, which is Tülu 3's final template). Read word by word against Tülu 2's text,
+  "replace the `\n` with eos" would turn `A1<eos>\n` into `A1<eos><eos>` (two end tokens), which makes no sense; the
+  sensible meaning is "the answer ends with the end token and nothing after it", which is ours.
+
+All 5 rows of Table 13, and the same 2-turn chat in each format we know exactly:
+
+| score | row | what it is | exact text known? |
+| --- | --- | --- | --- |
+| 53.0 | Tülu (replace `\n` w/ eos) | a test variant: no `\n` after any answer's end token (our reading) | no, one sentence only |
+| 52.9 | Zephyr | every turn (system, user and assistant) ends with end token + `\n` | yes (open-instruct `"zephyr"`) |
+| 52.8 | Tülu 3 (no `\n`) | Tülu 2 minus the `\n` after the last answer = Tülu 3's final | yes |
+| 52.6 | Tülu 2 | end token + `\n` after every answer, the last one too | yes |
+| 51.6 | Llama 3 template | Llama 3's own header-token format | not checked |
+
+```
+Tülu 2  (52.6)   ...<|assistant|>\nA1<eos>\n<|user|>\nU2\n<|assistant|>\nA2<eos>\n
+Tülu 3  (52.8)   ...<|assistant|>\nA1<eos>\n<|user|>\nU2\n<|assistant|>\nA2<eos>
+Zephyr  (52.9)   ...<|user|>\nU1<eos>\n<|assistant|>\nA1<eos>\n<|user|>\nU2<eos>\n<|assistant|>\nA2<eos>\n
+ours             ...<|assistant|>\nA1<eos><|user|>\nU2\n<|assistant|>\nA2<eos>
+53.0 (literal reading of their sentence, not confirmed)
+                 ...<|assistant|>\nA1<eos><|user|>\nU2\n<|assistant|>\nA2<eos>      <- same as ours
+```
+
+(Tülu 2 and Tülu 3 rendered from their Hugging Face `tokenizer_config.json` files with Jinja `trim_blocks` and
+`lstrip_blocks`, as `transformers` does; Zephyr from open-instruct's `CHAT_TEMPLATES["zephyr"]` at 95a84bb.)
+
+#### 45.1.7 Checked in our code and in our real stage-0 data (2026-10-15)
+
+**Code** (`sft/prepare_sft_data.py`, `tokenize_conversation`):
+
+- line 52: each turn starts with its marker, `<|{role}|>\n`;
+- lines 59-61: after an **answer**, only the end token is added (`ids.append(PAD_ID)`, 50256, a target) - nothing
+  after it;
+- lines 62-65: a `\n` is added only after a **user or system** turn (not a target);
+- the docstring (lines 10-14) states the same template.
+
+**Data** (`~/Downloads/sft_data/stage0_ultrachat_5k_T4096`, every row scanned):
+
+| | train | val |
+| --- | --- | --- |
+| chats (rows) | 5,000 | 500 |
+| multi-turn chats | 4,998 | 500 |
+| answers (end tokens that are targets) | 15,845 | 1,555 |
+| after an earlier answer's end token, the next tokens are `<` `\|` `user` (ids 27, 91, 7220) | 10,845 | 1,055 |
+| after the last answer's end token, the next token is padding (50256) | 5,000 | 500 |
+| "end token then `\n`" (ids 50256, 198) anywhere in the inputs | **0** | **0** |
+
+So v1 (padding) SFT was trained on the 53.0 format, and since almost every chat is multi-turn, the missing `\n` shows
+up 10,845 times in training.
+
+#### 45.1.8 Why Tülu 3 did not use the 53.0 one, and whether that reason applies to us
+
+- Their reason (45.1.2): *"to avoid generation inconsistency with later steps in our post-training pipeline"* and
+  *"to avoid complexity"*. Their pipeline is SFT -> DPO -> RL, then evaluation. The later steps also build chats with a
+  template (in RL and evaluation the model writes answers from template-built prompts), and those steps were built
+  around the Tülu template. Switching only SFT to the 53.0 format would have made SFT use one format and the later
+  steps another. The gain was only 0.2 points (53.0 vs 52.8) in one early run, so they kept the smaller change.
+- Their code shows the same idea: [open-instruct PR 350](https://github.com/allenai/open-instruct/pull/350) (merged
+  2024-09-30) made both their SFT script (`finetune.py`) and their DPO script (`dpo_tune.py`) read the template from
+  one shared table, `CHAT_TEMPLATES`, with the default `"tulu"`.
+- The paper does not say which exact step or tool would have been inconsistent; those two sentences are all it gives.
+- **For us the reason does not apply now:** we have only SFT so far - no DPO, no RL, no generation-based evaluation.
+  We can build all of them on our format from the start, so there is nothing to be inconsistent with. What carries
+  over is the rule behind their choice: every later stage must use exactly our SFT format.
+- Do not expect a gain from the 53.0 choice itself: 0.2 points over 52.8 in one early run is too small to count on.
+
+#### 45.1.9 DECISION (2026-10-15): keep our template, and use it in every stage
+
+The user decided: keep ours (Tülu 3's template minus the `\n` after an earlier answer's end token = the 53.0 format
+on a literal reading). No code change, no data change.
+
+"The same template in every stage" (SFT, DPO, RL, evaluation, inference) means these five things are the same
+everywhere:
+
+1. **The same markers:** `<|system|>\n`, `<|user|>\n`, `<|assistant|>\n`.
+2. **The same newlines:** `\n` after system and user text; **no** `\n` after an answer's end token.
+3. **The same end token:** 50256 after every answer, and generation stops at 50256.
+4. **The same generation prompt:** the prompt ends with `<|assistant|>\n`, and the model writes from there.
+5. **The same tokenizing:** each piece encoded on its own, as in `prepare_sft_data.py` (45.1.10 shows why).
+
+Training is not affected by the missing `\n` (Tülu 3 never trains it either, 45.1.5). It matters only for
+consistency: our multi-turn evaluation and chat code must build `A1<eos><|user|>` with no `\n`. So Tülu 3's
+`chat_template` file must never be reused as it is (it adds that `\n`).
+
+#### 45.1.10 The same text can give different tokens (tested 2026-10-15, tiktoken `gpt2`)
+
+The same text can become different tokens depending on whether it is encoded in one go or piece by piece:
+
+| text | piece by piece (ours) | in one go | same? |
+| --- | --- | --- | --- |
+| a normal chat: `<\|user\|>\nWhat is the capital of France?\n<\|assistant\|>\n` | 21 tokens | the same 21 tokens | yes |
+| `"\n" + "Paris"` | [198, 40313] | [198, 40313] | yes |
+| `"\n" + "<\|user\|>\n"` | [198, 27, 91, 7220, 91, 29, 198] | the same | yes |
+| a message ending with a newline, `"Write a poem.\n"`, then the template's `"\n"` | `.` `\n` `\n` = [13, 198, 198] | `.` `\n\n` = [13, 628] | **no** |
+
+GPT-2 has one token for `\n\n` (628). So a tool that encodes the whole chat in one go gives a different token here
+than our script. That is why item 5 of 45.1.9 says "the same tokenizing", not only "the same text".
+
+Also expected but not tested yet: a user message that contains the text `<|endoftext|>`. Our script encodes it as 7
+plain tokens; a Hugging Face GPT-2 tokenizer would probably turn it into the real end token 50256.
+
+#### 45.1.11 Our own code vs outside tools: when a chat_template file and a token check are needed
+
+| later stage built with | what we need |
+| --- | --- |
+| our own code (BluTrain + our Python) | call the same function as `prepare_sft_data.py`; nothing else |
+| an outside tool (Hugging Face `transformers` / its evaluation tools, vLLM, TRL) | our own `chat_template` file + a token-by-token check |
+
+- Our template exists today only as Python code inside `prepare_sft_data.py`.
+- Outside tools cannot call that function. They read the template from `tokenizer_config.json` (field
+  `chat_template`, written in Jinja) and call `tokenizer.apply_chat_template(messages)`.
+- Only if we use such a tool, we write our own `chat_template` for our format (the same as Tülu 3's, except the answer
+  line has no `\n` and no if/else). Not tested yet:
+
+```
+"{% for message in messages %}"
+"{% if message['role'] == 'system' %}{{ '<|system|>\n' + message['content'] + '\n' }}"
+"{% elif message['role'] == 'user' %}{{ '<|user|>\n' + message['content'] + '\n' }}"
+"{% elif message['role'] == 'assistant' %}{{ '<|assistant|>\n' + message['content'] + eos_token }}"
+"{% endif %}"
+"{% if loop.last and add_generation_prompt %}{{ '<|assistant|>\n' }}{% endif %}"
+"{% endfor %}"
+```
+
+- Then the check: take all 5,500 stage-0 chats; make tokens our way and the tool's way; compare token by token; every
+  chat must match before any later stage uses the file. The two cases of 45.1.10 (a message ending with `\n`, and the
+  text `<|endoftext|>` inside a message) are expected to differ and must be fixed on one side first.
+- Whether we will use outside tools is not decided; it will be decided when evaluation and DPO are built.
+
+#### 45.1.12 Tülu 3's tokenizer facts (checked 2026-10-15 in `allenai/Llama-3.1-Tulu-3-8B-SFT`)
+
+- `eos_token` = `<|end_of_text|>` (id 128001); `pad_token` = `<pad>` (id 128256, added by Tülu).
+- `added_tokens_decoder` holds only Llama 3's own tokens - 128000 `<|begin_of_text|>`, 128001 `<|end_of_text|>`,
+  128004 `<|finetune_right_pad_id|>`, 128006 `<|start_header_id|>`, 128007 `<|end_header_id|>`, 128008 `<|eom_id|>`,
+  128009 `<|eot_id|>`, 128010 `<|python_tag|>`, and the `<|reserved_special_token_N|>` ids - plus 128256 `<pad>`.
+- `<|user|>`, `<|assistant|>`, `<|system|>` are **not** registered tokens. Tülu 3 writes them as plain text, the same
+  as our option A.
+- With Tülu 3's own tokenizer (Llama 3 BPE, rebuilt from its `tokenizer.json` with tiktoken) each marker is **5**
+  tokens: `<` `|` `user` `|` `>\n` (and the same with `assistant` and `system`). With our GPT-2 tokenizer they are 6, 7
+  and 6 tokens.
+- Tülu 3's end token (`<|end_of_text|>`, 128001) is Llama 3's; ours is GPT-2's `<|endoftext|>` (50256). Same job,
+  different token.
+
+#### 45.1.13 Sources for 45.1
+
+- Tülu 3 paper: [arXiv 2411.15124](https://arxiv.org/abs/2411.15124) - Section 4.3.1 and Table 13; Appendix B.3,
+  Figure 27.
+- Tülu 3 chat template as released:
+  [allenai/Llama-3.1-Tulu-3-8B `tokenizer_config.json` at 6669437](https://huggingface.co/allenai/Llama-3.1-Tulu-3-8B/blob/666943798adbde0b1aff34626007e26986a3c107/tokenizer_config.json)
+  (field `chat_template`); the same string in
+  [allenai/Llama-3.1-Tulu-3-8B-SFT](https://huggingface.co/allenai/Llama-3.1-Tulu-3-8B-SFT/blob/main/tokenizer_config.json).
+- Tülu 2 chat template: [allenai/tulu-2-7b `tokenizer_config.json`](https://huggingface.co/allenai/tulu-2-7b/blob/main/tokenizer_config.json).
+- [open-instruct PR 376](https://github.com/allenai/open-instruct/pull/376) (remove the last newline; also masks the
+  between-turn newline) and [PR 350](https://github.com/allenai/open-instruct/pull/350) (one template table for SFT and
+  DPO; the old Tülu 2 Python template it replaced).
+- open-instruct at commit 95a84bb:
+  [`CHAT_TEMPLATES` ("zephyr", "tulu")](https://github.com/allenai/open-instruct/blob/95a84bb5781c69e58ba5a4f9b265f4b504ce4f2b/open_instruct/dataset_transformation.py#L160-L277)
+  and [`mask_labels`](https://github.com/allenai/open-instruct/blob/95a84bb5781c69e58ba5a4f9b265f4b504ce4f2b/open_instruct/dataset_transformation.py#L1307-L1368).
+- Our code: `sft/prepare_sft_data.py` (lines 10-14, 52, 59-65); our data: `~/Downloads/sft_data/stage0_ultrachat_5k_T4096`.
+
+### 45.2 The SFT doc as markdown: `work_docs/post_training_research_sft.md` (2026-10-15)
+
+The Google Doc "PostTraining - Research and Planning" (tab "SFT : what it is") now has a clean markdown copy in
+work_docs: **`post_training_research_sft.md`**, with its 5 images in `post_training_research_sft_images/`. It was
+built from the live doc (Google's markdown and plain-text exports, downloaded 2026-10-15 ~13:00) and has all the
+fixes below. The user will update the Google Doc from this file by hand later.
+
+**Why by hand, not with Gemini.** Over 4 rounds today, Gemini in Google Docs:
+
+- rewrote paragraphs in its own words instead of pasting the given text;
+- added its own wrong facts: Llama 3 token ids "128016 to 128019" (real: `<|eot_id|>` 128009, `<|start_header_id|>`
+  128006, `<|end_header_id|>` 128007), "6, 7 and 6 Llama tokens" (real: 5 each), a wrong `\n<|user|>\n` example, an
+  unseen-suite row "scored by log-likelihood and classifiers", and a wrong Tülu 2 paper title;
+- rewrote the doc's title, intro, summary and 3 "why it's needed" bullets without being asked (removing the exact
+  quotes from the papers);
+- in the last round it pasted the text exactly, but merged the line breaks and added double bullets.
+
+**How it was built and checked.**
+
+1. Export cleanup (formatting only): Google's backslash escapes removed; special tokens put in code spans; `|` inside
+   table cells escaped (Google's export left `<|user|>` cells unescaped, so those rows split into extra columns);
+   formulas, the pipeline line, the 3.1 flow, the 3.6 pseudo-code, the 3.8 input/target rows, the JSON/ChatML
+   examples and the 4.1 examples put in code blocks; headings cleaned; the 5 embedded images saved as PNG files.
+2. **Word-by-word check against the live doc's plain-text export:** 17,555 words in the doc, and every difference is
+   one of the edits listed below (no word lost). The restored top matches the pre-Gemini text word for word
+   (289/289).
+3. 29 tables, every row with the same number of cells; code fences balanced; no `<tag>` that a markdown viewer would
+   hide.
+4. **Every link checked:** 52 arXiv ids exist and 51 titles matched the doc (the Tülu 2 one is fixed below); the 8
+   other links (GitHub, Hugging Face) return HTTP 200.
+
+**The content changes, compared with the live Google Doc (to apply to the Google Doc later):**
+
+| # | where | change |
+| --- | --- | --- |
+| 1 | title, intro, Summary, 3 bullets | restored to the user's own text from before Gemini's rewrite |
+| 2 | Summary, 4th bullet | "open-soure" -> "open-source" |
+| 3 | 1.4 example paragraph | says the table shows each marker as one entry and leaves the newlines out; the real row is 24 GPT-2 tokens (`<\|user\|>\n` = 6, question = 7, `\n`, `<\|assistant\|>\n` = 7, `Paris` `.`, 50256) |
+| 4 | 1.5 "less data vs more data" | closed the bracket after "filtered beat unfiltered" |
+| 5 | 1.6 | made a real heading (it was bold text, so the markdown export lost it as a heading) |
+| 6 | 1.7 | "8.5B tokens" -> "8.4B tokens" (1.2, 6.4 and the checkpoint all say 8.4B: "step 8000 (8.4B tokens)", recorded when the checkpoint was inspected) |
+| 7 | 2.3 | "(DPO paper)Tülu 3" -> "(DPO paper) , Tülu 3" |
+| 8 | 2.4 | "task->for ex" -> "task -> for ex" |
+| 9 | 3.2 first sentence | restored to the user's own wording (Gemini had reworded it) |
+| 10 | 3.2 Tülu 3 template | split into lines; both template strings on their own lines as code (Tülu 3's two rules, Tülu 2, ours) |
+| 11 | 3.2 Table 13 | split into its 3 paragraphs (Table 13 / "Which one I use" / "The same template in every stage") |
+| 12 | 3.2 Tülu 3 tokens paragraph | the token example written as code: `<` `\|` `user` `\|` `>\n` |
+| 13 | 3.3 intro | corrected: with option A the role markers are plain text split into ordinary tokens, and only the end token is one special id, which the script adds as an id (the old text said the tokenizer "recognizes them and gives each one its id") |
+| 14 | 3.3 "One thing to watch" | the examples written as code spans |
+| 15 | 3.4 LIMA sentence | "itt" -> "it" |
+| 16 | 3.4 plan | restored to the user's own wording, with the Tülu 3 fact corrected (Tülu 3 does NOT have dedicated role tokens) |
+| 17 | 3.8 | "REGARIDNG" -> "REGARDING" |
+| 18 | 4.3 | "expeeriemtnations" -> "experimentations", and the bracket closed |
+| 19 | 6.2 | heading moved above its table (as in the 09-28 report); the empty heading removed; "MATH  BBH" -> "MATH , BBH" |
+| 20 | 6.2 table, unseen-suite row | corrected from Tülu 3 Tables 3 and 24: MMLU-Pro, GPQA, AGIEval English, Deepmind Mathematics, BigCodeBench, IFEval-OOD, HREF; scored by exact match, unit tests (pass@10), instruction checks (pass@1), win rate (HREF); all generate |
+| 21 | 6.4 | "willl", "testingwith", "8.4 B", "pretrainign", "experimentaitons", "seee e", "theseablation", "tooo" fixed |
+| 22 | 7 | "iIt's" -> "it's"; "excperimetnaitons ... onthis" -> "experimentations ... on this" |
+| 23 | 7, "longer than 4096 tokens?" | corrected: packing with varlen attention does not let an example longer than the row in; only a longer context length can (packing doc §7.6); the old text said "variable-attention ... can interpret long sequences" |
+| 24 | 7 source line | stray ":" removed |
+| 25 | 8.1 template bullet | ours = Tülu 3's template minus the between-turn `\n` (the 53.0 one) + the stage-0 check (4,998 of 5,000 multi-turn, 15,845 answers) |
+| 26 | 8.2 | a stray copy of the table's last row ("Muon , 3 learning rates , 4 GPUs ... see 8.3") removed |
+| 27 | Sources | the 3 chat-template links: double bullets removed, links clickable |
+| 28 | Sources | Tülu 2 title corrected: "Camels in a Changing Climate: Enhancing LM Adaptation with Tulu 2" (arXiv 2311.10702) |
+| 29 | Sources | "Adamw" -> "AdamW"; the 7 Muon papers as a list; "post-trainign" -> "post-training" |
+
+Tools (scratchpad, not kept): `build_md.py` (export cleanup) and `edits.py` (the content changes, each asserted to
+match exactly once).
+
+### 45.3 Plan (2026-10-15): the full packed SFT pipeline first, kernel optimisation paused
+
+The user changed the order: attention-kernel optimisation pauses; first a complete SFT pipeline with packing (v2),
+then optimisation on top of it. Status checked in the code today (laptop master `~/Downloads/BluTrain_sft`):
+
+| piece | status | evidence |
+| --- | --- | --- |
+| loss (masked CE, global trained-token count) | ready, no change for packing | labels are built per chat before any packing (`sft/prepare_sft_data.py` `build_row`: inputs = ids[:-1], labels = ids[1:]) |
+| chat template (Tülu 3 minus the between-turn `\n`, the 53.0 layout) | ready, decided 10-15 | §45.1 (code + stage-0 data) |
+| RoPE with per-token positions (restart at 0 per chat) | ready in kernel and autograd | `autograd::fused_rms_rope(..., positions)` (`NormalizationOps.h`, saved for the backward) |
+| attention forward, packed rows (v62, designs A and B) | ready in the kernel | `AttentionKernels.h:110-161` (`GqaChatPlan` for A, `seg_start` [B,T] for B) |
+| attention backward, packed rows | ready in Vj1d only (the default) | `GQA_bwd_generic.cu:728`: a packed call with `USE_VJ2=1` (or `USE_FLASH`/`USE_DETERMINISTIC_DQ`) throws, so chats can never silently mix |
+| autograd attention op passes packing info | **missing** | `AttentionOps.h`: no `seg_start` / plan parameter; the backward node stores none |
+| trainer passes positions + packing info to every layer | **missing** | `bluscript_zero_ckpt.cpp:617-619` (`pos_offset=0`, no positions), `:642` (attention, no packing) |
+| dataloader carries per-row chat segments | **missing (small)** | `sft/SftDataLoader.h` reads only inputs/labels/valid_counts/meta and returns the pretraining `Batch` |
+| preprocessing packs chats (First-Fit-Decreasing) | **missing** | one chat per row today |
+| end-to-end tests "packed == the same chats unpacked" | **missing** | only kernel-level packed tests exist (`test_varlen_attention.cu`, 605/605) |
+| SFT and DPO use the same tokens | **no: mismatch** | `prepare_dpo_data_tokenize.py:52-78, 114, 119` (below) |
+
+Kernel selection facts: the attention kernels live in `Tensor-Implementations/src/Kernels/cuda/attention/arch/`
+(`GQA_fwd_sm90.cu` = forward v62, `GQA_bwd_vj1d_sm90.cu` = Vj1d, `GQA_bwd_vj2_sm90.cu` = Vj2), not in `LossKernels.cu`.
+The backward is chosen at run time by environment variables in `GQA_bwd_generic.cu` (default Vj1d; `USE_VJ2=1` = Vj2,
+dense only); there is no compile-time flag. The model ties `wte` and the output layer (`bluscript_zero_ckpt.cpp:702-767`)
+and the loss runs over all 50,304 rows (`vocab_size = 50304`, line 138).
+
+**The DPO preprocessing does not match our SFT** (`/home/blu-bridge016/Downloads/Neural_Networks_exp_1926/prepare_dpo_data_tokenize.py`,
+seen 10-15; its comments say "same as SFT" four times):
+
+- it registers `<|user|>` = 50257, `<|assistant|>` = 50258, `<|system|>` = 50259 as tiktoken special tokens, so each
+  marker is ONE new id; our SFT writes them as plain text (6 / 7 / 6 GPT-2 tokens);
+- it encodes message CONTENT with `allowed_special` (line 119), so a message containing the text `<|endoftext|>` or
+  `<|user|>` becomes a real control token (our SFT uses `encode_ordinary`: plain text);
+- it says its data must match the SFT checkpoint `stage0_adamw_full`, which is OUR plain-text SFT run: DPO would feed
+  that model 3 ids it never saw as inputs (with tied embeddings and a 50,304-wide softmax in pretraining, those rows
+  were only ever pushed DOWN as outputs);
+- the layout (no `\n` after an answer's end token) and the end token 50256 do match;
+- it mentions an `sft_tokenizer.py` that is not on the laptop (to ask the DPO team; their
+  `compute_dpo_reference_logprobs.cpp` sits untracked in the box's `~/gautam_k/BluTrain_sft`).
+
+**Phase 0, decisions (before coding):**
+
+- D1 one tokenization for SFT and DPO: (a) plain-text markers everywhere (DPO switches to `encode_ordinary`; no SFT
+  re-run) or (b) special ids 50257-50259 everywhere (SFT re-run first so those rows are learned). Recommendation: (a)
+  now (our SFT model already learned it, Tülu 3 does the same), (b) only if the ablation shows a gain. The
+  `allowed_special` on content must be fixed in either case.
+- D2 end-of-answer token: keep 50256 (as Tülu 3 reuses Llama's `<|end_of_text|>`) or a dedicated end-of-turn id in a
+  spare row (as Llama 3 `<|eot_id|>`). Recommendation: keep 50256 for the pipeline; test a dedicated id later, once a
+  generation loop exists (stopping can only be measured by generating).
+- D3 packing design: wire design A (the faster main path, §41.3); keep B behind a debug switch.
+- D4 packing rule: First-Fit-Decreasing (same rows as Best-Fit on our data, packing doc §13).
+- D5 steps / LR: first run keeps 64 rows per step; then the step-count ablation (§44.1).
+
+**Phase 1, library:** the autograd attention op and its backward node take an optional packing argument (design A
+plan, or B `seg_start`); empty = dense = bit-identical to today. Tests: dense output unchanged bit for bit; packed via
+autograd = the kernel-level packed tests; a packed row = the same chats as separate padded rows (outputs, LSE, dQ/dK/dV
+within tolerance, positions reset per chat).
+
+**Phase 2, data:** `prepare_sft_data.py --pack ffd`: chats built exactly as today, packed First-Fit-Decreasing into
+rows, plus `seg_start.bin` (uint16 [N, T]; positions = t - seg_start), meta (rule, rows, fill %, chats per row);
+self-tests (every chat once, no label crosses a chat, seg_start contract, the pad tail is its own segment). Val packed
+too, and the v1 val kept for the cross-check. `SftDataLoader`: optional `seg_start.bin`; per micro-batch uploads
+positions [B, T] int32 and builds one design-A plan (host segment list -> `gqa_chat_plan_build`), shared by all layers
+and the backward; without the file it behaves exactly as today.
+
+**Phase 3, trainer:** thread positions + plan from the batch to every block (`fused_rms_rope(positions)`,
+`scaled_dot_product_attention(plan)`); pretraining untouched; log fill rate and chats per step.
+
+**Phase 4, proof runs (1 GPU, short):** pretraining step 0 bit-identical; val loss on the packed val set = val loss on
+the v1 val set (same chats; checks masking + positions end to end); step 0 packed = step 0 padded on the same chats;
+then the full stage-0 packed run vs the v1 run (val curve per token, throughput).
+
+**Phase 5, after the pipeline:** DPO alignment check with the DPO team, the special-token / end-token ablation (needs
+generation), the step-count ablation, then the paused optimisations (Vj2 packed modes = G7, Vj2 as default, the
+forward v62 work, B-1 test 2).
+
+### 45.4 Future task: split over-long chats like TRL `bfd_split` (decided 2026-10-15: not now)
+
+Today `prepare_sft_data.py` DROPS every chat longer than the row (T = 4096): 10 of 5,010 sampled chats on stage-0 (0.2%;
+packing doc §7.5). The user wants, later, TRL's `bfd_split` behaviour (packing doc §8.3): cut an over-long chat into
+pieces of at most T tokens and pack each piece as its own segment, with its own start (positions restart at 0) and end,
+so no data is thrown away. For now we keep dropping. Points to settle when we do it:
+
+- where to cut (TRL cuts every `max_length` tokens, even inside a turn) and whether a piece may end in the middle of an
+  answer: the end token 50256 would then be missing from every piece except the last, which is what our "EOT must be a
+  target" rule (§32.2) protects against;
+- which tokens of each piece are targets (a piece that starts inside an answer has no prompt, so its first tokens are
+  trained without the question they answer);
+- the context lost between pieces (a later piece cannot see the earlier one; packing doc §7.6) and whether to repeat
+  the prompt at the start of each piece instead;
+- how many chats are affected on the real data mix (stage-0: 0.2%; long-answer data such as reasoning traces: many more);
+- an ablation: drop vs split, same data, same steps.
+
+### 45.5 The packed SFT pipeline: built and proven end to end (2026-10-15)
+
+> **Update (same evening):** the pipeline below used packing design B (`seg_start`). It was switched to design A
+> (the per-chat list, the cu_seqlens way) everywhere and B was removed: see §45.7. The results below are kept as measured.
+
+Kernel optimisation paused (§45.3); the full packed (v2) SFT pipeline was built in one day and passes its one
+mandatory end-to-end test. Only the mandatory tests were run (GPU time is short); the others are listed under "later".
+
+**What was built (laptop master `~/Downloads/BluTrain_sft`, box copy `~/gautam_k/sft_v2/BluTrain_sft`):**
+
+| step | change | file (md5) | check |
+| --- | --- | --- | --- |
+| A1 | Vj2 backward learns packed rows (design B, `seg_start`): per key block only the query steps whose chat can see it (a prefix, Vj1d's proof), the step's 64 `seg_start` loaded with LSE/D, mask `key < seg_start[query]`; packed smem 199,232 B | `GQA_bwd_vj2_sm90.cu` (ced7d3d8) | box `test_varlen_attention` G9 under Vj2: **94/94**; dense Vj2 SASS **identical** to b1 (1,728/1,728 lines) |
+| A2 | Vj2 is the DEFAULT Hopper backward; `USE_VJ2=0` = Vj1d; design A plans run on Vj1d; the `T % 128` fallback now passes the packing on | `GQA_bwd_generic.cu` (c81c9909) | CLASSIC 144/144 (Vj2); G9 94/94 and G11 95/95 with `USE_VJ2=0` |
+| A3 | autograd `scaled_dot_product_attention(..., seg_start)`: checked like `positions`, passed to the forward, kept in `GQAFlashAttentionQKVBackward` for the backward | `AttentionOps.h/.cpp` (438f6177 / ea40d371), `AttentionBackward.h/.cpp` (124f8b91 / f8163997) | compiles; covered by the e2e test |
+| D1 | `prepare_sft_data.py --pack ffd`: chats labelled alone, First-Fit-Decreasing with a max segment tree, rows shuffled, `seg_start.bin` (uint16 [N,T], pad tail = own segment); packing self-checks | `sft/prepare_sft_data.py` (c1f2f3b2) | self-test (tree FFD == plain FFD on 300 sets); **v1 output byte-identical** to the old stage-0 files |
+| D2 | `SftDataLoader`: optional `seg_start.bin` (contract checked when opened); per micro-batch `last_seg_start()` and `last_positions()` (t - seg_start) as int32 [B,T] | `sft/SftDataLoader.h` (ed727f72) | covered by the e2e test |
+| T1 | `bluscript_sft.cpp` = copy of `bluscript_zero_ckpt.cpp` (unchanged) + global `g_packed` set before every SFT forward, read by RoPE (`positions`) and attention (`seg_start`); `BLU_SFT_B` (rows per micro-batch); `g_packed` emptied after the training loop | `bluscript_sft.cpp` (05dede59) | e2e test; the exit fix is checked on the first real run |
+
+**Packed stage-0 data** (`~/Downloads/sft_data/stage0_ultrachat_5k_T4096_packed`, box `~/gautam_k/sft_data/...`):
+train 5,000 chats -> **1,517 rows** (minimum possible 1,511), real tokens 99.6% of the slots (v1: about 30%), 3.3 chats
+per row (max 12); val 500 chats -> **147 rows** (min 146), 99.0%. Same chats and same 15,845 / 1,555 end-token targets
+as v1.
+
+**The mandatory test (box GPU 1, 2026-10-15 15:44-15:58):** the same 500 chats (the val set used as the train split),
+once as 500 v1 rows and once as 147 packed rows; `BLU_SFT_B=1` (no row dropped), one optimizer step over all rows
+(`BLU_SFT_ROWS_PER_STEP` = 500 / 147, 3 steps because the schedule needs a decay tail), AdamW 2e-5, from step 8000.
+
+| | v1 (500 rows) | packed (147 rows) |
+| --- | --- | --- |
+| step 0 val loss | 1.445038 | 1.445084 (+0.003%, bf16 rounding) |
+| step 0 train loss | 1.445038 | 1.445084 |
+| **step 0 grad norm** | **0.7935** | **0.7935** (group norms 0.7929 / 0.0321 in both) |
+| step 1 train loss / norm | 1.423608 / 0.6496 | 1.423671 / 0.6502 |
+| val after step 2 | 1.381130 | 1.381213 |
+| trained tokens | 444,233 | 444,233 |
+| time per step (steps 0 / 1 / 2) | 53.6 / 49.0 / 43.9 s | 21.2 / 18.3 / 13.3 s (**2.5-3.3x faster**) |
+
+The equal step-0 loss proves the data, the loader, the per-chat positions and the forward masking; the equal grad norm
+proves the backward (Vj2 packed) through the whole model.
+
+**Bug found and fixed:** the packed run printed "Training complete" and then hung (futex wait, 57.8 GB held on the GPU)
+while the v1 run exited. `g_packed` is a global made before `main`, so it was destroyed after the caching allocator (a
+static made later) and freeing its two GPU tensors then blocked. Fix: `g_packed = PackedRows{}` right after the training
+loop. The box blocks debuggers (`ptrace_scope=1`), so this is from the code, not from a trace.
+
+**How to run (box):** data `prepare_sft_data.py --pack ffd`; build `make -j all SM_ARCH=90`, then
+`bash build_sft_cmd.sh` (the run-mpi compile line with `-o bluscript_sft_bin`); run as the 10-07 runs, with
+`BLU_SFT_DATA=<dir with packed train>`; a split without `seg_start.bin` trains as v1.
+
+**Later (not run, by decision):** Vj2 vs Vj1d pretraining comparison, compute-sanitizer on packed Vj2, CLASSIC error-value
+diff vs b1, packed speed per kernel, design A in Vj2, the step-count ablation (§44.1), the drop-vs-split ablation (§45.4).
+
+**First real packed run, `packed64` (box GPU 1, 2026-10-15 16:13-16:19; `bluscript_sft_bin` 05dede59):** stage-0 packed
+train (1,517 rows) + the v1 val set (496 chats on 1 GPU, so the numbers compare directly with 10-07), AdamW 2e-5 ->
+2e-6, B=8, 64 rows per step (about 211 chats per step), 2 epochs = 47 steps.
+
+| | v1 (10-07, 1 GPU) | packed64 |
+| --- | --- | --- |
+| rows (chats) per step | 64 (64) | 64 (~211) |
+| optimizer steps, 2 epochs | 156 | 47 |
+| val at step 0 | 1.4464 | 1.4464 |
+| val at the end | 1.2839 | 1.3002 |
+| time per step / 2 epochs | 5.3 s / ~14 min | 5.2 s / ~6.3 min (sum of step times 379.5 s, first step 58.4 s) |
+
+Val curve: 1.4464 (0), 1.3433 (10), 1.3180 (20), 1.3057 (30), 1.3014 (40), 1.3002 (46). The process exited by itself
+after "Training complete", so the `g_packed` exit fix works. The end val is 0.016 higher than v1 with 3.3x fewer
+optimizer steps at the same LR schedule: the step-count effect of §44.1 (correctness is shown by the same-chats test
+above). `packed16` (16 rows per step, about 53 chats per step, 189 steps) was started to separate that effect and was
+stopped by the user at step 5; to re-run when GPU time allows.
+
+### 45.6 Special tokens or plain-text role markers: what others do, and the decision to make (research, 2026-10-15)
+
+(Answers questions 1-4 of the §44.6 future task; the chat-template part is §45.1.)
+
+**Today:** our SFT data writes `<|system|>`, `<|user|>`, `<|assistant|>` as plain text (6 / 6 / 7 GPT-2 tokens; the word
+"assistant" is the pieces `ass` + `istant`), and only the end token 50256 is a special id. The DPO team's
+`prepare_dpo_data_tokenize.py` makes the three markers special ids 50257 / 50258 / 50259 (and encodes message content
+with special tokens allowed). Our SFT checkpoints never saw those ids, so the two do not match.
+
+**What others do (checked 2026-10-15):**
+
+| model / tool | role markers | end of a turn | when the ids exist | checked in |
+| --- | --- | --- | --- | --- |
+| Tülu 3 (Llama 3.1 base) | plain text `<\|user\|>` ... | Llama's `<\|end_of_text\|>` | n/a (plain text) | its `tokenizer_config.json` (§45.1) |
+| Zephyr-style (open-instruct `"zephyr"`) | plain text | the model's eos (`</s>`) | n/a | open-instruct `CHAT_TEMPLATES` @95a84bb |
+| Llama 3 instruct | special ids `<\|start_header_id\|>`role`<\|end_header_id\|>` | `<\|eot_id\|>` (128009) | reserved in the tokenizer before pretraining | Tülu 3's tokenizer (Llama 3's tokens) |
+| Llama 3 **base** | (same ids) | | the rows of `<\|eot_id\|>`, `<\|start_header_id\|>`, `<\|end_header_id\|>` are **zero** in the base model: "The original Llama 3 8b (base) special token weights are zero, which might cause NaN gradients" | [imone/Llama-3-8B-fixed-special-embedding](https://huggingface.co/imone/Llama-3-8B-fixed-special-embedding) (also reported by [Unsloth](https://unsloth.ai/blog/llama3), page not machine-readable) |
+| SmolLM2-1.7B base | special `<\|im_start\|>`, `<\|im_end\|>` (ChatML) | `<\|im_end\|>` in chat | ids **1 and 2**, right after `<\|endoftext\|>` = 0: made with the tokenizer | [tokenizer_config.json](https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B/blob/main/tokenizer_config.json) |
+| Qwen2.5-0.5B base | special `<\|im_start\|>`, `<\|im_end\|>` | `<\|im_end\|>` | 151644 / 151645 in the base tokenizer | [tokenizer_config.json](https://huggingface.co/Qwen/Qwen2.5-0.5B/blob/main/tokenizer_config.json) |
+| OLMo-2-0425-1B base | special `<\|im_start\|>`, `<\|im_end\|>` | `<\|im_end\|>` | 100264 / 100265 in the base tokenizer | [tokenizer_config.json](https://huggingface.co/allenai/OLMo-2-0425-1B/blob/main/tokenizer_config.json) |
+| OLMo 3 (paper) | chat special tokens put into MIDTRAINING data made the model print them (GSM8K 49.43 -> 0); the same layout as plain text kept 46.02: "Leave special tokens for SFT stage" | | | [arXiv 2512.13961](https://arxiv.org/abs/2512.13961) (our report §2.1) |
+| TRL `clone_chat_template` | takes a base model WITHOUT chat tokens (its example: Llama-3.2-1B) and, at SFT time, adds another model's special tokens (Qwen3's), switches the eos to that end-of-turn token and resizes the embeddings | | added at SFT | [trl@478624d chat_template_utils.py:45](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/trl/chat_template_utils.py#L45) |
+| transformers `resize_token_embeddings` | new rows start from the mean (and covariance) of the old rows by default (`mean_resizing=True`), "to reduce the kl-divergence between the next token probability before and after adding the new embeddings" | | | [transformers@4cc2aa8 modeling_utils.py:2634](https://github.com/huggingface/transformers/blob/4cc2aa84301c9aa210b5513dab9fefae03981f6e/src/transformers/modeling_utils.py#L2634), citing [Hewitt](https://nlp.stanford.edu/~johnhew/vocab-expansion.html) |
+
+No published head-to-head comparison of "special ids vs the same markers as plain text" for SFT was found. Both are used
+by strong recipes (Tülu 3 plain text; Llama 3 / Qwen / SmolLM / OLMo special ids).
+
+**The answers:**
+
+1. **Is adding them to the tokenizer enough?** No. Three parts: (a) the tokenizer maps the exact string to one id (easy;
+   the DPO script does it); (b) the MODEL must learn the id: our ids 50257-50259 have rows (50,304 rows) but were never
+   an input, and because the input table is tied to the output layer and pretraining's softmax covered all 50,304 rows,
+   those rows were only pushed down ("never predict me"); they need a starting value (the mean of the trained rows, as
+   transformers / Unsloth / the imone fix do) and SFT trained with them; (c) every stage and tool uses the same ids
+   (SFT, DPO, eval, chat, HF converter).
+2. **Must they be added when the tokenizer is trained?** No. BPE training only learns merges of ordinary text; special
+   tokens are a separate list of exact strings matched BEFORE BPE and mapped to fixed ids, so they can be added later.
+   Reserving them at tokenizer creation (as SmolLM2 did) is free and keeps the ids stable; we cannot retrain our
+   tokenizer (it is GPT-2's; every id would change), but we have 47 spare ids, so adding them changes no existing id.
+3. **When does the model learn them?** Reserving an id is not training it (Llama 3 base: reserved but zero rows). OLMo 3
+   found that putting chat special tokens into midtraining hurt and advises SFT. Our pretraining is finished, so for this
+   model SFT is the only place. For a future base model: reserve the ids in the tokenizer from the start, keep them out
+   of pretraining/midtraining data, learn them in SFT.
+4. **Which is better for us?**
+   - Plain text (A): works (our SFT runs, Tülu 3), no new rows, no initialisation risk. Weak point: a user can type
+     `<|assistant|>` and it becomes exactly the same tokens as the real marker (the model cannot tell them apart).
+   - Special ids (B): 1 id per marker (about 20 tokens per chat saved, ~1.6% of an average chat), a user's typed
+     `<|assistant|>` stays plain text (when content is encoded with `encode_ordinary`), clean role/stop parsing, the
+     modern default, and it matches the DPO team. Cost: 3 rows to initialise and learn, an SFT re-run (now ~6 minutes
+     packed on 1 GPU for stage-0), every tool aware of the ids.
+   - **Recommendation (changed from §44.6/§45.3, which said plain text):** move to B for SFT and DPO together, with the 3
+     rows initialised to the mean of the trained rows (ids 0-50256), the end token kept at 50256, and content always
+     encoded as plain text; decide it with one A-vs-B ablation (same packed data and steps; compare answer-token val loss
+     now, and stopping / role leaks once generation exists) before the DPO team builds its final data. Reasons for the
+     change: the DPO team already uses B, the injection weak point of A, every checked modern base tokenizer reserves
+     chat tokens, TRL's own path adds them at SFT, and an SFT re-run is now cheap.
+   - The end-of-turn token stays 50256 in both (Tülu 3 reuses its eos; a separate end-of-turn id would be a fourth new
+     row and is tested only after generation exists).
+
+**Not done yet:** the A-vs-B ablation (needs GPU); measuring the current norms of rows 50257-50259 in the checkpoint; the
+DPO team's `sft_tokenizer.py` and which SFT checkpoint their DPO starts from.
+
+### 45.7 Packed rows: design A (the per-chat list) everywhere, design B (seg_start) removed (2026-10-15, evening)
+
+**Why this change.** On 2026-10-12 we decided that packing design A is the default (§41.3), because it was measured
+faster. The pipeline of §45.5 was still built on design B (one `seg_start` number per token) in the morning. That went
+against the decision, and the speed cost was not flagged. The user decided: use only the list way ("only seqlens"),
+remove B from every kernel, and make A the pipeline's way.
+
+The two designs answer the same question ("which keys may this query see?") in two ways:
+
+| | design B (removed) | design A (kept) |
+| --- | --- | --- |
+| what the kernel gets | one number per token: `seg_start[t]` = where token t's chat starts | a list of chats per row: (row, start, length) |
+| how work is cut | in fixed row tiles; a tile that holds a chat border mixes two chats and needs the extra mask | per chat; every chat starts on its own tiles, only the normal causal mask is left |
+| who uses it | FlexAttention's document mask; HF transformers on its SDPA / eager paths | FlashAttention 2/3/4 (`cu_seqlens`), TE `thd` / Megatron `PackedSeqParams`, PyTorch `varlen_attn`, HF on its FlashAttention path, TRL |
+
+Measured on our kernels (2026-10-10/12, real packed rows): forward A is 2-16% faster than B; backward A is 3-5% faster
+on middle and long chats, B is 2-4% faster only on very short chats. Middle rows: forward A 501 µs vs B 538 µs,
+backward A 1,466 µs vs B 1,537 µs. (The source links for "who uses it" are in the research of 2026-10-15: FA2
+`flash_attn_interface.py:1391`, FA3 `hopper/flash_attn_interface.py:890`, FA4 `flash_attn/cute/interface.py:4167`,
+TE `dot_product_attention.py:470, 550`, Megatron `packed_seq_params.py:10-46`, PyTorch `varlen.py:62-65`, torchtitan
+`attention.py:132, 177, 467`, HF `modeling_flash_attention_utils.py:480-517` and `masking_utils.py:734-763`, TRL
+`sft_trainer.py:1180-1202`.)
+
+**Why the forward kernel (v62) had both, and how one was chosen.** On 2026-10-10 both were built into the same kernels
+to measure them (Step 3 = B, Step 5 = A). They were compiled as two modes of one template kernel, next to the dense
+mode. There was no flag or environment variable: every call chose by its arguments. A `seg_start` pointer meant B, a
+plan meant A, neither meant dense, and both together were refused. After 2026-10-12 nothing removed B, and the
+pipeline then called the B form. Now the B mode is gone from v62, Vj1d and Vj2, and the `seg_start` argument is gone from
+the API, so there is one packed path left to test.
+
+**How design A works, step by step.** Example row, T = 4096 tokens: chat 1 has 1,000 tokens, chat 2 has 2,500 tokens,
+and the last 596 positions are padding (the "pad tail").
+
+1. **The data file stores the list.** `prepare_sft_data.py --pack ffd` writes, per row, the lengths of its chats in row
+   order: `[1000, 2500]` (`seq_lengths.bin`, int32, all rows one after the other; `seq_offsets.bin`, int64 [N+1],
+   says where each row's list starts). This is TRL's `seq_lengths` column (`trl/data_utils.py:775`, TRL commit 478624d).
+   The positions after the last chat are the pad tail. 5,000 chats take 20 KB (the old per-token `seg_start.bin` was
+   12.4 MB).
+2. **The loader turns the list into segments and positions**, for every micro-batch (`SftDataLoader::next_batch`):
+   segments (row, start, length) = (0, 0, 1000), (0, 1000, 2500), (0, 3500, 596): every chat, then the pad tail as a
+   segment of its own (the kernels need every token covered). The RoPE positions restart at 0 in every segment:
+   0..999, 0..2499, 0..595, as TRL's collator builds `position_ids` from `seq_lengths` (`sft_trainer.py:478-489, 528-541`).
+3. **The trainer builds one plan per micro-batch** (`packed_rows_of` in `bluscript_sft.cpp` calls
+   `gqa_chat_plan_make(rows, starts, lengths, n, B, T, Hq)`). The plan is a few small lists of work items, made on the
+   host and uploaded with ONE asynchronous copy (the host does not wait for the GPU). All 26 layers use the same plan,
+   in the forward and in the backward. It is freed when the last user lets go of it (a shared handle: the attention
+   backward nodes keep it until their backward has run).
+4. **Forward (v62).** One work unit = (one segment, one couple of its 128-row query pairs, one head). For the example
+   row with 18 query heads: chat 1 has ceil(1000/128) = 8 query pairs = 4 couples, chat 2 has 20 pairs = 10 couples,
+   the pad tail 5 pairs = 3 couples, so (4 + 10 + 3) x 18 = 306 units. Every index inside a unit is counted from the
+   segment start, so a unit of chat 2 starts reading keys at token 1000 and never loads a key of chat 1. The mask
+   inside a unit is the plain causal mask. Rows past the segment end are computed but never stored.
+5. **Backward (Vj2, the default).** One block = (one 128-key tile of a segment, one query head): chat 1 has
+   ceil(1000/128) = 8 tiles, chat 2 has 20, the pad tail 5, so 33 x 18 = 594 blocks. A block of key tile kt visits only
+   its own chat's 64-row query steps, from the tile's diagonal (step 2kt) to the chat's last step: tile 0 of chat 1
+   visits 16 steps, tile 7 visits 2. Blocks run longest first, in sections of (row, head) pairs, as the dense grid does
+   (FA3's LPT scheduler; for rows that hold one chat each, the plan's order is exactly the dense order).
+   Two things are new compared with dense, and both are FlashAttention-3's way:
+   - *Padded slots.* A chat can start at any token, but Vj2 reads LSE and D in 256-byte bulk copies and adds dQ in
+     fixed 64 x 128 tiles, which need 64-row alignment. So every chat gets its own 64-row-aligned slot per head in
+     those three buffers (FA3 varlen's `offset_padded`): ceil(1000/64) + ceil(2500/64) + ceil(596/64) = 16 + 40 + 10 = 66
+     tiles per head instead of 64 (3% more). A small prepare kernel fills the slots; slot rows past a chat's end get
+     LSE = +inf and D = 0, so they add exact zeros (P = exp(-inf) = 0, dS = 0; FlashAttention 2 does the same,
+     `flash_bwd_kernel.h:411-413`). A convert kernel writes each slot back to its chat's token rows.
+   - *The chat's last key tile.* Keys past the chat end sit only in its last tile; causal hides them. Their dK/dV rows
+     belong to the next segment, so that tile stores only its rows below the chat end, with plain stores (FA3 stores all
+     varlen dK/dV this way, `hopper/epilogue_bwd.hpp:31, 263-268`).
+   `USE_VJ2=0` runs Vj1d instead, which has had design A since 2026-10-10 (64-key tiles, `bwd_tiles` of the same plan).
+6. **Why B was slower:** with `seg_start`, key tile 7 of the example row holds keys 896-1023, that is keys of chat 1
+   (896-999) AND of chat 2 (1000-1023). It must run the masked path and visit the query steps of both chats. Every
+   tile that holds a chat border pays that. In A every tile belongs to one chat.
+
+**What changed (laptop `~/Downloads/BluTrain_sft`, 14 files; the morning's B versions were never committed, a copy was kept only in the session's scratch folder):**
+
+| file | change | md5 |
+| --- | --- | --- |
+| `GQA_fwd_sm90.cu` | v62: design B mode removed (modes now dense = 0, chats = 1); launcher takes only the plan's units | eff8cdb6 |
+| `GQA_bwd_vj1d_sm90.cu` | Vj1d: design B mode removed; launcher takes only the plan's tiles | 302ece10 |
+| `GQA_bwd_vj2_sm90.cu` | Vj2: B replaced by A (`template<bool CHATS>`, block list from the plan, padded slots, `bwd_prep_vj2_chats`, `convert_dq_frag_vj2<true>`, plain-store epilogue for a chat's last tile); `gqa_vj2_section_pairs(S)` shared with the plan builder | 7667deec |
+| `GQA_fwd_generic.cu` | forward API without `seg_start`; plan builder adds the Vj2 block list and the padded dQ slots, one allocation + one async copy; `gqa_chat_plan_make` (shared handle) | c993599a |
+| `GQA_bwd_generic.cu` | backward API without `seg_start`; Vj2 mode runs the plan on Vj2 when T % 128 == 0, else Vj1d | 2dbe59eb |
+| `AttentionKernels.h` | `GqaChatPlan` + `vj2_blocks`, `dq_tiles`, `storage`; `GqaChatPlanPtr`; `seg_start` parameters removed | a95a7c63 |
+| `AttentionOps.h/.cpp` | autograd `scaled_dot_product_attention(..., const cuda::GqaChatPlanPtr& chats = nullptr)` | 1453a83f / 5ea8541e |
+| `AttentionBackward.h/.cpp` | the QKV backward node keeps the plan (`chats_`) instead of `seg_start_` | 0be1184e / e46df1f2 |
+| `test_varlen_attention.cu` | G8/G9 (the B groups) deleted, -808 lines; G11 now also runs under Vj2; timings dense vs A | 612b7d53 |
+| `sft/prepare_sft_data.py` | `--pack ffd` writes `seq_lengths.bin` + `seq_offsets.bin`; new check: every chat's last position predicts its own end token, and the pad tail trains nothing | f9dc7a42 |
+| `sft/SftDataLoader.h` | reads the lists; per micro-batch: positions (GPU) + segment lists (host); refuses an old folder that has only `seg_start.bin` | 83c88d41 |
+| `bluscript_sft.cpp` | `g_packed = {positions, chats}`; `packed_rows_of()` builds the plan per micro-batch | 204587bd |
+
+Packed stage-0 data regenerated (laptop `~/Downloads/sft_data/stage0_ultrachat_5k_T4096_packed`): `seq_lengths.bin` /
+`seq_offsets.bin` / `meta.json` = train 2e23ee29 / 207168e2 / c2feaf3a, val fc96ebae / 068c7987 / c86824ba;
+`seg_start.bin` removed. Same 1,517 + 147 rows.
+
+**Checks done on the laptop (no GPU):**
+
+| check | result |
+| --- | --- |
+| machine code (SASS), dense v62 before vs after | identical, 2,280 instructions |
+| SASS, v62 design A before vs after | identical except two parameter offsets (the removed pointer), 2,168 |
+| SASS, dense Vj1d / Vj1d design A | identical (1,624) / identical except parameter offsets (1,784) |
+| SASS, dense Vj2 vs the first Vj2 (b1) | identical, 1,760 instructions |
+| Vj2 design A kernel | 1,688 instructions, 168 registers, 0 spills (same as dense) |
+| plan builder, the real source compiled on the CPU with a fake allocator, 254 layouts (one chat per row, random chats, 4,096 one-token chats, border cases) | 0 failures: every (chat, head, key tile) exactly once, every step's slot = its own rows, LPT order in sections, one-chat rows = the dense order exactly. Two planted bugs were caught (9.2 M and 108 K failures), so the check is not vacuous |
+| data regenerated with the new script | inputs / labels / valid counts byte-identical to the morning's packed files; the chat boundaries from the lists = the old `seg_start.bin` exactly (train 5,000 chats, val 500) |
+| loader, its real new code on the CPU over every row and micro-batch | 0 check failures; positions = t - old seg_start for every token; 5,458 train + 604 val segments = the old chat runs. A planted bug was caught (358,314 wrong positions) |
+| v1 (unpacked) output of the script | still byte-identical (fdb9ef90 / eec5e38b / d57b5ac5) |
+| compile | all 5 kernel files (nvcc 13.0, sm_90a), autograd files, the test, `sanitize_vj2.cu`, the trainer (`mpic++ -fsyntax-only`): 0 errors |
+
+**Box (2026-10-15 18:14):** the 14 files and the new data copied (checksums verified, the box's `seg_start.bin` removed);
+`make -j all SM_ARCH=90`, the trainer (`build_sft_cmd.sh`) and the test binary `tva_a` all built with exit 0. GPUs were
+not available, so nothing was run.
+
+**Pending (needs the GPU, run only with permission):**
+1. `test_varlen_attention` G11 under Vj2 (quick: all layouts with 18/6 heads, 16 real rows, repeat 50): design A
+   backward vs the fp64 reference, every chat = the chat run alone (dK/dV bit for bit), isolation, refusals.
+2. The same-chats end-to-end test of §45.5 again (500 v1 rows vs 147 packed rows, step 0): val loss and grad norm must
+   match as before (v1: 1.445038 / 0.7935).
+
+Later: G11 with `USE_VJ2=0` (Vj1d's design A, unchanged code), compute-sanitizer on Vj2 design A, speed of A on Vj2 vs
+the dense rows, and the `packed16` run (§45.5).
+
+### 45.8 Everything still to do: tasks and tests (written 2026-10-15 evening)
+
+One place for every open task and test. When an item is done, tick it and write the date and the result next to it;
+do not delete lines. Sources are given for every item, so each can be checked.
+
+**Standing rules for every run (the user's instructions):** no GPU run without the user's OK, and the user names the GPU
+index (this morning: GPU 1); the user runs the box commands; one log per run, with a summary; say how long a run takes;
+only mandatory tests now, the rest are "later"; edit on the laptop and copy to the box (never edit on the box); the
+user does all commits and pushes.
+
+**State at the end of 2026-10-15:** packing design A (the per-chat list) is in every kernel and in the whole pipeline,
+design B is removed (§45.7). Laptop: done and checked without a GPU. Box (`~/gautam_k/sft_v2/BluTrain_sft`): files
+and data copied (checksums verified, the box's `seg_start.bin` removed), library + trainer + test binary built at 18:14,
+all exit 0. **Nothing of the design-A change has run on a GPU yet.**
+
+**2026-10-16 morning, first:** the learning session of §45.10 (how blocks compute masked work, segstart vs seqlens).
+
+#### 45.8.1 Next GPU window: the two mandatory tests (in this order)
+
+- [ ] **Test 1 - G11 quick under Vj2** (about 5-10 min, not measured before). Checks the new Vj2 design-A backward: dQ/dK/dV
+  of every chat and pad tail against the fp64 reference, every chat = the same chat run alone (O/LSE/dK/dV bit for bit,
+  dQ within FlashAttention's tolerance), isolation (changing one chat changes no other chat), the refusals, a repeat
+  test, and a dense-vs-A backward time.
+  ```bash
+  GPU=1; cd ~/gautam_k/sft_v2/BluTrain_sft/Tensor-Implementations && nvidia-smi -i $GPU --query-gpu=memory.used --format=csv,noheader
+  CUDA_VISIBLE_DEVICES=$GPU VARLEN_QUICK=1 VARLEN_ONLY=G11 VARLEN_STAGE0_LABELS=/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin LD_LIBRARY_PATH=lib:../Profiler/lib:$LD_LIBRARY_PATH ./tva_a > ~/gautam_k/sft_v2/runs/G11_quick_vj2_A.log 2>&1; echo "exit=$?"; grep -E 'backward mode|FAIL|checks passed|ALL RUN' ~/gautam_k/sft_v2/runs/G11_quick_vj2_A.log | head -30
+  ```
+  Pass: `backward mode: Vj2 (default)`, `checks passed N, failed 0`, `ALL RUN CHECKS PASS`.
+- [ ] **Test 2 - the same-chats end-to-end run, packed, design A** (about 3 min). The same 500 chats as §45.5 (147
+  packed rows, `BLU_SFT_B=1`, one optimizer step over all rows, from step 8000). The v1 side does not need a re-run: its
+  code path did not change (dense machine code byte-identical), and its numbers are known.
+  ```bash
+  G=~/gautam_k; R=$G/sft_v2/BluTrain_sft; BIN=$R/bluscript_sft_bin; INIT=$G/ckpt/blumodel_step_8000; GPU=1
+  LDP=$(make -C $R --no-print-directory print_run_ld_path); nvidia-smi -i $GPU --query-gpu=memory.used --format=csv,noheader
+  d=$G/sft_v2/runs/e2e_packed_A; mkdir -p $d && cd $d
+  for v in $(env | grep -o '^BLU_[A-Z0-9_]*'); do unset "$v"; done
+  env CUDA_VISIBLE_DEVICES=$GPU LD_LIBRARY_PATH=$LDP BLU_SFT_DATA=$G/sft_data/e2e_packed BLU_INIT_FROM=$INIT BLU_ALL_BF16=1 BLU_CKPT=0 BLU_OPTIMIZER=adamw BLU_SFT_B=1 BLU_SFT_ROWS_PER_STEP=147 BLU_SFT_EPOCHS=3 \
+    mpirun -np 1 -x LD_LIBRARY_PATH -x CUDA_VISIBLE_DEVICES -x BLU_SFT_DATA -x BLU_INIT_FROM -x BLU_ALL_BF16 -x BLU_CKPT -x BLU_OPTIMIZER -x BLU_SFT_B -x BLU_SFT_ROWS_PER_STEP -x BLU_SFT_EPOCHS $BIN < /dev/null > run.log 2>&1
+  echo "== packed A exit=$?"; grep -E "SftLoader|\[val\] step 0 |^step +0 |Training complete|ERROR" run.log | cut -c1-200
+  ```
+  Pass: the loader line says `PACKED rows (seq_lengths.bin: 500 chats, each attends only to itself)`; step-0 val loss
+  about 1.4450 (v1: 1.445038; design B gave 1.445084); step-0 grad norm 0.7935 (group norms 0.7929 / 0.0321); the
+  process exits by itself after "Training complete". With A every chat's attention is cut exactly as in its own v1
+  row, so the loss should match v1 to at least 4 digits.
+- [ ] After both: pull the two logs to the laptop (`profiling_reports/`), write the results into §45.7, tick here.
+
+If a test fails: stop, keep the log, do not change anything on the box; the fix is made on the laptop.
+
+#### 45.8.2 Then: finish the SFT pipeline phase (user's order, §45.3 phases 4-5)
+
+| # | task | needs | source |
+| --- | --- | --- | --- |
+| 2.1 | [ ] Re-run the stage-0 sample runs on the packed data: AdamW 2e-5, and the Muon runs (2e-5 / 5e-5 / 1.2e-4 from the 10-07 sweep), same settings as 10-07, the v1 val set kept for direct comparison | GPU, ~6 min per run packed on 1 GPU | user's plan 10-15; v1 runs §37.4-37.5 (AdamW 2e-5 end val 1.2809 on 4 GPUs; Muon best at 1.2e-4) |
+| 2.2 | [ ] `packed16` again (16 rows per step, 189 steps): separates the step-count effect from packing itself (it was stopped at step 5) | GPU, about 10-15 min (estimate) | §45.5 |
+| 2.3 | [ ] The step-count ablation: runs 1 (padding, 156 steps), 2a (pack per step, 64 chats), 2b (pack once + 61,075-trained-token budget per step), 2c (B=4 x 20 rows, 151 steps), 3 (64 rows, 47 steps), 4 (= 3 with a lower LR); two seeds each; compare answer-token val loss | GPU; 2a and 2b need a loader/trainer change (a step counted in chats or tokens, not rows) | §44.1, packing doc §9, memory "packing cuts optimizer steps" |
+| 2.4 | [ ] Special tokens decision with the DPO team (D1/D2): recommendation = special ids 50257 `<\|user\|>`, 50258 `<\|assistant\|>`, 50259 `<\|system\|>` for SFT AND DPO, the 3 rows initialised to the mean of the trained rows 0-50256, end token stays 50256, message content always encoded as plain text (`encode_ordinary`) | meeting with the DPO team | §45.6, §45.3 (D1/D2) |
+| 2.5 | [ ] Before 2.4: measure the current norms of rows 50257-50259 in the checkpoint; ask the DPO team for their `sft_tokenizer.py` and which SFT checkpoint their DPO starts from; their script encodes content with `allowed_special` (`prepare_dpo_data_tokenize.py:119`): must change to plain text in either option | CPU + the DPO team | §45.3, §45.6 |
+| 2.6 | [ ] Tokens ablation: plain-text markers vs special ids, same packed data and steps; compare answer-token val loss now, stopping and role leaks once generation exists | GPU; a `prepare_sft_data.py` option for the special ids + the row initialisation in the trainer | §45.6 |
+| 2.7 | [ ] Pretraining step 0 with today's library: Vj2 is now the default backward for pretraining too, so compare a pretraining step 0 with `USE_VJ2=0` (Vj1d, the old default) against the default (Vj2): the loss must be equal, the grad norm close (different rounding order) | GPU, short | §45.3 phase 4; "Vj2 vs Vj1d pretraining comparison" (§45.5 later list) |
+
+#### 45.8.3 Later tests of the attention kernels (listed, not run, by decision)
+
+| # | test | how | why |
+| --- | --- | --- | --- |
+| 3.1 | [ ] G11 on Vj1d's design A | `USE_VJ2=0 VARLEN_QUICK=1 VARLEN_ONLY=G11 ./tva_a` | Vj1d's A code is unchanged (SASS identical) but has not run with today's library |
+| 3.2 | [ ] G11 refusals in the other modes | `USE_FLASH=1` and `USE_DETERMINISTIC_DQ=1`, each with `VARLEN_ONLY=G11` (seconds) | the refusal must hold where packing is not supported |
+| 3.3 | [ ] the full (not quick) packed groups under Vj2: G10, G11, G12 (other row lengths, a 16,384-token chat, 4,096 one-token chats), G13 (large inputs, 60 rows in one call) | `./tva_a` with no `VARLEN_ONLY` runs everything (long: tell the time first) | the quick run covers one head setting and 16 real rows |
+| 3.4 | [ ] compute-sanitizer memcheck + racecheck on Vj2 design A | on the G11 quick layouts | new memory code: padded slots, plain-store epilogue |
+| 3.5 | [ ] speed of design A on Vj2: `VARLEN_ONLY=BENCH` (dense vs A, forward + backward, real and uniform rows), then against FA3 varlen as on 10-12 | GPU | A on Vj2 must beat A on Vj1d; the 10-12 numbers were Vj1d |
+| 3.6 | [ ] Vj2 vs Vj1d in a pretraining run (speed + loss curve) | GPU, longer | Vj2 became the default on 10-15 |
+| 3.7 | [ ] full CLASSIC (605 checks) on the current Vj2 | `VARLEN_ONLY=CLASSIC` without `VARLEN_QUICK` | the last full 605 was on snapshot f5 (§43); later changes ran 144-check quick runs |
+| 3.8 | [ ] CLASSIC error values vs b1 (optional) | diff of the error columns | proves identical numbers, not only PASS |
+| 3.9 | [ ] B-1 test 2: speed race g4 vs b1 | `gpu_runs/b1_1014/t2_speed.sh`, about 4 min | pending since 10-14 (all GPUs were taken) |
+
+#### 45.8.4 Paused kernel optimisation (after the pipeline; goal: beat FA3 / FA4 / cuDNN on H200, §43)
+
+- [ ] Forward v62 (1.21x FA3 on B8 18/6): G1 for P.V (`m64n128k16`, V descriptor LBO 16,384 B), G5 tail (wave
+  quantisation: 2,304 units / 132 CTAs = 17.45 rounds), G6 the output through shared memory + TMA store (§43.12).
+- [ ] Vj2 design A speed (the old G7 / Phase 2 item, now on A only): profile packed rows, per-kernel time.
+- [ ] Packed-row tile waste (§45.9): design A throws away 11.5% of its computed pairs (7.5% diagonal tiles, 3.8% empty
+  slots at chat ends, 0.2% pad tails). Ideas: smaller tiles or one shared masked tile for the ends of several chats;
+  skip the pad-tail segments (write zeros; their outputs feed no loss).
+- [ ] Final scoreboard against FA3, FA4, cuDNN (dense and packed).
+- [ ] Head-dim-64 bug (§42.8), and FA4's Blackwell methods for our B300 kernels (§43.12 item 4).
+
+#### 45.8.5 Future tasks (decided, not now)
+
+| task | source |
+| --- | --- |
+| [ ] Split over-long chats like TRL `bfd_split` instead of dropping them (10 of 5,010 on stage-0), with the drop-vs-split ablation | §45.4, packing doc §7.7 |
+| [ ] DFT and focal loss vs plain cross-entropy (a change to the loss op only) | memory "DFT + focal loss" (10-06) |
+| [ ] The remaining SFT Q&A questions: Q4, Q5, Q6, Q11 (logits only at trained positions: a gather + an lm_head GEMM with irregular M; BluBLAS gives wrong numbers silently for a transposed operand when M/N is not a multiple of 64, so that needs a guard first), Q12, Q13 | §38, memory "SFT plan = the 13 Q&A questions" |
+| [ ] Kruthik's fused embedding backward (`EmbeddingBwdFused`, the team's mandated kernel) is not used by `bluscript_sft.cpp`; with packing the tokens per micro-batch stay B x T, so it would work without its N fix: ask the user whether to wire it in | memory "v2 packing + Kruthik fused emb" |
+| [ ] B300: the sm103 loss forward has no `ignore_index` (masked rows are computed as trained in the loss value); fix before any SFT run on B300 | memory "B300 loss fwd ignores ignore_index" |
+| [ ] Casting follow-ups: #1 bf16 `wte` (parked, keep fp32), #3 `data<T>()` is an unchecked reinterpret (827 sites), #4 the unexplained ~1 ms of the bf16-logits change | memory "4 immediate tasks after SFT" |
+| [ ] Shared-memory race warnings in TI's `matmul_bf16_optimized` (20 racecheck warnings) | memory "racecheck warnings in TI matmul_bf16_optimized" |
+| [ ] Re-explain `ignore_index` clearly (why -100 cannot work with uint16 targets; why the default is -1) | memory, parked by the user 2026-09-21 |
+
+#### 45.8.6 Housekeeping
+
+- [ ] **Commit + push (the user does it). Nothing has been committed in either repo since 2026-09-28** (TI `d96b991`,
+  BluTrain_sft `909ab75`, both on `dist_side_merge`): all the SFT work since then exists only as uncommitted files on
+  the laptop (and partly on the box). `git status` on 2026-10-15 evening:
+  - Tensor-Implementations, modified: `AttentionBackward.h/.cpp`, `AttentionOps.h/.cpp`, `AttentionKernels.h`,
+    `NormalizationBackward.h/.cpp`, `NormalizationOps.h/.cpp`, `UnaryOps/Normalizations.h` + `cpu/Normalizations.cpp`,
+    `FusedRMSRoPEKernels.h`, the 4 `FusedRMSRoPE_{fwd,bwd}_sm90{,_kernel}.cu`, `GQA_bwd_generic.cu`,
+    `GQA_bwd_vj1_sm90.cu`, `GQA_bwd_vj1d_sm90.cu`, `GQA_fwd_generic.cu`, `GQA_fwd_sm90.cu`; new (untracked):
+    `GQA_bwd_vj2_sm90.cu`, `Tests/kernel_tests/{sanitize_vj2,test_rope_positions,test_varlen_attention}.cu`.
+  - BluTrain_sft, modified: `bluscript_zero_ckpt.cpp` (+235 / -24 lines, the SFT loader integration of 10-06/07) and the
+    Tensor-Implementations submodule pointer; new (untracked): `bluscript_sft.cpp`, `sft/` (`prepare_sft_data.py`,
+    `SftDataLoader.h`, `test_sft_dataloader.cpp`; it still compiles with today's loader), and
+    `bluscript_zero_ckpt.cpp.orig_init` (a backup: decide whether to keep it out of the commit).
+  - This repo (`Neural_Networks_exp_1926`): the work docs and records.
+  The design-B version was never committed, so a commit now holds design A only. Ask me for the push block.
+- [ ] Any other binary in `~/gautam_k/sft_v2/BluTrain_sft` that uses the attention op (for example a pretraining
+  trainer built there) must be rebuilt before use: the op's signature changed on 10-15. `bluscript_sft_bin` is rebuilt.
+- Old-format packed data (`seg_start.bin`) is gone from the box and from the laptop's data folder; nothing needs it
+  (`seq_lengths.bin` reproduces it exactly, checked).
+
+### 45.9 Packed rows and attention tiles: how much computed work is thrown away (2026-10-15, question from the user)
+
+**The question.** Attention kernels work in tiles (blocks of queries x keys). With packed rows and a per-chat causal
+mask, part of some tiles is masked: those query-key pairs are computed and then thrown away. How much, and does it hurt?
+
+**Where the waste can come from.** The tensor cores always compute a whole tile; masked pairs are computed and then
+given weight exactly 0 (forward: score set to -inf before the softmax, so its exp is 0; backward: P = 0, so dS = 0).
+That is why masking cannot change the result, only the time. The waste depends on where the tile grid sits:
+
+- **Grid fixed to the row (design B, FlexAttention's document mask, the user's picture):** a tile can hold the end of
+  one chat and the start of the next. Example, a 16-token row with chats a (6), b (7), c (3) and 4-token tiles:
+
+  ```
+  tokens:  0 1 2 3 | 4 5 6 7 | 8 9 10 11 | 12 13 14 15
+  chat:    a a a a | a a b b | b b b  b  | b  c  c  c
+                     ^^^^^^^ one tile holds the end of chat a AND the start of chat b
+  ```
+
+  Such a tile is masked for both reasons (causal, and other chat), and the key loop of chat b's rows must also visit
+  chat a's tiles that share a tile with b.
+- **Grid restarted at every chat (design A, ours; FlashAttention varlen does the same):** no tile ever holds two chats:
+
+  ```
+  chat a (6):   [0 1 2 3]  [4 5 . .]        . = slot past the chat end (computed, never used)
+  chat b (7):   [6 7 8 9]  [10 11 12 .]
+  chat c (3):   [13 14 15 .]
+  ```
+
+  What is left: the causal triangle inside each chat's diagonal tiles (the same as any causal attention), the empty
+  slots of each chat's last tile, and the row's pad tail (processed as a segment of its own).
+
+**In our code** (laptop `~/Downloads/BluTrain_sft`, `Tensor-Implementations/src/Kernels/cuda/attention/arch/`):
+forward v62 tiles are 64 queries x 128 keys (`GQA_fwd_sm90.cu:47`); in design A a work unit reads its chat's start and
+length (`:476-477`), visits key tiles 0 .. the diagonal tile of its own chat only (`:488`), skips a 64-row query tile
+that starts past the chat end (`:491`), masks only the diagonal tile (`:535`, `:554`), and never stores rows past the
+end (`:657`). Backward Vj2 blocks are 128 keys x 64-query steps (`GQA_bwd_vj2_sm90.cu:68-69`); a block takes its chat
+from the plan (`:452`), visits only that chat's query steps (`:468`), masks the diagonal steps (`:604`, `:613`), gets
+LSE = +inf for slot rows past the chat end so their P is 0 (`:409`), and stores dK/dV only for rows inside the chat
+(`:703-714`). The plan gives each chat its own work items (`GQA_fwd_generic.cu:455, 475, 494`).
+
+**Counted on the stage-0 packed data** (1,517 rows, 5,000 chats, 478 pad tails), following the kernels' tile rules
+exactly; per head; real = key <= query in the same chat (script and output:
+`profiling_reports/tile_waste_2026_10_15/`):
+
+| layout | forward pairs computed | x real | backward pairs computed | x real |
+| --- | --- | --- | --- | --- |
+| v1 (one chat per padded 4096-token row) | 43,253,760,000 | 9.15 | 43,253,760,000 | 9.15 |
+| packed, no chat mask (wrong: chats see each other) | 13,123,190,784 | 2.78 | 13,123,190,784 | 2.78 |
+| packed, design B (row grid; removed 10-15) | 5,665,947,648 | 1.20 | 5,512,896,512 | 1.17 |
+| **packed, design A (grid per chat; ours)** | **5,345,517,568** | **1.13** | **5,345,517,568** | **1.13** |
+
+Real pairs: 4,728,665,163. Design A's forward throws away 11.54% of what it computes: 7.48% inside the diagonal tiles
+(key after the query, including keys past a chat's end), 3.83% in query rows past a chat's end in its last 64-row
+tile, 0.23% in the pad-tail segments. For comparison, one causal sequence of 4,096 tokens with the same tiles throws
+away 3.01%: packed rows have more diagonal tiles (one set per chat) and one partly filled last tile per chat.
+
+**Does it hurt?** Not the result (the thrown-away pairs get weight exactly 0; G10/G11 check every chat bit for bit
+against the same chat run alone). For speed: design A computes 8.1x less attention work than v1 and about 6% less
+forward / 3% less backward than design B, which matches the measured A-vs-B gain (forward 2-16%, backward 3-5% on
+middle and long chats, 2026-10-10/12). Design B wins only when chats are much shorter than a tile (several tiny chats
+fit in one tile there, while A gives each chat at least one whole tile); our chats average 1,238 tokens.
+
+**What could still be cut (not now; listed in §45.8.4):** the diagonal-tile waste is the same as in FlashAttention
+(tile-based causal attention computes the whole diagonal tile); the empty slots at chat ends (3.8%) could be reduced by
+giving chat ends smaller tiles or by putting the ends of several chats into one masked tile; the pad tails (0.2%)
+could be skipped by writing zeros instead (their outputs feed no loss).
+
+### 45.10 Tomorrow morning FIRST (2026-10-16): learn how attention blocks compute masked work, segstart vs seqlens
+
+**Decided by the user on 2026-10-15 evening:** this is the first task of 2026-10-16 morning, before anything else. It
+continues the question the user asked with a picture before the EOD (a packed row with 4 documents d0-d3 cut into
+fixed square blocks: inside each block some pairs are real work and the rest is masked; "won't that waste affect us?").
+The explanations below were given in chat on 10-15 and were NOT yet clear to the user, so tomorrow they are explained
+again from zero, step by step, with a small drawn grid first (8-token blocks, every pair drawn), and only then with the
+real block sizes and the numbers. The 10-15 EOD stays as it was sent (the user decided not to change it).
+
+**The facts to explain (all counted with the kernels' own block rules; scripts in `profiling_reports/tile_waste_2026_10_15/`):**
+
+1. **What a block is.** The GPU computes attention in fixed blocks: in our forward kernel one block is 64 queries x
+   128 keys = 8,192 pairs; the backward uses 128 keys x 64-query steps. A block is always computed whole; pairs that
+   must not count (a key after the query, or a key of another chat) are computed and then set to weight 0.
+2. **The rule behind all the waste.** A query must look at every key of its own chat, from the chat's first token up to
+   itself. So the work of one query block is a whole line of key blocks, from the key block where its chat starts to
+   the key block holding the query itself. Even a query block in the middle of a long chat reaches back to the
+   chat's first token.
+3. **segstart (design B, removed):** the blocks sit at fixed places in the row (multiples of 64 / 128 tokens). A chat
+   almost never starts exactly at a block edge, so its first key block is shared with the previous chat, and EVERY
+   query block of the chat (start, middle and end) must go through that shared, mostly masked block. Example (one
+   4096-token row: chat 1 = tokens 0-999, chat 2 = 1000-3999, padding 4000-4095): the middle query block of chat 2
+   (rows 2048-2111) needs key blocks 896-1023 ... 2048-2175 = 10 blocks, and the first one holds 104 keys of chat 1
+   (masked) and 24 of chat 2. The padding rows share a block pair with chat 2's last rows, so they also go through all
+   of chat 2's key blocks (25 blocks instead of 1). Whole row: segstart 720 blocks.
+4. **seqlens (design A, ours):** every chat's blocks start at its own first token. The same middle query block needs
+   chat-2 keys 1000-2151 = 9 blocks, all of chat 2. The only extra is the empty part of each chat's last block.
+   Whole row: seqlens 650 blocks (segstart computes 10.8% more blocks than seqlens on this row).
+5. **Why the gap depends on chat length** (rows filled with chats of one length, forward blocks):
+
+   | chat length | seqlens blocks | segstart blocks | segstart vs seqlens |
+   | --- | --- | --- | --- |
+   | 2000 | 546 | 576 | +5.5% |
+   | 1000 | 290 | 336 | +16% |
+   | 300 | 123 | 168 | +37% |
+   | 100 | 82 | 124 | +51% |
+   | 64 | 64 | 64 | equal |
+   | 20 | 205 | 114 | -44% (segstart wins) |
+
+   segstart's extra is about one block per query block of a chat, while a chat's total work grows with its length
+   squared, so the extra is a small part of a long chat and a big part of a middle one.
+6. **Why segstart wins on very short chats.** (a) A chat shorter than a block still gets a whole block with seqlens (a
+   20-token chat fills 20 of its 64 query rows), while segstart puts about 3 such chats into one block. (b) Measured on
+   2026-10-12 (§40.12, real rows with the shortest chats, backward): seqlens computed slightly LESS work than segstart
+   (14.0% vs 15.1% of a dense row) but took MORE time (28.2% vs 27.4% of the dense time), because it splits such rows
+   into many more small work pieces and every piece has a fixed cost (loading its keys, starting up, writing results)
+   however little real work it holds. That is the "segstart is 2-4% faster than seqlens only on very short chats".
+7. **The correct one-line summary** (the 10-15 EOD sentence put a reason next to the wrong fact): masked work at chat
+   borders is why seqlens is faster than segstart on middle and long chats; whole blocks for tiny chats and the
+   per-piece fixed cost are why segstart is faster than seqlens on very short chats. Our stage-0 chats average 1,238
+   tokens, so seqlens is the right choice (1.13x the real work against segstart's 1.20x on the real packed data, §45.9).
+
+**Plan for the morning session:** (1) draw a 16-token row with 4-token blocks and two chats, count every pair by hand;
+(2) the same with the chat start moved off a block edge, to see the shared block appear for every query block;
+(3) a tiny-chat row, to see why segstart wins there; (4) only then the real sizes, the tables above and §45.9;
+(5) then the GPU tests of §45.8.1 when a GPU is free.

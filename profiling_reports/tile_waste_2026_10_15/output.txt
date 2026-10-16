@@ -1,0 +1,14 @@
+stage-0 packed: 1517 rows, 5000 chats, 478 pad tails; REAL query-key pairs (key <= query, same chat) = 4,728,665,163 per head
+
+                                                     forward  x real        backward  x real
+v1 (one chat per padded 4096 row)             43,253,760,000   9.147  43,253,760,000   9.147
+packed, NO chat mask (wrong: chats mix)       13,123,190,784   2.775  13,123,190,784   2.775
+packed, design B (row grid; removed)           5,665,947,648   1.198   5,512,896,512   1.166
+packed, design A (grid per chat; ours)         5,345,517,568   1.130   5,345,517,568   1.130
+
+design A forward, where the computed-but-unused pairs are (per head):
+  inside the diagonal tiles (key > query; also keys past a chat's end)        399,820,853 =  7.48% of computed
+  query rows past a chat's end in its last 64-row tile                        204,620,672 =  3.83% of computed
+  the pad-tail segments (whole rows of padding)                                12,410,880 =  0.23% of computed
+  total thrown away                                                           616,852,405 = 11.54% of computed
+  (a plain causal sequence of 4096 tokens with the same tiles throws away 3.01% too)

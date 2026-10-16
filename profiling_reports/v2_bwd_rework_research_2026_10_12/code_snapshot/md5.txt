@@ -15,3 +15,5 @@ d23c09e313b56b049ecb63e0b36cd72a  sanitize_vj2.cu
 5a988de024d30d72a48124070d27ea16  test_varlen_attention.cu
 85eb2d0f85203844373880999cce1a5f  GQA_bwd_vj2_sm90.b2a_85eb2d0f.cu
 41318b58aaffe42b45649f524cdabfb1  GQA_bwd_vj2_sm90.g4_41318b58.cu
+d33c4408a90a1dc1e5b54206a612ea3f  GQA_bwd_vj2_sm90.b4a_d33c4408.cu
+0fc4c1c8022fe823ba6a588c46088106  GQA_bwd_vj2_sm90.b1_0fc4c1c8.cu

@@ -1,0 +1,45 @@
+#pragma once
+
+#include <cstdint>
+#include <cuda_runtime.h>
+#include "dtype/Types.h"
+
+namespace OwnTensor {
+namespace cuda {
+
+// positions (v2 packing, added 2026-10-10): optional DEVICE pointer to int32 [B, T], the
+// RoPE position of every token. With several chats packed into one row, each chat must
+// restart at position 0, so the position is no longer "token index + pos_offset".
+//   * nullptr (the default, every existing caller): unchanged behaviour, position = t + pos_offset.
+//   * non-null: position = positions[b*T + t]; pos_offset must then be 0 (the op layer checks).
+// Same scheme as torchtitan (rope_cache[positions], models/common/rope.py:382-385) and HF
+// position_ids. TE / FlashAttention compute it in-kernel from cu_seqlens instead
+// (TE fused_rope.cu:162-182, FA ops/triton/rotary.py:50-67); a per-token array is simpler
+// here because our kernels already index (batch, token) directly.
+// It is the LAST parameter so every existing call site compiles unchanged.
+void fused_qk_norm_rope_forward(
+    const float* q_in, const float* k_in,
+    float*       q_out, float* k_out,
+    const float* q_gamma, const float* k_gamma,
+    const float* cos_sin,
+    float*       q_rstd, float* k_rstd,
+    int B, int Hq, int Hkv, int T, int hd,
+    int pos_offset, float eps = 1e-5f, bool interleaved = false,
+    cudaStream_t stream = 0,
+    const int32_t* positions = nullptr);
+
+void fused_qk_norm_rope_backward(
+    const float* dz_q, const float* dz_k,
+    const float* q_in, const float* k_in,
+    const float* q_gamma, const float* k_gamma,
+    const float* cos_sin,
+    const float* q_rstd, const float* k_rstd,
+    float*       dq_in, float* dk_in,
+    float*       dq_gamma, float* dk_gamma,
+    int B, int Hq, int Hkv, int T, int hd,
+    int pos_offset, bool interleaved = false,
+    cudaStream_t stream = 0,
+    const int32_t* positions = nullptr);
+
+} // namespace cuda
+} // namespace OwnTensor

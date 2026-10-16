@@ -1,0 +1,70 @@
+[precision] bf16 logits ON — frees ~3 GiB ([B,T,vocab] fp32 activation + gradient). Gradients are unaffected (fp32 softmax stats, exact 1.0 backward seed), but the REPORTED loss is bf16 and quantizes to ~0.06 steps: compare tokens/s and grad-norm across an A/B, not the loss digits.
+[SftLoader] /home/operator/gautam_k/sft_data/e2e_packed/train: 147 rows x T=4096, 444233 trained tokens | B=1 W=1 -> 147 micro-batches per rank per epoch, 0 rows unused per epoch | PACKED rows (seg_start.bin: several chats per row)
+[SftLoader] /home/operator/gautam_k/sft_data/e2e_packed/val: 147 rows x T=4096, 444233 trained tokens | B=1 W=1 -> 147 micro-batches per rank per epoch, 0 rows unused per epoch | PACKED rows (seg_start.bin: several chats per row)
+[sft] 147 rows per step = B 1 x GRAD_ACCUM 147 x W 1 | 3 epochs = 3 steps | lr 2e-05 -> 2e-06, warmup 1 steps then cosine | val every 10 steps (147 batches per rank)
+[sft] loss: label 65535 ignored, divided by the step's global trained-token count, backward seed 1 (= W) | tok/s below counts all positions, padding included
+================ Configuration ================
+  d_model         : 2304
+  n_layers        : 26
+  q_heads/kv_heads: 18 / 6  (G=3)
+  head_dim        : 128
+  ffn_hidden      : 6144  (SwiGLU)
+  context_length  : 4096
+  rope_theta      : 500000  (interleaved=NeoX)
+  vocab_size      : 50304
+  weight_tying    : ON
+  precision       : resid bfloat16 | logits bfloat16 | embed bfloat16
+                    (matmuls bf16, QK-norm+RoPE fp32, optimizer masters fp32 — all fixed)
+  B x T           : 1 x 4096
+  world_size      : 1
+  global_batch    : 602112  (grad_accum=147)
+  max_lr / min_lr : 2e-05 / 2e-06
+  warmup / steps  : 1 / 3
+  WSD stable_steps: 0  (decay tail=2)
+===============================================
+Initializing model on CUDA device 0...
+Number of parameters: 1588229888
+[pg] bootstrap=mpi-broadcast (mpirun) host=innmi1srh2-p032 rank=0/1 node=0 local_rank=0 (DERIVED) ranks_per_node=1 cuda_dev=0 bus=0000:3B:00.0
+[DCP] is_valid(/home/operator/gautam_k/ckpt/blumodel_step_8000) -> TRUE
+[init] weights only from /home/operator/gautam_k/ckpt/blumodel_step_8000 (its step 8000, loss 2.009818). Optimizer state, step and data position start fresh.
+==================== MFU accounting ====================
+  device            : NVIDIA H200 x 1
+  peak BF16 (dense) : 989.400 TFLOP/s per GPU
+  cluster peak      : 0.989 PFLOP/s
+  fwd FLOPs/token   : 3.667 GFLOP  (causal)
+  fwd+bwd /token    : 11.001 GFLOP  (causal, x3) <-- headline
+  fwd+bwd /token    : 12.473 GFLOP  (PaLM convention)
+  6*N cross-check   : 9.529 GFLOP  (weight matmuls only; excludes the T-dependent attention core)
+  model FLOPs/step  : 6.624 PFLOP  over 602112 tokens
+  100% MFU would be : 6694.682 ms/step
+  note              : no activation checkpointing in this loop, so HFU == MFU
+========================================================
+[ZeRO-1] overlap: reduce=off (monolithic, after backward) | refresh=off (synchronous publish in step)
+[ZeRO-1] variant: v1 reduce/broadcast | symmetric memory: off  (BLU_ZERO_V2=0 BLU_SYMMETRIC=0)
+[ZeRO-1] params=1588223232 padded=1588224000 W=1 shard=1588224000 | optimizer state/GPU: 18175.781 MB (vs 18175.772 MB unsharded)
+[ZeRO-1] params=6656 padded=15360 W=1 shard=15360 | optimizer state/GPU: 0.176 MB (vs 0.076 MB unsharded)
+[optimizer] AdamW  (BLU_OPTIMIZER=adamw)
+  G0 adamw:bfloat16/1588M : zero1-v1 reduce/broadcast | lr 0.000 -> 0.000
+  G1 adamw:float32/0M : zero1-v1 reduce/broadcast | lr 0.000 -> 0.000
+[ZeRO-1] grad_clip=1.000 APPLIES TO 1588229888 / 1588229888 params (100.00%)
+decayed params: 1588101120, non-decayed: 128768 | ZeRO-1 optimizer groups: 2 | world_size: 1
+
+Starting training...
+
+  [val] step 0 | val_loss 1.445084 | 444233 trained tokens
+step      0 | train 1.445084 | val 1.445084 | tok/s 28358.36 | norm 0.7935 | dt 21232.26 ms | mfu 31.53% | TF/gpu 312.0 | lr 2.0000e-05 | G0(adamw:bfloat16/1588M) 0.7929 | G1(adamw:float32/0M) 0.0321 | trained 444233
+step      1 | train 1.423671 | val 1.445084 | tok/s 32909.50 | norm 0.6502 | dt 18295.99 ms | mfu 36.59% | TF/gpu 362.0 | lr 2.0000e-05 | G0(adamw:bfloat16/1588M) 0.6497 | G1(adamw:float32/0M) 0.0272 | trained 444233
+  [val] step 2 | val_loss 1.381213 | 444233 trained tokens
+step      2 | train 1.381213 | val 1.381213 | tok/s 45409.49 | norm 0.3808 | dt 13259.61 ms | mfu 50.49% | TF/gpu 499.5 | lr 2.0000e-06 | G0(adamw:bfloat16/1588M) 0.3805 | G1(adamw:float32/0M) 0.0143 | trained 444233
+
+==================== MFU summary ====================
+  steady-state MFU  : 0.00%   (0 steps, first 5 excluded)
+  best-step MFU     : 0.00%
+  model TFLOP/s/gpu : 0.00  of 989.40 peak
+  cluster PFLOP/s   : 0.00
+  steady tok/s      : 0
+  total model FLOPs : 0.000 EFLOP over 0.000 min
+=====================================================
+
+=== Training complete ===
+[MEM] active_peak 55744 MiB | allocated_peak 55744 MiB | reserved_peak 56456 MiB | cached_free 11687 MiB

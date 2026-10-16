@@ -1,0 +1,1881 @@
+diff --git a/include/autograd/backward/AttentionBackward.h b/include/autograd/backward/AttentionBackward.h
+index 1316d1e..e16ff94 100644
+--- a/include/autograd/backward/AttentionBackward.h
++++ b/include/autograd/backward/AttentionBackward.h
+@@ -2,6 +2,7 @@
+ 
+ #include "autograd/Node.h"
+ #include "core/Tensor.h"
++#include "ops/helpers/AttentionKernels.h"   // cuda::GqaChatPlanPtr (v2 packed rows)
+ 
+ namespace OwnTensor {
+ namespace autograd {
+@@ -143,13 +144,14 @@ private:
+     Tensor saved_lse_;
+     int64_t B_, Nq_heads_, Nkv_heads_, T_, hd_;
+     bool is_causal_;
++    cuda::GqaChatPlanPtr chats_;   // v2 packed rows (design A); null = dense. The SAME plan as the forward.
+ 
+ public:
+     GQAFlashAttentionQKVBackward(
+         const Tensor& query, const Tensor& key, const Tensor& value,
+         const Tensor& output, const Tensor& lse,
+         int64_t B, int64_t Nq_heads, int64_t Nkv_heads, int64_t T, int64_t hd,
+-        bool is_causal);
++        bool is_causal, cuda::GqaChatPlanPtr chats = nullptr);
+ 
+     const char* name() const override { return "GQAFlashAttentionQKVBackward"; }
+     std::vector<Tensor> apply(std::vector<Tensor>&& grads) override;
+@@ -159,6 +161,7 @@ public:
+         saved_value_  = Tensor();
+         saved_output_ = Tensor();
+         saved_lse_    = Tensor();
++        chats_.reset();
+     }
+ };
+ 
+diff --git a/include/autograd/backward/NormalizationBackward.h b/include/autograd/backward/NormalizationBackward.h
+index a8dfe9b..10bf6d9 100644
+--- a/include/autograd/backward/NormalizationBackward.h
++++ b/include/autograd/backward/NormalizationBackward.h
+@@ -59,11 +59,15 @@ private:
+ 
+ class FusedRMSRoPEBackward : public Node {
+ public:
++    // positions (v2 packing, added 2026-10-10): the optional int32 [B, T] per-token RoPE
++    // positions the forward used (invalid Tensor = none). Kept as a plain Tensor reference
++    // (no grad, never modified) so its buffer stays alive until this node runs.
+     FusedRMSRoPEBackward(
+         Tensor q, Tensor k, Tensor q_gamma, Tensor k_gamma,
+         Tensor cos_sin_cache, Tensor q_rstd, Tensor k_rstd,
+-        int64_t pos_offset = 0, bool interleaved = false)
+-        : pos_offset_(pos_offset), interleaved_(interleaved)
++        int64_t pos_offset = 0, bool interleaved = false,
++        Tensor positions = Tensor())
++        : pos_offset_(pos_offset), interleaved_(interleaved), positions_(positions)
+     {
+         q_ = SavedVariable(q, false);
+         k_ = SavedVariable(k, false);
+@@ -79,12 +83,14 @@ public:
+     void release_saved_variables() override {
+         q_.reset(); k_.reset(); q_gamma_.reset(); k_gamma_.reset();
+         cos_sin_cache_.reset(); q_rstd_.reset(); k_rstd_.reset();
++        positions_ = Tensor();   // v2: drop the reference with the other saved tensors
+     }
+ 
+ private:
+     SavedVariable q_, k_, q_gamma_, k_gamma_, cos_sin_cache_, q_rstd_, k_rstd_;
+     int64_t pos_offset_;
+     bool interleaved_;
++    Tensor positions_;   // v2: optional per-token positions [B, T] (invalid = none)
+ };
+ 
+ } // namespace autograd
+diff --git a/include/autograd/operations/AttentionOps.h b/include/autograd/operations/AttentionOps.h
+index d7ecbad..e746d17 100644
+--- a/include/autograd/operations/AttentionOps.h
++++ b/include/autograd/operations/AttentionOps.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "core/Tensor.h"
++#include "ops/helpers/AttentionKernels.h"   // cuda::GqaChatPlanPtr (v2 packed rows)
+ 
+ namespace OwnTensor {
+ namespace autograd {
+@@ -125,7 +126,11 @@ Tensor scaled_dot_product_attention(
+   const int Nkv_heads,
+   bool is_causal = true,
+   float dropout_p = 0.0f,
+-  SDPBackend backend = SDPBackend::FlashAttention
++  SDPBackend backend = SDPBackend::FlashAttention,
++  // v2 packed rows (2026-10-15): optional per-chat plan (design A, the cu_seqlens way; GqaChatPlan in
++  // ops/helpers/AttentionKernels.h) built for this (B, T, Nq_heads). nullptr (default) = plain causal over the whole
++  // row, as before. The backward node keeps the plan: the backward must use the same one.
++  const cuda::GqaChatPlanPtr& chats = nullptr
+ );
+ 
+ /**
+diff --git a/include/autograd/operations/NormalizationOps.h b/include/autograd/operations/NormalizationOps.h
+index 694a89e..4420de5 100644
+--- a/include/autograd/operations/NormalizationOps.h
++++ b/include/autograd/operations/NormalizationOps.h
+@@ -37,6 +37,10 @@ Tensor rms_norm(
+  * @param pos_offset     position offset for RoPE cache
+  * @param eps            RMSNorm epsilon
+  * @param interleaved    false for NeoX, true for GPT-J
++ * @param positions      (v2 packing, added 2026-10-10) optional int32 CUDA tensor [B, T]
++ *                       with each token's RoPE position (packed chats restart at 0).
++ *                       Default = unchanged behaviour (position = t + pos_offset). It is
++ *                       saved for the backward, which must rotate by the same positions.
+  * @return std::pair<Tensor, Tensor> (q_out, k_out)
+  */
+ std::pair<Tensor, Tensor> fused_rms_rope(
+@@ -47,7 +51,8 @@ std::pair<Tensor, Tensor> fused_rms_rope(
+     const Tensor& cos_sin_cache,
+     int64_t pos_offset = 0,
+     float eps = 1e-5f,
+-    bool interleaved = false);
++    bool interleaved = false,
++    const Tensor& positions = Tensor());
+ 
+ /**
+  * @brief Alias for fused_rms_rope.
+diff --git a/include/ops/UnaryOps/Normalizations.h b/include/ops/UnaryOps/Normalizations.h
+index 247596a..95dde66 100644
+--- a/include/ops/UnaryOps/Normalizations.h
++++ b/include/ops/UnaryOps/Normalizations.h
+@@ -118,6 +118,13 @@ RMSNormBackwardResult rms_norm_backward(
+ /**
+  * @brief Fused QK-norm (RMSNorm) + RoPE forward on Query and Key tensors.
+  *        Executes fused CUDA kernel fusing RMS scale + RoPE rotation.
++ *
++ * @param positions  (v2 packing, added 2026-10-10) optional int32 CUDA tensor [B, T]:
++ *                   the RoPE position of every token, so packed chats can each restart
++ *                   at 0. Default (invalid Tensor) = unchanged behaviour, position =
++ *                   t + pos_offset. When given, pos_offset must be 0 and every value must
++ *                   be < the cos_sin_cache length (the caller guarantees that; the loader
++ *                   checks it on the host).
+  */
+ FusedRMSRoPEForwardResult fused_rms_rope_forward(
+     const Tensor& q,
+@@ -127,10 +134,12 @@ FusedRMSRoPEForwardResult fused_rms_rope_forward(
+     const Tensor& cos_sin_cache,
+     int64_t pos_offset = 0,
+     float eps = 1e-5f,
+-    bool interleaved = false);
++    bool interleaved = false,
++    const Tensor& positions = Tensor());
+ 
+ /**
+  * @brief Fused QK-norm (RMSNorm) + RoPE backward on Query and Key tensors.
++ *        positions must be the same tensor the forward used (see fused_rms_rope_forward).
+  */
+ FusedRMSRoPEBackwardResult fused_rms_rope_backward(
+     const Tensor& grad_q,
+@@ -143,7 +152,8 @@ FusedRMSRoPEBackwardResult fused_rms_rope_backward(
+     const Tensor& q_rstd,
+     const Tensor& k_rstd,
+     int64_t pos_offset = 0,
+-    bool interleaved = false);
++    bool interleaved = false,
++    const Tensor& positions = Tensor());
+ 
+ } // namespace OwnTensor
+ 
+diff --git a/include/ops/helpers/AttentionKernels.h b/include/ops/helpers/AttentionKernels.h
+index e1d0ea7..81e657c 100644
+--- a/include/ops/helpers/AttentionKernels.h
++++ b/include/ops/helpers/AttentionKernels.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ #include <cstdint>
++#include <memory>
+ #include "dtype/Types.h"   // bfloat16_t (host+device safe)
+ 
+ namespace OwnTensor {
+@@ -107,6 +108,43 @@ void gqa_flash_attn_forward(
+    bool is_causal
+ );
+ 
++/**
++* v2 packed rows (added 2026-10-10): several whole chats per row of T tokens, each attending only to
++* itself. Given as a per-chat list -- design A, the cu_seqlens way of FlashAttention varlen,
++* TE/Megatron THD, PyTorch varlen_attn, TRL and torchtitan VarlenInnerAttention: the kernels cut
++* their work per segment instead of per row. (Design B, one seg_start value per token, was removed
++* on 2026-10-15: A is faster and one representation keeps one tested path.)
++* Build ONE plan per batch from the segments of every row -- chats AND each row's pad tail as its
++* own segment; together they must cover every token of every row exactly once (checked, throws) --
++* and pass the same plan to gqa_flash_attn_forward_qkv and gqa_flash_attn_backward_qkv.
++* The plan owns device memory: free it with gqa_chat_plan_free (or hold it as a GqaChatPlanPtr).
++* RoPE positions are not part of the plan: the caller gives fused_rms_rope positions that restart
++* at 0 for every segment (as TRL's collator builds position_ids from the packed seq_lengths).
++*/
++struct GqaChatPlan {
++    int32_t* fwd_units = nullptr;   // device, 4 ints per forward unit (v62): {b, t0, L, (cpl << 8) | hq}
++    int      n_fwd_units = 0;
++    int32_t* bwd_tiles = nullptr;   // device, 4 ints per Vj1d backward key tile (64 keys): {b, t0, L, kt}
++    int      n_bwd_tiles = 0;
++    int32_t* vj2_blocks = nullptr;  // device, 8 ints per Vj2 backward block (128 keys x one query head):
++                                    //   {b, t0, L, kt, hq, dqt0, 0, 0}, dqt0 = padded dQ tile of its first step
++    int      n_vj2_blocks = 0;
++    int32_t* dq_tiles = nullptr;    // device, 4 ints per padded 64-row dQ tile of ONE query head (the same list
++    int      n_dq_tiles = 0;        //   for every head): {b, row0, nrows, 0} (GQA_bwd_vj2_sm90.cu, bwd_prep_vj2_chats)
++    int B = 0, S = 0, Hq = 0;       // the shape the plan was built for (checked at every call)
++    int32_t* storage = nullptr;     // the ONE device allocation the four lists point into
++};
++// seg_b/seg_t0/seg_len: HOST arrays of n_seg segments (row, start, length). Hq <= 255.
++// The lists go up with one asynchronous copy on the current stream: the call does not wait for the GPU.
++void gqa_chat_plan_build(GqaChatPlan& plan, const int32_t* seg_b, const int32_t* seg_t0,
++                         const int32_t* seg_len, int n_seg, int B, int S, int Hq);
++void gqa_chat_plan_free(GqaChatPlan& plan);
++// The plan as a shared handle (2026-10-15): the autograd attention op keeps it until the backward of the
++// micro-step it was built for has run; it is freed when the last holder lets go.
++using GqaChatPlanPtr = std::shared_ptr<const GqaChatPlan>;
++GqaChatPlanPtr gqa_chat_plan_make(const int32_t* seg_b, const int32_t* seg_t0, const int32_t* seg_len,
++                                  int n_seg, int B, int S, int Hq);
++
+ /**
+ * @brief Grouped-query flash-attention forward, same kernels as
+ * gqa_flash_attn_forward but taking Q, K, V as three independent device
+@@ -116,6 +154,12 @@ void gqa_flash_attn_forward(
+ * Writes O as [B, Nq_heads, T, hd] (bf16) and LSE as [B, Nq_heads, T] (fp32).
+ * Same constraints as gqa_flash_attn_forward: hd in {64, 128}, T a multiple of
+ * 32 (256 for the causal hd==64 path). is_causal with hd!=64 is refused.
++*
++* chats (v2 packed rows, design A): optional per-chat plan built for this (B, T, Nq_heads)
++* (see GqaChatPlan). nullptr (default) = plain causal over the whole row, exactly as before.
++* A plan is only accepted on the Hopper v62 path (causal, hd 128, T % 256 == 0); anywhere
++* else this throws instead of ignoring it. The backward takes the SAME plan; pass it to both,
++* or the gradients mix the chats again.
+ */
+ void gqa_flash_attn_forward_qkv(
+    const bfloat16_t* q,       // [B, Nq_heads,  T, hd]
+@@ -124,7 +168,8 @@ void gqa_flash_attn_forward_qkv(
+    bfloat16_t*       output,  // [B, Nq_heads, T, hd]
+    float*            lse,     // [B, Nq_heads, T]
+    int B, int Nq_heads, int Nkv_heads, int T, int hd,
+-   bool is_causal
++   bool is_causal,
++   const GqaChatPlan* chats = nullptr      // v2 packed rows (design A): per-chat plan, see above
+ );
+ 
+ /**
+@@ -158,6 +203,12 @@ void gqa_flash_attn_backward(
+ * device buffers instead of one packed qkv / grad_qkv buffer. No packing
+ * copy is performed. dK/dV accumulation across the query-head group happens
+ * inside the kernel, so grad_k/grad_v need not be pre-zeroed by the caller.
++*
++* chats (v2 packed rows, design A): the SAME plan the forward got; output and lse must
++* come from that packed forward. nullptr (default) = plain causal, exactly as before.
++* A plan is only accepted on the Hopper Vj2 (default since 2026-10-15; T % 128 == 0, else
++* Vj1d runs) / Vj1d (USE_VJ2=0) paths (causal, hd 128, T % 64 == 0, neither USE_FLASH=1
++* nor USE_DETERMINISTIC_DQ=1); anywhere else this throws instead of ignoring it.
+ */
+ void gqa_flash_attn_backward_qkv(
+    const bfloat16_t* q,           // [B, Nq_heads,  T, hd]
+@@ -170,7 +221,8 @@ void gqa_flash_attn_backward_qkv(
+    bfloat16_t*       grad_k,      // [B, Nkv_heads, T, hd]
+    bfloat16_t*       grad_v,      // [B, Nkv_heads, T, hd]
+    int B, int Nq_heads, int Nkv_heads, int T, int hd,
+-   bool is_causal
++   bool is_causal,
++   const GqaChatPlan* chats = nullptr      // v2 packed rows (design A): the SAME plan the forward got
+ );
+ 
+ /**
+diff --git a/include/ops/helpers/FusedRMSRoPEKernels.h b/include/ops/helpers/FusedRMSRoPEKernels.h
+index fbcb4dc..1753fb7 100644
+--- a/include/ops/helpers/FusedRMSRoPEKernels.h
++++ b/include/ops/helpers/FusedRMSRoPEKernels.h
+@@ -1,11 +1,22 @@
+ #pragma once
+ 
++#include <cstdint>
+ #include <cuda_runtime.h>
+ #include "dtype/Types.h"
+ 
+ namespace OwnTensor {
+ namespace cuda {
+ 
++// positions (v2 packing, added 2026-10-10): optional DEVICE pointer to int32 [B, T], the
++// RoPE position of every token. With several chats packed into one row, each chat must
++// restart at position 0, so the position is no longer "token index + pos_offset".
++//   * nullptr (the default, every existing caller): unchanged behaviour, position = t + pos_offset.
++//   * non-null: position = positions[b*T + t]; pos_offset must then be 0 (the op layer checks).
++// Same scheme as torchtitan (rope_cache[positions], models/common/rope.py:382-385) and HF
++// position_ids. TE / FlashAttention compute it in-kernel from cu_seqlens instead
++// (TE fused_rope.cu:162-182, FA ops/triton/rotary.py:50-67); a per-token array is simpler
++// here because our kernels already index (batch, token) directly.
++// It is the LAST parameter so every existing call site compiles unchanged.
+ void fused_qk_norm_rope_forward(
+     const float* q_in, const float* k_in,
+     float*       q_out, float* k_out,
+@@ -14,7 +25,8 @@ void fused_qk_norm_rope_forward(
+     float*       q_rstd, float* k_rstd,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, float eps = 1e-5f, bool interleaved = false,
+-    cudaStream_t stream = 0);
++    cudaStream_t stream = 0,
++    const int32_t* positions = nullptr);
+ 
+ void fused_qk_norm_rope_backward(
+     const float* dz_q, const float* dz_k,
+@@ -26,7 +38,8 @@ void fused_qk_norm_rope_backward(
+     float*       dq_gamma, float* dk_gamma,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, bool interleaved = false,
+-    cudaStream_t stream = 0);
++    cudaStream_t stream = 0,
++    const int32_t* positions = nullptr);
+ 
+ } // namespace cuda
+ } // namespace OwnTensor
+diff --git a/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu b/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
+index 3e7c02e..7f0e002 100644
+--- a/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
+@@ -51,12 +51,14 @@ void gqa_v44_causal_bwd_launch_d128(
+ // dK/dV + a fixed-order, atomic-free greduce over the G query heads). dK/dV are
+ // BIT-IDENTICAL run-to-run, matching cuDNN's one-writer reproducibility; dQ is
+ // still K-tile reduced and non-deterministic (~3e-5), exactly as cuDNN's is.
+-// This is the DEFAULT Hopper backward.
++// The default Hopper backward until 2026-10-15 (now USE_VJ2=0). chat_tiles = a GqaChatPlan's
++// bwd_tiles (packed rows, design A), or nullptr for plain causal.
+ void gqa_vj1d_causal_bwd_launch_d128(
+     const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
+     const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* lse,
+     __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
+-    int B, int Hq, int Hkv, int G, int S, float scale);
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int32_t* chat_tiles, int n_chat_tiles);
+ 
+ // Defined in GQA_bwd_vj1_sm90.cu (kernel Vj1: same design as Vj1d but the
+ // greduce is replaced by an atomic TMA-reduce). Faster, and dK/dV then wobble
+@@ -67,6 +69,18 @@ void gqa_vj1_causal_bwd_launch_d128(
+     __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
+     int B, int Hq, int Hkv, int G, int S, float scale);
+ 
++// Defined in GQA_bwd_vj2_sm90.cu (kernel Vj2, added 2026-10-12: FA3-structured -- 128 keys per block, a
++// loader warpgroup with a dQ-writer warp, 2 compute warpgroups, P/dS in registers for the dV/dK GEMMs, dS
++// from fp32 P). Same outputs and determinism as Vj1d (one-writer dK/dV partials + fixed-order head sum).
++// The default Hopper backward since 2026-10-15 (USE_VJ2=0 selects Vj1d); dense rows, and packed rows as a
++// GqaChatPlan's Vj2 lists (design A; nullptr = dense).
++void gqa_vj2_causal_bwd_launch_d128(
++    const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
++    const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* lse,
++    __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int32_t* chat_blocks, int n_chat_blocks, const int32_t* dq_tiles, int n_dq_tiles);
++
+ // v44 / Vj1 / Vj1d all tile at Br=Bc=64 over the KV axis, so S must be a
+ // multiple of 64. Vj1d's greduce grid is S/8, which 64 already covers.
+ static inline bool gqa_v44_shape_ok(int T, int hd) {
+@@ -76,47 +90,66 @@ static inline bool gqa_v44_shape_ok(int T, int hd) {
+ // ---------------------------------------------------------------------------
+ // Hopper backward kernel selection.
+ //
+-//   default          Vj1d  -- bit-identical dK/dV (cuDNN-matching)
+-//   USE_FLASH=1      Vj1   -- fastest, fully non-deterministic
++//   default          Vj2   -- FA3-structured (2026-10-12), the default since
++//                             2026-10-15; bit-identical dK/dV like Vj1d. Needs
++//                             S % 128 == 0 (else Vj1d runs). Dense rows and packed
++//                             rows (a per-chat plan, design A).
++//   USE_VJ2=0        Vj1d  -- the default until 2026-10-15; bit-identical dK/dV
++//                             (cuDNN-matching); dense rows and packed rows (design A)
++//   USE_FLASH=1      Vj1   -- fastest, fully non-deterministic; dense only
+ //   USE_DETERMINISTIC_DQ=1
+ //                    v44   -- bit-identical dQ (per-CTA dq slices + fixed-order
+-//                             reduce), the slower reproducible-dQ path
++//                             reduce), the slower reproducible-dQ path; dense only
++//   (USE_VJ2=1 is accepted and means the default, Vj2.)
+ //
+-// Setting BOTH opt-in flags is ambiguous: they select different kernels and are
+-// not composable. Warn once and fall back to the default rather than silently
+-// honouring one, which would make an A/B measure something other than its label.
++// Setting more than one of USE_FLASH=1, USE_DETERMINISTIC_DQ=1, USE_VJ2=1 / USE_VJ2=0
++// is ambiguous: they select different kernels and are not composable. Warn once and
++// fall back to the default rather than silently honouring one, which would make an
++// A/B measure something other than its label.
+ // Read once into a function-local static: the value is cached for the process,
+ // so a setenv after the first backward launch has no effect.
+ // ---------------------------------------------------------------------------
+-enum class GqaBwdMode { Vj1d_Default, Vj1_Flash, V44_DetDQ };
++enum class GqaBwdMode { Vj2_Default, Vj1d, Vj1_Flash, V44_DetDQ };
+ 
+ static inline GqaBwdMode gqa_bwd_mode() {
+     static const GqaBwdMode mode = [] {
+-        auto on = [](const char* n) {
++        auto is = [](const char* n, char c) {
+             const char* e = std::getenv(n);
+-            return e && e[0] == '1';
++            return e && e[0] == c;
+         };
+-        const bool flash  = on("USE_FLASH");
+-        const bool det_dq = on("USE_DETERMINISTIC_DQ");
+-        if (flash && det_dq) {
++        const bool flash  = is("USE_FLASH", '1');
++        const bool det_dq = is("USE_DETERMINISTIC_DQ", '1');
++        const bool vj2    = is("USE_VJ2", '1');
++        const bool vj1d   = is("USE_VJ2", '0');
++        if ((int)flash + (int)det_dq + (int)(vj2 || vj1d) > 1) {
+             fprintf(stderr,
+-                    "[GQA bwd] WARNING: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 are both set. "
++                    "[GQA bwd] WARNING: more than one of USE_FLASH=1, USE_DETERMINISTIC_DQ=1, USE_VJ2=1/0 is set. "
+                     "They select different backward kernels and are not composable. "
+-                    "Falling back to the default Vj1d (bit-identical dK/dV).\n");
+-            return GqaBwdMode::Vj1d_Default;
++                    "Falling back to the default Vj2 (bit-identical dK/dV).\n");
++            return GqaBwdMode::Vj2_Default;
+         }
+         if (flash)  return GqaBwdMode::Vj1_Flash;
+         if (det_dq) return GqaBwdMode::V44_DetDQ;
+-        return GqaBwdMode::Vj1d_Default;
++        if (vj1d)   return GqaBwdMode::Vj1d;
++        return GqaBwdMode::Vj2_Default;
+     }();
+     return mode;
+ }
+ 
++// The modes that honour packed rows (a per-chat plan): Vj2 and Vj1d.
++static inline bool gqa_bwd_mode_packs() {
++    const GqaBwdMode m = gqa_bwd_mode();
++    return m == GqaBwdMode::Vj2_Default || m == GqaBwdMode::Vj1d;
++}
++
++// chats reach only the Vj2 and Vj1d cases: the callers refuse a plan unless gqa_bwd_mode_packs(),
++// so Vj1 / v44 never see packed rows.
+ static inline void gqa_hopper_causal_bwd_d128(
+     const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
+     const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* lse,
+     __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
+-    int B, int Hq, int Hkv, int G, int S, float scale) {
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const GqaChatPlan* chats) {
+     switch (gqa_bwd_mode()) {
+         case GqaBwdMode::Vj1_Flash:
+             gqa_vj1_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale);
+@@ -124,9 +157,24 @@ static inline void gqa_hopper_causal_bwd_d128(
+         case GqaBwdMode::V44_DetDQ:
+             gqa_v44_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale);
+             return;
+-        case GqaBwdMode::Vj1d_Default:
++        case GqaBwdMode::Vj2_Default:
++            // Vj2 takes 128 keys per block. S % 128 == 64 stays on Vj1d: the forward's fast path needs S % 256 == 0
++            // (gqa_v62_shape_ok), so training never sends such an S, and the tests (forward + backward) cannot reach
++            // Vj2's half-size last block -- it is not run until it can be tested. The fallback passes the plan
++            // through (Vj1d has design A too).
++            if (S % 128 == 0) {
++                gqa_vj2_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale,
++                                               chats ? chats->vj2_blocks : nullptr, chats ? chats->n_vj2_blocks : 0,
++                                               chats ? chats->dq_tiles : nullptr, chats ? chats->n_dq_tiles : 0);
++                return;
++            }
++            gqa_vj1d_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale,
++                                            chats ? chats->bwd_tiles : nullptr, chats ? chats->n_bwd_tiles : 0);
++            return;
++        case GqaBwdMode::Vj1d:
+         default:
+-            gqa_vj1d_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale);
++            gqa_vj1d_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale,
++                                            chats ? chats->bwd_tiles : nullptr, chats ? chats->n_bwd_tiles : 0);
+             return;
+     }
+ }
+@@ -603,7 +651,7 @@ void gqa_flash_attn_backward(
+         gqa_hopper_causal_bwd_d128(
+             dQ_in, dK_in, dV_in, dO, ddO, lse,
+             dQ_out, dK_out, dV_out,
+-            B, Nq_heads, Nkv_heads, G, T, scale);
++            B, Nq_heads, Nkv_heads, G, T, scale, /*chats=*/nullptr);
+         return;
+     }
+ 
+@@ -668,7 +716,7 @@ void gqa_flash_attn_backward_qkv(
+     bfloat16_t*       grad_k,
+     bfloat16_t*       grad_v,
+     int B, int Nq_heads, int Nkv_heads, int T, int hd,
+-    bool is_causal)
++    bool is_causal, const GqaChatPlan* chats)
+ {
+     if (Nkv_heads <= 0 || Nq_heads % Nkv_heads != 0) {
+         throw std::runtime_error(
+@@ -688,18 +736,37 @@ void gqa_flash_attn_backward_qkv(
+     __nv_bfloat16* dK_out = reinterpret_cast<__nv_bfloat16*>(grad_k);
+     __nv_bfloat16* dV_out = reinterpret_cast<__nv_bfloat16*>(grad_v);
+ 
++    const bool hopper_ok = is_causal && !disable_sm90_gqa() &&
++                           get_arch() == ArchFamily::Hopper && gqa_v44_shape_ok(T, hd);
++
++    // v2 packed rows (design A, a per-chat plan): only the Hopper Vj2 (default since 2026-10-15) and Vj1d
++    // kernels know the plan. Vj1 (USE_FLASH=1), v44 (USE_DETERMINISTIC_DQ=1) and every non-Hopper path
++    // below would IGNORE it and silently let the chats of a row see each other, so a plan that cannot be
++    // honoured is refused here instead (same rule as gqa_flash_attn_forward_qkv); it must also be the one
++    // the forward got (same shape).
++    if (chats != nullptr) {
++        if (!(hopper_ok && gqa_bwd_mode_packs()))
++            throw std::runtime_error(
++                "gqa_flash_attn_backward_qkv: chats (packed rows, design A) needs the Hopper Vj2 (default) or "
++                "Vj1d (USE_VJ2=0) path: causal, head_dim 128, T % 64 == 0, an H100/H200, "
++                "BLUTRAIN_NO_SM90[_GQA] unset, and neither USE_FLASH=1 nor USE_DETERMINISTIC_DQ=1");
++        if (chats->B != B || chats->S != T || chats->Hq != Nq_heads || chats->bwd_tiles == nullptr ||
++            chats->vj2_blocks == nullptr || chats->dq_tiles == nullptr)
++            throw std::runtime_error("gqa_flash_attn_backward_qkv: chats plan was built for another shape "
++                                     "(B, T, Nq_heads) or is empty");
++    }
++
+     // Hopper (H100/H200) causal hd==128 -> v44 (wgmma/TMA, causal-correct).
+     // This is the path bluscript's "split" attn_mode reaches.
+     // BLUTRAIN_NO_SM90_GQA forces the generic path below. Disabling this also
+     // removes compute_drowsum_v22_sm90 and convert_dq_accum_to_bf16_v5_sm90,
+     // which are fixed sub-steps of the v44 launch. As on the forward side, there
+     // is no generic causal kernel for hd==128, so that config throws.
+-    if (is_causal && !disable_sm90_gqa() &&
+-        get_arch() == ArchFamily::Hopper && gqa_v44_shape_ok(T, hd)) {
++    if (hopper_ok) {
+         gqa_hopper_causal_bwd_d128(
+             dQ_in, dK_in, dV_in, dO, ddO, lse,
+             dQ_out, dK_out, dV_out,
+-            B, Nq_heads, Nkv_heads, G, T, scale);
++            B, Nq_heads, Nkv_heads, G, T, scale, chats);
+         return;
+     }
+ 
+diff --git a/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.cu b/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.cu
+index 706d0d7..a5d972f 100644
+--- a/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.cu
+@@ -481,6 +481,15 @@ gqa_bwd_vj1(
+     };
+     uint32_t qopar = 0;
+     issue(0);                                          // prologue: load tile 0
++    // Tile 0's sLSE/sD are written by threads 0..63 in issue(0) and read by all 4 warps in
++    // fused_p_stsm before any other __syncthreads. mbar_qo does not order those writes: only thread 0 arrives
++    // on it, and it arrives before its own sLSE store. Tiles >= 1 are published by the store barrier after
++    // issue(it + 1) (the NOTE in the loop); tile 0 had nothing. Before 2026-10-10 there was no barrier here:
++    // a race on the first tile, correct only because the 256-B LSE load lands before the 32-KB Q/dO TMA and
++    // the S GEMM finish (SASS of the old kernel: sLSE STS at 0x1010, first LDS at 0x1ee0, no BAR between;
++    // v44 orders the same data with producer_sync + the d_ready mbarrier, GQA_bwd_sm90.cu:594-596,622).
++    // Cost: one barrier per CTA, not per tile. SASS change: +1 BAR.SYNC, nothing else in the arithmetic.
++    __syncthreads();
+ 
+     for (int it = 0; it < nIter; it++) {
+         const int q = kt + it;
+@@ -488,6 +497,7 @@ gqa_bwd_vj1(
+         mbar_wait_v4(&mbar_qo, qopar); qopar ^= 1;
+         // NOTE: no post-load barrier — sQ visibility is guaranteed by mbar_wait (TMA completion), and
+         // sLSE/sD were written+published by the PREVIOUS tile's store-barrier (prefetch). One barrier saved.
++        // (Tile 0 has no previous tile: it is published by the __syncthreads() right after issue(0).)
+ 
+         // S = Q@Kᵀ and dP = dO@Vᵀ ISSUED TOGETHER (overlap on the tensor pipe), waited once — instead of
+         // S(wait)→fused_p→dP(wait) which serialized the two GEMMs. Attacks wait 1.28 + 44%-idle pipe.
+diff --git a/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.cu b/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.cu
+index 6897708..dbb3a92 100644
+--- a/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.cu
+@@ -412,7 +412,21 @@ __global__ void gqa_dkdv_greduce(const bf16* __restrict__ partial, bf16* __restr
+     *reinterpret_cast<uint4*>(out + (((long)(b * Hkv + hkv) * S + s) * Dd + dg * 8)) = *reinterpret_cast<const uint4*>(o);
+ }
+ 
+-template<int Br, int Bc, int D>
++// v2 design B (one seg_start value per token, added 2026-10-10) was REMOVED on 2026-10-15: design A below is
++// faster (backward 3-5% on middle and long chats, 2026-10-10/12 measurements) and is the cu_seqlens way of
++// FlashAttention, TE/Megatron and TRL. The dense kernel is unchanged by both (SASS checked).
++// v2 design A (per-segment work list, added 2026-10-10), MODE_CHATS: one CTA per (key tile of the
++// plan, query head). tiles[blockIdx.x] = {b, t0, L, kt}: key tile kt of segment [t0, t0+L) of row b.
++// Every index is segment-relative, so the loop and the diagonal mask are the dense ones with S = L.
++// Rows past L (the tail of the segment's last q-tile): LSE = +inf and D = 0, so P = 0 and dS = 0 --
++// they add nothing to dK/dV, and their dQ rows (the next segment's) get exact zeros from the
++// reduce-add (FlashAttention 2 does the same, csrc/flash_attn/src/flash_bwd_kernel.h:411-413).
++// Keys past L sit only in the segment's last key tile; their dK/dV rows belong to the next segment,
++// so that tile stores its rows < L with plain stores instead of the 64-row TMA store (FA3 stores
++// all varlen dK/dV that way, hopper/epilogue_bwd.hpp:31,263-268).
++constexpr int MODE_DENSE = 0, MODE_CHATS = 1;
++
++template<int Br, int Bc, int D, int MODE>
+ __global__ void __launch_bounds__(128, 1)
+ gqa_bwd_vj1d(
+     const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
+@@ -420,12 +434,17 @@ gqa_bwd_vj1d(
+     const __grid_constant__ CUtensorMap tma_dV_st, const __grid_constant__ CUtensorMap tma_dK_st,
+     const __grid_constant__ CUtensorMap tma_dq_red,
+     const float* __restrict__ LSE, const float* __restrict__ Drow,
+-    int B, int Hq, int Hkv, int G, int S, float scale) {
+-    const int kt = blockIdx.x, hq = blockIdx.y, b = blockIdx.z;
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int4* __restrict__ tiles, bf16* __restrict__ dVp, bf16* __restrict__ dKp) {   // A only
++    constexpr bool CHATS  = (MODE == MODE_CHATS);
++    int kt = blockIdx.x, b = blockIdx.z, t0 = 0, L = 0;
++    if constexpr (CHATS) { const int4 tl = tiles[blockIdx.x]; b = tl.x; t0 = tl.y; L = tl.z; kt = tl.w; }
++    const int hq = blockIdx.y;
+     const int hkv = hq / G;
+     const int wtid = threadIdx.x;
+-    const int nQ = S / Br;
+-    const int k_row0 = kt * Bc;
++    int nQ = S / Br;
++    if constexpr (CHATS) nQ = (L + Br - 1) / Br;   // q-tiles of the segment
++    const int k_row0 = kt * Bc;                     // relative to the row (dense) or segment (A)
+     const float scale2 = scale * LOG2E_V29;
+ 
+     __shared__ __align__(128)  bf16  sK_sw[Bc*D], sV_sw[Bc*D], sQ_sw[Br*D], sdO_sw[Br*D];
+@@ -445,7 +464,7 @@ gqa_bwd_vj1d(
+     const uint64_t descDSmn = make_desc_sw128_MN(sDS);
+     const uint64_t descDSk  = make_desc_sw128_K (sDS);
+ 
+-    const uint32_t kvRow = (uint32_t)((b*Hkv+hkv)*S + k_row0);
++    const uint32_t kvRow = (uint32_t)((b*Hkv+hkv)*S + t0 + k_row0);   // t0: A only (else 0)
+     if (wtid == 0) {
+         mbar_expect_tx_v4(&mbar_kv, (uint32_t)(Bc*64*sizeof(bf16))*4);
+         tma_load_2d_v4(&tma_K, sK_sw,       &mbar_kv, 0,  kvRow);
+@@ -453,6 +472,7 @@ gqa_bwd_vj1d(
+         tma_load_2d_v4(&tma_V, sV_sw,       &mbar_kv, 0,  kvRow);
+         tma_load_2d_v4(&tma_V, sV_sw+64*64, &mbar_kv, 64, kvRow);
+     }
++
+     mbar_wait_v4(&mbar_kv, 0);
+ 
+     float dv[64], dk[64];
+@@ -464,8 +484,8 @@ gqa_bwd_vj1d(
+     const int nq_ = nQ - kt, nIter = nq_;   // Vj1 per-hq: ONE query head per CTA
+     auto issue = [&](int it) {
+         const int q = kt + it;
+-        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
+-        const long lb = (long)(b*Hq+hq)*S + (long)q*Br;
++        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + t0 + q*Br);
++        const long lb = (long)(b*Hq+hq)*S + t0 + (long)q*Br;
+         if (wtid == 0) {
+             mbar_expect_tx_v4(&mbar_qo, (uint32_t)(Br*D*sizeof(bf16))*2);
+             tma_load_2d_v4(&tma_Q,  sQ_sw,        &mbar_qo, 0,  qRow);
+@@ -473,17 +493,35 @@ gqa_bwd_vj1d(
+             tma_load_2d_v4(&tma_dO, sdO_sw,       &mbar_qo, 0,  qRow);
+             tma_load_2d_v4(&tma_dO, sdO_sw+64*64, &mbar_qo, 64, qRow);
+         }
++        if constexpr (CHATS) {   // A: rows past L -> P = 0 and dS = 0 (see the kernel comment)
++            if (wtid < Br) {
++                const bool in_seg = q * Br + wtid < L;
++                sLSE[wtid] = in_seg ? LSE[lb+wtid] : INFINITY;
++                sD[wtid]   = in_seg ? Drow[lb+wtid] : 0.0f;
++            }
++        } else {
+         if (wtid < Br) { sLSE[wtid] = LSE[lb+wtid]; sD[wtid] = Drow[lb+wtid]; }
++        }
+     };
+     uint32_t qopar = 0;
+     issue(0);                                          // prologue: load tile 0
++    // Tile 0's sLSE/sD are written by threads 0..63 in issue(0) and read by all 4 warps in
++    // fused_p_stsm before any other __syncthreads. mbar_qo does not order those writes: only thread 0 arrives
++    // on it, and it arrives before its own sLSE store. Tiles >= 1 are published by the store barrier after
++    // issue(it + 1) (the NOTE in the loop); tile 0 had nothing. Before 2026-10-10 there was no barrier here:
++    // a race on the first tile, correct only because the 256-B LSE load lands before the 32-KB Q/dO TMA and
++    // the S GEMM finish (SASS of the old kernel: sLSE STS at 0x1010, first LDS at 0x1ee0, no BAR between;
++    // v44 orders the same data with producer_sync + the d_ready mbarrier, GQA_bwd_sm90.cu:594-596,622).
++    // Cost: one barrier per CTA, not per tile. SASS change: +1 BAR.SYNC, nothing else in the arithmetic.
++    __syncthreads();
+ 
+     for (int it = 0; it < nIter; it++) {
+         const int q = kt + it;
+-        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
++        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + t0 + q*Br);
+         mbar_wait_v4(&mbar_qo, qopar); qopar ^= 1;
+         // NOTE: no post-load barrier — sQ visibility is guaranteed by mbar_wait (TMA completion), and
+         // sLSE/sD were written+published by the PREVIOUS tile's store-barrier (prefetch). One barrier saved.
++        // (Tile 0 has no previous tile: it is published by the __syncthreads() right after issue(0).)
+ 
+         // S = Q@Kᵀ and dP = dO@Vᵀ ISSUED TOGETHER (overlap on the tensor pipe), waited once — instead of
+         // S(wait)→fused_p→dP(wait) which serialized the two GEMMs. Attacks wait 1.28 + 44%-idle pipe.
+@@ -546,7 +584,10 @@ gqa_bwd_vj1d(
+     // Vj1d: one-writer bf16 PARTIAL store to [B,Hq,S,D] at hqRow (each per-hq CTA owns its own slot),
+     // then a fixed-order greduce sums the G heads DETERMINISTICALLY (no atomics) -> bit-identical dK/dV
+     // run-to-run, matching cuDNN's one-writer reproducibility. Price = the ~69us greduce pass.
+-    const uint32_t hqRow = (uint32_t)((b*Hq+hq)*S + k_row0);
++    const uint32_t hqRow = (uint32_t)((b*Hq+hq)*S + t0 + k_row0);
++    bool full_tile = true;
++    if constexpr (CHATS) full_tile = (k_row0 + Bc <= L);
++    if (full_tile) {
+     if (wtid == 0) {
+         tma_store_2d_v34(&tma_dV_st, sQ_sw + 0,    0,  hqRow);
+         tma_store_2d_v34(&tma_dV_st, sQ_sw + 4096, 64, hqRow);
+@@ -554,20 +595,34 @@ gqa_bwd_vj1d(
+         tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, hqRow);
+         tma_store_commit_v34(); tma_store_wait_v34();
+     }
++    } else if constexpr (CHATS) {
++        // A, the segment's last key tile: copy only its rows < L. The staging above is plain
++        // row-major [64 rows][64 cols] per column half (stage_acc_bf16_s<64,64>), 8 bf16 per uint4.
++        const int nrow = L - k_row0;
++        for (int e = wtid; e < 4 * 64 * 8; e += 128) {   // 4 blocks (dV h0/h1, dK h0/h1) x 64 rows x 8
++            const int blk = e >> 9, r = (e >> 3) & 63, c8 = e & 7;
++            if (r >= nrow) continue;
++            const bf16* src = (blk < 2 ? sQ_sw : sdO_sw) + (blk & 1) * 4096 + r * 64 + c8 * 8;
++            bf16* dst = (blk < 2 ? dVp : dKp) + ((size_t)hqRow + r) * D + (blk & 1) * 64 + c8 * 8;
++            *reinterpret_cast<uint4*>(dst) = *reinterpret_cast<const uint4*>(src);
++        }
++    }
+ }
+ 
+ #else   // ---- non-Hopper: keep the translation unit compilable ----
+ // Stubs so the host pass still sees the kernels it launches. Parameter types
+ // must match the Hopper definitions exactly (including __restrict__), or the
+ // stub fails to match the template it is meant to instantiate.
+-template<int Br, int Bc, int D>
++constexpr int MODE_DENSE = 0, MODE_CHATS = 1;
++template<int Br, int Bc, int D, int MODE>
+ __global__ void gqa_bwd_vj1d(
+     const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
+     const __grid_constant__ CUtensorMap tma_Q,  const __grid_constant__ CUtensorMap tma_dO,
+     const __grid_constant__ CUtensorMap tma_dV_st, const __grid_constant__ CUtensorMap tma_dK_st,
+     const __grid_constant__ CUtensorMap tma_dq_red,
+     const float* __restrict__ LSE, const float* __restrict__ Drow,
+-    int B, int Hq, int Hkv, int G, int S, float scale) {}
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int4* __restrict__ tiles, bf16* __restrict__ dVp, bf16* __restrict__ dKp) {}
+ __global__ void gqa_dkdv_greduce(const bf16* __restrict__ partial, bf16* __restrict__ out,
+                                  int Hq, int Hkv, int G, int S) {}
+ __global__ void compute_drowsum_v22(
+@@ -582,7 +637,8 @@ void launch_gqa_backward_vj1d(
+     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+     const bf16 *d_dO, const float *d_LSE,
+     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+-    int B, int Hq, int Hkv, int G, int S, float scale) {
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int32_t *d_chat_tiles, int n_chat_tiles) {
+     auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+         CUtensorMap desc{}; uint64_t gS[2]={(uint64_t)D,total_rows}; uint64_t gT[1]={(uint64_t)D*sizeof(bf16)};
+         uint32_t bx[2]={64u,tile_rows}, eS[2]={1,1};
+@@ -637,7 +693,13 @@ void launch_gqa_backward_vj1d(
+     compute_drowsum_v22<<<(unsigned)dGrid,dBlock>>>(d_dO,d_O,d_Drow,drowN);
+ 
+     dim3 GRID(S/Bc, Hq, B);   // Vj1 per-hq: 3x the CTAs (Hq not Hkv) to fill the GPU at low B
+-    gqa_bwd_vj1d<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
++    // d_chat_tiles != nullptr -> design A: one CTA per (plan key tile, query head).
++    if (d_chat_tiles) {
++        dim3 GRID_A(n_chat_tiles, Hq, 1);
++        gqa_bwd_vj1d<Br,Bc,D,MODE_CHATS><<<GRID_A,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale,
++            reinterpret_cast<const int4*>(d_chat_tiles), d_dVp, d_dKp);
++    } else
++        gqa_bwd_vj1d<Br,Bc,D,MODE_DENSE><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale,nullptr,nullptr,nullptr);
+     // fixed-order deterministic G-head reduction (no atomics) -> bit-identical dK/dV.
+     dim3 grGRID(S/8, Hkv, B);
+     gqa_dkdv_greduce<<<grGRID,128>>>(d_dVp, d_dV, Hq, Hkv, G, S);
+@@ -651,15 +713,17 @@ void launch_gqa_backward_vj1d(
+ // ---------------------------------------------------------------------------
+ // Library-facing entry point. Called from GQA_bwd_generic.cu only when the
+ // running GPU is Hopper AND the shape satisfies the d128 tiling constraints.
++// chat_tiles/n_chat_tiles: the bwd_tiles list of a GqaChatPlan (design A), or nullptr = dense.
+ // ---------------------------------------------------------------------------
+ void gqa_vj1d_causal_bwd_launch_d128(
+     const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
+     const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* LSE,
+     __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
+-    int B, int Hq, int Hkv, int G, int S, float scale)
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int32_t* chat_tiles, int n_chat_tiles)
+ {
+     gqa_bwd_vj1d::launch_gqa_backward_vj1d<64, 64, 128>(
+-        Q, K, V, O, dO, LSE, dQ, dK, dV, B, Hq, Hkv, G, S, scale);
++        Q, K, V, O, dO, LSE, dQ, dK, dV, B, Hq, Hkv, G, S, scale, chat_tiles, n_chat_tiles);
+ }
+ 
+ } // namespace cuda
+diff --git a/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu b/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu
+index 162fbc2..97fa947 100644
+--- a/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu
+@@ -19,6 +19,11 @@
+ #include "dtype/Types.h"
+ #include "ops/helpers/KernelDispatch.h"
+ #include "ops/helpers/KernelPolicy.h"
++#include "device/CachingCudaAllocator.h"   // v2 design A: the plan's device lists
++#include "device/DeviceCore.h"             // getCurrentStream(): the plan's upload
++#include <algorithm>
++#include <string>
++#include <vector>
+ using namespace nvcuda;
+ 
+ namespace OwnTensor {
+@@ -35,10 +40,12 @@ void gqa_v48_causal_launch_d64(
+ // Defined in GQA_fwd_sm90.cu (kernel v62, wgmma/TMA, compiled for the machine
+ // arch). Causal + head_dim 128 only, and the persistent grid is a fixed 132 CTAs
+ // sized for the H200, so it is taken ONLY when get_arch()==Hopper.
++// v2 (2026-10-10): chat_units != nullptr (n_units entries) selects the per-segment variant (design A).
+ void gqa_v62_causal_launch_d128(
+     const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
+     __nv_bfloat16* O, float* LSE,
+-    int B, int Hq, int Hkv, int S, float scale, cudaStream_t stream);
++    int B, int Hq, int Hkv, int S, float scale, cudaStream_t stream,
++    const int32_t* chat_units, int n_units);
+ 
+ // v62 needs S % 256 == 0: total_units = B*Hq*(nTiles/4) with nTiles = S/BLOCK_M
+ // (=S/64), so the /4 pairing requires S/64 to be a multiple of 4.
+@@ -251,7 +258,8 @@ void gqa_flash_attn_forward(
+     if (is_causal && !disable_sm90_gqa() &&
+         get_arch() == ArchFamily::Hopper && gqa_v62_shape_ok(T, hd)) {
+         gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
+-                                   B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0);
++                                   B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0,
++                                   /*chat_units=*/nullptr, 0);
+         return;
+     }
+ 
+@@ -311,7 +319,7 @@ void gqa_flash_attn_forward_qkv(
+     bfloat16_t*       output,
+     float*            lse,
+     int B, int Nq_heads, int Nkv_heads, int T, int hd,
+-    bool is_causal)
++    bool is_causal, const GqaChatPlan* chats)
+ {
+     if (Nkv_heads <= 0 || Nq_heads % Nkv_heads != 0) {
+         throw std::runtime_error(
+@@ -326,14 +334,31 @@ void gqa_flash_attn_forward_qkv(
+     __nv_bfloat16* dV = const_cast<__nv_bfloat16*>(reinterpret_cast<const __nv_bfloat16*>(v));
+     __nv_bfloat16* dO = reinterpret_cast<__nv_bfloat16*>(output);
+ 
++    const bool v62_ok = is_causal && !disable_sm90_gqa() &&
++                        get_arch() == ArchFamily::Hopper && gqa_v62_shape_ok(T, hd);
++
++    // v2 packed rows (design A, a per-chat plan): only the Hopper v62 kernel knows the plan. Every
++    // other path below would IGNORE it and silently let the chats of a row see each other, so a plan
++    // that cannot be honoured is refused here instead. A plan is also only valid for the shape it was
++    // built for (its units hold row indices, head indices and segment bounds of that shape).
++    if (chats != nullptr) {
++        if (!v62_ok)
++            throw std::runtime_error(
++                "gqa_flash_attn_forward_qkv: chats (packed rows, design A) needs the Hopper v62 path: "
++                "causal, head_dim 128, T % 256 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset");
++        if (chats->B != B || chats->S != T || chats->Hq != Nq_heads || chats->fwd_units == nullptr)
++            throw std::runtime_error("gqa_flash_attn_forward_qkv: chats plan was built for another shape "
++                                     "(B, T, Nq_heads) or is empty");
++    }
++
+     // Hopper (H100/H200) causal hd==128 -> v62 (wgmma/TMA persistent kernel).
+     // This is the path bluscript's "split" attn_mode reaches.
+     // BLUTRAIN_NO_SM90_GQA forces the generic path below; see the note on the
+     // packed entry point above about hd==128 throwing instead of falling back.
+-    if (is_causal && !disable_sm90_gqa() &&
+-        get_arch() == ArchFamily::Hopper && gqa_v62_shape_ok(T, hd)) {
++    if (v62_ok) {
+         gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
+-                                   B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0);
++                                   B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0,
++                                   chats ? chats->fwd_units : nullptr, chats ? chats->n_fwd_units : 0);
+         return;
+     }
+ 
+@@ -379,5 +404,142 @@ void gqa_flash_attn_forward_qkv(
+     }
+ }
+ 
++// ---------------------------------------------------------------------------
++// v2 design A: the per-segment plan (see GqaChatPlan in AttentionKernels.h).
++// Forward units {b, t0, L, (cpl << 8) | hq}: per segment, the couples of its query pairs (pair cpl
++// with pair nP-1-cpl, nP = ceil(L/128)) for every head -- the dense kernel's balancing applied
++// inside the segment. Order: longest segment first (LPT, like FA3's varlen scheduler,
++// hopper/tile_scheduler.hpp:493-700), and inside a segment head-major then couple, the dense order
++// (consecutive units share K/V in L2). Backward tiles {b, t0, L, kt}: one per 64-key tile of each
++// segment, most q-tiles to visit first (Vj1d).
++// Vj2 (added 2026-10-15): blocks {b, t0, L, kt, hq, dqt0, 0, 0}, one per (128-key tile of a segment, query head),
++// in the dense Vj2 grid's order -- sections of gqa_vj2_section_pairs(S) (batch, head) pairs, inside a section the
++// blocks with the most 64-row steps first (FA3 SingleTileBwdLPTScheduler); for rows of ONE segment each this is
++// exactly the dense order. dq tiles {b, row0, nrows, 0}: the padded 64-row slots of Vj2's LSE / D / fp32 dQ,
++// ceil(L/64) per segment in (row, start) order, the same list for every head (FA3 varlen's offset_padded: a chat
++// starts at any token, but those buffers need 64-row alignment); dqt0 = hq * n_dq_tiles + the segment's first
++// slot + 2 kt. All four lists go up in ONE allocation with one asynchronous copy on the current stream: the plan
++// is built once per micro-batch, and a synchronous copy would first wait for the GPU to finish the previous one.
++// The kernels only read the lists.
++// ---------------------------------------------------------------------------
++int gqa_vj2_section_pairs(int S);   // GQA_bwd_vj2_sm90.cu
++
++void gqa_chat_plan_build(GqaChatPlan& plan, const int32_t* seg_b, const int32_t* seg_t0,
++                         const int32_t* seg_len, int n_seg, int B, int S, int Hq)
++{
++    if (B <= 0 || S <= 0 || Hq <= 0 || Hq > 255 || n_seg <= 0 || !seg_b || !seg_t0 || !seg_len)
++        throw std::runtime_error("gqa_chat_plan_build: bad shape or empty segment list (Hq must be 1..255)");
++    struct Seg { int b, t0, L; };
++    std::vector<Seg> sg((size_t)n_seg);
++    for (int i = 0; i < n_seg; ++i) {
++        sg[i] = {seg_b[i], seg_t0[i], seg_len[i]};
++        if (sg[i].b < 0 || sg[i].b >= B || sg[i].t0 < 0 || sg[i].L <= 0 || (long long)sg[i].t0 + sg[i].L > S)
++            throw std::runtime_error("gqa_chat_plan_build: segment " + std::to_string(i) + " is outside its row");
++    }
++    // Every token of every row must belong to exactly one segment: a row the plan does not cover
++    // would keep unwritten (garbage) outputs that the next layers read.
++    std::vector<Seg> byrow = sg;
++    std::sort(byrow.begin(), byrow.end(), [](const Seg& a, const Seg& c) { return a.b != c.b ? a.b < c.b : a.t0 < c.t0; });
++    for (int b = 0, k = 0; b < B; ++b) {
++        int t = 0;
++        while (k < n_seg && byrow[k].b == b) {
++            if (byrow[k].t0 != t) throw std::runtime_error("gqa_chat_plan_build: row " + std::to_string(b) + " has a gap or overlap at token " + std::to_string(t));
++            t += byrow[k].L; ++k;
++        }
++        if (t != S) throw std::runtime_error("gqa_chat_plan_build: row " + std::to_string(b) + " is covered up to token " + std::to_string(t) + " of " + std::to_string(S));
++    }
++    std::vector<Seg> lpt = byrow;   // longest first; ties keep (row, start) order: deterministic
++    std::stable_sort(lpt.begin(), lpt.end(), [](const Seg& a, const Seg& c) { return a.L > c.L; });
++    std::vector<int32_t> fu, bt;
++    for (const Seg& g : lpt) {
++        const int nP = (g.L + 127) / 128, ncpl = (nP + 1) / 2;
++        for (int hq = 0; hq < Hq; ++hq)
++            for (int cpl = 0; cpl < ncpl; ++cpl) { fu.push_back(g.b); fu.push_back(g.t0); fu.push_back(g.L); fu.push_back((cpl << 8) | hq); }
++    }
++    struct KT { int b, t0, L, kt, work; };
++    std::vector<KT> kts;
++    for (const Seg& g : byrow) {
++        const int nk = (g.L + 63) / 64;
++        for (int kt = 0; kt < nk; ++kt) kts.push_back({g.b, g.t0, g.L, kt, nk - kt});
++    }
++    std::stable_sort(kts.begin(), kts.end(), [](const KT& a, const KT& c) { return a.work > c.work; });
++    for (const KT& k : kts) { bt.push_back(k.b); bt.push_back(k.t0); bt.push_back(k.L); bt.push_back(k.kt); }
++
++    // Vj2: the padded dQ slots (segments in (row, start) order) ...
++    std::vector<int32_t> dq;
++    std::vector<int> slot0(byrow.size()), rowfirst((size_t)B + 1, 0);
++    int nd = 0;
++    for (size_t j = 0; j < byrow.size(); ++j) {
++        const Seg& g = byrow[j];
++        slot0[j] = nd;
++        for (int q = 0; 64 * q < g.L; ++q) {
++            dq.push_back(g.b); dq.push_back(g.t0 + 64 * q); dq.push_back(std::min(64, g.L - 64 * q)); dq.push_back(0);
++            ++nd;
++        }
++        rowfirst[(size_t)g.b + 1] = (int)j + 1;
++    }
++    for (int b = 0; b < B; ++b) rowfirst[(size_t)b + 1] = std::max(rowfirst[(size_t)b + 1], rowfirst[b]);
++    // ... and the blocks, section by section
++    struct VB { int b, t0, L, kt, hq, dqt0, work; };
++    std::vector<int32_t> vb;
++    std::vector<VB> sec;
++    const int sw = gqa_vj2_section_pairs(S), HB = B * Hq;
++    for (int h0 = 0; h0 < HB; h0 += sw) {
++        sec.clear();
++        for (int hb = h0; hb < std::min(HB, h0 + sw); ++hb) {
++            const int b = hb / Hq, hq = hb % Hq;
++            for (int j = rowfirst[b]; j < rowfirst[(size_t)b + 1]; ++j) {
++                const Seg& g = byrow[j];
++                const int nq = (g.L + 63) / 64;
++                for (int kt = 0; 128 * kt < g.L; ++kt)
++                    sec.push_back({g.b, g.t0, g.L, kt, hq, hq * nd + slot0[j] + 2 * kt, nq - 2 * kt});
++            }
++        }
++        std::stable_sort(sec.begin(), sec.end(), [](const VB& a, const VB& c) { return a.work > c.work; });
++        for (const VB& v : sec) for (int x : {v.b, v.t0, v.L, v.kt, v.hq, v.dqt0, 0, 0}) vb.push_back(x);
++    }
++
++    std::vector<int32_t> all;   // every list is a multiple of 4 ints, so each one starts 16-B aligned (int4 loads)
++    all.reserve(fu.size() + bt.size() + vb.size() + dq.size());
++    for (const std::vector<int32_t>* v : {&fu, &bt, &vb, &dq}) all.insert(all.end(), v->begin(), v->end());
++    gqa_chat_plan_free(plan);
++    auto& alloc = CachingCUDAAllocator::instance();
++    int32_t* buf = static_cast<int32_t*>(alloc.allocate(all.size() * sizeof(int32_t)));
++    // Pageable source: the copy has read it when the call returns, so `all` may go out of scope.
++    if (cudaMemcpyAsync(buf, all.data(), all.size() * sizeof(int32_t), cudaMemcpyHostToDevice,
++                        getCurrentStream()) != cudaSuccess) {
++        alloc.deallocate(buf);
++        throw std::runtime_error("gqa_chat_plan_build: upload failed");
++    }
++    plan.storage      = buf;
++    plan.fwd_units    = buf;
++    plan.bwd_tiles    = plan.fwd_units + fu.size();
++    plan.vj2_blocks   = plan.bwd_tiles + bt.size();
++    plan.dq_tiles     = plan.vj2_blocks + vb.size();
++    plan.n_fwd_units  = (int)(fu.size() / 4);
++    plan.n_bwd_tiles  = (int)(bt.size() / 4);
++    plan.n_vj2_blocks = (int)(vb.size() / 8);
++    plan.n_dq_tiles   = nd;
++    plan.B = B; plan.S = S; plan.Hq = Hq;
++}
++
++void gqa_chat_plan_free(GqaChatPlan& plan)
++{
++    if (plan.storage) CachingCUDAAllocator::instance().deallocate(plan.storage);
++    plan = GqaChatPlan{};
++}
++
++GqaChatPlanPtr gqa_chat_plan_make(const int32_t* seg_b, const int32_t* seg_t0, const int32_t* seg_len,
++                                  int n_seg, int B, int S, int Hq)
++{
++    std::unique_ptr<GqaChatPlan> p(new GqaChatPlan());
++    gqa_chat_plan_build(*p, seg_b, seg_t0, seg_len, n_seg, B, S, Hq);
++    return GqaChatPlanPtr(p.release(), [](const GqaChatPlan* q) {
++        GqaChatPlan* m = const_cast<GqaChatPlan*>(q);
++        gqa_chat_plan_free(*m);
++        delete m;
++    });
++}
++
+ } // namespace cuda
+ } // namespace OwnTensor
+diff --git a/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu b/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu
+index 063f35a..512e075 100644
+--- a/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu
+@@ -329,6 +329,28 @@ __device__ __forceinline__ uint64_t make_swz_desc(const void* p) {
+               "l"(b[0]), "l"(b[1]), "l"(b[2]), "l"(b[3]), "l"(b[4]), "l"(b[5]), "l"(b[6]), "l"(b[7]));
+     }
+ 
++// v2 packing: design B (one seg_start value per token, the FlexAttention document-mask way; added 2026-10-10)
++// was REMOVED on 2026-10-15. Design A below does the same job faster (forward 2-16% on the 2026-10-10/12
++// measurements: B's tiles that hold a chat border mix two chats, A starts every chat on its own tiles) and is
++// the cu_seqlens way of FlashAttention 2/3/4, TE/Megatron THD, PyTorch varlen_attn and TRL. One packing
++// representation keeps one tested path.
++// v2 packing, design A (per-segment work list, the cu_seqlens way; added 2026-10-10), MODE_CHATS:
++// the same packed rows, but the work is cut per segment instead of per row. units[u] =
++// {b, t0, L, (cpl << 8) | hq}: segment [t0, t0+L) of row b (a chat or a pad tail; the segments of
++// a row cover all of it), query head hq, and the couple cpl of the segment's query PAIRS -- pair cpl
++// with pair nP-1-cpl (nP = ceil(L/128)), the same balancing as the dense decode_u inside the
++// segment; for odd nP the middle pair is a 1-pair unit. Changes against the dense kernel:
++//   * Q/K/V rows are offset by t0, and every tile index is segment-relative, so the diagonal mask is
++//     exactly the dense causal mask of a sequence of length L. Keys past L only appear in a row's
++//     diagonal tile, where causal already hides them (they are after every row of the segment).
++//   * rows past L (the tail of the last pair) are computed but never stored (O and LSE); a q-tile
++//     entirely past L gets no active tiles and runs only the existing inactive-tail handshake.
++//   * no -inf guard: every row of a segment sees key t0 of its own segment.
++// The same split is made by FlashAttention varlen (hopper/seqlen.h, tile_scheduler.hpp:593-700;
++// rows past seqlen are not stored, epilogue_fwd.hpp:303,331,358) and TE/Megatron THD.
++constexpr int MODE_DENSE = 0, MODE_CHATS = 1;
++
++template <int MODE>
+ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+     const __grid_constant__ CUtensorMap tmapKsw,
+     const __grid_constant__ CUtensorMap tmapVsw,
+@@ -336,8 +358,11 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+     const __nv_bfloat16* __restrict__ Q,
+     __nv_bfloat16* __restrict__ O,
+     float* __restrict__ LSE,
+-    int B, int Hq, int Hkv, int S, float scale)
++    int B, int Hq, int Hkv, int S, float scale,
++    const int4* __restrict__ units,          // v2 A: work list, read only when CHATS
++    int n_units)
+ {
++    constexpr bool CHATS  = (MODE == MODE_CHATS);
+     const int G = Hq / Hkv;
+     const int tid = threadIdx.x;
+     const int wg = tid / WG;
+@@ -345,7 +370,8 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+     const float scale2 = scale * LOG2E;
+ 
+     const int nTiles = S / BLOCK_M;
+-    const int total_units = B * Hq * (nTiles / 4);
++    int total_units = B * Hq * (nTiles / 4);
++    if constexpr (CHATS) total_units = n_units;
+     auto decode_u = [&](int u, int half, int& b, int& hq, int& hkv, int& pair) {
+         const int NC = nTiles / 4;
+         int cpl = u % NC, bh = u / NC;
+@@ -378,15 +404,25 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+         reg_dec_producer();
+         int g = 0, j = 0, stage = 0, ph = 0;
+         for (int uidx = blockIdx.x; uidx < total_units; uidx += NUM_SMS) {
++            int4 un{};
++            if constexpr (CHATS) un = units[uidx];
+             #pragma unroll 1
+             for (int half = 0; half < 2; ++half) {
+-            int b, hq, hkv, pair; decode_u(uidx, half, b, hq, hkv, pair);
++            int b, hq, hkv, pair, t0 = 0;
++            if constexpr (CHATS) {   // A: segment [t0, t0+L) of row b; pairs cpl and nP-1-cpl
++                b = un.x; t0 = un.y; hq = un.w & 0xff; hkv = hq / G;
++                const int cpl = un.w >> 8, nP = (un.z + 2 * BLOCK_M - 1) / (2 * BLOCK_M);
++                pair = half ? (nP - 1 - cpl) : cpl;
++                if (half == 1 && pair == cpl) break;   // middle pair of an odd count: 1-pair unit
++            } else {
++                decode_u(uidx, half, b, hq, hkv, pair);
++            }
+             if (j > 0) { mbar_wait(&qempty[0], (j - 1) & 1); mbar_wait(&qempty[1], (j - 1) & 1); }
+             if (lane_wg == 0) {
+                 #pragma unroll
+                 for (int c = 0; c < 2; ++c) {
+                     int q_tile = 2 * pair + c;
+-                    int q_row = (b * Hq + hq) * S + q_tile * BLOCK_M;
++                    int q_row = (b * Hq + hq) * S + t0 + q_tile * BLOCK_M;   // t0: A only (else 0)
+                     __nv_bfloat16* Qd = &Qt[c * TILE_Q];
+                     mbar_expect_tx(&qfull[c], 2 * Q_TMA_BYTES);
+                     tma_load_2d(__cvta_generic_to_shared(&Qd[0]),         &tmapQsw, 0,  q_row, &qfull[c]);
+@@ -394,7 +430,7 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+                 }
+             }
+             const int nkv = shared_nkv(pair);
+-            const int kv_row_base = (b * Hkv + hkv) * S;
++            const int kv_row_base = (b * Hkv + hkv) * S + t0;   // t0: A only (else 0)
+             for (int n = 0; n < nkv; ++n) {
+                 if (g >= NSTAGES) mbar_wait(&empty[stage], ph ^ 1);
+                 if (lane_wg == 0) {
+@@ -416,8 +452,13 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+         return;
+     }
+     {
+-        const int c = wg - 1;
+         reg_inc_consumer();
++        // Consumer index, broadcast from lane 0 so ptxas knows it is the same in the whole warp and keeps what is
++        // built from it (this group's Q buffer, the wgmma descriptors) in uniform registers, as CUTLASS's
++        // canonical_warp_group_idx / FA3's warp_uniform (hopper/utils.h:621-623) do. Taken from threadIdx
++        // directly (v62 as first written), the descriptors lived in vector registers and every HGMMA needed R2UR
++        // moves (ncu 2026-10-13, dense B8 18/6: R2UR 40.2M executed vs FA3's 0.7M).
++        const int c = __shfl_sync(0xffffffffu, (int)(threadIdx.x / WG), 0) - 1;
+         const int warp = lane_wg / 32, lane = lane_wg % 32;
+         const int groupID = lane / 4, tig = lane % 4;
+         const int R0 = 16 * warp + groupID, R1 = R0 + 8;
+@@ -426,14 +467,28 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+         if (c == 1) pp_arrive1();
+ 
+         for (int uidx = blockIdx.x; uidx < total_units; uidx += NUM_SMS) {
++            int4 un{};
++            if constexpr (CHATS) un = units[uidx];
+             #pragma unroll 1
+             for (int half = 0; half < 2; ++half) {
+-            int b, hq, hkv, pair; decode_u(uidx, half, b, hq, hkv, pair);
++            int b, hq, hkv, pair, t0 = 0, L = 0;
++            if constexpr (CHATS) {   // A: the same decode as the producer (same unit, same pairs)
++                b = un.x; t0 = un.y; L = un.z; hq = un.w & 0xff; hkv = hq / G;
++                const int cpl = un.w >> 8, nP = (L + 2 * BLOCK_M - 1) / (2 * BLOCK_M);
++                pair = half ? (nP - 1 - cpl) : cpl;
++                if (half == 1 && pair == cpl) break;
++            } else {
++                decode_u(uidx, half, b, hq, hkv, pair);
++            }
+             const int q_tile = 2 * pair + c;
++            // gR0/gR1: rows of this thread, relative to the row start (dense) or the segment start (A)
+             const int gR0 = q_tile * BLOCK_M + R0, gR1 = q_tile * BLOCK_M + R1;
+-            const long long q_base = ((long long)(b * Hq + hq) * S + (long long)q_tile * BLOCK_M) * HEAD_DIM;
++            const long long q_base = ((long long)(b * Hq + hq) * S + t0 + (long long)q_tile * BLOCK_M) * HEAD_DIM;
+             const int nkv_shared = shared_nkv(pair);
+-            const int my_nkv = (q_tile * BLOCK_M + BLOCK_M - 1) / BLOCK_N + 1;
++            int my_nkv = (q_tile * BLOCK_M + BLOCK_M - 1) / BLOCK_N + 1;
++            // A: a q-tile that starts at or past L holds no row of the segment (the second tile of a
++            // last pair when L % 128 is in 1..64): no active tile, only the inactive-tail handshake.
++            if constexpr (CHATS) { if (q_tile * BLOCK_M >= L) my_nkv = 0; }
+ 
+             mbar_wait(&qfull[c], j & 1);
+ 
+@@ -476,7 +531,8 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+                 __nv_bfloat16* Vt = &sV[cur * TILE_K];
+                 wgmma_wait0();                          // QK(n) -- issued one iteration ago
+ 
+-                    const bool diag = (n * BLOCK_N + BLOCK_N - 1 >= q_tile * BLOCK_M);
++                    const int nt = n;   // K/V tile, relative to the row (dense) or the segment (A)
++                    const bool diag = (nt * BLOCK_N + BLOCK_N - 1 >= q_tile * BLOCK_M);
+                     float mA[8], mB[8];
+                     if (!diag) {
+                         #pragma unroll
+@@ -494,7 +550,7 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+                             int s = reg % 4, bq = (reg >> 2) & 7;
+                             int keycol = 8 * (reg / 4) + 2 * tig + (reg & 1);
+                             float v = S_acc[reg];
+-                            int gcol = n * BLOCK_N + keycol; int grow = (s < 2) ? gR0 : gR1;
++                            int gcol = nt * BLOCK_N + keycol; int grow = (s < 2) ? gR0 : gR1;
+                             if (gcol > grow) v = -INFINITY;
+                             S_acc[reg] = v;
+                             const bool seed = (reg < 32) && ((s & 1) == 0);
+@@ -508,6 +564,8 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+                                         fmaxf(fmaxf(mB[4], mB[5]), fmaxf(mB[6], mB[7])));
+                     float mt0 = quad_max(lmax0), mt1 = quad_max(lmax1);
+                     float nm0 = fmaxf(m0, mt0), nm1 = fmaxf(m1, mt1);
++                    // No -inf guard is needed: every row (dense, or A's segment-relative rows) sees key 0
++                    // of its own row or segment in the first tile, so nm0/nm1 are finite from tile 0 on.
+                     float cc0 = ex2_approx((m0 - nm0) * scale2), cc1 = ex2_approx((m1 - nm1) * scale2);
+                     const float b0 = -nm0 * scale2, b1 = -nm1 * scale2;
+                     if (c == 0) pp_sync1(); else pp_sync2();   // v56: baton acquired HERE, not 154+120 instrs earlier
+@@ -594,6 +652,9 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+             // per row instead of four 2-byte writes on a 4-byte stride, so a row costs one sector for
+             // 16 B of payload instead of one sector for 8 B. Address is 4 B aligned (head is even and
+             // q_base + row*HEAD_DIM is a multiple of 128).
++            // A: rows past L belong to the next segment (computed by its own unit): never stored.
++            bool st0 = true, st1 = true;
++            if constexpr (CHATS) { st0 = gR0 < L; st1 = gR1 < L; }
+             #pragma unroll
+             for (int reg = 0; reg < ACC_PV; reg += 2) {
+                 int half2 = reg / 32, rr = reg % 32;
+@@ -601,12 +662,13 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+                 int row = (s < 2) ? R0 : R1;
+                 int head = half2 * 64 + 8 * bcol + 2 * tig;
+                 float rcp = (s < 2) ? r0 : r1;
++                if (!CHATS || ((s < 2) ? st0 : st1))
+                 *reinterpret_cast<__nv_bfloat162*>(&O[q_base + (long long)row * HEAD_DIM + head]) =
+                     __floats2bfloat162_rn(O_acc[reg] * rcp, O_acc[reg + 1] * rcp);
+             }
+             if (tig == 0) {
+-                LSE[(long long)(b * Hq + hq) * S + gR0] = (m0 * scale2) * LN2 + logf(l0);
+-                LSE[(long long)(b * Hq + hq) * S + gR1] = (m1 * scale2) * LN2 + logf(l1);
++                if (st0) LSE[(long long)(b * Hq + hq) * S + t0 + gR0] = (m0 * scale2) * LN2 + logf(l0);
++                if (st1) LSE[(long long)(b * Hq + hq) * S + t0 + gR1] = (m1 * scale2) * LN2 + logf(l1);
+             }
+             ++j;
+         }
+@@ -615,19 +677,29 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+ }
+ 
+ #else   // ---- non-Hopper: keep the translation unit compilable ----
++// Same parameter types as the Hopper definition, __restrict__ included: the host pass sees only
++// this stub, and nvcc's generated explicit specializations of a TEMPLATE kernel must match it
++// exactly (the old non-template stub could differ in __restrict__; a template cannot).
++constexpr int MODE_DENSE = 0, MODE_CHATS = 1;
++template <int MODE>
+ __global__ void gqa_v62_sm90(const __grid_constant__ CUtensorMap, const __grid_constant__ CUtensorMap,
+-                        const __grid_constant__ CUtensorMap, const __nv_bfloat16*,
+-                        __nv_bfloat16*, float*, int, int, int, int, float) {}
++                        const __grid_constant__ CUtensorMap, const __nv_bfloat16* __restrict__,
++                        __nv_bfloat16* __restrict__, float* __restrict__, int, int, int, int, float,
++                        const int4* __restrict__, int) {}
+ #endif
+ 
+ size_t smem_bytes() { return T3_SMEM_V34; }   // sK+sV + Qt + mbarriers
+ 
+ } // namespace gqa62
+ 
++// v2 (2026-10-10): chat_units/n_units (device work list of a GqaChatPlan, design A) select the
++// per-segment variant; nullptr keeps the dense kernel exactly as before. (Design B's seg_start
++// parameter was removed on 2026-10-15, see the kernel comment.)
+ void gqa_v62_causal_launch_d128(
+     const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
+     __nv_bfloat16* O, float* LSE,
+-    int B, int Hq, int Hkv, int S, float scale, cudaStream_t stream)
++    int B, int Hq, int Hkv, int S, float scale, cudaStream_t stream,
++    const int32_t* chat_units, int n_units)
+ {
+     int device = 0; cudaGetDevice(&device);
+     cudaDeviceProp prop{}; cudaGetDeviceProperties(&prop, device);
+@@ -639,11 +711,18 @@ void gqa_v62_causal_launch_d128(
+     CUtensorMap tmapKsw = gqa62::make_tma_kv128(K, kv_rows, gqa62::HEAD_DIM);
+     CUtensorMap tmapVsw = gqa62::make_tma_kv128(V, kv_rows, gqa62::HEAD_DIM);
+     CUtensorMap tmapQsw = gqa62::make_tma_q64(Q, (uint64_t)B * Hq * S, gqa62::HEAD_DIM);  // Q box [64][64] SW128
+-    static bool cfg = false;
++    // The dynamic-smem opt-in is per kernel, so each variant gets its own once-flag.
++    static bool cfg_dense = false, cfg_chats = false;
+     size_t smem_bytes = gqa62::smem_bytes();
+-    if (!cfg) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg = true; }
+     dim3 grid(gqa62::NUM_SMS); dim3 block(gqa62::NUM_THREADS);
+-    gqa62::gqa_v62_sm90<<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale);
++    const int4* units = reinterpret_cast<const int4*>(chat_units);
++    if (chat_units != nullptr) {
++        if (!cfg_chats) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90<gqa62::MODE_CHATS>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg_chats = true; }
++        gqa62::gqa_v62_sm90<gqa62::MODE_CHATS><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, units, n_units);
++    } else {
++        if (!cfg_dense) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90<gqa62::MODE_DENSE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg_dense = true; }
++        gqa62::gqa_v62_sm90<gqa62::MODE_DENSE><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, nullptr, 0);
++    }
+ }
+ 
+ 
+diff --git a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.cu b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.cu
+index d066fbf..447dfcf 100644
+--- a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.cu
++++ b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.cu
+@@ -19,9 +19,13 @@ void fused_qk_norm_rope_backward_sm90(
+     float*       dq_gamma, float* dk_gamma,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, bool interleaved,
+-    cudaStream_t stream);
++    cudaStream_t stream,
++    const int32_t* positions);   // v2: per-token positions [B, T] or nullptr
+ 
+-template <bool IS_NEOX>
++// HAS_POS (v2 packing, added 2026-10-10): false = original kernel (cache row t + pos_offset),
++// true = cache row positions[b*T + t], matching the forward. Template flag so the false
++// instantiation is unchanged; positions is appended last.
++template <bool IS_NEOX, bool HAS_POS>
+ __global__ void fused_qknorm_rope_backward(
+     const float* __restrict__ dz_q,      // [B, Hq,  T, hd]  upstream grad for Q
+     const float* __restrict__ dz_k,      // [B, Hkv, T, hd]  upstream grad for K
+@@ -37,7 +41,8 @@ __global__ void fused_qknorm_rope_backward(
+     float*       __restrict__ dq_gamma,   // [hd]  accumulated (zero before launch)
+     float*       __restrict__ dk_gamma,   // [hd]  accumulated (zero before launch)
+     int Hq, int Hkv, int T, int hd,
+-    int pos_offset)
++    int pos_offset,
++    const int32_t* __restrict__ positions)   // [B, T], read only when HAS_POS
+ {
+     const int t    = blockIdx.x;
+     const int hh   = blockIdx.y;
+@@ -62,7 +67,10 @@ __global__ void fused_qknorm_rope_backward(
+     const float  rstd = rstd_in[((long)b * H + h) * T + t];  // saved by the forward
+ 
+     const int  half      = hd / 2;
+-    const long cache_row = (long)(t + pos_offset) * hd;
++    // v2: same cache row as the forward used for this token (was always t + pos_offset;
++    // HAS_POS=false keeps exactly that).
++    const long cache_row = HAS_POS ? (long)positions[(long)b * T + t] * hd
++                                   : (long)(t + pos_offset) * hd;
+ 
+     // ---- Pass A: dy = rope_inverse(dz); S = (1/hd) sum_j g[j]*xhat[j] ----
+     float partial = 0.f;
+@@ -122,7 +130,8 @@ void fused_qk_norm_rope_backward(
+     float*       dq_gamma, float* dk_gamma,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, bool interleaved,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    const int32_t* positions)
+ {
+     // Hopper dispatch gate; the kernel below is the fallback for all other archs.
+     // The Hopper path writes dq_gamma/dk_gamma outright, so it must be taken
+@@ -135,7 +144,7 @@ void fused_qk_norm_rope_backward(
+         fused_qk_norm_rope_backward_sm90(
+             dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
+             q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
+-            B, Hq, Hkv, T, hd, pos_offset, interleaved, stream);
++            B, Hq, Hkv, T, hd, pos_offset, interleaved, stream, positions);
+         return;
+     }
+ 
+@@ -146,16 +155,29 @@ void fused_qk_norm_rope_backward(
+     dim3 block(32);
+     dim3 grid(T, Hq + Hkv, B);
+ 
++    // v2: positions == nullptr launches the original <.., false> instantiation.
+     if (!interleaved) {   // NeoX (bluscript default)
+-        fused_qknorm_rope_backward<true><<<grid, block, 0, stream>>>(
+-            dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
+-            q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
+-            Hq, Hkv, T, hd, pos_offset);
++        if (positions == nullptr)
++            fused_qknorm_rope_backward<true, false><<<grid, block, 0, stream>>>(
++                dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
++                Hq, Hkv, T, hd, pos_offset, positions);
++        else
++            fused_qknorm_rope_backward<true, true><<<grid, block, 0, stream>>>(
++                dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
++                Hq, Hkv, T, hd, pos_offset, positions);
+     } else {              // GPT-J interleaved
+-        fused_qknorm_rope_backward<false><<<grid, block, 0, stream>>>(
+-            dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
+-            q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
+-            Hq, Hkv, T, hd, pos_offset);
++        if (positions == nullptr)
++            fused_qknorm_rope_backward<false, false><<<grid, block, 0, stream>>>(
++                dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
++                Hq, Hkv, T, hd, pos_offset, positions);
++        else
++            fused_qknorm_rope_backward<false, true><<<grid, block, 0, stream>>>(
++                dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
++                Hq, Hkv, T, hd, pos_offset, positions);
+     }
+ }
+ 
+diff --git a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.cu b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.cu
+index f6ac96c..91ef8f5 100644
+--- a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.cu
++++ b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.cu
+@@ -19,7 +19,12 @@ namespace cuda {
+ #define BWD_T_CHUNKS 32
+ #endif
+ 
+-template <bool IS_NEOX, int HD>
++// HAS_POS (v2 packing, added 2026-10-10): false = original kernel (cache row t + pos_offset),
++// true = cache row positions[b*T + t] (several chats per row, each restarting at 0). It must
++// match the forward exactly: the backward undoes the SAME rotation. Template flag so the false
++// instantiation is the pre-change kernel; positions is appended last. dgamma partials keep their
++// fixed (t-chunk, head, batch) order, so they stay bit-reproducible with positions too.
++template <bool IS_NEOX, int HD, bool HAS_POS>
+ __global__ void fused_qk_norm_rope_bwd_kernel_sm90(
+     const float* __restrict__ dz_q,      // [B, Hq,  T, hd]  upstream grad for Q
+     const float* __restrict__ dz_k,      // [B, Hkv, T, hd]  upstream grad for K
+@@ -35,7 +40,8 @@ __global__ void fused_qk_norm_rope_bwd_kernel_sm90(
+     float*       __restrict__ dq_gpart,   // [B*Hq*BWD_T_CHUNKS,  hd]  Q dgamma partials
+     float*       __restrict__ dk_gpart,   // [B*Hkv*BWD_T_CHUNKS, hd]  K dgamma partials
+     int Hq, int Hkv, int T,
+-    int pos_offset)
++    int pos_offset,
++    const int32_t* __restrict__ positions)   // [B, T], read only when HAS_POS
+ {
+     // HD must stay a template parameter: it makes HALF, PAIRS and every ia/ib
+     // compile-time constants, which is what keeps the per-lane arrays below in
+@@ -90,7 +96,11 @@ __global__ void fused_qk_norm_rope_bwd_kernel_sm90(
+         const float* x  = in_base + head_off;
+         float*       dx = dx_base + head_off;
+         const float  rstd = rstd_in[((long)b * H + h) * T + t];
+-        const float* cs_row = cos_sin + (long)(t + pos_offset) * HD;
++        // v2: same cache row as the forward used for this token (was always t + pos_offset;
++        // HAS_POS=false keeps exactly that).
++        const float* cs_row = HAS_POS
++            ? cos_sin + (long)positions[(long)b * T + t] * HD
++            : cos_sin + (long)(t + pos_offset) * HD;
+ 
+         // Pass A must finish S before any dx is written, so the two passes
+         // cannot merge. Instead xhat, dy and g are held in registers across
+@@ -200,7 +210,8 @@ void fused_qk_norm_rope_backward_sm90(
+     float*       dq_gamma, float* dk_gamma,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, bool interleaved,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    const int32_t* positions)
+ {
+     // Q and K size their partial buffers with their OWN head count (Hq vs Hkv).
+     ensure_sm90_gamma_part(&d_sm90_qgamma_part, &sm90_qgamma_part_size,
+@@ -217,26 +228,35 @@ void fused_qk_norm_rope_backward_sm90(
+     // hd is specialized to the shipped shapes (64, 128), matching the forward.
+     // Keep abort() rather than assert(): assert compiles out under -DNDEBUG and
+     // an unsupported hd would then silently leave dq/dk untouched.
+-#define LAUNCH_BWD(NEOX, HDV)                                                  \
+-    fused_qk_norm_rope_bwd_kernel_sm90<NEOX, HDV><<<grid, block, 0, stream>>>(       \
++    // v2: HASP selects the per-token-positions instantiation (positions != nullptr).
++#define LAUNCH_BWD(NEOX, HDV, HASP)                                            \
++    fused_qk_norm_rope_bwd_kernel_sm90<NEOX, HDV, HASP><<<grid, block, 0, stream>>>( \
+         dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,                     \
+         q_rstd, k_rstd, dq_in, dk_in, dq_gamma_part, dk_gamma_part,            \
+-        Hq, Hkv, T, pos_offset)
++        Hq, Hkv, T, pos_offset, positions)
+ 
+-#define DISPATCH_BWD_HD(NEOX)                                                  \
++#define DISPATCH_BWD_HD(NEOX, HASP)                                            \
+     switch (hd) {                                                              \
+-        case  64: LAUNCH_BWD(NEOX,  64);  break;                               \
+-        case 128: LAUNCH_BWD(NEOX, 128);  break;                               \
++        case  64: LAUNCH_BWD(NEOX,  64, HASP);  break;                         \
++        case 128: LAUNCH_BWD(NEOX, 128, HASP);  break;                         \
+         default :                                                              \
+             fprintf(stderr, "fused_qk_norm_rope_backward: unsupported hd=%d "  \
+                             "(expected 64 or 128)\n", hd);                     \
+             abort();                                                           \
+     }
+ 
+-    if (!interleaved) {   // NeoX (bluscript default)
+-        DISPATCH_BWD_HD(true);
+-    } else {              // GPT-J interleaved
+-        DISPATCH_BWD_HD(false);
++    if (positions == nullptr) {   // original path: cache row = t + pos_offset
++        if (!interleaved) {   // NeoX (bluscript default)
++            DISPATCH_BWD_HD(true, false);
++        } else {              // GPT-J interleaved
++            DISPATCH_BWD_HD(false, false);
++        }
++    } else {                      // v2: per-token positions[b*T + t]
++        if (!interleaved) {
++            DISPATCH_BWD_HD(true, true);
++        } else {
++            DISPATCH_BWD_HD(false, true);
++        }
+     }
+ 
+ #undef DISPATCH_BWD_HD
+diff --git a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90.cu b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90.cu
+index 661e98c..8b03638 100644
+--- a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90.cu
++++ b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90.cu
+@@ -17,9 +17,13 @@ void fused_qk_norm_rope_forward_sm90(
+     float*       q_rstd, float* k_rstd,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, float eps, bool interleaved,
+-    cudaStream_t stream);
++    cudaStream_t stream,
++    const int32_t* positions);   // v2: per-token positions [B, T] or nullptr
+ 
+-template <bool IS_NEOX>
++// HAS_POS (v2 packing, added 2026-10-10): false = original kernel (position = t + pos_offset),
++// true = position = positions[b*T + t]. Template flag so the false instantiation is unchanged;
++// positions is appended last. See the note in FusedRMSRoPEKernels.h.
++template <bool IS_NEOX, bool HAS_POS>
+ __global__ void fused_qknorm_rope_forward(
+     const float* __restrict__ q_in,          // [B, Hq,  T, hd]  pre-norm Q
+     const float* __restrict__ k_in,          // [B, Hkv, T, hd]  pre-norm K
+@@ -30,7 +34,8 @@ __global__ void fused_qknorm_rope_forward(
+     const float* __restrict__ cos_sin_cache, // [cache_seq_len, hd]
+     float*       __restrict__ q_rstd,        // [B, Hq,  T]  1/rms to save for backward
+     float*       __restrict__ k_rstd,        // [B, Hkv, T]  1/rms to save for backward
+-    int Hq, int Hkv, int T, int Hd, int pos_offset, float eps) {
++    int Hq, int Hkv, int T, int Hd, int pos_offset, float eps,
++    const int32_t* __restrict__ positions) {  // [B, T], read only when HAS_POS
+     
+     const int tok_pos = blockIdx.x;
+     const int head_ind = blockIdx.y;
+@@ -68,7 +73,10 @@ __global__ void fused_qknorm_rope_forward(
+     
+     // Norm + RoPE. One lane owns whole pairs, so both halves stay in one thread.
+     const int half = Hd/2;
+-    const long cache_row = long(tok_pos + pos_offset) * Hd;
++    // v2: with HAS_POS the cache row is the token's position inside its chat
++    // (was always tok_pos + pos_offset; HAS_POS=false keeps exactly that).
++    const long cache_row = HAS_POS ? (long)positions[(long)batch * T + tok_pos] * Hd
++                                   : long(tok_pos + pos_offset) * Hd;
+ 
+     for (int i = lane; i < half; i += 32) {
+         int ia, ib;
+@@ -94,27 +102,40 @@ void fused_qk_norm_rope_forward(
+     float*       q_rstd, float* k_rstd,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, float eps, bool interleaved,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    const int32_t* positions)
+ {
+     // Hopper dispatch gate; the kernel below is the fallback for all other archs.
+     if (!disable_sm90_qknorm_rope() && get_arch() == ArchFamily::Hopper) {
+         fused_qk_norm_rope_forward_sm90(
+             q_in, k_in, q_out, k_out, q_gamma, k_gamma, cos_sin,
+-            q_rstd, k_rstd, B, Hq, Hkv, T, hd, pos_offset, eps, interleaved, stream);
++            q_rstd, k_rstd, B, Hq, Hkv, T, hd, pos_offset, eps, interleaved, stream,
++            positions);
+         return;
+     }
+ 
+     dim3 block(32);
+     dim3 grid(T, Hq + Hkv, B);
+ 
++    // v2: positions == nullptr launches the original <.., false> instantiation.
+     if (!interleaved) {   // NeoX (bluscript default)
+-        fused_qknorm_rope_forward<true><<<grid, block, 0, stream>>>(
+-            q_in, k_in, q_out, k_out, q_gamma, k_gamma, cos_sin,
+-            q_rstd, k_rstd, Hq, Hkv, T, hd, pos_offset, eps);
++        if (positions == nullptr)
++            fused_qknorm_rope_forward<true, false><<<grid, block, 0, stream>>>(
++                q_in, k_in, q_out, k_out, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, Hq, Hkv, T, hd, pos_offset, eps, positions);
++        else
++            fused_qknorm_rope_forward<true, true><<<grid, block, 0, stream>>>(
++                q_in, k_in, q_out, k_out, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, Hq, Hkv, T, hd, pos_offset, eps, positions);
+     } else {              // GPT-J interleaved
+-        fused_qknorm_rope_forward<false><<<grid, block, 0, stream>>>(
+-            q_in, k_in, q_out, k_out, q_gamma, k_gamma, cos_sin,
+-            q_rstd, k_rstd, Hq, Hkv, T, hd, pos_offset, eps);
++        if (positions == nullptr)
++            fused_qknorm_rope_forward<false, false><<<grid, block, 0, stream>>>(
++                q_in, k_in, q_out, k_out, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, Hq, Hkv, T, hd, pos_offset, eps, positions);
++        else
++            fused_qknorm_rope_forward<false, true><<<grid, block, 0, stream>>>(
++                q_in, k_in, q_out, k_out, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, Hq, Hkv, T, hd, pos_offset, eps, positions);
+     }
+ }
+ 
+diff --git a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.cu b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.cu
+index dd08a1c..962526f 100644
+--- a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.cu
++++ b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.cu
+@@ -40,7 +40,13 @@ __device__ __forceinline__ float& vref(float4& v, int i) {
+     return i == 0 ? v.x : (i == 1 ? v.y : (i == 2 ? v.z : v.w));
+ }
+ 
+-template <bool IS_NEOX, int HD, int TOK_PER_WARP, int WARPS_PER_BLOCK>
++// HAS_POS (v2 packing, added 2026-10-10): false = the original kernel, position = t + pos_offset;
++// true = per-token positions[b*T + t] (several chats per row, each restarting at 0).
++// It is a template flag, not a runtime branch, so the HAS_POS=false instantiation is the
++// pre-change kernel instruction for instruction (verified by a SASS diff, see
++// Tests/kernel_tests/test_rope_positions.cu). positions is appended LAST so the existing
++// parameters keep their constant-bank offsets.
++template <bool IS_NEOX, int HD, int TOK_PER_WARP, int WARPS_PER_BLOCK, bool HAS_POS>
+ __global__ __launch_bounds__(32 * WARPS_PER_BLOCK)
+ void fused_qknorm_rope_forward_t_sm90(
+     const float* __restrict__ q_in,          // [B, Hq,  T, hd]  pre-norm Q
+@@ -52,7 +58,8 @@ void fused_qknorm_rope_forward_t_sm90(
+     const float* __restrict__ cos_sin_cache, // [cache_seq_len, hd]
+     float*       __restrict__ q_rstd,        // [B, Hq,  T]  1/rms to save for backward
+     float*       __restrict__ k_rstd,        // [B, Hkv, T]  1/rms to save for backward
+-    int Hq, int Hkv, int T, int pos_offset, float eps = 1e-5f) {
++    int Hq, int Hkv, int T, int pos_offset, float eps = 1e-5f,
++    const int32_t* __restrict__ positions = nullptr) {  // [B, T], read only when HAS_POS
+ 
+     constexpr int HALF   = HD / 2;
+     constexpr int VECS   = (HD   + 31) / 32;   // sum-of-squares steps per lane
+@@ -120,7 +127,11 @@ void fused_qknorm_rope_forward_t_sm90(
+ 
+             // a-half lanes read the cos block (0..HALF-1), b-half lanes the sin
+             // block (HALF..HD-1), hence the partner exchange.
+-            const float* cs_row = cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
++            // v2: with HAS_POS the cache row is the token's own position in its chat
++            // (was always tok_pos + pos_offset; HAS_POS=false keeps exactly that).
++            const float* cs_row = HAS_POS
++                ? cos_sin_cache + (long)positions[(long)batch * T + tok_pos] * HD
++                : cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
+             const vec_t cs0 = reinterpret_cast<const vec_t*>(cs_row)[lane];
+             const vec_t csp = shfl_xor_vec(cs0, 16);
+ 
+@@ -184,7 +195,10 @@ void fused_qknorm_rope_forward_t_sm90(
+             if (lane == 0) rstd_out[rstd_base + tt] = rstd;
+ 
+             // Norm + RoPE. One lane owns whole pairs, so both halves stay in one thread.
+-            const float* cs_row = cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
++            // v2: same position rule as the NeoX path above.
++            const float* cs_row = HAS_POS
++                ? cos_sin_cache + (long)positions[(long)batch * T + tok_pos] * HD
++                : cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
+ 
+             #pragma unroll
+             for (int p = 0; p < PAIRS; ++p) {
+@@ -229,7 +243,8 @@ void fused_qk_norm_rope_forward_sm90(
+     float*       q_rstd, float* k_rstd,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, float eps, bool interleaved,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    const int32_t* positions)
+ {
+     constexpr int TPW = FWD_TOK_PER_WARP;
+     constexpr int WPB = FWD_WARPS_PER_BLOCK;
+@@ -241,26 +256,35 @@ void fused_qk_norm_rope_forward_sm90(
+     // IS_NEOX == !interleaved. hd is specialized to the shipped shapes (64, 128).
+     // Keep abort() rather than assert(): assert compiles out under -DNDEBUG and
+     // an unsupported hd would then silently leave the output buffers untouched.
+-#define LAUNCH_T(NEOX, HDV)                                                    \
+-    fused_qknorm_rope_forward_t_sm90<NEOX, HDV, TPW, WPB>                           \
++    // v2: HASP selects the per-token-positions instantiation (positions != nullptr).
++#define LAUNCH_T(NEOX, HDV, HASP)                                              \
++    fused_qknorm_rope_forward_t_sm90<NEOX, HDV, TPW, WPB, HASP>                \
+         <<<grid, block, 0, stream>>>(                                          \
+         q_in, k_in, q_out, k_out, q_gamma, k_gamma, cos_sin,                   \
+-        q_rstd, k_rstd, Hq, Hkv, T, pos_offset, eps)
++        q_rstd, k_rstd, Hq, Hkv, T, pos_offset, eps, positions)
+ 
+-#define DISPATCH_HD(NEOX)                                                      \
++#define DISPATCH_HD(NEOX, HASP)                                                \
+     switch (hd) {                                                              \
+-        case  64: LAUNCH_T(NEOX,  64);  break;                                 \
+-        case 128: LAUNCH_T(NEOX, 128);  break;                                 \
++        case  64: LAUNCH_T(NEOX,  64, HASP);  break;                           \
++        case 128: LAUNCH_T(NEOX, 128, HASP);  break;                           \
+         default :                                                              \
+             fprintf(stderr, "fused_qk_norm_rope_forward: unsupported hd=%d "   \
+                             "(expected 64 or 128)\n", hd);                     \
+             abort();                                                           \
+     }
+ 
+-    if (!interleaved) {   // NeoX (bluscript default)
+-        DISPATCH_HD(true);
+-    } else {              // GPT-J interleaved
+-        DISPATCH_HD(false);
++    if (positions == nullptr) {   // original path: position = t + pos_offset
++        if (!interleaved) {   // NeoX (bluscript default)
++            DISPATCH_HD(true, false);
++        } else {              // GPT-J interleaved
++            DISPATCH_HD(false, false);
++        }
++    } else {                      // v2: per-token positions[b*T + t]
++        if (!interleaved) {
++            DISPATCH_HD(true, true);
++        } else {
++            DISPATCH_HD(false, true);
++        }
+     }
+ 
+ #undef DISPATCH_HD
+diff --git a/src/UnaryOps/cpu/Normalizations.cpp b/src/UnaryOps/cpu/Normalizations.cpp
+index e4e21b6..998b58c 100644
+--- a/src/UnaryOps/cpu/Normalizations.cpp
++++ b/src/UnaryOps/cpu/Normalizations.cpp
+@@ -8,6 +8,7 @@
+ #include "core/TensorDataManip.h"
+ #include <cmath>
+ #include <omp.h>
++#include <string>      // std::to_string in fused_rms_rope_positions_ptr (v2 positions check)
+ #include <vector>
+ #include <algorithm>
+ #include "profiler/RecordFunction.h"
+@@ -992,6 +993,32 @@ RMSNormBackwardResult rms_norm_backward(
+     return {grad_input, grad_weight};
+ }
+ 
++// v2 packing (added 2026-10-10): validates the optional per-token positions tensor and
++// returns its device pointer, or nullptr when it is not given (= the original behaviour,
++// position = t + pos_offset). Rules: int32, CUDA, same device as q, contiguous [B, T], and
++// pos_offset == 0 (positions and an offset together would be ambiguous). Value range
++// (0 <= p < cache length) is NOT checked here: that would need a device->host copy every
++// call; the loader checks it once on the host (same split as torchtitan's async check,
++// models/common/rope.py:25-38).
++static const int32_t* fused_rms_rope_positions_ptr(const Tensor& positions, const Tensor& q,
++                                                   int B, int T, int64_t pos_offset,
++                                                   const char* who) {
++    if (!positions.is_valid()) return nullptr;
++    const std::string w(who);
++    if (!positions.device().is_cuda() || positions.device().index != q.device().index)
++        throw std::runtime_error(w + ": positions must be a CUDA tensor on q's device");
++    if (positions.dtype() != Dtype::Int32)
++        throw std::runtime_error(w + ": positions must be int32");
++    if (positions.ndim() != 2 || positions.shape().dims[0] != B || positions.shape().dims[1] != T)
++        throw std::runtime_error(w + ": positions must have shape [B, T] = [" +
++                                 std::to_string(B) + ", " + std::to_string(T) + "]");
++    if (!positions.is_contiguous())
++        throw std::runtime_error(w + ": positions must be contiguous");
++    if (pos_offset != 0)
++        throw std::runtime_error(w + ": pass either positions or a nonzero pos_offset, not both");
++    return positions.data<int32_t>();
++}
++
+ // =================================================================
+ // Public API — Fused RMSNorm + RoPE Forward
+ // =================================================================
+@@ -1003,7 +1030,8 @@ FusedRMSRoPEForwardResult fused_rms_rope_forward(
+     const Tensor& cos_sin_cache,
+     int64_t pos_offset,
+     float eps,
+-    bool interleaved)
++    bool interleaved,
++    const Tensor& positions)
+ {
+     PROFILER_SCOPE("fused_rms_rope_forward");
+     if (!q.device().is_cuda() || !k.device().is_cuda()) {
+@@ -1037,6 +1065,10 @@ FusedRMSRoPEForwardResult fused_rms_rope_forward(
+     Tensor q_rstd = Tensor::empty(Shape{{B, Hq, T}}, stat_opts);
+     Tensor k_rstd = Tensor::empty(Shape{{B, Hkv, T}}, stat_opts);
+ 
++    // v2: nullptr unless a positions tensor is given (then validated here).
++    const int32_t* pos_ptr =
++        fused_rms_rope_positions_ptr(positions, q, B, T, pos_offset, "fused_rms_rope_forward");
++
+     device::set_cuda_device(q.device().index);
+     cuda::fused_qk_norm_rope_forward(
+         q.data<float>(), k.data<float>(),
+@@ -1045,7 +1077,8 @@ FusedRMSRoPEForwardResult fused_rms_rope_forward(
+         cos_sin_cache.data<float>(),
+         q_rstd.data<float>(), k_rstd.data<float>(),
+         B, Hq, Hkv, T, hd,
+-        static_cast<int>(pos_offset), eps, interleaved);
++        static_cast<int>(pos_offset), eps, interleaved,
++        /*stream=*/0, pos_ptr);
+ 
+     return {q_out, k_out, q_rstd, k_rstd};
+ }
+@@ -1064,7 +1097,8 @@ FusedRMSRoPEBackwardResult fused_rms_rope_backward(
+     const Tensor& q_rstd,
+     const Tensor& k_rstd,
+     int64_t pos_offset,
+-    bool interleaved)
++    bool interleaved,
++    const Tensor& positions)
+ {
+     PROFILER_SCOPE("fused_rms_rope_backward");
+     int B   = static_cast<int>(q.shape().dims[0]);
+@@ -1073,6 +1107,10 @@ FusedRMSRoPEBackwardResult fused_rms_rope_backward(
+     int hd  = static_cast<int>(q.shape().dims[3]);
+     int Hkv = static_cast<int>(k.shape().dims[1]);
+ 
++    // v2: must be the same positions the forward used (FusedRMSRoPEBackward saves them).
++    const int32_t* pos_ptr =
++        fused_rms_rope_positions_ptr(positions, q, B, T, pos_offset, "fused_rms_rope_backward");
++
+     Tensor grad_q_in = Tensor::empty(q.shape(), q.opts());
+     Tensor grad_k_in = Tensor::empty(k.shape(), k.opts());
+ 
+@@ -1093,7 +1131,8 @@ FusedRMSRoPEBackwardResult fused_rms_rope_backward(
+         grad_q_in.data<float>(), grad_k_in.data<float>(),
+         grad_q_gamma.data<float>(), grad_k_gamma.data<float>(),
+         B, Hq, Hkv, T, hd,
+-        static_cast<int>(pos_offset), interleaved);
++        static_cast<int>(pos_offset), interleaved,
++        /*stream=*/0, pos_ptr);
+ 
+     return {grad_q_in, grad_k_in, grad_q_gamma, grad_k_gamma};
+ }
+diff --git a/src/autograd/backward/AttentionBackward.cpp b/src/autograd/backward/AttentionBackward.cpp
+index 80dfac6..667cb50 100644
+--- a/src/autograd/backward/AttentionBackward.cpp
++++ b/src/autograd/backward/AttentionBackward.cpp
+@@ -210,12 +210,12 @@ GQAFlashAttentionQKVBackward::GQAFlashAttentionQKVBackward(
+     const Tensor& query, const Tensor& key, const Tensor& value,
+     const Tensor& output, const Tensor& lse,
+     int64_t B, int64_t Nq_heads, int64_t Nkv_heads, int64_t T, int64_t hd,
+-    bool is_causal)
++    bool is_causal, cuda::GqaChatPlanPtr chats)
+     : Node(3),  // 3 inputs: Q, K, V
+       saved_query_(query), saved_key_(key), saved_value_(value),
+       saved_output_(output), saved_lse_(lse),
+       B_(B), Nq_heads_(Nq_heads), Nkv_heads_(Nkv_heads), T_(T), hd_(hd),
+-      is_causal_(is_causal) {}
++      is_causal_(is_causal), chats_(std::move(chats)) {}
+ 
+ std::vector<Tensor> GQAFlashAttentionQKVBackward::apply(std::vector<Tensor>&& grads) {
+     PROFILER_SCOPE("GQAFlashAttentionQKVBackward::apply");
+@@ -245,7 +245,8 @@ std::vector<Tensor> GQAFlashAttentionQKVBackward::apply(std::vector<Tensor>&& gr
+         grad_key.data<bfloat16_t>(),
+         grad_value.data<bfloat16_t>(),
+         static_cast<int>(B_), static_cast<int>(Nq_heads_), static_cast<int>(Nkv_heads_),
+-        static_cast<int>(T_), static_cast<int>(hd_), is_causal_);
++        static_cast<int>(T_), static_cast<int>(hd_), is_causal_,
++        chats_.get());   // v2 packed rows (design A), else dense
+ 
+     return {grad_query, grad_key, grad_value};
+ }
+diff --git a/src/autograd/backward/NormalizationBackward.cpp b/src/autograd/backward/NormalizationBackward.cpp
+index 9ea28bb..5581cb3 100644
+--- a/src/autograd/backward/NormalizationBackward.cpp
++++ b/src/autograd/backward/NormalizationBackward.cpp
+@@ -67,9 +67,10 @@ std::vector<Tensor> FusedRMSRoPEBackward::apply(std::vector<Tensor>&& grads) {
+     Tensor dz_q = (grads.size() > 0 && grads[0].is_valid()) ? grads[0] : Tensor::zeros(q.shape(), q.opts());
+     Tensor dz_k = (grads.size() > 1 && grads[1].is_valid()) ? grads[1] : Tensor::zeros(k.shape(), k.opts());
+ 
++    // v2: positions_ is the forward's per-token positions (invalid Tensor = original path).
+     auto result = fused_rms_rope_backward(
+         dz_q, dz_k, q, k, q_gamma, k_gamma, cos_sin_cache,
+-        q_rstd, k_rstd, pos_offset_, interleaved_);
++        q_rstd, k_rstd, pos_offset_, interleaved_, positions_);
+ 
+     return {result.grad_q, result.grad_k, result.grad_q_gamma, result.grad_k_gamma};
+ }
+diff --git a/src/autograd/operations/AttentionOps.cpp b/src/autograd/operations/AttentionOps.cpp
+index 9aff529..7a84a1f 100644
+--- a/src/autograd/operations/AttentionOps.cpp
++++ b/src/autograd/operations/AttentionOps.cpp
+@@ -342,7 +342,8 @@ static Tensor sdpa_flash_attention_qkv(
+     const int Nkv_heads,
+     bool is_causal,
+     float dropout_p,
+-    SDPBackend /*backend*/)
++    SDPBackend /*backend*/,
++    const cuda::GqaChatPlanPtr& chats)   // v2 packed rows: per-chat plan (design A); nullptr = dense
+ {
+     PROFILER_SCOPE("sdpa_flash_attention_qkv");
+ 
+@@ -400,6 +401,11 @@ static Tensor sdpa_flash_attention_qkv(
+     Tensor k_c = key.contiguous();
+     Tensor v_c = value.contiguous();
+ 
++    // v2 packed rows (design A, 2026-10-15): the kernels check the plan's shape (B, T, Nq_heads) and refuse a plan
++    // they cannot honour (non-Hopper, hd 64, T % 256 != 0 in the forward, Vj1 / v44 in the backward).
++    if (chats && !is_causal)
++        throw std::runtime_error("sdpa_flash_attention_qkv (GQA): a packed-rows plan needs is_causal = true");
++
+     Tensor output = Tensor::empty(Shape{{B, static_cast<int64_t>(Nq_heads), T, hd}}, opts);
+     Tensor lse    = Tensor::empty(Shape{{B, static_cast<int64_t>(Nq_heads), T}}, lse_opts);
+ 
+@@ -411,14 +417,14 @@ static Tensor sdpa_flash_attention_qkv(
+         lse.data<float>(),
+         static_cast<int>(B), Nq_heads, Nkv_heads,
+         static_cast<int>(T), static_cast<int>(hd),
+-        is_causal);
++        is_causal, chats.get());
+ 
+     if (GradMode::is_enabled() &&
+         (query.requires_grad() || key.requires_grad() || value.requires_grad()))
+     {
+         auto grad_fn = std::make_shared<GQAFlashAttentionQKVBackward>(
+             q_c.detach(), k_c.detach(), v_c.detach(), output.detach(), lse.detach(),
+-            B, Nq_heads, Nkv_heads, T, hd, is_causal);
++            B, Nq_heads, Nkv_heads, T, hd, is_causal, chats);
+ 
+         Tensor& q_mut = const_cast<Tensor&>(query);
+         Tensor& k_mut = const_cast<Tensor&>(key);
+@@ -675,7 +681,8 @@ Tensor scaled_dot_product_attention(
+   const int Nkv_heads,
+   bool is_causal,
+   float dropout_p,
+-  SDPBackend backend
++  SDPBackend backend,
++  const cuda::GqaChatPlanPtr& chats
+ ){
+   PROFILER_SCOPE("autograd::scaled_dot_product_attention");
+   GraphRecordMode::record_forward("ATTENTION: scaled_dot_product_attention (GQA, unpacked QKV)");
+@@ -683,7 +690,8 @@ Tensor scaled_dot_product_attention(
+   switch(backend){
+     case SDPBackend::FlashAttention:
+ #ifdef WITH_CUDA
+-      return sdpa_flash_attention_qkv(query, key, value, Nq_heads, Nkv_heads, is_causal, dropout_p, backend);
++      return sdpa_flash_attention_qkv(query, key, value, Nq_heads, Nkv_heads, is_causal, dropout_p, backend,
++                                      chats);
+ #else
+       throw std::runtime_error(
+         "GQA scaled_dot_product_attention (FlashAttention) requires CUDA.");
+diff --git a/src/autograd/operations/NormalizationOps.cpp b/src/autograd/operations/NormalizationOps.cpp
+index db5d470..42f6202 100644
+--- a/src/autograd/operations/NormalizationOps.cpp
++++ b/src/autograd/operations/NormalizationOps.cpp
+@@ -93,12 +93,15 @@ std::pair<Tensor, Tensor> fused_rms_rope(
+     const Tensor& cos_sin_cache,
+     int64_t pos_offset,
+     float eps,
+-    bool interleaved)
++    bool interleaved,
++    const Tensor& positions)
+ {
+     PROFILER_SCOPE("autograd::fused_rms_rope");
+     GraphRecordMode::record_forward("NORMALIZATION: fused_rms_rope");
+ 
+-    auto result = fused_rms_rope_forward(q, k, q_gamma, k_gamma, cos_sin_cache, pos_offset, eps, interleaved);
++    // v2: positions (optional) is validated inside fused_rms_rope_forward.
++    auto result = fused_rms_rope_forward(q, k, q_gamma, k_gamma, cos_sin_cache, pos_offset, eps, interleaved,
++                                         positions);
+     Tensor q_out = result.q_out;
+     Tensor k_out = result.k_out;
+ 
+@@ -107,8 +110,10 @@ std::pair<Tensor, Tensor> fused_rms_rope(
+                               (k_gamma.is_valid() && k_gamma.requires_grad()));
+ 
+     if (GradMode::is_enabled() && any_requires_grad) {
++        // v2: the backward gets the SAME positions (it undoes the same rotation).
+         auto grad_fn = std::make_shared<FusedRMSRoPEBackward>(
+-            q, k, q_gamma, k_gamma, cos_sin_cache, result.q_rstd, result.k_rstd, pos_offset, interleaved
++            q, k, q_gamma, k_gamma, cos_sin_cache, result.q_rstd, result.k_rstd, pos_offset, interleaved,
++            positions
+         );
+ 
+         if (q.requires_grad())

@@ -1,0 +1,119 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj1d (USE_VJ2=0)  |  quick: yes
+
+===== VARLEN_ONLY=G11 (Step 5: design A backward) =====
+
+===== G11 design A backward: per-segment plan vs reference, alone, isolation (G9's inputs) =====
+  G10 refusal: bwd plan AND seg_start                       threw: gqa_flash_attn_backward_qkv: pass seg_start (design B) OR chats (design A), not both  PASS
+  G10 refusal: bwd is_causal = false                        threw: gqa_flash_attn_backward_qkv: chats (packed rows, design A) needs the Hopper Vj1d path (reached by default or with USE_VJ2=0): causal, head_dim 128, T % 64 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset, and neither USE_FLASH=1 nor USE_DETERMINISTIC_DQ=1  PASS
+  G10 refusal: bwd head_dim 64                              threw: gqa_flash_attn_backward_qkv: chats (packed rows, design A) needs the Hopper Vj1d path (reached by default or with USE_VJ2=0): causal, head_dim 128, T % 64 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset, and neither USE_FLASH=1 nor USE_DETERMINISTIC_DQ=1  PASS
+  G10 refusal: bwd T = 288 (not a multiple of 64)           threw: gqa_flash_attn_backward_qkv: chats (packed rows, design A) needs the Hopper Vj1d path (reached by default or with USE_VJ2=0): causal, head_dim 128, T % 64 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset, and neither USE_FLASH=1 nor USE_DETERMINISTIC_DQ=1  PASS
+  G10 refusal: bwd plan for B=1 used with B=2               threw: gqa_flash_attn_backward_qkv: chats plan was built for another shape (B, T, Nq_heads) or is empty  PASS
+  G11 D2 2048+2048 18/6                        O    chats     2  worst ratio   0.300  (err 1.040e-02 vs floor 1.733e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D2 2048+2048 18/6                        LSE  chats     2  worst ratio   0.000  (err 1.211e-06 vs floor 6.945e-03)  fails 0 (known 0)  nan 0  PASS
+  G11 D2 2048+2048 18/6                        dQ   chats     2  worst ratio   0.384  (err 1.383e-02 vs floor 1.802e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D2 2048+2048 18/6                        dK   chats     2  worst ratio   0.572  (err 2.996e-02 vs floor 2.617e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D2 2048+2048 18/6                        dV   chats     2  worst ratio   0.463  (err 2.761e-02 vs floor 2.980e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D2 2048+2048 18/6                        2 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (2.6 s); backward q-tile visits A/dense 50.8%
+  G11 D2 2048+2048 18/6                        2 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031  PASS
+  G11 D2 2048+2048 18/6                        isolation incl. dO (1 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  G11 D3 1000+3096 18/6                        O    chats     2  worst ratio   0.293  (err 8.121e-03 vs floor 1.388e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D3 1000+3096 18/6                        LSE  chats     2  worst ratio   0.000  (err 1.349e-06 vs floor 6.050e-03)  fails 0 (known 0)  nan 0  PASS
+  G11 D3 1000+3096 18/6                        dQ   chats     2  worst ratio   0.327  (err 9.466e-03 vs floor 1.448e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D3 1000+3096 18/6                        dK   chats     2  worst ratio   0.491  (err 2.481e-02 vs floor 2.528e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D3 1000+3096 18/6                        dV   chats     2  worst ratio   0.500  (err 3.113e-02 vs floor 3.113e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D3 1000+3096 18/6                        2 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (3.5 s); backward q-tile visits A/dense 65.4%
+  G11 D3 1000+3096 18/6                        2 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.016  PASS
+  G11 D3 1000+3096 18/6                        isolation incl. dO (1 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.002, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  G11 D4 1+4095, 4095+1 18/6                   O    chats     4  worst ratio   0.340  (err 7.737e-03 vs floor 1.138e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D4 1+4095, 4095+1 18/6                   LSE  chats     4  worst ratio   0.000  (err 1.397e-06 vs floor 6.133e-03)  fails 0 (known 0)  nan 0  PASS
+  G11 D4 1+4095, 4095+1 18/6                   dQ   chats     2  worst ratio   0.396  (err 1.287e-02 vs floor 1.626e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D4 1+4095, 4095+1 18/6                   dK   chats     2  worst ratio   0.505  (err 2.613e-02 vs floor 2.589e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D4 1+4095, 4095+1 18/6                   dV   chats     4  worst ratio   0.515  (err 4.543e-02 vs floor 4.407e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D4 1+4095, 4095+1 18/6                   dQ   1-token  segs      2  worst |kernel|/bound 3.149e-03  fails 0  nan 0  PASS
+  G11 D4 1+4095, 4095+1 18/6                   dK   1-token  segs      2  worst |kernel|/bound 2.514e-03  fails 0  nan 0  PASS
+  G11 D4 1+4095, 4095+1 18/6                   4 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (4.5 s); backward q-tile visits A/dense 100.0%
+  G11 D4 1+4095, 4095+1 18/6                   4 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031  PASS
+  G11 D4 1+4095, 4095+1 18/6                   isolation incl. dO (1 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  G11 D5 64x64, 32x128 18/6                    O    chats    96  worst ratio   0.441  (err 9.524e-03 vs floor 1.080e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.295 p90 0.360 p99 0.391 max 0.441]
+  G11 D5 64x64, 32x128 18/6                    LSE  chats    96  worst ratio   0.000  (err 7.151e-07 vs floor 4.498e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G11 D5 64x64, 32x128 18/6                    dQ   chats    96  worst ratio   0.801  (err 1.955e-02 vs floor 1.220e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.384 p90 0.514 p99 0.654 max 0.801]
+  G11 D5 64x64, 32x128 18/6                    dK   chats    96  worst ratio   0.651  (err 2.844e-02 vs floor 2.186e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.425 p90 0.515 p99 0.617 max 0.651]
+  G11 D5 64x64, 32x128 18/6                    dV   chats    96  worst ratio   0.873  (err 4.509e-02 vs floor 2.581e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.493 p90 0.586 p99 0.791 max 0.873]
+  G11 D5 64x64, 32x128 18/6                    96 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (6.1 s); backward q-tile visits A/dense 3.8%
+  G11 D5 64x64, 32x128 18/6                    96 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.000  PASS
+  G11 D5 64x64, 32x128 18/6                    isolation incl. dO (1 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.000, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  G11 D6q 512 x 1 + pad 18/6                   O    chats   513  worst ratio   0.212  (err 7.794e-03 vs floor 1.835e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.212]
+  G11 D6q 512 x 1 + pad 18/6                   LSE  chats   513  worst ratio   0.000  (err 5.985e-07 vs floor 2.824e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G11 D6q 512 x 1 + pad 18/6                   dQ   chats     1  worst ratio   0.541  (err 1.604e-02 vs floor 1.483e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D6q 512 x 1 + pad 18/6                   dK   chats     1  worst ratio   0.392  (err 2.117e-02 vs floor 2.702e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D6q 512 x 1 + pad 18/6                   dV   chats   513  worst ratio   0.595  (err 3.397e-02 vs floor 2.853e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.500 p99 0.500 max 0.595]
+  G11 D6q 512 x 1 + pad 18/6                   dQ   1-token  segs    512  worst |kernel|/bound 3.300e-03  fails 0  nan 0  PASS
+  G11 D6q 512 x 1 + pad 18/6                   dK   1-token  segs    512  worst |kernel|/bound 3.030e-03  fails 0  nan 0  PASS
+  G11 D6q 512 x 1 + pad 18/6                   513 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (26.1 s); backward q-tile visits A/dense 101.3%
+  G11 D6q 512 x 1 + pad 18/6                   513 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031  PASS
+  G11 D6q 512 x 1 + pad 18/6                   isolation incl. dO (1 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  G11 D7 63/65/127/129/255/257 18/6            O    chats    29  worst ratio   0.438  (err 1.056e-02 vs floor 1.205e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.293 p90 0.353 p99 0.438 max 0.438]
+  G11 D7 63/65/127/129/255/257 18/6            LSE  chats    29  worst ratio   0.000  (err 7.141e-07 vs floor 5.663e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G11 D7 63/65/127/129/255/257 18/6            dQ   chats    29  worst ratio   0.564  (err 1.813e-02 vs floor 1.606e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.412 p90 0.500 p99 0.564 max 0.564]
+  G11 D7 63/65/127/129/255/257 18/6            dK   chats    29  worst ratio   0.619  (err 2.402e-02 vs floor 1.942e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.414 p90 0.500 p99 0.619 max 0.619]
+  G11 D7 63/65/127/129/255/257 18/6            dV   chats    29  worst ratio   0.665  (err 3.865e-02 vs floor 2.907e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.545 p99 0.665 max 0.665]
+  G11 D7 63/65/127/129/255/257 18/6            29 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (3.0 s); backward q-tile visits A/dense 8.1%
+  G11 D7 63/65/127/129/255/257 18/6            29 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031  PASS
+  G11 D7 63/65/127/129/255/257 18/6            isolation incl. dO (1 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  G11 D8 random + pad tails 18/6               O    chats    46  worst ratio   0.410  (err 9.469e-03 vs floor 1.155e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.290 p90 0.338 p99 0.410 max 0.410]
+  G11 D8 random + pad tails 18/6               LSE  chats    46  worst ratio   0.000  (err 9.455e-07 vs floor 5.008e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G11 D8 random + pad tails 18/6               dQ   chats    45  worst ratio   1.049  (err 3.098e-02 vs floor 1.476e-02)  fails 1 (known 1)  nan 0  KNOWN  [p50 0.413 p90 0.550 p99 1.049 max 1.049]
+        known: chat row 1 @664 L=303 (err 3.098e-02, floor 1.476e-02, nan 0)
+  G11 D8 random + pad tails 18/6               dK   chats    45  worst ratio   0.568  (err 2.272e-02 vs floor 1.999e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.436 p90 0.542 p99 0.568 max 0.568]
+  G11 D8 random + pad tails 18/6               dV   chats    46  worst ratio   0.864  (err 4.352e-02 vs floor 2.517e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.485 p90 0.596 p99 0.864 max 0.864]
+  G11 D8 random + pad tails 18/6               dQ   1-token  segs      1  worst |kernel|/bound 1.205e-03  fails 0  nan 0  PASS
+  G11 D8 random + pad tails 18/6               dK   1-token  segs      1  worst |kernel|/bound 1.190e-03  fails 0  nan 0  PASS
+  G11 D8 random + pad tails 18/6               46 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (5.0 s); backward q-tile visits A/dense 25.8%
+  G11 D8 random + pad tails 18/6               46 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.062  PASS
+  G11 D8 random + pad tails 18/6               isolation incl. dO (1 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.062, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  G11 D9 all pad 18/6                          O    chats     1  worst ratio   0.280  (err 7.371e-03 vs floor 1.316e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D9 all pad 18/6                          LSE  chats     1  worst ratio   0.000  (err 1.494e-06 vs floor 5.597e-03)  fails 0 (known 0)  nan 0  PASS
+  G11 D9 all pad 18/6                          dQ   chats     1  worst ratio   0.670  (err 1.944e-02 vs floor 1.451e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D9 all pad 18/6                          dK   chats     1  worst ratio   0.369  (err 2.239e-02 vs floor 3.030e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D9 all pad 18/6                          dV   chats     1  worst ratio   0.356  (err 2.755e-02 vs floor 3.870e-02)  fails 0 (known 0)  nan 0  PASS
+  G11 D9 all pad 18/6                          1 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (3.0 s); backward q-tile visits A/dense 100.0%
+  G11 D9 all pad 18/6                          1 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.031  PASS
+  G11 D11 offsets 18/6                         O    chats    22  worst ratio   0.357  (err 8.396e-03 vs floor 1.175e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.277 p90 0.335 p99 0.357 max 0.357]
+  G11 D11 offsets 18/6                         LSE  chats    22  worst ratio   0.000  (err 1.596e-06 vs floor 5.818e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G11 D11 offsets 18/6                         dQ   chats    21  worst ratio   0.574  (err 2.138e-02 vs floor 1.863e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.399 p90 0.467 p99 0.574 max 0.574]
+  G11 D11 offsets 18/6                         dK   chats    21  worst ratio   0.680  (err 3.233e-02 vs floor 2.378e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.390 p90 0.482 p99 0.680 max 0.680]
+  G11 D11 offsets 18/6                         dV   chats    22  worst ratio   0.673  (err 3.185e-02 vs floor 2.366e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.597 p99 0.673 max 0.673]
+  G11 D11 offsets 18/6                         dQ   1-token  segs      1  worst |kernel|/bound 1.563e-03  fails 0  nan 0  PASS
+  G11 D11 offsets 18/6                         dK   1-token  segs      1  worst |kernel|/bound 1.328e-03  fails 0  nan 0  PASS
+  G11 D11 offsets 18/6                         22 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (4.7 s); backward q-tile visits A/dense 86.3%
+  G11 D11 offsets 18/6                         22 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.125  PASS
+  G11 D11 offsets 18/6                         isolation incl. dO (1 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.062, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  G11 D10 stage-0 packed (rows 0-15) 18/6      O    chats    42  worst ratio   0.500  (err 1.540e-02 vs floor 1.540e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.299 p90 0.362 p99 0.500 max 0.500]
+  G11 D10 stage-0 packed (rows 0-15) 18/6      LSE  chats    42  worst ratio   0.000  (err 1.471e-06 vs floor 4.735e-03)  fails 0 (known 0)  nan 0  PASS  [p50 0.000 p90 0.000 p99 0.000 max 0.000]
+  G11 D10 stage-0 packed (rows 0-15) 18/6      dQ   chats    37  worst ratio   0.922  (err 2.618e-02 vs floor 1.420e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.419 p90 0.547 p99 0.922 max 0.922]
+  G11 D10 stage-0 packed (rows 0-15) 18/6      dK   chats    37  worst ratio   0.704  (err 2.613e-02 vs floor 1.855e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.430 p90 0.550 p99 0.704 max 0.704]
+  G11 D10 stage-0 packed (rows 0-15) 18/6      dV   chats    42  worst ratio   0.674  (err 3.437e-02 vs floor 2.549e-02)  fails 0 (known 0)  nan 0  PASS  [p50 0.500 p90 0.592 p99 0.674 max 0.674]
+  G11 D10 stage-0 packed (rows 0-15) 18/6      dQ   1-token  segs      5  worst |kernel|/bound 1.474e-03  fails 0  nan 0  PASS
+  G11 D10 stage-0 packed (rows 0-15) 18/6      dK   1-token  segs      5  worst |kernel|/bound 1.392e-03  fails 0  nan 0  PASS
+  G11 D10 stage-0 packed (rows 0-15) 18/6      42 segments, non-finite/unwritten O+LSE+dQ+dK+dV 0 PASS  (10.0 s); backward q-tile visits A/dense 88.9%
+  G11 D10 stage-0 packed (rows 0-15) 18/6      42 segments: A vs alone (dense kernels) -- O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.062  PASS
+  G11 D10 stage-0 packed (rows 0-15) 18/6      isolation incl. dO (2 runs): other segments' O/LSE/dK/dV mismatched elements 0, worst dQ diff/atol 0.062, changed chat's dK/dV unchanged in 0 run(s)  PASS
+  G11 repeat A x50 (D10 rows 0-7): O/LSE/dK/dV mismatched elements 0, dQ max diff 1.953e-03 vs atol 1.562e-02  PASS
+  G11 D10 rows 0-7     work (q-tile visits vs dense): B 92.5%, A 92.6% | bwd median: dense 4.1778 ms, B 4.0845 ms (97.8%), A 3.8856 ms (93.0%)
+  G11 D10 rows 752-759 work (q-tile visits vs dense): B 37.1%, A 36.1% | bwd median: dense 4.1686 ms, B 1.9679 ms (47.2%), A 1.8884 ms (45.3%)
+  G11 D10 rows 1504-1511 work (q-tile visits vs dense): B 15.1%, A 14.0% | bwd median: dense 4.1216 ms, B 1.1346 ms (27.5%), A 1.1624 ms (28.2%)
+  (timing is reported, not gated; free clocks)
+
+===== SUMMARY =====
+checks passed 95, failed 0, skipped groups 0   (76 s total)
+  KNOWN issues observed this run: 1 (kept by decision, watched in every run)
+  KNOWN G11 D8 random + pad tails 18/6 dQ chat row 1 @664 L=303: ratio 1.049 (recorded <= 1.059) -- same Vj1d bf16-P dS issue as the G6 D10 entry. 2026-10-10 DIAG (G9_diag_D8_row1_t664_h200_gpu7_1010_1932.log): worst element at chat token 2 (3 keys), D = 12.9, sum_j bf16(P_j) = 0.99902; the bf16-P model reproduces the kernel's dQ row exactly, the fp32-P models give 0.74x the floor's row error; the SAME chat alone through today's dense kernels gives the same ratio 1.049 in 50/50 runs -> not caused by packing.
+  PENDING (Step 5; design B is covered by G8 (forward) and G9 (backward)):
+    G9 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G9
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    G11 (design A backward) and packed backward on Vj1d need their own run since 2026-10-15: USE_VJ2=0
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS (known issues observed: see KNOWN above)
