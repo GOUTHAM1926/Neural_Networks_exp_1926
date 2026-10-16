@@ -1,0 +1,160 @@
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+gpu NVIDIA H200 uuid 63455deb-e023-ea06-e7a3-99b3b2bb661a | expected (not given)
+MEM layout=real_rows_0-7 fa3_varlen fwd+bwd peak extra 901 MiB
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 17) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_fwd_sm90FlashAttentionForwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmem_o_i641_0088'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 21) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_bwd_sm90FlashAttentionBackwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi641_Tenso'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+GATE layout=real_rows_0-7 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 4.11e-04 dQ 1.92e-03 dK 2.73e-03 dV 1.61e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_0-7 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.22e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.47e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_0-7 cudnn_varlen_gqa: rel O 1.64e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_0-7 cudnn_varlen_gqa fwd+bwd peak extra 2038 MiB
+  [real_rows_0-7] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1,
+BENCH layout=real_rows_0-7 impl=fa3_varlen dir=fwd med_ms=0.9943 p10_ms=0.9863 p90_ms=1.0465 tflops=563.4
+BENCH layout=real_rows_0-7 impl=fa3_varlen dir=bwd med_ms=2.9503 p10_ms=2.9204 p90_ms=3.0579 tflops=474.7
+BENCH layout=real_rows_0-7 impl=fa3_varlen_det dir=fwd med_ms=0.9454 p10_ms=0.9381 p90_ms=0.9731 tflops=592.6
+BENCH layout=real_rows_0-7 impl=fa3_varlen_det dir=bwd med_ms=3.4949 p10_ms=3.4537 p90_ms=3.6296 tflops=400.7
+BENCH layout=real_rows_0-7 impl=fa4_varlen dir=fwd med_ms=1.0880 p10_ms=1.0740 p90_ms=1.1503 tflops=514.9
+BENCH layout=real_rows_0-7 impl=fa4_varlen dir=bwd med_ms=2.8523 p10_ms=2.8389 p90_ms=2.9796 tflops=491.0
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_gqa dir=fwd med_ms=1.1724 p10_ms=1.1490 p90_ms=1.2375 tflops=477.8
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_gqa dir=bwd med_ms=3.3073 p10_ms=3.2733 p90_ms=3.4516 tflops=423.5
+BENCH layout=real_rows_0-7 impl=torch_varlen dir=fwd med_ms=1.9623 p10_ms=1.9255 p90_ms=2.0424 tflops=285.5
+BENCH layout=real_rows_0-7 impl=torch_varlen dir=bwd med_ms=6.1750 p10_ms=6.0483 p90_ms=6.3661 tflops=226.8
+BENCH layout=real_rows_0-7 impl=flex_docmask dir=fwd med_ms=1.8635 p10_ms=1.8240 p90_ms=1.9585 tflops=300.6
+BENCH layout=real_rows_0-7 impl=flex_docmask dir=bwd med_ms=4.5653 p10_ms=4.4827 p90_ms=4.7781 tflops=306.8
+AGREE layout=real_rows_0-7 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_0-7 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_0-7 torch_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_0-7 flex_docmask vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 1.562e-02
+MEM layout=real_rows_752-759 fa3_varlen fwd+bwd peak extra 903 MiB
+GATE layout=real_rows_752-759 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 4.73e-04 dQ 1.64e-03 dK 2.67e-03 dV 1.53e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_752-759 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.29e+00 dQ 1.13e+00 dK 1.36e+00 dV 1.16e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_752-759 cudnn_varlen_gqa: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_gqa fwd+bwd peak extra 1037 MiB
+  [real_rows_752-759] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = 
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=fwd med_ms=0.5303 p10_ms=0.5266 p90_ms=0.5431 tflops=400.4
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=bwd med_ms=1.5597 p10_ms=1.5559 p90_ms=1.5737 tflops=340.4
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=fwd med_ms=0.4922 p10_ms=0.4888 p90_ms=0.5002 tflops=431.4
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=bwd med_ms=1.8374 p10_ms=1.8334 p90_ms=1.8557 tflops=288.9
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=fwd med_ms=0.5949 p10_ms=0.5912 p90_ms=0.6075 tflops=356.9
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=bwd med_ms=1.5392 p10_ms=1.5355 p90_ms=1.5495 tflops=344.9
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_gqa dir=fwd med_ms=0.5693 p10_ms=0.5653 p90_ms=0.5823 tflops=373.0
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_gqa dir=bwd med_ms=1.7295 p10_ms=1.7234 p90_ms=1.7419 tflops=307.0
+BENCH layout=real_rows_752-759 impl=torch_varlen dir=fwd med_ms=0.9257 p10_ms=0.9167 p90_ms=0.9389 tflops=229.4
+BENCH layout=real_rows_752-759 impl=torch_varlen dir=bwd med_ms=3.0172 p10_ms=2.9952 p90_ms=3.0460 tflops=176.0
+BENCH layout=real_rows_752-759 impl=flex_docmask dir=fwd med_ms=0.9448 p10_ms=0.9398 p90_ms=0.9632 tflops=224.8
+BENCH layout=real_rows_752-759 impl=flex_docmask dir=bwd med_ms=2.3276 p10_ms=2.3155 p90_ms=2.3542 tflops=228.1
+AGREE layout=real_rows_752-759 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_752-759 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 1.562e-02
+AGREE layout=real_rows_752-759 flex_docmask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 1.562e-02
+MEM layout=real_rows_1504-1511 fa3_varlen fwd+bwd peak extra 976 MiB
+GATE layout=real_rows_1504-1511 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 9.06e-04 dQ 1.56e-03 dK 2.55e-03 dV 3.01e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_1504-1511 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.38e+00 dQ 1.08e+00 dK 1.26e+00 dV 1.36e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_1504-1511 cudnn_varlen_gqa: rel O 9.06e-04 dQ 6.25e-03 dK 5.10e-03 dV 6.02e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_1504-1511 cudnn_varlen_gqa fwd+bwd peak extra 1063 MiB
+  [real_rows_1504-1511] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] 
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen dir=fwd med_ms=0.3517 p10_ms=0.3491 p90_ms=0.3615 tflops=190.5
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen dir=bwd med_ms=1.2392 p10_ms=1.2353 p90_ms=1.2508 tflops=135.2
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen_det dir=fwd med_ms=0.3186 p10_ms=0.3159 p90_ms=0.3267 tflops=210.3
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen_det dir=bwd med_ms=1.3843 p10_ms=1.3777 p90_ms=1.3896 tflops=121.0
+BENCH layout=real_rows_1504-1511 impl=fa4_varlen dir=fwd med_ms=0.4344 p10_ms=0.4314 p90_ms=0.4458 tflops=154.2
+BENCH layout=real_rows_1504-1511 impl=fa4_varlen dir=bwd med_ms=1.1707 p10_ms=1.1674 p90_ms=1.1769 tflops=143.1
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_gqa dir=fwd med_ms=0.3814 p10_ms=0.3785 p90_ms=0.3924 tflops=175.6
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_gqa dir=bwd med_ms=1.1732 p10_ms=1.1702 p90_ms=1.1851 tflops=142.8
+BENCH layout=real_rows_1504-1511 impl=torch_varlen dir=fwd med_ms=0.6670 p10_ms=0.6600 p90_ms=0.6817 tflops=100.4
+BENCH layout=real_rows_1504-1511 impl=torch_varlen dir=bwd med_ms=1.9199 p10_ms=1.9055 p90_ms=1.9539 tflops=87.2
+BENCH layout=real_rows_1504-1511 impl=flex_docmask dir=fwd med_ms=0.6209 p10_ms=0.6174 p90_ms=0.6337 tflops=107.9
+BENCH layout=real_rows_1504-1511 impl=flex_docmask dir=bwd med_ms=1.5016 p10_ms=1.4903 p90_ms=1.5248 tflops=111.5
+AGREE layout=real_rows_1504-1511 fa4_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_1504-1511 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_1504-1511 torch_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 1.562e-02
+AGREE layout=real_rows_1504-1511 flex_docmask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 1.562e-02
+MEM layout=uniform_512 fa3_varlen fwd+bwd peak extra 955 MiB
+GATE layout=uniform_512 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 1.81e-03 dQ 1.80e-03 dK 2.58e-03 dV 3.03e-03 (tol 2e-02) -> PASS
+GATE layout=uniform_512 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.24e+00 dK 1.44e+00 dV 1.57e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_512 cudnn_varlen_gqa: rel O 9.06e-04 dQ 7.19e-03 dK 5.15e-03 dV 6.06e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_512 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+  [uniform_512] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1, -
+BENCH layout=uniform_512 impl=fa3_varlen dir=fwd med_ms=0.3489 p10_ms=0.3465 p90_ms=0.3596 tflops=221.6
+BENCH layout=uniform_512 impl=fa3_varlen dir=bwd med_ms=1.1727 p10_ms=1.1689 p90_ms=1.1861 tflops=164.8
+BENCH layout=uniform_512 impl=fa3_varlen_det dir=fwd med_ms=0.3171 p10_ms=0.3137 p90_ms=0.3200 tflops=243.8
+BENCH layout=uniform_512 impl=fa3_varlen_det dir=bwd med_ms=1.3159 p10_ms=1.3112 p90_ms=1.3228 tflops=146.9
+BENCH layout=uniform_512 impl=fa4_varlen dir=fwd med_ms=0.4224 p10_ms=0.4196 p90_ms=0.4349 tflops=183.0
+BENCH layout=uniform_512 impl=fa4_varlen dir=bwd med_ms=1.1046 p10_ms=1.1025 p90_ms=1.1114 tflops=175.0
+BENCH layout=uniform_512 impl=cudnn_varlen_gqa dir=fwd med_ms=0.3461 p10_ms=0.3427 p90_ms=0.3578 tflops=223.3
+BENCH layout=uniform_512 impl=cudnn_varlen_gqa dir=bwd med_ms=1.1414 p10_ms=1.1375 p90_ms=1.1546 tflops=169.3
+BENCH layout=uniform_512 impl=torch_varlen dir=fwd med_ms=0.6078 p10_ms=0.6018 p90_ms=0.6225 tflops=127.2
+BENCH layout=uniform_512 impl=torch_varlen dir=bwd med_ms=1.8621 p10_ms=1.8440 p90_ms=1.8905 tflops=103.8
+BENCH layout=uniform_512 impl=flex_docmask dir=fwd med_ms=0.5349 p10_ms=0.5323 p90_ms=0.5479 tflops=144.5
+BENCH layout=uniform_512 impl=flex_docmask dir=bwd med_ms=1.2369 p10_ms=1.2277 p90_ms=1.2591 tflops=156.3
+AGREE layout=uniform_512 fa4_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_512 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_512 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_512 flex_docmask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 1.562e-02
+MEM layout=uniform_1024 fa3_varlen fwd+bwd peak extra 913 MiB
+GATE layout=uniform_1024 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 1.81e-03 dQ 1.84e-03 dK 2.72e-03 dV 1.56e-03 (tol 2e-02) -> PASS
+GATE layout=uniform_1024 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.26e+00 dK 1.35e+00 dV 1.44e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_1024 cudnn_varlen_gqa: rel O 9.06e-04 dQ 7.35e-03 dK 5.43e-03 dV 6.25e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_1024 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+  [uniform_1024] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1, 
+BENCH layout=uniform_1024 impl=fa3_varlen dir=fwd med_ms=0.4484 p10_ms=0.4451 p90_ms=0.4592 tflops=344.8
+BENCH layout=uniform_1024 impl=fa3_varlen dir=bwd med_ms=1.3669 p10_ms=1.3630 p90_ms=1.3712 tflops=282.8
+BENCH layout=uniform_1024 impl=fa3_varlen_det dir=fwd med_ms=0.4135 p10_ms=0.4094 p90_ms=0.4171 tflops=373.9
+BENCH layout=uniform_1024 impl=fa3_varlen_det dir=bwd med_ms=1.6033 p10_ms=1.5981 p90_ms=1.6137 tflops=241.1
+BENCH layout=uniform_1024 impl=fa4_varlen dir=fwd med_ms=0.5132 p10_ms=0.5104 p90_ms=0.5271 tflops=301.3
+BENCH layout=uniform_1024 impl=fa4_varlen dir=bwd med_ms=1.3164 p10_ms=1.3126 p90_ms=1.3202 tflops=293.7
+BENCH layout=uniform_1024 impl=cudnn_varlen_gqa dir=fwd med_ms=0.4605 p10_ms=0.4564 p90_ms=0.4663 tflops=335.8
+BENCH layout=uniform_1024 impl=cudnn_varlen_gqa dir=bwd med_ms=1.4414 p10_ms=1.4345 p90_ms=1.4508 tflops=268.2
+BENCH layout=uniform_1024 impl=torch_varlen dir=fwd med_ms=0.7798 p10_ms=0.7734 p90_ms=0.7946 tflops=198.3
+BENCH layout=uniform_1024 impl=torch_varlen dir=bwd med_ms=2.4845 p10_ms=2.4606 p90_ms=2.5119 tflops=155.6
+BENCH layout=uniform_1024 impl=flex_docmask dir=fwd med_ms=0.7236 p10_ms=0.7201 p90_ms=0.7376 tflops=213.7
+BENCH layout=uniform_1024 impl=flex_docmask dir=bwd med_ms=1.7078 p10_ms=1.6956 p90_ms=1.7276 tflops=226.3
+AGREE layout=uniform_1024 fa4_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_1024 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_1024 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_1024 flex_docmask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 1.562e-02
+MEM layout=uniform_2048 fa3_varlen fwd+bwd peak extra 894 MiB
+GATE layout=uniform_2048 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 1.10e-03 dQ 1.92e-03 dK 2.73e-03 dV 7.76e-04 (tol 2e-02) -> PASS
+GATE layout=uniform_2048 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.54e+00 dQ 1.32e+00 dK 1.35e+00 dV 1.43e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_2048 cudnn_varlen_gqa: rel O 1.10e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.21e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_2048 cudnn_varlen_gqa fwd+bwd peak extra 966 MiB
+  [uniform_2048] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1, 
+BENCH layout=uniform_2048 impl=fa3_varlen dir=fwd med_ms=0.6548 p10_ms=0.6437 p90_ms=0.6840 tflops=472.3
+BENCH layout=uniform_2048 impl=fa3_varlen dir=bwd med_ms=1.8938 p10_ms=1.8837 p90_ms=1.9745 tflops=408.2
+BENCH layout=uniform_2048 impl=fa3_varlen_det dir=fwd med_ms=0.6126 p10_ms=0.6064 p90_ms=0.6400 tflops=504.8
+BENCH layout=uniform_2048 impl=fa3_varlen_det dir=bwd med_ms=2.2491 p10_ms=2.2299 p90_ms=2.3559 tflops=343.7
+BENCH layout=uniform_2048 impl=fa4_varlen dir=fwd med_ms=0.7269 p10_ms=0.7158 p90_ms=0.7654 tflops=425.4
+BENCH layout=uniform_2048 impl=fa4_varlen dir=bwd med_ms=1.8773 p10_ms=1.8684 p90_ms=1.9738 tflops=411.8
+BENCH layout=uniform_2048 impl=cudnn_varlen_gqa dir=fwd med_ms=0.7114 p10_ms=0.7004 p90_ms=0.7470 tflops=434.7
+BENCH layout=uniform_2048 impl=cudnn_varlen_gqa dir=bwd med_ms=2.1179 p10_ms=2.0980 p90_ms=2.2404 tflops=365.0
+BENCH layout=uniform_2048 impl=torch_varlen dir=fwd med_ms=1.1492 p10_ms=1.1364 p90_ms=1.2301 tflops=269.1
+BENCH layout=uniform_2048 impl=torch_varlen dir=bwd med_ms=3.7828 p10_ms=3.7151 p90_ms=4.0228 tflops=204.4
+BENCH layout=uniform_2048 impl=flex_docmask dir=fwd med_ms=1.1241 p10_ms=1.1077 p90_ms=1.2083 tflops=275.1
+BENCH layout=uniform_2048 impl=flex_docmask dir=bwd med_ms=2.7072 p10_ms=2.6624 p90_ms=2.8831 tflops=285.6
+AGREE layout=uniform_2048 fa4_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_2048 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_2048 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_2048 flex_docmask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 1.562e-02
+MEM layout=uniform_4096 fa3_varlen fwd+bwd peak extra 881 MiB
+GATE layout=uniform_4096 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 5.53e-04 dQ 1.92e-03 dK 2.73e-03 dV 8.06e-04 (tol 2e-02) -> PASS
+GATE layout=uniform_4096 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.49e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.17e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_4096 cudnn_varlen_gqa: rel O 1.11e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_4096 cudnn_varlen_gqa fwd+bwd peak extra 965 MiB
+  [uniform_4096] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1, 
+BENCH layout=uniform_4096 impl=fa3_varlen dir=fwd med_ms=1.0760 p10_ms=1.0599 p90_ms=1.1126 tflops=574.8
+BENCH layout=uniform_4096 impl=fa3_varlen dir=bwd med_ms=3.0730 p10_ms=3.0110 p90_ms=3.1482 tflops=503.1
+BENCH layout=uniform_4096 impl=fa3_varlen_det dir=fwd med_ms=1.0205 p10_ms=1.0118 p90_ms=1.0488 tflops=606.1
+BENCH layout=uniform_4096 impl=fa3_varlen_det dir=bwd med_ms=3.6857 p10_ms=3.5962 p90_ms=3.7577 tflops=419.5
+BENCH layout=uniform_4096 impl=fa4_varlen dir=fwd med_ms=1.1705 p10_ms=1.1542 p90_ms=1.2048 tflops=528.4
+BENCH layout=uniform_4096 impl=fa4_varlen dir=bwd med_ms=3.0665 p10_ms=3.0066 p90_ms=3.1293 tflops=504.2
+BENCH layout=uniform_4096 impl=cudnn_varlen_gqa dir=fwd med_ms=1.2378 p10_ms=1.2112 p90_ms=1.2912 tflops=499.7
+BENCH layout=uniform_4096 impl=cudnn_varlen_gqa dir=bwd med_ms=3.5829 p10_ms=3.4949 p90_ms=3.6766 tflops=431.5
+BENCH layout=uniform_4096 impl=torch_varlen dir=fwd med_ms=2.1182 p10_ms=2.0471 p90_ms=2.1946 tflops=292.0
+BENCH layout=uniform_4096 impl=torch_varlen dir=bwd med_ms=6.5816 p10_ms=6.4860 p90_ms=6.7856 tflops=234.9
+BENCH layout=uniform_4096 impl=flex_docmask dir=fwd med_ms=1.9828 p10_ms=1.9195 p90_ms=2.0414 tflops=311.9
+BENCH layout=uniform_4096 impl=flex_docmask dir=bwd med_ms=4.8886 p10_ms=4.7739 p90_ms=5.0581 tflops=316.3
+AGREE layout=uniform_4096 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_4096 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_4096 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_4096 flex_docmask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03

@@ -1,0 +1,27 @@
+==PROF== Connected to process 1552392 (/root/gautam_k/sft_v2/BluTrain_sft/Tensor-Implementations/tva_a)
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "void OwnTensor::cuda::gqa62::gqa_v62_sm90<(int)1>(CUtensorMap_st, CUtensorMap_st, CUtensorMap_st, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int, int, int, int, float, const int4 *, int)": 0%....50%....100% - 38 passes
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj2 (USE_VJ2=1, the default)  |  quick: no
+
+===== BENCH: ours (dense / A), fwd and bwd, interleaved =====
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=fwd med_ms=1.1061 p10_ms=1.1061 p90_ms=1.1061 tflops=192.0
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=bwd med_ms=2.9034 p10_ms=2.9034 p90_ms=2.9034 tflops=182.9
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=fwd med_ms=0.5244 p10_ms=0.5244 p90_ms=0.5244 tflops=405.0
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=bwd med_ms=1.5717 p10_ms=1.5717 p90_ms=1.5717 tflops=337.8
+  (free clocks; record nvidia-smi clocks next to it)
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (6 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (packed rows = design A only since 2026-10-15):
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    G11 on Vj1d (A's 64-key tiles) needs its own run: USE_VJ2=0 VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS
+==PROF== Disconnected from process 1552392
+==PROF== Report: /root/gautam_k/sft_v2/runs/ab_fwdf3b_1016/ncu_new_fwd_packed.ncu-rep

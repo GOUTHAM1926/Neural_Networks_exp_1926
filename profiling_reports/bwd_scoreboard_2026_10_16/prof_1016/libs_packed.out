@@ -1,0 +1,26 @@
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+gpu NVIDIA H200 uuid 63455deb-e023-ea06-e7a3-99b3b2bb661a | expected (not given)
+MEM layout=real_rows_752-759 fa3_varlen fwd+bwd peak extra 905 MiB
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 17) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_fwd_sm90FlashAttentionForwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmem_o_i641_0088'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 21) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_bwd_sm90FlashAttentionBackwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi641_Tenso'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+GATE layout=real_rows_752-759 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 4.73e-04 dQ 1.64e-03 dK 2.67e-03 dV 1.53e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_752-759 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.29e+00 dQ 1.13e+00 dK 1.36e+00 dV 1.16e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_752-759 cudnn_varlen_gqa: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_gqa fwd+bwd peak extra 1037 MiB
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=fwd med_ms=0.5316 p10_ms=0.5275 p90_ms=0.5450 tflops=399.5
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=bwd med_ms=1.5825 p10_ms=1.5700 p90_ms=1.5975 tflops=335.5
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=fwd med_ms=0.5137 p10_ms=0.5096 p90_ms=0.5309 tflops=413.4
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=bwd med_ms=1.8696 p10_ms=1.8563 p90_ms=1.8905 tflops=284.0
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=fwd med_ms=0.6013 p10_ms=0.5966 p90_ms=0.6177 tflops=353.2
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=bwd med_ms=1.5708 p10_ms=1.5589 p90_ms=1.5973 tflops=338.0
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_gqa dir=fwd med_ms=0.5903 p10_ms=0.5842 p90_ms=0.6016 tflops=359.8
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_gqa dir=bwd med_ms=1.7467 p10_ms=1.7287 p90_ms=1.7839 tflops=303.9
+AGREE layout=real_rows_752-759 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_752-759 cudnn_varlen_gqa vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+Collecting data...
+Generating '/tmp/nsys-report-b4d7.qdstrm'
+[1/1] [0%                          ] libs_packed.nsys-rep[1/1] [0%                          ] libs_packed.nsys-rep[1/1] [==============61%           ] libs_packed.nsys-rep[1/1] [===============67%          ] libs_packed.nsys-rep[1/1] [==================75%       ] libs_packed.nsys-rep[1/1] [====================83%     ] libs_packed.nsys-rep[1/1] [====================84%     ] libs_packed.nsys-rep[1/1] [====================85%     ] libs_packed.nsys-rep[1/1] [=====================86%    ] libs_packed.nsys-rep[1/1] [=====================87%    ] libs_packed.nsys-rep[1/1] [=====================88%    ] libs_packed.nsys-rep[1/1] [========================100%] libs_packed.nsys-rep[1/1] [========================100%] libs_packed.nsys-rep
+Generated:
+	/root/gautam_k/sft_v2/runs/prof_1016/libs_packed.nsys-rep

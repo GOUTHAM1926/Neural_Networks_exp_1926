@@ -1,0 +1,34 @@
+12:59:16 IST start | GPU 1 NVIDIA H200, 130 MiB | lib 2464c5b8
+12:59:24 IST nsys ours_dense exit=0 | kernels 7 lines | clock samples 74
+12:59:31 IST nsys ours_packed exit=0 | kernels 11 lines | clock samples 60
+12:59:47 IST nsys libs_dense exit=0 | kernels 26 lines | clock samples 154
+12:59:47 IST start | GPU 1 NVIDIA H200, 130 MiB | lib 2464c5b8
+12:59:55 IST nsys ours_dense exit=0 | kernels 7 lines | clock samples 69
+12:59:59 IST nsys ours_packed exit=0 | kernels 11 lines | clock samples 42
+13:00:03 IST nsys libs_packed exit=0 | kernels 39 lines | clock samples 155
+13:00:06 IST ncu ours_dense exit=0 | kernels profiled 0 | raw 2 lines
+13:00:09 IST ncu ours_packed exit=0 | kernels profiled 0 | raw 2 lines
+13:00:13 IST nsys libs_dense exit=0 | kernels 26 lines | clock samples 131
+13:00:26 IST nsys libs_packed exit=0 | kernels 39 lines | clock samples 132
+13:00:30 IST ncu ours_dense exit=0 | kernels profiled 0 | raw 2 lines
+13:00:33 IST ncu ours_packed exit=0 | kernels profiled 0 | raw 2 lines
+13:00:46 IST ncu libs_dense exit=0 | kernels profiled 2 | raw 2 lines
+13:00:54 IST ncu libs_dense exit=15 | kernels profiled 2 | raw 2 lines
+13:01:09 IST ncu libs_packed exit=15 | kernels profiled 1 | raw 3 lines
+13:01:09 IST PROF DONE
+13:01:18 IST ncu libs_packed exit=15 | kernels profiled 1 | raw 3 lines
+13:01:18 IST PROF DONE
+13:04:51 IST start | GPU 1 NVIDIA H200, 0 MiB | lib 2464c5b8
+13:05:04 IST nsys ours_dense exit=0 | kernels 7 lines | clock samples 113
+13:05:15 IST nsys ours_packed exit=0 | kernels 11 lines | clock samples 103
+13:05:36 IST nsys libs_dense exit=0 | kernels 26 lines | clock samples 203
+13:05:57 IST nsys libs_packed exit=0 | kernels 39 lines | clock samples 189
+13:06:02 IST ncu ours_dense exit=0 | kernels profiled 0 | raw 2 lines
+13:06:07 IST ncu ours_packed exit=0 | kernels profiled 0 | raw 2 lines
+13:07:01 IST ncu libs_dense exit=0 | kernels profiled 5 | raw 7 lines
+13:08:39 IST ncu libs_packed exit=0 | kernels profiled 10 | raw 12 lines
+13:08:39 IST PROF DONE
+13:44:30 IST start | GPU 1 NVIDIA H200, 0 MiB | lib 2464c5b8
+13:44:45 IST ncu ours_dense exit=0 | kernels profiled 1 | raw 3 lines
+13:45:01 IST ncu ours_packed exit=0 | kernels profiled 1 | raw 3 lines
+13:45:01 IST PROF DONE (ncu_ours)

@@ -1,0 +1,8 @@
+layout real_rows_752-759: 24 segments
+torch 2.14.1+cu130 cudnn 92400 | gpu NVIDIA H200
+RIVAL mode=packed impl=fa3 iters=2000 wall_s=4.12 per_iter_ms=2.0589
+Collecting data...
+Generating '/tmp/nsys-report-9c75.qdstrm'
+[1/1] [0%                          ] packed_fa3_r2.nsys-rep[1/1] [0%                          ] packed_fa3_r2.nsys-rep[1/1] [0%                          ] packed_fa3_r2.nsys-rep[1/1] [====27%                     ] packed_fa3_r2.nsys-rep[1/1] [==20%                       ] packed_fa3_r2.nsys-rep[1/1] [=16%                        ] packed_fa3_r2.nsys-rep[1/1] [14%                         ] packed_fa3_r2.nsys-rep[1/1] [====27%                     ] packed_fa3_r2.nsys-rep[1/1] [====28%                     ] packed_fa3_r2.nsys-rep[1/1] [=====30%                    ] packed_fa3_r2.nsys-rep[1/1] [=====31%                    ] packed_fa3_r2.nsys-rep[1/1] [=========44%                ] packed_fa3_r2.nsys-rep[1/1] [============57%             ] packed_fa3_r2.nsys-rep[1/1] [================71%         ] packed_fa3_r2.nsys-rep[1/1] [====================84%     ] packed_fa3_r2.nsys-rep[1/1] [====================85%     ] packed_fa3_r2.nsys-rep[1/1] [========================100%] packed_fa3_r2.nsys-rep[1/1] [========================100%] packed_fa3_r2.nsys-rep
+Generated:
+	/root/gautam_k/sft_v2/runs/sbfree_1016/packed_fa3_r2.nsys-rep

@@ -1,0 +1,14 @@
+06:49:55 dense start | GPU 1 NVIDIA H200, 130 MiB | lib 2464c5b8 | bench 4d667815
+06:49:58 dense_vj2_r1 exit=0 (26 BENCH lines, backward mode: Vj2 (USE_VJ2=1, the default)  )
+06:50:02 dense_vj1d_r1 exit=0 (26 BENCH lines, backward mode: Vj1d (USE_VJ2=0)  )
+06:50:31 dense_libs exit=0 (130 BENCH lines)
+06:50:34 dense_vj2_r2 exit=0 (26 BENCH lines, backward mode: Vj2 (USE_VJ2=1, the default)  )
+06:50:37 dense_vj1d_r2 exit=0 (26 BENCH lines, backward mode: Vj1d (USE_VJ2=0)  )
+06:50:37 DENSE DONE
+06:50:38 packed start | GPU 1 NVIDIA H200, 130 MiB | lib 2464c5b8 | segments 93367592
+06:50:41 packed_vj2_r1 exit=0 (28 BENCH lines) | segments same as 10-12: YES
+06:50:46 packed_vj1d_r1 exit=0 (28 BENCH lines) | segments same as 10-12: YES
+06:51:15 packed_libs exit=0 (84 BENCH lines, 14 gate PASS, 0 INVALID)
+06:51:18 packed_vj2_r2 exit=0 (28 BENCH lines) | segments same as 10-12: YES
+06:51:23 packed_vj1d_r2 exit=0 (28 BENCH lines) | segments same as 10-12: YES
+06:51:23 PACKED DONE

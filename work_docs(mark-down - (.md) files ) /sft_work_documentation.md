@@ -5543,7 +5543,7 @@ all exit 0. **Nothing of the design-A change has run on a GPU yet.**
 
 #### 45.8.1 Next GPU window: the two mandatory tests (in this order)
 
-- [ ] **Test 1 - G11 quick under Vj2** (about 5-10 min, not measured before). Checks the new Vj2 design-A backward: dQ/dK/dV
+- [x] **Test 1 - G11 quick under Vj2** (about 5-10 min, not measured before). **DONE 2026-10-16, PASS: 94/94, 12 s (2x H200 box, GPU 0).** Checks the new Vj2 design-A backward: dQ/dK/dV
   of every chat and pad tail against the fp64 reference, every chat = the same chat run alone (O/LSE/dK/dV bit for bit,
   dQ within FlashAttention's tolerance), isolation (changing one chat changes no other chat), the refusals, a repeat
   test, and a dense-vs-A backward time.
@@ -5552,7 +5552,7 @@ all exit 0. **Nothing of the design-A change has run on a GPU yet.**
   CUDA_VISIBLE_DEVICES=$GPU VARLEN_QUICK=1 VARLEN_ONLY=G11 VARLEN_STAGE0_LABELS=/home/operator/gautam_k/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin LD_LIBRARY_PATH=lib:../Profiler/lib:$LD_LIBRARY_PATH ./tva_a > ~/gautam_k/sft_v2/runs/G11_quick_vj2_A.log 2>&1; echo "exit=$?"; grep -E 'backward mode|FAIL|checks passed|ALL RUN' ~/gautam_k/sft_v2/runs/G11_quick_vj2_A.log | head -30
   ```
   Pass: `backward mode: Vj2 (default)`, `checks passed N, failed 0`, `ALL RUN CHECKS PASS`.
-- [ ] **Test 2 - the same-chats end-to-end run, packed, design A** (about 3 min). The same 500 chats as §45.5 (147
+- [x] **Test 2 - the same-chats end-to-end run, packed, design A** (about 3 min). **DONE 2026-10-16, PASS: step-0 val 1.445038 = v1 exactly, grad norm 0.7935 (GPU 1).** The same 500 chats as §45.5 (147
   packed rows, `BLU_SFT_B=1`, one optimizer step over all rows, from step 8000). The v1 side does not need a re-run: its
   code path did not change (dense machine code byte-identical), and its numbers are known.
   ```bash
@@ -5613,6 +5613,7 @@ If a test fails: stop, keep the log, do not change anything on the box; the fix 
 
 | task | source |
 | --- | --- |
+| [ ] **Deterministic dQ for Vj2** (dense and packed; decided 2026-10-16: not now, only if bit-identical runs are needed). Today O/LSE (v62) and dK/dV (Vj2: one writer per query head + fixed-order head sum) are bit-identical run to run; only dQ varies (atomic adds of up to 32 key blocks per dQ tile; max 4.9e-4 vs FA's tolerance 1.6e-2 in the 10-16 repeat test). Plan: ordered adds, one counter per dQ tile, fixed order = highest key tile first (the order the blocks reach a tile anyway in our LPT sections, so little waiting expected), done by the writer warp; a switch like `USE_DETERMINISTIC_DQ`. The other two ways cost more: v44's per-block dQ copies + fixed-order sum (up to 32 copies of dQ), or a separate dQ pass (about 7 GEMMs per step instead of 5). Reference cost: FA3's deterministic mode = 1.22x FA3's backward time on 10-16, but it also has to order dK/dV, because FA3's normal GQA backward adds dK/dV with atomicAdd into fp32 buffers (`hopper/epilogue_bwd.hpp:323, 458-491, 480`; `flash_bwd_launch_template.h:92-94, 138-153`, FlashAttention 94e22c9) | chat 2026-10-16, §45.12 |
 | [ ] Split over-long chats like TRL `bfd_split` instead of dropping them (10 of 5,010 on stage-0), with the drop-vs-split ablation | §45.4, packing doc §7.7 |
 | [ ] DFT and focal loss vs plain cross-entropy (a change to the loss op only) | memory "DFT + focal loss" (10-06) |
 | [ ] The remaining SFT Q&A questions: Q4, Q5, Q6, Q11 (logits only at trained positions: a gather + an lm_head GEMM with irregular M; BluBLAS gives wrong numbers silently for a transposed operand when M/N is not a multiple of 64, so that needs a guard first), Q12, Q13 | §38, memory "SFT plan = the 13 Q&A questions" |
@@ -5766,3 +5767,698 @@ real block sizes and the numbers. The 10-15 EOD stays as it was sent (the user d
 (2) the same with the chat start moved off a block edge, to see the shared block appear for every query block;
 (3) a tiny-chat row, to see why segstart wins there; (4) only then the real sizes, the tables above and §45.9;
 (5) then the GPU tests of §45.8.1 when a GPU is free.
+
+### 45.11 2026-10-16: design A (seqlens) proven on the GPU (2x H200 box)
+
+**Where:** the 2-node box was busy, so the work moved to a 2x H200 box (`root@86.38.238.80`, Ubuntu 24.04, CUDA 13.0).
+Set up: Open MPI 4.1.6 installed (`openmpi-bin libopenmpi-dev zlib1g-dev`; the same apt line upgraded the box's NCCL
+2.28.9 -> 2.32.3); the laptop's public key added to the box's `authorized_keys`; the laptop master copied with rsync
+(252 MB code incl. git history, the laptop's sm_86 build left out; 132 MB SFT data), no clone and no push; the step-8000
+checkpoint downloaded from HF `navingv/curriculum_8btokens` with curl (`metadata.bin` 129,127 B md5 5119b20d,
+`data_rank_0.bin` 6,469,415,424 B). Build from scratch about 10 min: library, trainer and `tva_a` all exit 0, the 3
+checked files have the laptop's md5 (7667deec / 83c88d41 / 204587bd).
+
+**Test 1, `test_varlen_attention` G11 quick under Vj2 (GPU 0): 94 of 94 checks, 0 failed, 12 s.** Design A's
+backward on Vj2 matches the fp64 reference on every layout; every segment equals the same segment run alone (O, LSE,
+dK, dV bit for bit, dQ within FlashAttention's tolerance); isolation holds. (The 10-15 Vj1d run had 95 checks: the
+"plan + seg_start" refusal no longer exists.) Repeat x50 on real rows 0-7: O/LSE/dK/dV mismatched elements 0, dQ max
+difference 4.883e-4 against the tolerance 1.562e-2. Backward time, same run (8 rows x 4096, 18/6 heads, free clocks):
+
+| real rows | work vs dense (64-key tile visits) | dense backward | design A backward | A time vs dense |
+| --- | --- | --- | --- | --- |
+| 0-7 (longest chats) | 92.6% | 3.0556 ms | 2.9010 ms | 94.9% |
+| 752-759 (middle) | 36.1% | 2.8978 ms | 1.4740 ms | 50.9% |
+| 1504-1511 (shortest) | 14.0% | 2.9389 ms | 1.0225 ms | 34.8% |
+
+On 2026-10-12 (another box and GPU, so only a rough comparison) Vj1d's design A took 3.895 / 1.898 / 1.162 ms on the
+same rows (§40.12), so Vj2's design A is about 26% / 22% / 12% faster than Vj1d's. The time falls more slowly than the
+work (middle rows 36% of the work, 51% of the time): fixed costs per block and the partly filled last blocks; this is
+the packed-speed item of §45.8.4.
+
+**Test 2, the same-chats end-to-end run, packed, design A (GPU 1):** the same 500 chats as §45.5 as 147 packed rows,
+B = 1, one optimizer step over all rows, from step 8000:
+
+| | v1 (500 rows, 10-15) | packed, design B (10-15) | **packed, design A (10-16)** |
+| --- | --- | --- | --- |
+| step 0 val loss | 1.445038 | 1.445084 | **1.445038** |
+| step 0 grad norm | 0.7935 | 0.7935 | **0.7935** (groups 0.7929 / 0.0321) |
+| step 0 time | 53.6 s | 21.2 s | 13.6 s (another box; 44,396 tok/s, mfu 49.4%) |
+
+With design A the step-0 loss equals v1's to all 7 printed digits, where design B differed in the 5th: A computes each
+chat's attention with the same blocks, in the same order, as the chat's own v1 row (each chat starts its own blocks at
+its first token, like the v1 row starts at token 0), so the numbers are the same; B cut the blocks on the row grid,
+which changes the rounding a little. The process exited by itself after "Training complete" (exit 0).
+
+Steps 1 and 2 of the same runs:
+
+| | v1 (500 rows) | packed, design B | packed, design A |
+| --- | --- | --- | --- |
+| step 1 train loss / grad norm | 1.423608 / 0.6496 | 1.423671 / 0.6502 | 1.423602 / 0.6498 |
+| val loss after step 2 | 1.381130 | 1.381213 | 1.381214 |
+| time per step (steps 0 / 1 / 2) | 53.6 / 49.0 / 43.9 s | 21.2 / 18.3 / 13.3 s | 13.6 / 13.0 / 12.9 s (other box) |
+
+Why step 0 is exact and steps 1-2 are only close: step 0's loss is a forward pass on the starting weights, and every
+token's forward numbers are the same in v1 and design A. From step 1 on, the weights have been updated with a gradient
+that is summed differently: v1 adds up 500 micro-batches of 1 row, the packed runs 147 micro-batches, and each weight
+gradient (inputs x output gradients) sums over the tokens of a micro-batch, so the fp32 roundings of those sums differ
+(and dQ is summed with atomics, in a run-to-run order). So after an update the losses differ in the 5th-6th digit.
+Design A and design B give the same val loss after step 2 (1.381214 vs 1.381213) because they share that micro-batch
+structure, while v1 differs by 0.006%: the difference comes from how the gradient is grouped, not from the attention
+design. Logs on the laptop: `profiling_reports/sft_seqlens_gpu_tests_2026_10_16/` (G11 log, run.log, sft_adamw.csv).
+
+**Result: the packed SFT pipeline with design A is proven on the GPU.** Logs on the box: `~/gautam_k/sft_v2/runs/`
+(`G11_quick_vj2_A.log`, `e2e_packed_A/run.log`).
+
+### 45.12 2026-10-16: scoreboard on the 2x H200 box, backward first (dense and packed), Vj1d added as a rival
+
+**Decision (user, 10-16):** optimise the attention kernels of the finished SFT pipeline, backward (Vj2) first, dense
+("normal") and packed (per-chat mask), then the forward (v62). Rivals: our old Vj1d, FA3 (+ deterministic), FA4, cuDNN,
+FA2, Flex (packed); xFormers to be added. The learning session of §45.10 is moved to later.
+
+**Setup:** the rivals' environment was copied from the old box to the same paths (`/home/operator/envv`: torch 2.14.1+cu130,
+cuDNN 9.24; `/home/operator/gautam_k/benv`: FA3 built from FlashAttention `94e22c9`, FA4 from the same commit; Python
+3.12.3 on both boxes; 6.2 GB, about 11 min). Scripts `sb_dense.sh` / `sb_packed.sh` (records
+`profiling_reports/bwd_scoreboard_2026_10_16/`), GPU 1 (GPU 0 was a colleague's training run), free clocks, 12:19-12:21 IST (the 2x H200 box's own clock is UTC,
+5:30 behind; all times in these notes are IST).
+Ours ran twice, before and after the libraries; the two rounds differ by 0.98% (median), 3.9% (max). All exits 0; the
+packed row sets are identical to 10-12; 14 of 14 correctness gates pass, the packed libraries agree with FA3 to bf16
+noise. Full tables: `tables_1016.md` (made by `tables.py`).
+
+**Backward, time ratio ours Vj2 / rival (below 1 = ours faster), mean over the shapes (ours faster on):**
+
+| | Vj1d | FA3 | FA3 det | FA4 | cuDNN | FA2 | Flex |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| dense, 13 shapes | 0.687 (13/13) | 0.986 (7/13) | 0.805 (13/13) | 0.975 (6/13) | 0.785 (13/13) | 0.444 (13/13) | - |
+| packed (seqlens), 7 row sets | 0.783 (7/7) | 0.939 (6/7) | 0.805 (7/7) | 0.967 (4/7) | 0.878 (7/7) | 0.504 (7/7) | 0.694 (7/7) |
+
+Our model's shapes: dense B8 18/6 backward 3.072 ms vs FA3 3.073, FA4 3.042, cuDNN 3.632; packed typical rows
+(`real_rows_752`) 1.511 ms vs FA3 varlen 1.560, FA4 1.539, cuDNN 1.730, Vj1d 1.983. Where we lose: dense B4 24/8 (1.096x
+FA3), B8 32/8 (1.031x FA3, 1.041x FA4); packed long chats (uniform_4096 1.019x FA3, real_rows_0-7 1.018x FA4).
+
+**Forward (v62, unchanged), same runs:** dense 1.135x FA3 (B8 18/6 1.233x), 1.034x FA4, 0.984x cuDNN; packed 1.059x FA3
+varlen, 0.932x FA4, 0.975x cuDNN. The forward is the bigger gap (the known G1/G5/G6 items).
+
+**Two things to check next:** (1) the 10-14 profiler had our backward main kernel 3.0% faster than FA3's (fixed clocks), but at
+free clocks the whole call is equal at B8 18/6: either the helper kernels or the 700 W power cap (a faster kernel draws
+more power and the clock drops) eats it; to measure with per-kernel times plus clock and power. (2) The same forward kernel
+measured 5% slower in the Vj2 runs than in the Vj1d runs (mean 1.050): the forward is timed right after the backward, so
+the faster, more power-hungry Vj2 backward lowers the clock for the next forward; forward speed work must time the forward
+on its own.
+
+**Box rule seen 10-16:** the box now has a GPU-sharing board (`/root/gpu_board/gpuboard status | claim <gpu> --note .. |
+release <gpu>`, rules `/root/gpu_board/PROTOCOL.md`): claim before every run, never start on a refused claim, never kill
+others' processes.
+
+### 45.13 2026-10-16: the backward profiled kernel by kernel (ours vs FA3 / FA4 / cuDNN), and fix 1 (the causal mask ran on every step)
+
+**What ran:** `prof_bwd.sh` (records `profiling_reports/bwd_scoreboard_2026_10_16/`, data in `prof_1016/`), GPU 1, 13:04-13:08 IST,
+plus our two ncu steps again at 13:44-13:45 IST. Part A: nsys (`--trace=cuda`) at free clocks, with an nvidia-smi clock/power
+log every 100 ms. Part B: ncu `--set full` (ncu locks the clock at 1.36 GHz). Shapes: our model, dense B8 18/6 T4096, and
+packed typical rows `real_rows_752` (seqlens plan). Analysis scripts in the same folder: `bwd_breakdown.py` (one backward
+call kernel by kernel), `pipe_mix.py` (instructions per pipe), `sass_mix.py` (instructions per SASS opcode), `seq_names.py`.
+
+Three run problems, all fixed: (1) an output paste into the box shell started a second copy at 12:59 IST; both were killed,
+the clean run at 13:04 IST overwrote every file. (2) Our ncu steps first profiled nothing: the filter was
+`gqa_bwd_vj2_kernel<false>`, but ncu writes the template flag as `gqa_bwd_vj2_kernel<(bool)0>`; filter fixed to
+`<.bool.0>` / `<.bool.1>`, and `prof_bwd.sh <gpu> ncu_ours` reruns only those two steps. (3) The library dense run also timed
+FA3-deterministic and PyTorch's flash path (FA2): `BENCH_ONLY` keeps names by prefix, and `fa3` also keeps `fa3_det`.
+Harmless: the kernels are told apart by name. Pulling: only the CSVs are needed (the `.sqlite`, `.nsys-rep`, `.ncu-rep` files
+and the libraries' per-instruction CSVs stay on the box: `rsync --exclude`), the link to the box is slow (~500 KB/min).
+
+**1. One backward call, kernel by kernel (nsys, free clocks, median over the steady calls, first 10 calls skipped, µs).**
+"Helpers" = every kernel of the call except the main one; "gaps" = idle time between them.
+
+| dense B8 18/6 | whole call | main kernel | helpers | gaps | what the helpers are |
+| --- | --- | --- | --- | --- | --- |
+| ours (Vj2) | 3007 | 2633 | 369 | 5 | prep 157 (D = rowsum(dO*O), LSE copy, dQ zero), dQ convert 105, dK + dV head sums 107 |
+| FA3 | 2933 | 2551 | 374 | 8 | zero-fills 45, prep 150, dQ convert 105, dK + dV converts 75 |
+| FA3 deterministic | 3592 | 3206 | 375 | 11 | same as FA3 |
+| FA4 | 2905 | 2524 | 379 | 3 | zero-fills 45, prep 152, dQ + dK + dV post 182 |
+| cuDNN | 3308 | 2903 | 366 | 39 | prep 150, dQ convert 117, dK + dV head sums 99 |
+| FA2 (PyTorch flash) | 6517 | 5483 | 1027 | 7 | K/V repeated per query head 431, prep 156, dQ convert 144, dK/dV head sums 296 |
+
+| packed real_rows_752 | whole call | main kernel | helpers | gaps | what the helpers are |
+| --- | --- | --- | --- | --- | --- |
+| ours (Vj2, plan A) | 1495 | 1103 | 387 | 5 | prep 174, dQ convert 106, dK + dV head sums 107 |
+| FA3 varlen | 1495 | 1101 | 386 | 8 | zero-fills 50, prep 154, dQ convert 106, dK + dV converts 76 |
+| FA3 varlen deterministic | 1790 | 1393 | 387 | 10 | same |
+| FA4 varlen | 1484 | 1085 | 394 | 4 | zero-fills 49, prep 156, post 189 |
+| cuDNN varlen | 1583 | 1174 | 392 | 16 | prep 156, dQ convert 116, dK + dV head sums 117 |
+
+**Answer to question (1) of §45.12:** the helper kernels are NOT the problem (ours 369-387 µs, the others 366-394 µs).
+The whole difference is in the main kernel.
+
+**2. At the same clock our main kernel is the fastest (ncu, clock locked at 1.36 GHz):**
+
+| | ours | FA3 | FA4 | cuDNN | FA3 det |
+| --- | --- | --- | --- | --- | --- |
+| dense: cycles (millions) | **4.14** | 4.25 | 4.29 | 4.93 | 5.18 |
+| dense: instructions issued (millions, warp level) | 705 | 626 | **555** | 809 | 634 |
+| packed: cycles (millions) | **1.73** | 1.87 | 1.88 | 2.05 | 2.31 |
+| packed: instructions issued (millions) | 275 | 248 | **225** | 358 | 253 |
+
+All use 168 registers per thread at launch and about 199-216 KB of shared memory per block; ours, FA3 and FA4 use the same
+grid (4608 blocks dense: 32 key tiles x 18 heads x 8; cuDNN is persistent, 132 blocks).
+
+**3. At free clocks we lose the lead, because our kernel runs at a lower clock.** Main kernel, steady state: dense ours 2633 µs
+vs FA3 2551, FA4 2524; packed ours 1103 vs FA3 1101, FA4 1085. Over one run our main kernel took 2393-2404 µs for the
+first ~12 calls and then stepped up to ~2630 µs (the clock dropped); FA3 / FA4 ran 2460 → ~2530-2560 µs. Cycles (ncu) divided
+by free-clock time gives the clock each kernel ran at, roughly: ours ~1575 MHz, FA3 ~1665, FA4 ~1700, cuDNN ~1700 (dense);
+packed ours ~1570, FA3 ~1695, FA4 ~1730. This is an estimate: the memory part of a kernel does not scale with the SM clock,
+so cycles at 1.36 GHz are not exactly cycles at 1.7 GHz; all four kernels have a similar memory profile (DRAM 7-10% of
+peak, L2 hit 90-92% dense), so the comparison holds. The nvidia-smi log could not show it: our runs last under one second
+(only 2 busy samples), and the power reading is an average over a window (H200: about 4 s, see the 4 s power-window rule).
+**Why the clock is lower:** we execute more instructions (705M vs 626M / 555M). Every instruction costs energy; under the
+700 W power cap more energy per second means a lower clock. **Answer to question (1) of §45.12: it is the power cap.**
+
+**4. Where our extra instructions are (dense; pipe = the unit that executes them; work relative to ours = 1.00):**
+
+| pipe | what runs there | ours % of peak | FA3 | FA4 | cuDNN |
+| --- | --- | --- | --- | --- | --- |
+| alu | compare, select, logic (ISETP, FSEL, LOP3) | 15.3% | 0.83 | 0.78 | 1.36 |
+| fma | float multiply / add, integer multiply-add (FMUL, FFMA, FADD, IMAD) | 7.7% | 0.78 | 0.77 | 1.75 |
+| uniform | one value per warp: addresses, loop counters, tensor-core descriptors | 12.0% | 0.86 | 0.89 | 0.50 |
+| xu | exp (MUFU.EX2) | 14.5% | 0.98 | 0.98 | 0.98 |
+| lsu | shared-memory loads / stores | 7.6% | 0.98 | 1.00 | 1.10 |
+| tensor (gmma) | the matrix multiplies | 7.1% | 1.00 | 1.00 | 0.88 |
+
+So the exp, the loads and the matrix multiplies are the same for everyone; we do 20-28% more ALU work, 28-30% more FMA work
+(packed: 37%) and 12-16% more uniform work. Per SASS opcode (ours, dense, 720.7M executed): UMOV 89.1M, UIADD3 74.2M,
+FMUL 41.3M, F2FP (fp32 → bf16 pack) 41.3M, FFMA 38.9M, MUFU.EX2 38.9M, **FSEL 38.9M**, FADD 38.9M, LOP3 37.3M,
+HGMMA 64x64 29.2M, ULOP3 29.0M, ISETP.GT 21.9M, IMAD.MOV 19.6M.
+
+**FSEL = 38.9M = exactly one per exp.** FSEL is the select that zeroes P where key > query (the causal mask). The mask is
+only needed on the first two query steps of each key block (the steps that hold the diagonal), but it ran on every step.
+The source (`GQA_bwd_vj2_sm90.cu`, step loop) tested `if (diag)` inside the unrolled per-element loop; ptxas turned that
+into predicated code (the compare result `P0` from the uniform flag `UP0` decides the outcome, but the instructions run
+anyway): per element the key/query index math (LOP3, VIADD, IMAD.SHL), the compare (ISETP.GT) and the select (FSEL), on
+every step. In the hot loop (545 instructions per warp per step, each executed 1,216,512 times = 4608 blocks x 8 compute
+warps x 33 steps on average) the mask instructions are part of the 545.
+
+**5. Fix 1 (laptop, 2026-10-16): the mask is its own block after the exp loop, behind one branch.**
+
+    for (nt, e) S_[4nt+e] = exp2(S * scale2 - LSE2);            // every step, no mask code
+    if (diag) for (nt, e) { key = ...; qry = ...; if (key > qry) S_[4nt+e] = 0; }   // only the 2 diagonal steps
+
+`diag = (q0 < k0 + BN)` is the same as `i < 2` (q0 = (2kt + i)·64, k0 + BN = (2kt + 2)·64), in dense and packed mode (packed
+indices are segment-relative). The values and their order are unchanged, so O / dK / dV should be bit-identical (dQ is
+summed with atomic bulk adds, so its last bits can differ from run to run, as before).
+Checked on the laptop (nvcc 13.0, `-gencode arch=compute_90a,code=sm_90a`, 2 s per build):
+* SASS: `@P0 BRA` jumps over a block of 73 instructions (32 FSEL, 18 ISETP, 2 LOP3, 21 others) on the unmasked steps;
+  168 registers, 0 bytes spilled (same as before); the other five backward kernels (prep, prep_chats, both dQ converts,
+  head sum) are SASS-identical to before.
+* Expected: 73 instructions x 1,142,784 unmasked warp-steps = **about 83M fewer, 705M → ~622M (FA3: 626M)**.
+* First attempt (dropped): FA3's way, two loops (masked steps first, then unmasked) with their own copy of the step. ptxas
+  spilled 32 registers (128 B) in the unmasked copy: it stored half of the dK accumulator to local memory and loaded it back
+  on every step (with `#pragma unroll 1` too). The one-loop version keeps the old register layout.
+* Source md5 1b76873c (was 7667deec). Box: old library kept as `~/gautam_k/libs/vj2_old/libtensor.so` (2464c5b8), new as
+  `~/gautam_k/libs/vj2_maskblk/libtensor.so` (3b998bb6).
+
+**Test (`profiling_reports/bwd_opt_2026_10_16/ab_mask_1016.sh`, GPU 1, started after 14:00 IST):** (1) the quick suite on the
+new library (G2 dense, G3-G6, G10/G11 packed, G7); (2) a same-session race old vs new library, 12 rounds, the order
+alternating (old-new, new-old, ...), dense B8 18/6 and packed `real_rows_752`, 1000 iterations per run (at least 4 s of GPU
+work, so the clock settles under the power cap as in training); (3) ncu of the new main kernels. The script checks with `ldd`
+that the test binary really loads the library of the folder it is pointed at (else the race compares a library with
+itself), and stops if the quick suite fails.
+
+**Result of run 1 (GPU 1, 14:06-14:13 IST, data `bwd_opt_2026_10_16/ab_mask_1016/`):**
+* Quick suite on the new library: 296 checks passed, 0 failed (71 s).
+* Instructions really dropped (ncu): dense 705M → 617M (-12.5%; FA3 626M), packed 275M → 240M (-12.7%; FA3 248M).
+* But cycles at the locked clock did not drop: dense 4.144M → 4.158M (+0.3%), packed 1.730M → 1.754M (+1.4%). "Issue
+  active" fell 12.8%, and the waiting grew by the same amount (stall per instruction: wait +56%, barrier +57%, gmma +9%).
+  So the kernel is not limited by issuing instructions: the removed ones were sitting in time the warps spent waiting
+  anyway (on the tensor cores, the barriers and the loads).
+* Race, new vs old, per round (12 rounds, 1000 iterations per run, free clocks):
+
+| | mean | new faster in | t | verdict |
+| --- | --- | --- | --- | --- |
+| dense backward | -0.08% | 7/12 | -1.2 | no change |
+| packed backward | **+0.58%** | **0/12** | +7.8 | **slower in every round** |
+| dense forward (same kernel in both libraries) | -0.40% | 12/12 | -7.1 | faster |
+| packed forward (same kernel in both libraries) | -0.34% | 11/12 | -4.3 | faster |
+
+* Why packed got slower: on the 2 diagonal steps the mask used to be mixed in between the 32 exps (it hid in their
+  latency); now it runs after them, so those steps take longer. Dense rows have about 6% diagonal steps (2 of ~33 per key
+  block); packed rows have many short chats, so about 30-40% of their steps are diagonal (a 512-token chat: 8 of 20 steps).
+* The forwards ran faster although their kernel is the same: they are timed right after the backward, and the new backward
+  issues 12.5% fewer instructions (less power), so the next forward gets a slightly higher clock. This is the only sign of
+  the power effect; the backward itself did not get faster, so the "more instructions → lower clock" explanation of point 3
+  is not proven by this run (the same as the GEMM work: instruction cuts converted at zero).
+* Decision: not kept as it is (packed is the SFT path).
+
+**Fix 1, version 3 (laptop, source md5 cc3a6125):** two copies of the exp loop behind one branch: the diagonal steps run
+the original interleaved exp + mask code, all other steps run the plain exp (32 FFMA + 32 EX2, no mask code). Local SASS:
+168 registers, 0 spills; the plain copy is 65 instructions; FSEL only in the masked copy. Expected: the instruction cut of
+run 1 on the non-diagonal steps, and the diagonal steps as before (not certain: in the old code the compiler could also mix
+the mask with the code around it; the branch now stops that). Test: the same script, `ab_mask_1016.sh <gpu> vj2_maskv3
+ab_maskv3_1016` (old library vs version 3). Kept only if the quick suite passes and neither dense nor packed is slower.
+
+**Next candidates after fix 1 (not started):** (a) UMOV + UIADD3 = 163M (23% of our instructions): building the tensor-core
+descriptors and addresses per HGMMA; to compare with FA3 / FA4 we need their per-instruction CSVs
+(`ncu_libs_dense.source.csv`, `ncu_libs_packed.source.csv`, left on the box). (b) FA4 does the same work in 555M
+instructions: find what it skips. (c) After each cut, check the clock again: fewer instructions should raise the free clock.
+
+**Result of run 2, version 3 (GPU 1, 14:19-14:26 IST, data `bwd_opt_2026_10_16/ab_maskv3_1016/`, stats by `race_stats.py`):**
+quick suite 296 passed, 0 failed. Instructions: dense 705M → 618M (-12.4%), packed 275M → 240M (-12.6%). Cycles at the
+locked clock: dense +0.5%, packed +1.1%.
+
+| new vs old, per round (12 rounds) | run 1 (mask block after the exps) | run 2 (version 3, two exp copies) |
+| --- | --- | --- |
+| dense backward | -0.08% (7/12 faster, t -1.2) | +0.11% (3/12 faster, t +1.8) |
+| packed backward | +0.58% (0/12, t +7.8) | +0.22% (1/12, t +4.8) |
+| dense forward (same kernel) | -0.40% (12/12) | -0.30% (11/12) |
+| packed forward (same kernel) | -0.34% (11/12) | -0.62% (12/12) |
+
+What this shows:
+* Even with the diagonal steps running the original code (version 3), the backward does not get faster; the other steps
+  lose 12% of their instructions and the cycles stay the same (+0.5%). The two compute warpgroups then wait longer for
+  each other at the named barriers (run 1: barrier stall per instruction +57%, so total barrier waiting about +37%). The
+  backward is limited by its chain of tensor-core GEMMs, loads and barriers, not by issuing instructions.
+* Per forward + backward pair (as in training, where the two alternate), version 3 is a wash: dense backward +3.4 µs vs
+  forward -3.7 µs; packed backward +3.4 µs vs forward -3.6 µs. The forward gain is a power effect (fewer instructions in the
+  backward leave more power for the next kernel); in training the next kernel after the attention backward is a GEMM, so
+  the same effect would go to it, but that is not measured.
+* So the clock explanation of point 3 ("we lose at free clocks because we execute more instructions") is NOT confirmed: with
+  fewer instructions than FA3 our backward is still not faster at free clocks. Second explanation, not yet tested: our kernel
+  spends more of its time waiting on memory (long_scoreboard 1.68 stall cycles per instruction); that waiting is fixed in
+  nanoseconds, so it does not shrink when the clock goes up, and a kernel that is fastest at 1.36 GHz can lose at ~1.7 GHz
+  without drawing more power. Test to tell the two apart: ours vs FA3 under ncu with `--clock-control none` (cycles at the real
+  clock), or each one in a 5 s loop with an nvidia-smi log (clock and power per contender).
+
+**Decision (user, 2026-10-16 ~14:40 IST):** keep version 3 of the backward fix (fewer instructions, neutral over a forward +
+backward pair; box library `f3557691`); the backward is at FA3's level, move to the forward now, come back to the backward
+later to beat the others.
+
+### 45.14 2026-10-16: the forward (v62) — where the gap is, and the plan G1 → F1 → G5 → G6
+
+**Kernel against kernel (nsys, 10-16 traces, free clocks):** dense B8 18/6 ours 1,202 µs vs FA3 874, FA4 967, cuDNN 1,035;
+packed `real_rows_752` ours 554 µs vs FA3 432, FA4 491, cuDNN 457. (The scoreboard's 1.233x FA3 includes the libraries'
+Python launch overhead; kernel against kernel it is 1.38x dense, 1.28x packed. These forwards were timed right after a
+backward, so the clock is not the forward's own.)
+
+**Same clock (ncu 10-13, records `v2_bwd_rework_research_2026_10_12/gpu_runs/g2_1013/ncu_g2_fwd.*` for ours after G2 and
+`prof_1013/ncu_libs_fwd.*` for the libraries), dense B8 18/6:**
+
+| | ours v62 | FA3 | FA4 | cuDNN |
+| --- | --- | --- | --- | --- |
+| time at the locked clock | 1,084 µs | 877 | 952 | 1,009 |
+| instructions | 349M | 307M | 316M | 369M |
+| tensor cores busy | **64.1%** | **82.9%** | 74.4% | 67.9% |
+| SMs busy (10-13 table) | 95.7% | 99.6% | 99.0% | 96.5% |
+
+Unlike the backward, the forward's gap is real kernel work at the same clock.
+
+**A misleading number, corrected:** averaged over all warps, our forward shows 2.75 "long scoreboard" stall cycles per
+instruction vs FA3's 0.30, and 33% of our stall samples sit on mbarrier wait lines. The barrier addresses
+(`0x38018 + 8·stage` = `empty[stage]`, `0x38040/48` = `qempty[0/1]`) show these are the LOADER warps waiting for a free
+buffer: our loader warpgroup runs its loop in all 4 warps and they idle there, which costs no compute time (FA3 lets 3 of
+its 4 loader warps exit). Restricted to the compute warps' code, the stall mix of ours and FA3 is similar (wait 32% vs 26%,
+barrier 16% vs 12%, long scoreboard 3.9% vs 3.8%).
+
+**The real difference: the order of the steps in the loop** (ours `GQA_fwd_sm90.cu:527-622`, FA3
+`hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp:1170-1207`, IntraWGOverlap):
+
+    OURS  (per key tile n, one compute group)        FA3  (per key tile n, one compute group)
+    1. wait: QK(n) finished                          1. start QK(n) and P.V(n-1) on the tensor cores
+    2. softmax(n): this group has NOTHING on         2. wait: QK(n) finished
+       the tensor cores                              3. softmax(n), while P.V(n-1) is STILL RUNNING
+    3. start P.V(n), then QK(n+1)                    4. wait: P.V(n-1) finished; rescale O
+    4. wait: P.V(n) finished (QK(n+1) still runs)
+
+Both use ping-pong between the two compute groups, and both start a GEMM early, but ours overlaps only QK(n+1) with the
+wait for P.V(n) (a short window), while FA3 overlaps the whole softmax with P.V(n-1). Our earlier statement "our forward
+already has FA3's structure" (from reading only the file's header comments) was too quick.
+
+**Plan (one change at a time; each: local build + SASS / spill check, then one ~10 min GPU run = quick suite + 12-round race
+against the current library + ncu):**
+1. **G1:** P.V as 8 full-width `m64n128k16` per key tile instead of 16 half-width `m64n64k16` (FA3/FA4/cuDNN all use the full
+   width; the same change in the backward on 10-13 was bit-identical). The tile does NOT change (64 queries x 128 keys per
+   group, 128 x 128 per block, as FA3): only the instruction. Half as many P.V instructions, and the P fragments are read once.
+2. **F1:** FA3's loop order (softmax(n) during P.V(n-1)); about 32 more registers per thread during the softmax (P(n-1)
+   must stay live while its GEMM runs); FA3 fits it in 240 registers per thread, ours has 232: check spills first.
+3. **G5:** the tail: 2,304 equal units over 132 SMs = 17.45 rounds, the last round 45% full; heaviest first (FA3: LPT).
+4. **G6:** the output through shared memory + TMA store.
+
+**G1 done on the laptop (`GQA_fwd_sm90.cu` md5 86da0e1f, was eff8cdb6):** new `wgmma_pv128_x8` (8 x
+`m64n128k16`, A = P from registers, trans-b = 1) and `make_pv_desc` (the V tile's SW128 descriptor with LBO = 16,384 B, the
+distance between its two head-half blocks of [128 keys][64]; the backward's `desc_lbo` uses 8,192 B because its tiles hold 64
+rows). The m64n128 accumulator layout equals the two old halves side by side (o[0..31] = head cols 0-63, o[32..63] = 64-127),
+so the softmax rescale and the epilogue are unchanged. Local SASS (dense and packed kernels): P.V = 8
+`HGMMA.64x128x16 ... R152 (P from registers), gdesc.tnspB` per key tile (was 16 `HGMMA.64x64x16`), 168 registers, 0 spills,
+WARPGROUP.ARRIVE / DEPBAR 3 / 3 as before (no per-wgmma sync), R2UR 81 → 65.
+Test: `ab_mask_1016.sh <gpu> vj2_fwdg1 ab_fwdg1_1016 vj2_maskv3` (old = the current library with backward version 3).
+
+**G1 result (GPU 1, 14:49-14:56 IST, data `bwd_opt_2026_10_16/ab_fwdg1_1016/`; old = library f3557691 (backward version 3),
+new = adce5abb (+ forward G1)):** quick suite 296 passed, 0 failed.
+
+| G1 vs current, per round (12 rounds) | mean | new faster in | t |
+| --- | --- | --- | --- |
+| **dense forward** (B8 18/6) | **-3.34%** (1.2398 → 1.1972 ms) | **12/12** | -61.8 |
+| **packed forward** (real_rows_752) | **-3.22%** (0.5750 → 0.5564 ms) | **12/12** | -46.4 |
+| dense backward (kernel unchanged) | +0.19% | 1/12 | +3.0 |
+| packed backward (kernel unchanged) | +0.10% | 5/12 | +2.0 |
+
+ncu dense forward (vs the 10-13 profile after G2): cycles 1.916M → 1.840M (-4.0%), instructions 349M → 326M, tensor
+cores busy 64.1% → 66.6%. The unchanged backward got slightly slower: the same power effect as in §45.13 in reverse (the
+forward is timed before the backward; a faster forward leaves the next kernel a little less power). Per forward + backward
+pair: dense -41 + 6 = -35 µs, packed -18.6 + 0.1 = -18.5 µs. **Kept.** Box library with G1: `~/gautam_k/libs/vj2_fwdg1`
+(adce5abb), also the box's `lib/libtensor.so`. Next: F1 (FA3's loop order).
+
+**F1 on the laptop (`GQA_fwd_sm90.cu` md5 79093fe2, was 86da0e1f = G1):** the consumer loop in FA3's order. Per key tile
+n >= 1: wait for tile n's K/V; baton; start QK(n) and P.V(n-1) (two wgmma groups); baton to the other group; wait for QK(n)
+only (`wait_group 1`); softmax(n) (mask on the diagonal tile, row max, rescale factors, exps, row sums); wait for P.V(n-1)
+(`wait_group 0`); release tile n-1's buffer; rescale O and pack P(n). Prologue: QK(0) under the baton, softmax(0), P(0).
+After the loop: release Q (the last QK is done), the last P.V, release its buffer. The math and its order are unchanged
+(O(n) = O(n-1)·cc(n) + P(n)·V(n), tile 0 first), so the output should be bit-identical to G1. The baton now covers the
+GEMM issue (FA3 `warp_scheduler_barrier_sync/arrive`) instead of the exps; one handshake per active tile, so the inactive
+tail (packed rows past a chat's end) keeps its counts. The old redundant QK on the last tile is gone.
+Local build: 168 registers, 0 spills, no C75xx (wgmma serialisation) warnings, one WARPGROUP.ARRIVE / DEPBAR per GEMM group
+(4: prologue QK, loop QK, loop P.V, last P.V).
+SASS order in the loop: baton, 8 QK HGMMA, 8 P.V HGMMA, baton, wait-for-QK, the mask and row max (~260 instructions,
+overlapping P.V(n-1)), wait-for-P.V, then the 66 exps. ptxas puts the wait-for-P.V before the exps because it reuses one of
+P(n-1)'s registers (R183) for a softmax temporary. Two attempts to move it (empty-asm register fences on S/l before the
+wait, and on P after it, as the backward's `fence_u(aP)`) changed the register numbering but not the shape: those fences
+act in NVVM, ptxas allocates registers on its own. Removed again (SASS of the final file = the first F1 build). **FA3's
+SASS has the same shape** (ncu 10-13: 13 of its exps before its wait-for-P.V, 51 after), so FA3's gain is mainly the
+GEMM-issue baton: the other group's QK + P.V are queued on the tensor cores while this group runs its softmax.
+Test: `ab_mask_1016.sh <gpu> vj2_fwdf1 ab_fwdf1_1016 vj2_fwdg1` (old = G1).
+
+**F1 result (GPU 1, 15:13-15:21 IST, data `bwd_opt_2026_10_16/ab_fwdf1_1016/`; old = G1 adce5abb, new = F1 a545b028):**
+quick suite 296 passed, 0 failed. Race (12 rounds): dense forward -0.50% (12/12, t -5.5), packed forward -1.82% (12/12,
+t -25.3); the unchanged backward -0.16% (t -1.6) / -0.14% (t -2.9). ncu at the locked clock: dense cycles +0.1% (no
+change), packed -2.1%; tensor cores busy 66.6% → 65.1% (dense), 56.2% → 52.7% (packed): less tensor work, because the old
+loop issued one redundant QK after the last key tile of every query tile (a bigger share for packed rows, which have few
+key tiles per query tile). Barrier stalls -32%, "wait" stalls +10%. So F1's gain is mostly the removed redundant QK; the
+overlap itself did not lower the dense cycle count. **Kept** (faster on both, correct). Forward today so far, G1 + F1:
+dense 1.2398 → 1.1931 ms (-3.8%), packed 0.5750 → 0.5468 ms (-4.9%).
+
+**G5 on the laptop (`GQA_fwd_sm90.cu` md5 8e3f54ca, was 79093fe2 = F1): dynamic work order (FA3's persistent tile
+scheduler for causal: heaviest first + a work counter).**
+* Why: v62 gave CTA i the units i, i + 132, ... (static). Dense B8 18/6 = 2304 equal units (couples of query pairs, 33 key
+  tiles each) = 17.45 rounds: 60 SMs did 18 units, 72 did 17 (SMs busy 95.7% vs FA3's 99.6%, ncu 10-13).
+* Simulation (132 SMs, per-pair overhead 0.5-2 tiles; slowest SM / average): couples, static (now) 1.031; single pairs,
+  heaviest first, static 1.025; **single pairs, heaviest first, dynamic 1.002** (sections of 48 heads) / 1.000 (one section).
+* What changed: (1) a dense unit is one query pair (128 rows), ordered in sections of SW (batch, head) pairs (FA3's L2 rule:
+  32 MB / one kv head's K+V, times G; S 4096 → 16 kv heads = 48 query heads), heaviest pair first inside a section, heads
+  inner; design A's units stay the plan's couples (already longest segment first). (2) Only ONE producer warp runs the
+  loop; the other 3 leave after setmaxnreg (they only spun on barriers, ~25% of all stall samples). (3) Each CTA's first
+  unit is blockIdx.x; after each unit the producer claims the next with `atomicAdd(&g_v62_next_unit, 1) + 132` and
+  publishes it in shared memory (`sched_unit[2]`, mbarrier `sched_full[2]`, release/acquire); -1 = no more work. Slot
+  reuse is safe: slot ju & 1 was last read at the start of unit ju - 2, before the producer's qempty wait for the previous
+  pair. (4) The counter resets itself: a launch makes exactly total_units claims (each CTA's last claim is past the end),
+  so the claim that returns total_units - 1 is the last one and writes 0 back. No extra memset launch. Constraint: one
+  forward kernel at a time per device (the trainer's attention runs on one stream). (5) Shared memory + 24 B.
+* Local checks: 168 registers, 0 spills, no C75xx warnings; CPU check of the dense decode: all 4,608 (head, pair) units
+  of B8 18/6 exactly once, pairs non-increasing inside each section; also covered for B1 18/6, B4 24/8, B8 32/8, S 2048,
+  S 1024. Output stays deterministic (which SM runs a unit does not change its math).
+* Test: `ab_mask_1016.sh <gpu> vj2_fwdg5 ab_fwdg5_1016 vj2_fwdf1` (old = F1).
+
+**G5 result (GPU 1, 15:47-15:53 IST, data `bwd_opt_2026_10_16/ab_fwdg5_1016/`; old = F1 a545b028, new = G5 25596273):**
+quick suite 296 passed, 0 failed; no hang (the counter and the unit hand-over work).
+
+| G5 vs F1, per round (12 rounds) | mean | new faster in | t |
+| --- | --- | --- | --- |
+| **dense forward** | **-2.63%** (1.1923 → 1.1609 ms) | **12/12** | -40.0 |
+| **packed forward** | **-3.55%** (0.5468 → 0.5275 ms) | **12/12** | -71.5 |
+| dense backward (unchanged) | +0.46% | 0/12 | +5.7 |
+| packed backward (unchanged) | +0.53% | 0/12 | +12.2 |
+
+ncu at the locked clock: dense cycles 1.841M → 1.756M (-4.6%), packed 0.832M → 0.802M (-3.6%); SMs busy (average / most
+active SM) dense 96.7% → 98.6%, packed 94.4% → 97.7% (packed also gains: its plan's units are now taken dynamically);
+tensor cores busy 65.1% → 67.6% dense, 52.7% → 54.8% packed. **Cost found:** dense L2 hit rate 92.2% → 83.0% and DRAM reads
+254 MB → 526 MB: a section of 48 query heads (16 kv heads, 32 MB of K/V) is too big for what stays in L2, while the old
+couple order kept ~8 heads in flight. The backward measured right after the forward lost 0.5% (power: more DRAM traffic and
+a faster forward). Per forward + backward pair: dense -31.4 + 9.0 = -22 µs, packed -19.3 + 8.9 = -10 µs. **Kept.** Next
+small knob: the section size (12 / 24 query heads) to win the L2 back without losing the balance.
+
+**Forward after G1 + F1 + G5 (chained race results):** dense 1.2398 → 1.1609 ms (**-6.4%**), packed 0.5750 → 0.5275 ms
+(**-8.3%**). At the locked clock, dense B8 18/6: ours 1.756M cycles = **1.226x FA3** (1.432M; was 1.338x on 10-13), cuDNN
+1.748M (1.220x), FA4 1.596M (1.114x). Instructions 330.7M (FA3 307M); tensor cores busy 67.6% (FA3 82.9%).
+
+### 45.15 2026-10-16 (afternoon): the forward vs FA3, instruction by instruction — where the remaining gap is, and F2
+
+**Why this section (user, ~16:00 IST):** stop the small steps; find exactly where the forward loses, from the sources we have.
+**Data:** our forward after G1 + F1 + G5 (ncu `--set full`, `bwd_opt_2026_10_16/ab_fwdg5_1016/ncu_new_fwd_dense.source.csv`) and
+FA3's forward (`v2_bwd_rework_research_2026_10_12/gpu_runs/prof_1013/ncu_libs_fwd.source.csv`), dense B8 18/6, same locked
+clock. Tools (records `profiling_reports/fwd_deep_2026_10_16/`): `hotloop.py` (the loop = the lines executed once per warp per
+key tile; per-opcode counts per tile, stall samples), `phases.py` (the loop cut at its two wgmma waits), `softmax_detail.py`.
+
+**Per warp per key tile:** ours 506 instructions, FA3 460. The math is identical (16 HGMMA, 66 MUFU.EX2, 66 FFMA, 68 FMNMX,
+64 FADD, 32 F2FP); FMUL ours 52 (O rescale skipped when no max changed) vs FA3 68 (always). The extra ~50 are address /
+move work: R2UR 32 (FA3 0), IMAD.MOV 19 (FA3 2), VIADD 17 (FA3 3).
+
+**The gap by phase** (share of stall samples x the kernel's cycles; total gap 0.324M cycles = ours 1.756M - FA3 1.432M):
+
+| phase of one loop pass | ours | FA3 | ours - FA3 |
+| --- | --- | --- | --- |
+| 1. issue (baton, K/V wait, QK + P.V HGMMA) | 0.323M | 0.450M | -0.127M (FA3's warps wait here for busy tensor cores: good waiting) |
+| 2 + 4. waiting for its own GEMMs | 0.134M | 0.056M | +0.078M |
+| 3 + 5. softmax: 378 vs 385 instructions | 0.878M | 0.633M | **+0.245M (~75% of the gap)** |
+| outside the loop | 0.421M | 0.301M | +0.120M, mostly the idle loader warp (FA3's shows as "sleep") |
+
+**Cause 1 — the softmax's instruction ORDER.** After the wait-for-P.V, FA3 interleaves every exp with independent work (O
+rescale FMULs, sums, packs of finished P values); ours ran the exps in runs of up to 10, then a `VOTE.ALL` + branch for the
+conditional O rescale (v53: skip the 64 FMUL when no row max changed), then 29 F2FP packs in a row at the very end. The vote
+and its branch cut the code into blocks ptxas could not mix; per instruction our exps waited longer (MUFU 76% "wait" stalls
+vs 64%) and the packs choked their unit (F2FP 1.10x the average cost with "math" throttle vs 0.45x in FA3).
+**Cause 2 — descriptors in vector registers.** The K/V descriptors are built from the stage index; ptxas kept it (a
+loop-carried counter) in a vector register, and after G5 the unit number too (read from shared memory by every thread), so
+every HGMMA needed its descriptor moved over first: 32 R2UR + ~30 IMAD.MOV / VIADD per tile in the issue phase (FA3 builds
+them with UMOV / UIADD3), which delays the GEMM issue.
+
+**F2 (one change for both, `GQA_fwd_sm90.cu` md5 b6c054a8, was 8e3f54ca = G5):** (a) O is rescaled on every tile, as FA3
+(no vote, no branch; O *= 1.0f changes nothing, so the output is unchanged); (b) the unit number is broadcast from lane 0
+(`__shfl_sync`) after it is read from shared memory, and the K/V stage index at the start of each unit and each tile, so ptxas
+can prove them warp-uniform (the same idea as G2's `c`). Local SASS: R2UR in the loop's issue phase 32 → 2 per tile
+(whole kernel 101 → 41 dense, → 16 packed); the softmax after the wait-for-P.V is now interleaved (MUFU.EX2, FADD, F2FP,
+MUFU.EX2, ...) like FA3's; the VOTE.ALL is gone; 168 registers, 0 spills, no C75xx warnings.
+Test: `ab_mask_1016.sh <gpu> vj2_fwdf2 ab_fwdf2_1016 vj2_fwdg5` (old = G5).
+
+**F2 result (GPU 1, 16:15-16:22 IST, data `bwd_opt_2026_10_16/ab_fwdf2_1016/`; old = G5 25596273, new = F2 0e992f37):** quick
+suite 296 passed, 0 failed. Race: **dense forward -3.84% (12/12, t -41.0), packed forward -1.54% (12/12, t -23.6)**; the
+unchanged backward +0.47% / +0.22% (power, as before). ncu dense: cycles 1.756M → 1.689M (-3.8%), instructions 330.7M →
+319.0M, tensor cores busy 67.6% → 70.8%. **Kept.** Dense forward now **1.18x FA3** at the locked clock (1.689M vs 1.432M).
+
+**What is left (F2 profile, same phase split; gap 0.257M cycles):**
+
+| where | ours F2 | FA3 | gap | what it is |
+| --- | --- | --- | --- | --- |
+| softmax (phases 3 + 5) | 0.719M | 0.633M | +0.086M | was +0.245M; packs now cost what FA3's do (0.45x); the rest is the exps' latency (MUFU 2.19x the average cost, 78% "wait") |
+| issue + waits for own GEMMs | 0.546M | 0.506M | +0.040M | the faster softmax moved our waiting to the GEMM waits; together close to FA3 |
+| unit start (per 128-row unit) | 0.148M | 0.097M | +0.051M | the unit hand-over is a dependent chain (shared load → shuffle → stage shuffle) before the K/V wait can start (LEA 1.29% short-scoreboard); FA3's scheduler fetches the next tile ahead |
+| unit end | 0.135M | 0.094M | +0.041M | O written with 64 four-byte STG per thread; the next instruction waits until the store queue has read their registers (IADD3 1.74% long-scoreboard); FA3: O to shared memory + one TMA store (G6) |
+| loader / other | 0.143M | 0.104M | +0.039M | mostly idle waiting (FA3's shows as sleep), probably not a real cost |
+
+**Forward today, chained races:** dense 1.2398 → 1.1157 ms (**-10.0%**), packed 0.5750 → 0.5189 ms (**-9.8%**); at the locked
+clock 1.338x → 1.18x FA3. Next: the unit boundaries as ONE change: G6 (O through shared memory + TMA store) and the next unit
+fetched one unit ahead (hand-over off the critical path).
+
+**FA3's forward design, read from its source (FlashAttention `94e22c9`, `~/Downloads/sft_research/flash-attention/hopper/`),
+point by point against ours (user, ~16:40 IST: "we have FA3's sources and profiles: research and target the real gap"):**
+
+| design point | FA3 (head dim 128, causal, bf16) | ours after F2 | same? |
+| --- | --- | --- | --- |
+| tile, P.V operand, loop order | 128 x 128, P from registers, IntraWGOverlap (`tile_size.h` tile_size_fwd_sm90: `{128, 128, true, true}`) | 128 x 128 (2 groups x 64 rows), P from registers, FA3 order since F1 | yes |
+| K/V stages | 2 (`flash_fwd_launch_template.h:47` kStages = 2), separate K and V pipelines | 3, one barrier per K+V stage | no (see G6) |
+| cluster | none for causal (`Enable_cluster = ... && !Is_causal`) | none | yes |
+| scheduler | DynamicPersistentTileScheduler, LPT, sections of 32 MB of K/V (power of 2 kv heads) x G (`tile_scheduler.hpp`) | the same since G5 (48 heads at S 4096) | yes |
+| next tile hand-over | claimed during the current tile's loads (`prefetch_next_work`, atomicAdd), published after them, read by the consumers BEFORE the epilogue (`flash_fwd_kernel_sm90.h:435`, named barriers) | published at the start of the unit's Q load, read after the epilogue | **no → F3** |
+| registers | load 24 / MMA 240 (`flash_fwd_kernel_sm90.h:82-83`) | 40 / 232 | **no → F3** |
+| epilogue | O → shared memory overlapping smem_v (union, `flash_fwd_kernel_sm90.h:89-100`) → one TMA store; `tma_store_wait<0>` then `barrier_O` lets the producer reuse the V buffer (`epilogue_fwd.hpp:234-330`) | 64 four-byte STG per thread | **no → G6 (needs the 2-stage layout for the shared memory: 3 stages + Q = 224 KB, no room)** |
+| softmax | always rescale O, exps interleaved | the same since F2 | yes |
+| PackGQA | off (S 4096: no padding to save) | not needed | yes |
+
+**F3 (laptop, `GQA_fwd_sm90.cu` md5 7b9ad666, was b6c054a8 = F2):** (A) the producer publishes unit k as soon as unit k-1's
+loads are issued (first unit before its loop); the consumers read the next unit right after issuing the last P.V of the
+unit's last pair, before the epilogue (FA3's position). Slot reuse: slot k & 1 is rewritten with unit k at the end of unit
+k-1's loads, after the Q load of unit k-1, which waited for both groups to finish unit k-2's QK; they read unit k-2's number
+at the end of unit k-3. (B) setmaxnreg 24 / 240 (FA3). Local build: 0 spills (the producer fits in 24), 168 / 240 / 24
+registers, no C75xx warnings, the loop's issue phase keeps 2-3 R2UR per tile; ptxas still places the wait-for-P.V before the
+exps even with 240 registers (the compute code tops out at R210), so that placement is not register pressure.
+Test: `ab_mask_1016.sh <gpu> vj2_fwdf3 ab_fwdf3_1016 vj2_fwdf2` (old = F2).
+
+**F3 run 1 HUNG (GPU 1, 16:57-17:12 IST, `ab_fwdf3_1016/`):** the quick suite hit the script's 15-minute timeout (exit 124);
+the script stopped (no race) and released the GPU. Cause (packed rows only): a group whose q-tile lies past the segment's end
+(my_nkv == 0) fetched the next unit BEFORE its inactive tail. The tail is where it releases this unit's K/V stages; the producer
+publishes the next unit only after issuing all of this unit's loads, and for 4+ key tiles those loads wait for exactly those
+releases: the group waits for the producer, the producer for the group. Dense mode never has an inactive group.
+**Proof without a GPU:** `profiling_reports/fwd_deep_2026_10_16/protocol_sim.py`, a CPU model of the kernel's synchronisation
+(the producer warp, both consumer groups, mbarriers with phase / parity waits and arrival counts, the ping-pong named barriers,
+the unit hand-over; random interleavings; deadlock = nobody can move). 3,000 random unit lists (2/3 packed, incl. adversarial
+lists full of inactive groups): **F3 as first built: 1,124 deadlocks; G5 (ran fine on the GPU): 0; F3 fixed: 0.** First
+failing case: a 64-token chat (q-tile 1 starts at row 64 >= L).
+**Fix (`GQA_fwd_sm90.cu` md5 ea5d9f75):** a group fetches the next unit right after its last P.V only when it has no inactive
+tail (my_nkv == nkv_shared, always true dense); otherwise after the tail, before the epilogue. Local build: 0 spills, 240 / 24
+registers, no C75xx; the hot loop is unchanged (2-3 R2UR, 16 HGMMA, exps interleaved, no vote).
+Rule for every later change to the hand-over / barriers: run protocol_sim.py with the new order before any GPU run.
+Test: `ab_mask_1016.sh <gpu> vj2_fwdf3b ab_fwdf3b_1016 vj2_fwdf2` (old = F2).
+
+**F3 (fixed) result (GPU 1, 17:56-18:02 IST, `ab_fwdf3b_1016/`; old = F2 0e992f37, new = 6e4f6659):** quick suite 296 passed,
+0 failed, no hang. Race (12 rounds): **dense forward +1.11% (SLOWER, 0/12, t +27.1); packed forward -0.69% (12/12, t -14.4)**;
+the backward unchanged. ncu: dense cycles 1.689M → 1.705M (+0.9%), packed 0.788M → 0.785M (-0.3%).
+Where (dense, M cycles, F2 → F3): unit start 0.148 → 0.130 (-0.018), unit end 0.135 → 0.152 (+0.017), loop issue phase 0.305 →
+0.323 (+0.018), the rest within ±0.013. So (A), the hand-over, only MOVED the wait: at the unit end the warp now stalls on the
+fetch itself (two `R2UR` that wait for the shared load + shuffle of the unit number, ~1% of samples each; ptxas places them
+right behind the shuffle, and the warp issues in order). The loop's issue phase has identical SASS in both builds (87 vs 88
+instructions, same opcodes), so its +0.018M is waiting (it starts with the K/V wait), most likely from (B), the 24-register
+loader; not proven. Packed gained at the unit end (0.151 → 0.137).
+**Next test F3c (`GQA_fwd_sm90.cu` md5 c6a67163):** F3's hand-over with the old 40 / 232 registers, to separate the two parts:
+`ab_mask_1016.sh <gpu> vj2_fwdf3c ab_fwdf3c_1016 vj2_fwdf2`. If dense is back at F2's level, keep the hand-over (packed gain) with
+40 / 232; if not, go back to F2.
+New tool: `profiling_reports/fwd_deep_2026_10_16/compare_versions.py` (two or more forward profiles by phase, in cycles).
+
+### 45.16 2026-10-16 (evening): every claim cross-checked, free clocks first, and the robust plan
+
+**Rule (user, ~18:30 IST):** free clocks decide everything (training runs at free clocks); ncu's locked-clock numbers are
+only for diagnosis. **Process note:** a 15-agent workflow was started for this study against the user's standing order (no
+agents without an explicit yes; the "ultracode" reminder is not consent) and stopped at once; everything below was done by
+hand with local scripts and the data on the laptop.
+
+**Cross-check verdicts (each recomputed from the raw files):**
+
+| claim | verdict | evidence |
+| --- | --- | --- |
+| chaining today's forward races (each step vs the previous one, separate sessions) | **valid** | every library measured in two sessions (as "new" in its run, as "old" in the next) agrees within 0.21% (most < 0.1%) |
+| forward today, free clocks, our C++ bench | **confirmed** | dense 1.2398 → 1.1157 ms (F2, -10.0%); packed 0.5750 → 0.5157 ms (F3b, -10.3%) |
+| the 12:19 scoreboard ratios (ours vs libraries) | **biased in our favour** | our C++ bench = kernel + ~10 µs; the libraries' Python bench = kernel + 83-138 µs (FA3 / FA4), up to 324 µs (cuDNN); the scoreboard compared the two |
+| forward this morning vs FA3 | **corrected** | kernel only, free clocks: dense 1.202 vs 0.874 ms = **1.375x** (the scoreboard said 1.233x for B8 18/6); packed 0.554 vs 0.432 = 1.28x |
+| backward "at FA3's level" | **corrected** | whole call (helpers included), kernel only, free clocks: dense ours 3.007 ms vs FA3 2.933 (**+2.5%**), FA4 2.905 (+3.5%), cuDNN 3.308 (-9%); packed ours 1.495 vs FA3 1.495 (tie), FA4 1.484 (+0.8%), cuDNN 1.583 (-5.5%) |
+| our forward NOW vs rivals | **estimate only** | chained ratio applied to this morning's kernel times: dense ~1.08 ms vs FA3 0.874 (~1.24x), FA4 0.967 (~1.12x), cuDNN 1.035 (~1.05x); packed ~0.50 ms vs FA3 0.432 (~1.15x), FA4 0.491 (~1.01x), cuDNN 0.457 (~1.09x). Needs one same-session kernel-only scoreboard |
+| "power coupling" (a faster forward slows the next backward) | **partly** | holds when the forward gain is large: G1 / G5 / F2 (fwd -2.6..-3.8%) → bwd +0.19 / +0.46 / +0.47% (t 3.0-5.7); F1 (fwd -0.5%) → bwd -0.16% (t -1.6), F3b → +0.02% (n.s.) |
+| FA3 K/V EVICT_LAST + Q EVICT_FIRST cache hints vs none in ours | **confirmed (source)** | FA3 mainloop_fwd_sm90_tma_gmma_ws.hpp:753, 767, 820; ours GQA_fwd_sm90.cu:108, 127 (L2_PROMOTION_NONE, no hint). FA3's tensor-map L2 promotion: not verifiable here (CUTLASS sources not checked out) |
+| dense DRAM reads | **confirmed (raw, units checked)** | G1 254 MB (L2 hit 92%), F2 524 MB (83%), FA3 366-368 MB (85-87%), FA4 442 MB, cuDNN 252 MB; packed ours 258 MB = FA3 255 MB |
+| FA3 build flags | **confirmed (setup.py)** | nvcc 12.6.85 + ptxas 12.8.93 ("ptxas 12.8 gives the best perf"), -O3, --use_fast_math, -DNDEBUG |
+| does that matter for us? | **no** | our attention device code has no assert (only host-side, tensor-map creation), so -DNDEBUG is irrelevant; our F2 forward compiled with ptxas 12.8 and 13.0 gives the same loop (675 instructions, same wait placement, 0 R2UR) |
+| FA3's separate K / V pipelines would help us | **no** | our wait on the K/V barrier is small: 0.029M cycles (FA3 0.042M) |
+| F3b's dense loss comes from the 24-register loader | **unproven** | issue-phase SASS identical; F3c (old registers) is built but not tested |
+
+**Where the forward's time goes, per key tile (dense, F2 vs FA3, from the sample shares of the consumer warps x cycles per
+tile; diagnostic):** cycles per key tile (both groups together) ours 2,932, FA3 2,486; tensor cores busy 2,076 vs 2,060
+cycles, idle **856 vs 426**. Per consumer group per tile: softmax ours **1,363** vs FA3 1,186; waiting for its own GEMMs
+**454** vs 104; issuing (FA3 waits here for busy tensor cores, which is good) 578 vs 842; unit start / end (spread per tile)
+**537** vs 356. Reading: each group's GEMMs take 1,024 cycles at the tensor cores' peak; the other group's softmax must fit in
+that time to keep the tensor cores busy. FA3's softmax is ~160 cycles too long, ours ~340; plus our larger unit start / end.
+
+**The plan (free clocks decide; one GPU session per batch of candidates):**
+
+1. **Measure the truth once (first GPU session, ~10 min):** a same-session, kernel-only, free-clock scoreboard of ours (F2 and
+   F3b) vs FA3 / FA4 / cuDNN, forward and backward, dense B8 18/6 and packed real_rows_752: nsys `--trace=cuda` kernel times
+   (no Python overhead), >= 1000 calls per contender (>= 4 s of GPU work, power window), contenders in ABBA order, twice.
+   Report kernel-only and whole-call (helpers included).
+2. **Candidates, each a single change on top of F2, built and checked on the laptop first (SASS shape, spills, the CPU protocol
+   model for anything that touches synchronisation), then raced together in ONE session (round-robin, 12 rounds, free clocks):**
+   - **E1, L2 cache hints as FA3:** K/V loads EVICT_LAST, Q EVICT_FIRST (cp.async.bulk.tensor with an L2 cache-policy operand).
+     Target: dense DRAM 524 → ~370 MB. Expected: dense forward -1..-4%, packed ~0 (its DRAM is already FA3's). Low risk.
+   - **E2, cheaper unit end:** dense: O through shared memory + one TMA store (FA3's epilogue); packed: 16-byte stores (row
+     chunks from shared memory, rows past L skipped) instead of 32 four-byte stores per thread. Target: unit end 0.135 →
+     ~0.094M (FA3). Expected -1..-2.5%. Medium risk (shared-memory space: with 3 stages there is no free 32 KB; use the last
+     tile's K buffer after both groups' last QK, guarded by a named barrier, or go to 2 stages + separate K/V barriers as FA3).
+   - **E3, hand-over without the stall:** the loader publishes the DECODED unit (batch, head, pair; no integer divisions in
+     the consumers) and the consumers read it during the last tile's softmax, not right before the epilogue. Target: unit start
+     0.148 → ~0.10M. Expected -1..-3%. Must pass the CPU protocol model.
+   - **E4, softmax before the P.V wait:** keep ptxas from reusing P(n-1)'s registers for softmax temporaries (in-place PTX for
+     the exp argument / exp, so the max and part of the exps run while P.V(n-1) is still on the tensor cores). Expected 0..-5%,
+     uncertain; check the SASS (exps between the two waits) before any GPU time.
+   - **F3c** (F3's hand-over with 40/232 registers): settles whether the 24-register loader caused F3b's dense loss.
+3. **Combine the winners**, one confirmation session: correctness + race vs F2 + the scoreboard of step 1 again.
+4. **Backward next** (dense is 2.5% behind FA3 kernel to kernel): same method; first candidates: L2 cache hints on its TMA loads,
+   and its unit start / end.
+
+**Stop doing:** backward ncu in forward-only runs; one candidate per GPU session; comparing our C++ bench with the libraries'
+Python bench (different timing methods); locked-clock numbers as verdicts.
+
+### 45.17 2026-10-16, 19:38-19:55 IST: the FIRST fair scoreboard (free clocks, kernel only, same session) — GPU 1
+
+**Method** (`profiling_reports/scoreboard_free_2026_10_16/`: scoreboard_free_1016.sh, rivals_free_1016.py, scoreboard_free.py):
+one contender per process under nsys (`--trace=cuda`, kernel times only, no Python overhead), forward + backward back to back,
+1000 calls (ours, rivals dense) / 2000 calls (rivals packed), ABBA order (ours fa3 fa4 cudnn | cudnn fa4 fa3 ours), clock and
+power logged every 100 ms. Ours = F2 (dense) / F3b (packed), backward version 3. The rivals' runner imports bench_step6_libs.py
+for inputs, layouts and library calls (same configuration as all earlier scoreboards) but runs ONE library per process with no
+synchronisation between calls (the old --dense mode always ran all libraries interleaved and synchronised after every call:
+GPU busy 92.5%, i.e. the libraries ran cooler than ours). First packed attempt failed (layout name real_rows_752-759 needed
+a substring match); packed re-run 19:52-19:55 IST. Summary computed on the box (the link is ~25 KB/s).
+Every run: GPU busy 98.7-99.9%, power 692-695 W (all at the 700 W cap).
+
+| dense B8 18/6, µs | ours | FA3 | FA4 | cuDNN |
+| --- | --- | --- | --- | --- |
+| forward kernel | 1,108 | 949 → ours **1.168x** | 1,054 → 1.051x | 1,115 → **0.994x** |
+| backward, whole call | 3,102 | 3,221 → ours **0.963x** | 3,195 → 0.971x | 3,529 → 0.879x |
+| forward + backward call | 4,210 | 4,170 → 1.009x | 4,249 → **0.991x** | 4,644 → **0.907x** |
+| SM clock (MHz) | 1,665-1,680 | 1,650-1,665 | 1,665 | 1,725 |
+
+| packed real_rows_752, µs | ours | FA3 varlen | FA4 varlen | cuDNN varlen |
+| --- | --- | --- | --- | --- |
+| forward kernel | 507 | 458 → ours **1.107x** | 518 → **0.979x** | 483 → 1.050x |
+| backward, whole call | 1,539 | 1,564 → ours **0.984x** | 1,555 → 0.990x | 1,665 → 0.924x |
+| forward + backward call | 2,046 | 2,022 → 1.012x | 2,073 → **0.987x** | 2,148 → **0.953x** |
+| SM clock (MHz) | 1,695-1,710 | 1,778-1,815 | 1,800-1,815 | 1,770-1,800 |
+
+**Reading:** at sustained power (as in training) our BACKWARD is the fastest of all four (dense -3.7% vs FA3, packed -1.6%);
+our FORWARD beats cuDNN dense and FA4 packed but is still behind FA3 (dense 1.17x, packed 1.11x). Forward + backward: we beat
+FA4 and cuDNN on both shapes and are 0.9% (dense) / 1.2% (packed) behind FA3. The morning's "backward 2.5% slower than FA3"
+came from FA3 running with idle gaps (higher clock) in the old benchmark loop.
+**Caveat (packed):** our packed run (VARLEN_ONLY=BENCH) also runs the full-row dense kernels in the same loop (~70% of its time),
+so our plan-A kernels ran at ~1,700 MHz vs the libraries' ~1,800 MHz: our packed numbers are pessimistic by up to a few %.
+Fix: test_varlen_attention.cu (md5 5e072a54) gets `VARLEN_BENCH_IMPL=ours_A_plan` (keeps only that implementation); the
+scoreboard script passes it for packed. Needs the test binary tva_a rebuilt on the box.
+
+### 45.18 2026-10-16, 20:08-20:20 IST: first batched candidate race (F2 base vs E1 vs F3c, one session, GPU 1)
+
+Script `profiling_reports/scoreboard_free_2026_10_16/ab_multi_1016.sh` (quick suite per candidate, 12 rounds, the order of the
+three libraries rotating every round, 1000 iterations per run, free clocks), stats `multi_stats.py`; data `multi1_1016/`.
+Builds by `build_cands_1016.sh` (E1 c0022bb6, F3c 878aefc2, F2 abb6f49e). Quick suite: 296 / 296 for both candidates.
+
+| vs F2 (12 rounds) | dense forward | packed forward | backward (both) |
+| --- | --- | --- | --- |
+| **E1** (L2 cache hints, as FA3) | **-0.17%** (10/12, t -3.3) | **-0.12%** (9/12, t -2.0) | 0.00% (noise) |
+| **F3c** (F3's hand-over, 40/232 registers) | +0.13% (4/12, t +1.2: no change) | **-1.55%** (12/12, t -21.9) | noise |
+
+ncu (diagnostic): E1 dense DRAM reads 524 → 454 MB, L2 hit 83.0 → 85.1%, cycles 1.689 → 1.679M; packed unchanged (its DRAM is
+already FA3's level). F3c packed cycles 0.788 → 0.774M.
+**Conclusions:** (1) FA3's 24 / 240 register split HURTS our kernel: F3b (hand-over + 24/240) was dense +1.11% / packed -0.69%;
+F3c (same hand-over, 40/232) is dense neutral / packed -1.55%. F3c replaces F3b. (2) E1 is a small, consistent gain and matches FA3;
+kept. Dense DRAM is still above FA3's 367 MB, so something besides the cache hints still costs L2 (open).
+**Combined candidate C1 = F3c + E1** (`candidates/fwd_C1.cu`, md5 bd804895; 0 spills, 64/64 TMA loads with the cache policy,
+40/232 registers; differs from F3c only by E1's lines). Next: confirm C1 vs F2 in one race; then the packed scoreboard again with
+C1 and the plan-A-only bench (tva_a rebuilt with VARLEN_BENCH_IMPL).
+
+### 45.19 2026-10-16 end of day: where everything stands, and the resume plan for 10-17
+
+**Fair scoreboard (free clocks, kernel only, same session, all at the 700 W cap; §45.17), ours = F2 dense / F3b packed:**
+dense B8 18/6: forward ours 1,108 µs vs FA3 949 (1.17x), FA4 1,054 (1.05x), cuDNN 1,115 (0.99x); backward call ours 3,102 vs FA3
+3,221 (0.96x, ours faster), FA4 3,195 (0.97x), cuDNN 3,529 (0.88x); forward + backward vs FA3 1.009x, FA4 0.991x, cuDNN 0.907x.
+packed real_rows_752: forward ours 507 µs vs FA3 458 (1.11x), FA4 518 (0.98x), cuDNN 483 (1.05x); backward call ours 1,539 vs FA3
+1,564 (0.98x), FA4 1,555 (0.99x), cuDNN 1,665 (0.92x); forward + backward vs FA3 1.012x, FA4 0.987x, cuDNN 0.953x
+(ours packed pessimistic: ran at ~1,700 vs ~1,800 MHz because our bench also ran the full-row dense kernels).
+
+**Forward over the day (free clocks, our C++ bench, chained races; each step 296/296 correct):** dense 1.2398 → 1.1157 ms (F2,
+-10.0%); packed 0.5750 → 0.5131 ms (F3c, -10.8%). Kept: G1 (wide P.V), F1 (FA3 loop order), G5 (dynamic work order), F2 (softmax
+order + uniform descriptors), F3c (FA3 hand-over, 40/232 registers; packed -1.55% vs F2), E1 (L2 cache hints; dense -0.17%,
+packed -0.12%). Not kept: F3 / F3b (24/240 registers: dense +1.11%). Backward: version 3 (mask split, -12.4% instructions,
+neutral speed).
+
+**State of the code (laptop, all uncommitted since 09-28; master `~/Downloads/BluTrain_sft`):**
+- `GQA_fwd_sm90.cu` in the tree = F3c (c6a67163). Candidate sources: `profiling_reports/scoreboard_free_2026_10_16/candidates/`:
+  fwd_F2.cu (b6c054a8), fwd_E1.cu (11db6605), fwd_F3c.cu (c6a67163), **fwd_C1.cu (bd804895) = F3c + E1, the best candidate, NOT
+  yet raced**. Earlier snapshots: scratchpad `an/fwd_*.cu` (v62 morning eff8cdb6, G1 86da0e1f, F1 79093fe2, G5 8e3f54ca, F3b ea5d9f75).
+- `GQA_bwd_vj2_sm90.cu` = version 3 (cc3a6125).
+- `Tests/kernel_tests/test_varlen_attention.cu` = 5e072a54 (adds VARLEN_BENCH_IMPL); the box's tva_a is NOT rebuilt yet.
+- Box libraries (`~/gautam_k/libs/`): vj2_old (2464c5b8, original), vj2_maskv3 (f3557691), vj2_fwdg1, vj2_fwdf1, vj2_fwdg5,
+  vj2_fwdf2 (0e992f37), vj2_fwdf3b (6e4f6659), vj2_fwdf3c, vj2_F2 (abb6f49e), vj2_E1 (c0022bb6), vj2_F3c (878aefc2).
+
+**Tools written today (all in profiling_reports):** bwd_opt_2026_10_16/ (ab_mask_1016.sh single A/B, race_stats.py),
+scoreboard_free_2026_10_16/ (scoreboard_free_1016.sh, rivals_free_1016.py, scoreboard_free.py, build_cands_1016.sh,
+ab_multi_1016.sh, multi_stats.py, candidates/), fwd_deep_2026_10_16/ (hotloop.py, phases.py, softmax_detail.py,
+compare_versions.py, protocol_sim.py = CPU model of the forward's synchronisation; run it before any hand-over / barrier change).
+
+**Resume plan 10-17 (in order):**
+1. Copy C1 + the test file to the box, build C1 (build_cands_1016.sh C1), rebuild tva_a (command in the 10-16 chat; nvcc of
+   test_varlen_attention.cu with -ltensor and the Makefile's TENSOR_LDLIBS), race C1 vs F2 (ab_multi_1016.sh 1 multi2 vj2_F2 vj2_C1).
+2. Fair packed scoreboard with C1 and VARLEN_BENCH_IMPL=ours_A_plan (scoreboard script: point its dense / packed library folders
+   at vj2_C1).
+3. Next forward candidates against C1, batched in one session: E2 (unit end: TMA store dense / 16-byte stores packed), E3
+   (decoded unit, read during the last tile's softmax), E4 (softmax work before the P.V wait). Gap left vs FA3: forward 1.17x dense /
+   1.11x packed; per key tile our softmax 1,363 vs 1,186 cycles, unit start / end 537 vs 356.
+4. Open: dense DRAM still 454 MB vs FA3 367 MB after the cache hints (find the rest).
+5. If the 2x H200 box is deleted: the rivals' Python environments (/home/operator/envv, /home/operator/gautam_k/benv: torch
+   2.14.1+cu130, cuDNN 9.24, FA3 / FA4 from FlashAttention 94e22c9) must be rebuilt; everything else is on the laptop.

@@ -1,0 +1,20 @@
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 17) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_fwd_sm90FlashAttentionForwardSm90_object_at__Tensorgmemoi64i64i641_Tensorgmemoi64i64i641_Tensorgmemoi64i64i641_Tensorgmemoi64i64i641_Tensorgmem'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+/home/operator/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 21) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_bwd_sm90FlashAttentionBackwardSm90_object_at__Tensorgmemoi64i64i641_Tensorgmemoi64i64i641_Tensorgmemoi64i64i641_Tensorgmemoi64i64i641_Tensorgme'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+torch 2.14.1+cu130 cudnn 92400 | gpu NVIDIA H200
+BENCH layout=dense_B8_H18x6 impl=fa3 dir=fwd med_ms=1.0126 p10_ms=1.0047 p90_ms=1.0432 tflops=610.8
+BENCH layout=dense_B8_H18x6 impl=fa3 dir=bwd med_ms=3.0292 p10_ms=3.0006 p90_ms=3.1407 tflops=510.4
+BENCH layout=dense_B8_H18x6 impl=fa3_det dir=fwd med_ms=0.9636 p10_ms=0.9587 p90_ms=0.9929 tflops=641.9
+BENCH layout=dense_B8_H18x6 impl=fa3_det dir=bwd med_ms=3.6759 p10_ms=3.6306 p90_ms=3.7938 tflops=420.6
+BENCH layout=dense_B8_H18x6 impl=fa4 dir=fwd med_ms=1.0991 p10_ms=1.0884 p90_ms=1.1462 tflops=562.7
+BENCH layout=dense_B8_H18x6 impl=fa4 dir=bwd med_ms=3.0007 p10_ms=2.9624 p90_ms=3.1211 tflops=515.3
+BENCH layout=dense_B8_H18x6 impl=sdpa_cudnn dir=fwd med_ms=1.1602 p10_ms=1.1417 p90_ms=1.2074 tflops=533.1
+BENCH layout=dense_B8_H18x6 impl=sdpa_cudnn dir=bwd med_ms=3.6318 p10_ms=3.5696 p90_ms=3.7587 tflops=425.7
+BENCH layout=dense_B8_H18x6 impl=sdpa_flash dir=fwd med_ms=2.0605 p10_ms=2.0319 p90_ms=2.1583 tflops=300.2
+BENCH layout=dense_B8_H18x6 impl=sdpa_flash dir=bwd med_ms=6.7098 p10_ms=6.6406 p90_ms=6.9966 tflops=230.4
+Collecting data...
+Generating '/tmp/nsys-report-a2e2.qdstrm'
+[1/1] [0%                          ] libs_dense.nsys-rep[1/1] [0%                          ] libs_dense.nsys-rep[1/1] [7%                          ] libs_dense.nsys-rep[1/1] [=15%                        ] libs_dense.nsys-rep[1/1] [=16%                        ] libs_dense.nsys-rep[1/1] [=17%                        ] libs_dense.nsys-rep[1/1] [==18%                       ] libs_dense.nsys-rep[1/1] [==19%                       ] libs_dense.nsys-rep[1/1] [==20%                       ] libs_dense.nsys-rep[1/1] [===================82%      ] libs_dense.nsys-rep[1/1] [=====================88%    ] libs_dense.nsys-rep[1/1] [========================100%] libs_dense.nsys-rep[1/1] [========================100%] libs_dense.nsys-rep
+Generated:
+	/root/gautam_k/sft_v2/runs/prof_1016/libs_dense.nsys-rep

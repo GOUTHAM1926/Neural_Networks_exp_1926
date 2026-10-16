@@ -1,0 +1,30 @@
+19:38:48 IST start | GPU 1 NVIDIA H200, 0 MiB | ours dense 0e992f37 packed 6e4f6659
+19:39:01 IST dense_ours_r1 exit=0 | trace rows 6065 | busy clock samples 121
+19:39:17 IST dense_fa3_r1 exit=0 | trace rows 9189 | busy clock samples 145
+19:39:36 IST dense_fa4_r1 exit=0 | trace rows 8169 | busy clock samples 186
+19:39:53 IST dense_cudnn_r1 exit=0 | trace rows 8180 | busy clock samples 164
+19:40:12 IST dense_cudnn_r2 exit=0 | trace rows 8180 | busy clock samples 176
+19:40:36 IST dense_fa4_r2 exit=0 | trace rows 8169 | busy clock samples 223
+19:40:55 IST dense_fa3_r2 exit=0 | trace rows 9189 | busy clock samples 180
+19:41:11 IST dense_ours_r2 exit=0 | trace rows 6065 | busy clock samples 149
+19:41:30 IST packed_ours_r1 exit=0 | trace rows 12126 | busy clock samples 179
+19:41:40 IST packed_fa3_r1 exit=1 | trace rows 0 | busy clock samples 93
+19:41:50 IST packed_fa4_r1 exit=1 | trace rows 0 | busy clock samples 89
+19:42:00 IST packed_cudnn_r1 exit=1 | trace rows 0 | busy clock samples 97
+19:42:11 IST packed_cudnn_r2 exit=1 | trace rows 0 | busy clock samples 95
+19:42:22 IST packed_fa4_r2 exit=1 | trace rows 0 | busy clock samples 102
+19:42:33 IST packed_fa3_r2 exit=1 | trace rows 0 | busy clock samples 99
+19:42:51 IST packed_ours_r2 exit=0 | trace rows 12126 | busy clock samples 170
+19:42:52 IST summary exit=1 (8 lines)
+19:42:52 IST SCOREBOARD DONE
+19:52:03 IST start | GPU 1 NVIDIA H200, 0 MiB | ours dense 0e992f37 packed 6e4f6659
+19:52:22 IST packed_ours_r1 exit=0 | trace rows 12126 | busy clock samples 177
+19:52:41 IST packed_fa3_r1 exit=0 | trace rows 18190 | busy clock samples 171
+19:53:06 IST packed_fa4_r1 exit=0 | trace rows 16170 | busy clock samples 235
+19:53:25 IST packed_cudnn_r1 exit=0 | trace rows 36373 | busy clock samples 175
+19:53:45 IST packed_cudnn_r2 exit=0 | trace rows 36373 | busy clock samples 177
+19:54:09 IST packed_fa4_r2 exit=0 | trace rows 16170 | busy clock samples 232
+19:54:27 IST packed_fa3_r2 exit=0 | trace rows 18190 | busy clock samples 173
+19:54:47 IST packed_ours_r2 exit=0 | trace rows 12126 | busy clock samples 177
+19:54:49 IST summary exit=0 (20 lines)
+19:54:49 IST SCOREBOARD DONE

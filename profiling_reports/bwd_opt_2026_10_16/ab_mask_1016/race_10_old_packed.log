@@ -1,0 +1,20 @@
+===== test_varlen_attention (v2 Step 2 harness) =====
+GPU 0: NVIDIA H200  sm_90  132 SMs  |  arch family Hopper: yes  |  BLUTRAIN_NO_SM90[_GQA]: off
+backward mode: Vj2 (USE_VJ2=1, the default)  |  quick: no
+
+===== BENCH: ours (dense / A), fwd and bwd, interleaved =====
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=fwd med_ms=1.2351 p10_ms=1.2142 p90_ms=1.2847 tflops=171.9
+BENCH layout=real_rows_752-759 impl=ours_dense_fullrow dir=bwd med_ms=3.0698 p10_ms=3.0302 p90_ms=3.1780 tflops=172.9
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=fwd med_ms=0.5774 p10_ms=0.5656 p90_ms=0.6001 tflops=367.8
+BENCH layout=real_rows_752-759 impl=ours_A_plan dir=bwd med_ms=1.5289 p10_ms=1.5133 p90_ms=1.5732 tflops=347.2
+  (free clocks; record nvidia-smi clocks next to it)
+
+===== SUMMARY =====
+checks passed 0, failed 0, skipped groups 0   (7 s total)
+  KNOWN issues observed this run: 0 (kept by decision, watched in every run)
+  PENDING (packed rows = design A only since 2026-10-15):
+    G11 mode refusals need their own runs: USE_FLASH=1 and USE_DETERMINISTIC_DQ=1 with VARLEN_ONLY=G11
+    G11 on Vj1d (A's 64-key tiles) needs its own run: USE_VJ2=0 VARLEN_ONLY=G11
+    empty-row contract (A's pad rows): O = 0, dQ/dK/dV = 0, fixed LSE value
+    tile-count check (debug build): tiles processed == host model
+ALL RUN CHECKS PASS

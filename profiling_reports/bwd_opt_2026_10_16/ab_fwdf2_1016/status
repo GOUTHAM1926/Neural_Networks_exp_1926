@@ -1,0 +1,21 @@
+16:15:14 IST start | GPU 1 NVIDIA H200, 0 MiB | old 25596273 new 0e992f37
+16:15:49 IST quick suite NEW exit=0 | checks passed 296, failed 0, skipped groups 0   (34 s total)
+16:16:15 IST race round 01 done (old new)
+16:16:42 IST race round 02 done (new old)
+16:17:10 IST race round 03 done (old new)
+16:17:36 IST race round 04 done (new old)
+16:18:03 IST race round 05 done (old new)
+16:18:32 IST race round 06 done (new old)
+16:18:58 IST race round 07 done (old new)
+16:19:25 IST race round 08 done (new old)
+16:19:51 IST race round 09 done (old new)
+16:20:18 IST race round 10 done (new old)
+16:20:44 IST race round 11 done (old new)
+16:21:09 IST race round 12 done (new old)
+16:21:09 IST race old | dense bwd 3.1024 ms (12 runs) fwd 1.1612 ms (12 runs) | packed bwd 1.5436 ms (12 runs) fwd 0.5273 ms (12 runs)
+16:21:09 IST race new | dense bwd 3.1179 ms (12 runs) fwd 1.1157 ms (12 runs) | packed bwd 1.5461 ms (12 runs) fwd 0.5188 ms (12 runs)
+16:21:19 IST ncu new_dense exit=0 | kernels profiled 1
+16:21:28 IST ncu new_packed exit=0 | kernels profiled 1
+16:21:43 IST ncu new_fwd_dense exit=0 | kernels profiled 1
+16:22:00 IST ncu new_fwd_packed exit=0 | kernels profiled 1
+16:22:00 IST AB DONE
