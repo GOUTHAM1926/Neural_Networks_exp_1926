@@ -1,0 +1,20 @@
+---
+name: project_blutrain_report_rewrite
+description: "BluTrain technical-report rewrite per boss Manoj's review — structure, mission, authoritative numbers"
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 457d6c2e-b2b2-4f24-a4ab-ad77d0262a7f
+---
+
+Rewriting the **BluTrain** technical report (was `draft_v4.pdf`, which boss Manoj Kumar Singh scolded as "a GPT-2 report, no clear intent"). New draft: `blutrain_technical_report/main.tex` — compiles **locally** via bundled `./tectonic -X compile main.tex` (no apt/sudo; tectonic binary is in that dir). 7 pages. Model to emulate = `BluBLAS_paper.pdf` (boss praised it).
+
+**Title (final):** "BluTrain: A C++/CUDA Framework for AI Systems" / subtitle "Robust, Lightweight, and Architecture-General — Built from First Principles". User vetoes in title: "First-Principles", "Training", "stack ownership", "hand-tuned", GPT-2/PyTorch. Tone: never "We present/We answer" (sounds like open-sourcing); use declarative / "This report describes". Say "from first principles" not "from scratch". Not open-sourcing — no code-release language, don't state it explicitly. Image (architecture screenshot): do NOT paste (shows unbuilt Nova/FSDP/CP); use clean tikz Figure 1 + companion citations instead.
+
+**Companion placeholder refs** (user fills later): `\cite{blublas}` (GEMM, at §6 Implementation), `\cite{nova}` (compiler — now has its own subsection §3.5 "Deep-learning compiler", honestly framed: results use eager path, Nova details in companion report). **Flux/data REMOVED** per user (don't reference data team). Deps claim generalized: "no third-party numerical, kernel, or deep-learning library" (cuBLAS/cuDNN named only in the PyTorch/TF contrast, not our claim). Subtitle pillars "Robust, Lightweight, Architecture-General" map to boss's exact words (robustness/lightness/generalised-across-AI) — keep. **Memory figure corrected: 18–22% lower steady-state (up to ~22%), traceable to Table 1 — the old "7–15%" was wrong.** A multi-lens review workflow caught 2 factual fixes (PyTorch 1,337 not 1,375 ms; memory band).
+
+**Required structure (boss's "BluBLAS-way"):** Intro w/ clear problem statement → Background (framework, not transformer arch) → Framework Stack (brief) → Optimizations (kernels + parallelism, each item must have a *purpose*/result) → Implementation → Evaluation (throughput/MFU, val-loss/numerical stability, memory) → Discussion → Related Work → Conclusion. Foreground the **mission/motto/modus operandi FIRST**: a from-scratch C++/CUDA training framework, NO cuBLAS/cuDNN deps, general across all AI (not bound to transformers; GPT-2 is just the validation workload), richer dtypes + numerical control than PyTorch. Compare framework-vs-framework (BluTrain vs PyTorch). Tone = technical report (not paper, no code release, no open-source promise — don't state that explicitly).
+
+**Authoritative numbers (verified):** val loss 3.0667 (BluTrain) vs 3.0684 (PyTorch), curves track within 3e-3 over 19,072 steps, both beat GPT-2 124M ~3.29 ref; HellaSwag ~0.306 both; **throughput: BluTrain median 408,019 tok/s (dt ~1285ms, from may27_perfect_run.log) vs PyTorch 392,219 tok/s (dt ~1375ms, from results.txt PyTorch column) = BluTrain ~4% FASTER.** 7–15% less VRAM; kernels attn 1.70×/1.51×, loss 2.15×/1.69×, others at DRAM speed-of-light parity. **Reconciliation:** in `results.txt` ONLY the BluTrain column (345k) is stale/wrong — use 408k from the run log; the PyTorch column (392k) IS valid. Do NOT use the short 8-GPU per-process micro-bench (412–416k) — different regime, caused a false "PyTorch faster" reading. MFU ~48% of TF32 peak is a derived estimate (not measured) — flag as such.
+
+**Omit per user:** FSDP, Nova/MLIR compiler, Context-Parallel (not built; "others will handle"). Differentiators (scalar-as-scalar not 0-d tensor, 18 dtypes, table-driven promotion [tensor lib only, "not yet merged"], SOTA reductions) are REFERENCE examples in the brief stack section — NOT the headline. See [[project_active_repo]] [[feedback_verify_claims_and_benchmark]].
