@@ -1,0 +1,11 @@
+15:15:52 IST env: BLU_CKPT=0 BLU_LOG_ENABLED=0 BLU_MIX_ROOT=/root/gautam_k/pt_data/mix BLU_MONITOR=0 
+15:15:53 IST start | STOP 12 | NVIDIA H200, 0 MiB, 0 %, 885 MHz
+15:15:53 IST old_r1 | bin 0e197a4f | libtensor d5423cd3 /root/gautam_k/lottn/old/Tensor-Implementations/lib/libtensor.so
+15:23:14 IST old_r1: reached step 12 after 441 s | 13 step lines | peak GPU memory 103893 MiB
+15:23:14 IST new_r1 | bin b1faa246 | libtensor 77af65f9 /root/gautam_k/lottn/new/Tensor-Implementations/lib/libtensor.so
+15:30:15 IST new_r1: reached step 12 after 421 s | 13 step lines | peak GPU memory 96725 MiB
+15:30:16 IST old_r2 | bin 0e197a4f | libtensor d5423cd3 /root/gautam_k/lottn/old/Tensor-Implementations/lib/libtensor.so
+15:37:37 IST old_r2: reached step 12 after 441 s | 13 step lines | peak GPU memory 103893 MiB
+15:37:38 IST new_r2 | bin b1faa246 | libtensor 77af65f9 /root/gautam_k/lottn/new/Tensor-Implementations/lib/libtensor.so
+15:44:38 IST new_r2: reached step 12 after 420 s | 13 step lines | peak GPU memory 96725 MiB
+15:44:39 IST summary written: /root/gautam_k/lottn/runs/trainer_ab_1021_1515/summary.txt

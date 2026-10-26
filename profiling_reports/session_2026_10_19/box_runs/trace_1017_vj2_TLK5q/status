@@ -1,0 +1,6 @@
+11:48:19 IST start | GPU 0 NVIDIA H200, 0 MiB, 0 % | vj2_TLK5q 97765067
+11:48:24 IST trace dense launch 900 exit=0 | V62_TRACE: launch 900 written to /root/gautam_K/sft_v2/runs/trace_1017_vj2_TLK5q/trace_dense_900.bin | fwd med_ms=1.1027
+11:48:30 IST trace dense launch 950 exit=0 | V62_TRACE: launch 950 written to /root/gautam_K/sft_v2/runs/trace_1017_vj2_TLK5q/trace_dense_950.bin | fwd med_ms=1.1071
+11:48:33 IST trace packed launch 900 exit=0 | V62_TRACE: launch 900 written to /root/gautam_K/sft_v2/runs/trace_1017_vj2_TLK5q/trace_packed_900.bin | fwd med_ms=0.4521
+11:48:35 IST trace packed launch 950 exit=0 | V62_TRACE: launch 950 written to /root/gautam_K/sft_v2/runs/trace_1017_vj2_TLK5q/trace_packed_950.bin | fwd med_ms=0.4522
+11:48:35 IST TRACE DONE

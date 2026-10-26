@@ -1,0 +1,7 @@
+17:24:58 IST start | Python 3.12.3 | disk free 70G
+torch 2.14.1+cu130 | CUDA 13.0 | triton 3.8.0
+liger_kernel (no __version__)
+cut_cross_entropy 25.1.1
+transformers 5.20.2
+imports used by loss_rivals_1017.py: OK
+17:26:44 IST SETUP DONE | env size 5.6G | disk free 55G

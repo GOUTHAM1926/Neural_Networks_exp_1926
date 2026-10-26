@@ -1,0 +1,310 @@
+torch 2.14.1+cu130 cuda 13.0 cudnn 92400 | gpu NVIDIA H200
+gpu NVIDIA H200 uuid b92d5b0e-5ff3-a7d8-3328-32e0c91b86b7 | expected (not given)
+MEM layout=real_rows_0-7 fa3_varlen fwd+bwd peak extra 901 MiB
+/root/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 17) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_fwd_sm90FlashAttentionForwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmem_o_i641_0088'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+/root/gautam_k/benv/lib/python3.12/site-packages/nvidia_cutlass_dsl/dsl_packages/cutlass/base_dsl/dsl.py:2300: UserWarning: Argument aux_data (position 21) cannot be converted to a JitArgument for function 'cutlass___call___flash_attncuteflash_bwd_sm90FlashAttentionBackwardSm90_object_at__Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi64i641_Tensorgmemoi641_Tenso'. Its type `<class 'flash_attn.cute.utils.AuxData'>` is not supported. If the value is known at compile time, annotate it: `aux_data: Constexpr`. Otherwise, implement the `JitArgument` or `DynamicExpression` protocol for type `<class 'flash_attn.cute.utils.AuxData'>`, or register a custom argument adapter.
+  exe_args, func_types, adapted_args = self.generate_mlir_function_types(
+GATE layout=real_rows_0-7 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 4.11e-04 dQ 1.92e-03 dK 2.73e-03 dV 1.61e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_0-7 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.22e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.47e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_0-7 cudnn_varlen_exp: rel O 1.64e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_0-7 cudnn_varlen_exp fwd+bwd peak extra 1407 MiB
+GATE layout=real_rows_0-7 cudnn_varlen_expsum: rel O 1.64e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_0-7 cudnn_varlen_expsum fwd+bwd peak extra 1695 MiB
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: Memory efficient kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1240.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: Memory Efficient attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:600.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: Flash attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1242.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: Flash Attention does not support non-null attn_mask. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:281.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: cuDNN attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1244.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: cuDNN attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:922.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+  [real_rows_0-7] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1,
+  [real_rows_0-7] sdpa flash mask unavailable: RuntimeError: No available kernel. Aborting execution.
+BENCH layout=real_rows_0-7 impl=fa3_varlen dir=fwd med_ms=1.0858 p10_ms=1.0781 p90_ms=1.0951 tflops=516.0
+BENCH layout=real_rows_0-7 impl=fa3_varlen dir=bwd med_ms=2.9735 p10_ms=2.9656 p90_ms=2.9859 tflops=471.0
+BENCH layout=real_rows_0-7 impl=fa3_varlen_det dir=fwd med_ms=0.9470 p10_ms=0.9438 p90_ms=0.9570 tflops=591.6
+BENCH layout=real_rows_0-7 impl=fa3_varlen_det dir=bwd med_ms=3.4179 p10_ms=3.4092 p90_ms=3.4298 tflops=409.8
+BENCH layout=real_rows_0-7 impl=fa4_varlen dir=fwd med_ms=1.1358 p10_ms=1.1299 p90_ms=1.1465 tflops=493.2
+BENCH layout=real_rows_0-7 impl=fa4_varlen dir=bwd med_ms=2.8949 p10_ms=2.8881 p90_ms=2.9054 tflops=483.8
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_exp dir=fwd med_ms=1.2350 p10_ms=1.2286 p90_ms=1.2437 tflops=453.6
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_exp dir=bwd med_ms=3.2022 p10_ms=3.1904 p90_ms=3.2134 tflops=437.4
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_expsum dir=fwd med_ms=1.3940 p10_ms=1.3914 p90_ms=1.3993 tflops=401.9
+BENCH layout=real_rows_0-7 impl=cudnn_varlen_expsum dir=bwd med_ms=3.3869 p10_ms=3.3771 p90_ms=3.3989 tflops=413.5
+BENCH layout=real_rows_0-7 impl=torch_varlen dir=fwd med_ms=1.9091 p10_ms=1.8964 p90_ms=1.9286 tflops=293.4
+BENCH layout=real_rows_0-7 impl=torch_varlen dir=bwd med_ms=6.2269 p10_ms=6.1457 p90_ms=6.3803 tflops=224.9
+BENCH layout=real_rows_0-7 impl=flex_docmask dir=fwd med_ms=1.8860 p10_ms=1.8744 p90_ms=1.8957 tflops=297.0
+BENCH layout=real_rows_0-7 impl=flex_docmask dir=bwd med_ms=4.5019 p10_ms=4.4495 p90_ms=4.6428 tflops=311.1
+BENCH layout=real_rows_0-7 impl=sdpa_flash_fullrow dir=fwd med_ms=1.9737 p10_ms=1.9576 p90_ms=1.9880 tflops=283.8
+BENCH layout=real_rows_0-7 impl=sdpa_flash_fullrow dir=bwd med_ms=6.4625 p10_ms=6.3680 p90_ms=6.6414 tflops=216.7
+BENCH layout=real_rows_0-7 impl=sdpa_cudnn_fullrow dir=fwd med_ms=1.1426 p10_ms=1.1394 p90_ms=1.1542 tflops=490.3
+BENCH layout=real_rows_0-7 impl=sdpa_cudnn_fullrow dir=bwd med_ms=3.5340 p10_ms=3.5087 p90_ms=3.5808 tflops=396.3
+BENCH layout=real_rows_0-7 impl=sdpa_cudnn_mask dir=fwd med_ms=3.9708 p10_ms=3.9555 p90_ms=3.9870 tflops=141.1
+BENCH layout=real_rows_0-7 impl=sdpa_cudnn_mask dir=bwd med_ms=11.0593 p10_ms=10.9806 p90_ms=11.2333 tflops=126.6
+BENCH layout=real_rows_0-7 impl=sdpa_efficient_fullrow dir=fwd med_ms=3.7770 p10_ms=3.7616 p90_ms=3.7970 tflops=148.3
+BENCH layout=real_rows_0-7 impl=sdpa_efficient_fullrow dir=bwd med_ms=13.0998 p10_ms=12.9985 p90_ms=13.2798 tflops=106.9
+BENCH layout=real_rows_0-7 impl=sdpa_efficient_mask dir=fwd med_ms=9.7468 p10_ms=9.7320 p90_ms=9.7730 tflops=57.5
+BENCH layout=real_rows_0-7 impl=sdpa_efficient_mask dir=bwd med_ms=26.4944 p10_ms=26.4027 p90_ms=26.6302 tflops=52.9
+AGREE layout=real_rows_0-7 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_0-7 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_0-7 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_0-7 torch_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_0-7 flex_docmask vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 1.562e-02
+AGREE layout=real_rows_0-7 sdpa_cudnn_mask vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_0-7 sdpa_efficient_mask vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+MEM layout=real_rows_752-759 fa3_varlen fwd+bwd peak extra 904 MiB
+GATE layout=real_rows_752-759 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 4.73e-04 dQ 1.64e-03 dK 2.67e-03 dV 1.53e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_752-759 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.29e+00 dQ 1.13e+00 dK 1.36e+00 dV 1.16e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_752-759 cudnn_varlen_exp: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_exp fwd+bwd peak extra 905 MiB
+GATE layout=real_rows_752-759 cudnn_varlen_expsum: rel O 9.47e-04 dQ 6.58e-03 dK 5.35e-03 dV 6.13e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_752-759 cudnn_varlen_expsum fwd+bwd peak extra 1193 MiB
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: Memory efficient kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1240.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: Memory Efficient attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:600.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: Flash attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1242.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: Flash Attention does not support non-null attn_mask. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/sdp_utils_cpp.h:281.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: cuDNN attention kernel not used because: (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:1244.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+/root/gautam_k/step6/bench_step6_libs.py:452: UserWarning: cuDNN attention has been runtime disabled. (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/native/transformers/cuda/sdp_utils.cpp:922.)
+  return F.scaled_dot_product_attention(a, b_, c, attn_mask=blk, scale=SCALE, enable_gqa=True)
+  [real_rows_752-759] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = 
+  [real_rows_752-759] sdpa flash mask unavailable: RuntimeError: No available kernel. Aborting execution.
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=fwd med_ms=0.6241 p10_ms=0.6193 p90_ms=0.6371 tflops=340.3
+BENCH layout=real_rows_752-759 impl=fa3_varlen dir=bwd med_ms=1.6080 p10_ms=1.6012 p90_ms=1.6188 tflops=330.2
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=fwd med_ms=0.4972 p10_ms=0.4933 p90_ms=0.5101 tflops=427.1
+BENCH layout=real_rows_752-759 impl=fa3_varlen_det dir=bwd med_ms=1.8348 p10_ms=1.8300 p90_ms=1.8434 tflops=289.4
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=fwd med_ms=0.6703 p10_ms=0.6609 p90_ms=0.6812 tflops=316.8
+BENCH layout=real_rows_752-759 impl=fa4_varlen dir=bwd med_ms=1.5724 p10_ms=1.5671 p90_ms=1.5834 tflops=337.7
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_exp dir=fwd med_ms=0.6554 p10_ms=0.6500 p90_ms=0.6677 tflops=324.0
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_exp dir=bwd med_ms=1.7666 p10_ms=1.7498 p90_ms=1.7840 tflops=300.5
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_expsum dir=fwd med_ms=0.8161 p10_ms=0.8136 p90_ms=0.8257 tflops=260.2
+BENCH layout=real_rows_752-759 impl=cudnn_varlen_expsum dir=bwd med_ms=1.8713 p10_ms=1.8623 p90_ms=1.8831 tflops=283.7
+BENCH layout=real_rows_752-759 impl=torch_varlen dir=fwd med_ms=0.9476 p10_ms=0.9389 p90_ms=0.9564 tflops=224.1
+BENCH layout=real_rows_752-759 impl=torch_varlen dir=bwd med_ms=3.2336 p10_ms=3.1922 p90_ms=3.2943 tflops=164.2
+BENCH layout=real_rows_752-759 impl=flex_docmask dir=fwd med_ms=1.0536 p10_ms=1.0450 p90_ms=1.0725 tflops=201.6
+BENCH layout=real_rows_752-759 impl=flex_docmask dir=bwd med_ms=2.3997 p10_ms=2.3830 p90_ms=2.4238 tflops=221.2
+BENCH layout=real_rows_752-759 impl=sdpa_flash_fullrow dir=fwd med_ms=1.9580 p10_ms=1.9414 p90_ms=1.9703 tflops=108.5
+BENCH layout=real_rows_752-759 impl=sdpa_flash_fullrow dir=bwd med_ms=6.3021 p10_ms=6.2936 p90_ms=6.3263 tflops=84.2
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_fullrow dir=fwd med_ms=1.1385 p10_ms=1.1352 p90_ms=1.1460 tflops=186.5
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_fullrow dir=bwd med_ms=3.5099 p10_ms=3.4920 p90_ms=3.5383 tflops=151.3
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_mask dir=fwd med_ms=3.9445 p10_ms=3.9246 p90_ms=3.9826 tflops=53.8
+BENCH layout=real_rows_752-759 impl=sdpa_cudnn_mask dir=bwd med_ms=10.9192 p10_ms=10.9002 p90_ms=10.9459 tflops=48.6
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_fullrow dir=fwd med_ms=3.7459 p10_ms=3.7315 p90_ms=3.7647 tflops=56.7
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_fullrow dir=bwd med_ms=12.9091 p10_ms=12.8930 p90_ms=12.9313 tflops=41.1
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_mask dir=fwd med_ms=9.6508 p10_ms=9.6375 p90_ms=9.6896 tflops=22.0
+BENCH layout=real_rows_752-759 impl=sdpa_efficient_mask dir=bwd med_ms=26.2722 p10_ms=26.2094 p90_ms=26.3157 tflops=20.2
+AGREE layout=real_rows_752-759 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_752-759 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 1.562e-02
+AGREE layout=real_rows_752-759 flex_docmask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 1.562e-02
+AGREE layout=real_rows_752-759 sdpa_cudnn_mask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 3.125e-02
+AGREE layout=real_rows_752-759 sdpa_efficient_mask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 3.125e-02
+MEM layout=real_rows_1504-1511 fa3_varlen fwd+bwd peak extra 976 MiB
+GATE layout=real_rows_1504-1511 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 9.06e-04 dQ 1.56e-03 dK 2.55e-03 dV 3.01e-03 (tol 2e-02) -> PASS
+GATE layout=real_rows_1504-1511 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.38e+00 dQ 1.08e+00 dK 1.26e+00 dV 1.36e+00 (tol 2e-02) -> FAIL
+GATE layout=real_rows_1504-1511 cudnn_varlen_exp: rel O 9.06e-04 dQ 6.25e-03 dK 5.10e-03 dV 6.02e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_1504-1511 cudnn_varlen_exp fwd+bwd peak extra 919 MiB
+GATE layout=real_rows_1504-1511 cudnn_varlen_expsum: rel O 9.06e-04 dQ 6.25e-03 dK 5.10e-03 dV 6.02e-03 (tol 2e-02) -> PASS
+MEM layout=real_rows_1504-1511 cudnn_varlen_expsum fwd+bwd peak extra 1206 MiB
+  [real_rows_1504-1511] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] 
+  [real_rows_1504-1511] sdpa flash mask unavailable: RuntimeError: No available kernel. Aborting execution.
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen dir=fwd med_ms=0.4490 p10_ms=0.4425 p90_ms=0.4696 tflops=149.2
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen dir=bwd med_ms=1.2856 p10_ms=1.2791 p90_ms=1.2992 tflops=130.3
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen_det dir=fwd med_ms=0.3221 p10_ms=0.3185 p90_ms=0.3362 tflops=208.0
+BENCH layout=real_rows_1504-1511 impl=fa3_varlen_det dir=bwd med_ms=1.3912 p10_ms=1.3839 p90_ms=1.4025 tflops=120.4
+BENCH layout=real_rows_1504-1511 impl=fa4_varlen dir=fwd med_ms=0.5103 p10_ms=0.5039 p90_ms=0.5336 tflops=131.3
+BENCH layout=real_rows_1504-1511 impl=fa4_varlen dir=bwd med_ms=1.1886 p10_ms=1.1838 p90_ms=1.1987 tflops=140.9
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_exp dir=fwd med_ms=0.4711 p10_ms=0.4638 p90_ms=0.4953 tflops=142.2
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_exp dir=bwd med_ms=1.1266 p10_ms=1.1185 p90_ms=1.1446 tflops=148.7
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_expsum dir=fwd med_ms=0.6327 p10_ms=0.6301 p90_ms=0.6430 tflops=105.9
+BENCH layout=real_rows_1504-1511 impl=cudnn_varlen_expsum dir=bwd med_ms=1.2963 p10_ms=1.2920 p90_ms=1.3130 tflops=129.2
+BENCH layout=real_rows_1504-1511 impl=torch_varlen dir=fwd med_ms=0.7010 p10_ms=0.6944 p90_ms=0.7148 tflops=95.6
+BENCH layout=real_rows_1504-1511 impl=torch_varlen dir=bwd med_ms=2.1745 p10_ms=2.1167 p90_ms=2.2440 tflops=77.0
+BENCH layout=real_rows_1504-1511 impl=flex_docmask dir=fwd med_ms=0.7418 p10_ms=0.7337 p90_ms=0.7669 tflops=90.3
+BENCH layout=real_rows_1504-1511 impl=flex_docmask dir=bwd med_ms=1.5891 p10_ms=1.5713 p90_ms=1.6197 tflops=105.4
+BENCH layout=real_rows_1504-1511 impl=sdpa_flash_fullrow dir=fwd med_ms=1.9537 p10_ms=1.9408 p90_ms=1.9733 tflops=34.3
+BENCH layout=real_rows_1504-1511 impl=sdpa_flash_fullrow dir=bwd med_ms=6.3026 p10_ms=6.2927 p90_ms=6.3287 tflops=26.6
+BENCH layout=real_rows_1504-1511 impl=sdpa_cudnn_fullrow dir=fwd med_ms=1.1372 p10_ms=1.1344 p90_ms=1.1472 tflops=58.9
+BENCH layout=real_rows_1504-1511 impl=sdpa_cudnn_fullrow dir=bwd med_ms=3.5045 p10_ms=3.4884 p90_ms=3.5414 tflops=47.8
+BENCH layout=real_rows_1504-1511 impl=sdpa_cudnn_mask dir=fwd med_ms=3.9449 p10_ms=3.9261 p90_ms=3.9792 tflops=17.0
+BENCH layout=real_rows_1504-1511 impl=sdpa_cudnn_mask dir=bwd med_ms=10.9206 p10_ms=10.9000 p90_ms=10.9601 tflops=15.3
+BENCH layout=real_rows_1504-1511 impl=sdpa_efficient_fullrow dir=fwd med_ms=3.7492 p10_ms=3.7358 p90_ms=3.7660 tflops=17.9
+BENCH layout=real_rows_1504-1511 impl=sdpa_efficient_fullrow dir=bwd med_ms=12.9110 p10_ms=12.8976 p90_ms=12.9430 tflops=13.0
+BENCH layout=real_rows_1504-1511 impl=sdpa_efficient_mask dir=fwd med_ms=9.6640 p10_ms=9.6501 p90_ms=9.6762 tflops=6.9
+BENCH layout=real_rows_1504-1511 impl=sdpa_efficient_mask dir=bwd med_ms=26.2894 p10_ms=26.2234 p90_ms=26.3371 tflops=6.4
+AGREE layout=real_rows_1504-1511 fa4_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=real_rows_1504-1511 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_1504-1511 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_1504-1511 torch_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 1.562e-02
+AGREE layout=real_rows_1504-1511 flex_docmask vs fa3_varlen: max|dO_out| 1.562e-02  max|d dQ| 1.562e-02
+AGREE layout=real_rows_1504-1511 sdpa_cudnn_mask vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+AGREE layout=real_rows_1504-1511 sdpa_efficient_mask vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 3.125e-02
+MEM layout=uniform_512 fa3_varlen fwd+bwd peak extra 956 MiB
+GATE layout=uniform_512 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 1.81e-03 dQ 1.80e-03 dK 2.58e-03 dV 3.03e-03 (tol 2e-02) -> PASS
+GATE layout=uniform_512 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.24e+00 dK 1.44e+00 dV 1.57e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_512 cudnn_varlen_exp: rel O 9.06e-04 dQ 7.19e-03 dK 5.15e-03 dV 6.06e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_512 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+GATE layout=uniform_512 cudnn_varlen_expsum: rel O 9.06e-04 dQ 7.19e-03 dK 5.15e-03 dV 6.06e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_512 cudnn_varlen_expsum fwd+bwd peak extra 1157 MiB
+  [uniform_512] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1, -
+  [uniform_512] sdpa flash mask unavailable: RuntimeError: No available kernel. Aborting execution.
+BENCH layout=uniform_512 impl=fa3_varlen dir=fwd med_ms=0.4452 p10_ms=0.4400 p90_ms=0.4581 tflops=173.7
+BENCH layout=uniform_512 impl=fa3_varlen dir=bwd med_ms=1.2200 p10_ms=1.2119 p90_ms=1.2390 tflops=158.4
+BENCH layout=uniform_512 impl=fa3_varlen_det dir=fwd med_ms=0.3172 p10_ms=0.3146 p90_ms=0.3296 tflops=243.8
+BENCH layout=uniform_512 impl=fa3_varlen_det dir=bwd med_ms=1.3237 p10_ms=1.3178 p90_ms=1.3361 tflops=146.0
+BENCH layout=uniform_512 impl=fa4_varlen dir=fwd med_ms=0.4983 p10_ms=0.4933 p90_ms=0.5064 tflops=155.1
+BENCH layout=uniform_512 impl=fa4_varlen dir=bwd med_ms=1.1233 p10_ms=1.1183 p90_ms=1.1306 tflops=172.1
+BENCH layout=uniform_512 impl=cudnn_varlen_exp dir=fwd med_ms=0.4284 p10_ms=0.4226 p90_ms=0.4544 tflops=180.4
+BENCH layout=uniform_512 impl=cudnn_varlen_exp dir=bwd med_ms=1.0614 p10_ms=1.0564 p90_ms=1.0738 tflops=182.1
+BENCH layout=uniform_512 impl=cudnn_varlen_expsum dir=fwd med_ms=0.5991 p10_ms=0.5954 p90_ms=0.6132 tflops=129.0
+BENCH layout=uniform_512 impl=cudnn_varlen_expsum dir=bwd med_ms=1.2520 p10_ms=1.2488 p90_ms=1.2584 tflops=154.4
+BENCH layout=uniform_512 impl=torch_varlen dir=fwd med_ms=0.6415 p10_ms=0.6366 p90_ms=0.6590 tflops=120.5
+BENCH layout=uniform_512 impl=torch_varlen dir=bwd med_ms=2.1320 p10_ms=2.0850 p90_ms=2.2036 tflops=90.7
+BENCH layout=uniform_512 impl=flex_docmask dir=fwd med_ms=0.6569 p10_ms=0.6515 p90_ms=0.6825 tflops=117.7
+BENCH layout=uniform_512 impl=flex_docmask dir=bwd med_ms=1.3454 p10_ms=1.3163 p90_ms=1.3700 tflops=143.7
+BENCH layout=uniform_512 impl=sdpa_flash_fullrow dir=fwd med_ms=1.9555 p10_ms=1.9372 p90_ms=1.9748 tflops=39.5
+BENCH layout=uniform_512 impl=sdpa_flash_fullrow dir=bwd med_ms=6.2907 p10_ms=6.2837 p90_ms=6.3086 tflops=30.7
+BENCH layout=uniform_512 impl=sdpa_cudnn_fullrow dir=fwd med_ms=1.1382 p10_ms=1.1345 p90_ms=1.1531 tflops=67.9
+BENCH layout=uniform_512 impl=sdpa_cudnn_fullrow dir=bwd med_ms=3.5067 p10_ms=3.4927 p90_ms=3.5549 tflops=55.1
+BENCH layout=uniform_512 impl=sdpa_cudnn_mask dir=fwd med_ms=3.9380 p10_ms=3.9203 p90_ms=3.9679 tflops=19.6
+BENCH layout=uniform_512 impl=sdpa_cudnn_mask dir=bwd med_ms=10.9088 p10_ms=10.8923 p90_ms=10.9426 tflops=17.7
+BENCH layout=uniform_512 impl=sdpa_efficient_fullrow dir=fwd med_ms=3.7432 p10_ms=3.7300 p90_ms=3.7595 tflops=20.7
+BENCH layout=uniform_512 impl=sdpa_efficient_fullrow dir=bwd med_ms=12.9018 p10_ms=12.8873 p90_ms=12.9334 tflops=15.0
+BENCH layout=uniform_512 impl=sdpa_efficient_mask dir=fwd med_ms=9.6426 p10_ms=9.6316 p90_ms=9.6615 tflops=8.0
+BENCH layout=uniform_512 impl=sdpa_efficient_mask dir=bwd med_ms=26.2722 p10_ms=26.2060 p90_ms=26.3174 tflops=7.4
+AGREE layout=uniform_512 fa4_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_512 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_512 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_512 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_512 flex_docmask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 1.562e-02
+AGREE layout=uniform_512 sdpa_cudnn_mask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_512 sdpa_efficient_mask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+MEM layout=uniform_1024 fa3_varlen fwd+bwd peak extra 914 MiB
+GATE layout=uniform_1024 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 1.81e-03 dQ 1.84e-03 dK 2.72e-03 dV 1.56e-03 (tol 2e-02) -> PASS
+GATE layout=uniform_1024 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.45e+00 dQ 1.26e+00 dK 1.35e+00 dV 1.44e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_1024 cudnn_varlen_exp: rel O 9.06e-04 dQ 7.35e-03 dK 5.43e-03 dV 6.25e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_1024 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+GATE layout=uniform_1024 cudnn_varlen_expsum: rel O 9.06e-04 dQ 7.35e-03 dK 5.43e-03 dV 6.25e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_1024 cudnn_varlen_expsum fwd+bwd peak extra 1158 MiB
+  [uniform_1024] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1, 
+  [uniform_1024] sdpa flash mask unavailable: RuntimeError: No available kernel. Aborting execution.
+BENCH layout=uniform_1024 impl=fa3_varlen dir=fwd med_ms=0.5467 p10_ms=0.5388 p90_ms=0.5621 tflops=282.8
+BENCH layout=uniform_1024 impl=fa3_varlen dir=bwd med_ms=1.4108 p10_ms=1.4036 p90_ms=1.4235 tflops=274.0
+BENCH layout=uniform_1024 impl=fa3_varlen_det dir=fwd med_ms=0.4164 p10_ms=0.4113 p90_ms=0.4284 tflops=371.3
+BENCH layout=uniform_1024 impl=fa3_varlen_det dir=bwd med_ms=1.5959 p10_ms=1.5916 p90_ms=1.6062 tflops=242.2
+BENCH layout=uniform_1024 impl=fa4_varlen dir=fwd med_ms=0.5891 p10_ms=0.5828 p90_ms=0.5995 tflops=262.5
+BENCH layout=uniform_1024 impl=fa4_varlen dir=bwd med_ms=1.3452 p10_ms=1.3401 p90_ms=1.3551 tflops=287.4
+BENCH layout=uniform_1024 impl=cudnn_varlen_exp dir=fwd med_ms=0.5456 p10_ms=0.5375 p90_ms=0.5622 tflops=283.4
+BENCH layout=uniform_1024 impl=cudnn_varlen_exp dir=bwd med_ms=1.3758 p10_ms=1.3672 p90_ms=1.3926 tflops=281.0
+BENCH layout=uniform_1024 impl=cudnn_varlen_expsum dir=fwd med_ms=0.7113 p10_ms=0.7090 p90_ms=0.7147 tflops=217.4
+BENCH layout=uniform_1024 impl=cudnn_varlen_expsum dir=bwd med_ms=1.5643 p10_ms=1.5596 p90_ms=1.5740 tflops=247.1
+BENCH layout=uniform_1024 impl=torch_varlen dir=fwd med_ms=0.8041 p10_ms=0.7981 p90_ms=0.8180 tflops=192.3
+BENCH layout=uniform_1024 impl=torch_varlen dir=bwd med_ms=2.7593 p10_ms=2.6862 p90_ms=2.8229 tflops=140.1
+BENCH layout=uniform_1024 impl=flex_docmask dir=fwd med_ms=0.8459 p10_ms=0.8365 p90_ms=0.8668 tflops=182.8
+BENCH layout=uniform_1024 impl=flex_docmask dir=bwd med_ms=1.7982 p10_ms=1.7763 p90_ms=1.8395 tflops=215.0
+BENCH layout=uniform_1024 impl=sdpa_flash_fullrow dir=fwd med_ms=1.9527 p10_ms=1.9365 p90_ms=1.9691 tflops=79.2
+BENCH layout=uniform_1024 impl=sdpa_flash_fullrow dir=bwd med_ms=6.2984 p10_ms=6.2847 p90_ms=6.3185 tflops=61.4
+BENCH layout=uniform_1024 impl=sdpa_cudnn_fullrow dir=fwd med_ms=1.1366 p10_ms=1.1336 p90_ms=1.1500 tflops=136.0
+BENCH layout=uniform_1024 impl=sdpa_cudnn_fullrow dir=bwd med_ms=3.5087 p10_ms=3.4907 p90_ms=3.5458 tflops=110.2
+BENCH layout=uniform_1024 impl=sdpa_cudnn_mask dir=fwd med_ms=3.9502 p10_ms=3.9262 p90_ms=3.9889 tflops=39.1
+BENCH layout=uniform_1024 impl=sdpa_cudnn_mask dir=bwd med_ms=10.9140 p10_ms=10.8888 p90_ms=10.9524 tflops=35.4
+BENCH layout=uniform_1024 impl=sdpa_efficient_fullrow dir=fwd med_ms=3.7484 p10_ms=3.7308 p90_ms=3.7660 tflops=41.2
+BENCH layout=uniform_1024 impl=sdpa_efficient_fullrow dir=bwd med_ms=12.9008 p10_ms=12.8820 p90_ms=12.9416 tflops=30.0
+BENCH layout=uniform_1024 impl=sdpa_efficient_mask dir=fwd med_ms=9.6442 p10_ms=9.6308 p90_ms=9.6583 tflops=16.0
+BENCH layout=uniform_1024 impl=sdpa_efficient_mask dir=bwd med_ms=26.2680 p10_ms=26.2192 p90_ms=26.3333 tflops=14.7
+AGREE layout=uniform_1024 fa4_varlen vs fa3_varlen: max|dO_out| 7.812e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_1024 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_1024 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_1024 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_1024 flex_docmask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 1.562e-02
+AGREE layout=uniform_1024 sdpa_cudnn_mask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_1024 sdpa_efficient_mask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+MEM layout=uniform_2048 fa3_varlen fwd+bwd peak extra 892 MiB
+GATE layout=uniform_2048 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 1.10e-03 dQ 1.92e-03 dK 2.73e-03 dV 7.76e-04 (tol 2e-02) -> PASS
+GATE layout=uniform_2048 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.54e+00 dQ 1.32e+00 dK 1.35e+00 dV 1.43e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_2048 cudnn_varlen_exp: rel O 1.10e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.21e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_2048 cudnn_varlen_exp fwd+bwd peak extra 869 MiB
+GATE layout=uniform_2048 cudnn_varlen_expsum: rel O 1.10e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.21e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_2048 cudnn_varlen_expsum fwd+bwd peak extra 1157 MiB
+  [uniform_2048] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1, 
+  [uniform_2048] sdpa flash mask unavailable: RuntimeError: No available kernel. Aborting execution.
+BENCH layout=uniform_2048 impl=fa3_varlen dir=fwd med_ms=0.7470 p10_ms=0.7368 p90_ms=0.7572 tflops=414.0
+BENCH layout=uniform_2048 impl=fa3_varlen dir=bwd med_ms=1.9399 p10_ms=1.9309 p90_ms=1.9520 tflops=398.5
+BENCH layout=uniform_2048 impl=fa3_varlen_det dir=fwd med_ms=0.6119 p10_ms=0.6087 p90_ms=0.6236 tflops=505.3
+BENCH layout=uniform_2048 impl=fa3_varlen_det dir=bwd med_ms=2.2258 p10_ms=2.2191 p90_ms=2.2389 tflops=347.3
+BENCH layout=uniform_2048 impl=fa4_varlen dir=fwd med_ms=0.7878 p10_ms=0.7824 p90_ms=0.7990 tflops=392.5
+BENCH layout=uniform_2048 impl=fa4_varlen dir=bwd med_ms=1.9141 p10_ms=1.9082 p90_ms=1.9255 tflops=403.9
+BENCH layout=uniform_2048 impl=cudnn_varlen_exp dir=fwd med_ms=0.7919 p10_ms=0.7833 p90_ms=0.8027 tflops=390.5
+BENCH layout=uniform_2048 impl=cudnn_varlen_exp dir=bwd med_ms=2.0510 p10_ms=2.0404 p90_ms=2.0622 tflops=376.9
+BENCH layout=uniform_2048 impl=cudnn_varlen_expsum dir=fwd med_ms=0.9579 p10_ms=0.9548 p90_ms=0.9625 tflops=322.8
+BENCH layout=uniform_2048 impl=cudnn_varlen_expsum dir=bwd med_ms=2.2369 p10_ms=2.2319 p90_ms=2.2478 tflops=345.6
+BENCH layout=uniform_2048 impl=torch_varlen dir=fwd med_ms=1.1626 p10_ms=1.1545 p90_ms=1.1755 tflops=266.0
+BENCH layout=uniform_2048 impl=torch_varlen dir=bwd med_ms=4.0040 p10_ms=3.9398 p90_ms=4.0541 tflops=193.1
+BENCH layout=uniform_2048 impl=flex_docmask dir=fwd med_ms=1.2159 p10_ms=1.2036 p90_ms=1.2277 tflops=254.3
+BENCH layout=uniform_2048 impl=flex_docmask dir=bwd med_ms=2.7502 p10_ms=2.7262 p90_ms=2.7809 tflops=281.1
+BENCH layout=uniform_2048 impl=sdpa_flash_fullrow dir=fwd med_ms=1.9602 p10_ms=1.9438 p90_ms=1.9762 tflops=157.8
+BENCH layout=uniform_2048 impl=sdpa_flash_fullrow dir=bwd med_ms=6.3028 p10_ms=6.2942 p90_ms=6.3489 tflops=122.7
+BENCH layout=uniform_2048 impl=sdpa_cudnn_fullrow dir=fwd med_ms=1.1406 p10_ms=1.1371 p90_ms=1.1510 tflops=271.1
+BENCH layout=uniform_2048 impl=sdpa_cudnn_fullrow dir=bwd med_ms=3.5196 p10_ms=3.5015 p90_ms=3.5545 tflops=219.7
+BENCH layout=uniform_2048 impl=sdpa_cudnn_mask dir=fwd med_ms=3.9582 p10_ms=3.9273 p90_ms=3.9875 tflops=78.1
+BENCH layout=uniform_2048 impl=sdpa_cudnn_mask dir=bwd med_ms=10.9262 p10_ms=10.9019 p90_ms=10.9790 tflops=70.8
+BENCH layout=uniform_2048 impl=sdpa_efficient_fullrow dir=fwd med_ms=3.7526 p10_ms=3.7330 p90_ms=3.7823 tflops=82.4
+BENCH layout=uniform_2048 impl=sdpa_efficient_fullrow dir=bwd med_ms=12.9223 p10_ms=12.8914 p90_ms=13.0220 tflops=59.8
+BENCH layout=uniform_2048 impl=sdpa_efficient_mask dir=fwd med_ms=9.6530 p10_ms=9.6396 p90_ms=9.7387 tflops=32.0
+BENCH layout=uniform_2048 impl=sdpa_efficient_mask dir=bwd med_ms=26.2940 p10_ms=26.2145 p90_ms=26.4647 tflops=29.4
+AGREE layout=uniform_2048 fa4_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_2048 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_2048 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_2048 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_2048 flex_docmask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 1.562e-02
+AGREE layout=uniform_2048 sdpa_cudnn_mask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_2048 sdpa_efficient_mask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+MEM layout=uniform_4096 fa3_varlen fwd+bwd peak extra 882 MiB
+GATE layout=uniform_4096 CONTROL fa4_varlen vs fa3 (normal rounding): rel O 5.53e-04 dQ 1.92e-03 dK 2.73e-03 dV 8.06e-04 (tol 2e-02) -> PASS
+GATE layout=uniform_4096 NEGATIVE wrong head mapping h%6 (must FAIL): rel O 1.49e+00 dQ 1.32e+00 dK 1.36e+00 dV 1.17e+00 (tol 2e-02) -> FAIL
+GATE layout=uniform_4096 cudnn_varlen_exp: rel O 1.11e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_4096 cudnn_varlen_exp fwd+bwd peak extra 870 MiB
+GATE layout=uniform_4096 cudnn_varlen_expsum: rel O 1.11e-03 dQ 7.69e-03 dK 5.46e-03 dV 6.45e-03 (tol 2e-02) -> PASS
+MEM layout=uniform_4096 cudnn_varlen_expsum fwd+bwd peak extra 1157 MiB
+  [uniform_4096] varlen_attn(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, cu_seq_q: torch.Tensor, cu_seq_k: torch.Tensor | None, max_q: int, max_k: int, *, return_aux: torch.nn.attention.varlen.AuxRequest | None = None, scale: float | None = None, window_size: tuple[int, int] = (-1, 
+  [uniform_4096] sdpa flash mask unavailable: RuntimeError: No available kernel. Aborting execution.
+BENCH layout=uniform_4096 impl=fa3_varlen dir=fwd med_ms=1.1548 p10_ms=1.1473 p90_ms=1.1652 tflops=535.6
+BENCH layout=uniform_4096 impl=fa3_varlen dir=bwd med_ms=3.0617 p10_ms=3.0546 p90_ms=3.0774 tflops=505.0
+BENCH layout=uniform_4096 impl=fa3_varlen_det dir=fwd med_ms=1.0187 p10_ms=1.0161 p90_ms=1.0277 tflops=607.1
+BENCH layout=uniform_4096 impl=fa3_varlen_det dir=bwd med_ms=3.5531 p10_ms=3.5375 p90_ms=3.5908 tflops=435.2
+BENCH layout=uniform_4096 impl=fa4_varlen dir=fwd med_ms=1.2046 p10_ms=1.1997 p90_ms=1.2162 tflops=513.4
+BENCH layout=uniform_4096 impl=fa4_varlen dir=bwd med_ms=3.0710 p10_ms=3.0625 p90_ms=3.0817 tflops=503.5
+BENCH layout=uniform_4096 impl=cudnn_varlen_exp dir=fwd med_ms=1.2912 p10_ms=1.2852 p90_ms=1.3030 tflops=479.0
+BENCH layout=uniform_4096 impl=cudnn_varlen_exp dir=bwd med_ms=3.4079 p10_ms=3.3989 p90_ms=3.4212 tflops=453.7
+BENCH layout=uniform_4096 impl=cudnn_varlen_expsum dir=fwd med_ms=1.4561 p10_ms=1.4533 p90_ms=1.4634 tflops=424.8
+BENCH layout=uniform_4096 impl=cudnn_varlen_expsum dir=bwd med_ms=3.6011 p10_ms=3.5911 p90_ms=3.6140 tflops=429.4
+BENCH layout=uniform_4096 impl=torch_varlen dir=fwd med_ms=2.0171 p10_ms=2.0017 p90_ms=2.0356 tflops=306.6
+BENCH layout=uniform_4096 impl=torch_varlen dir=bwd med_ms=6.5581 p10_ms=6.4674 p90_ms=6.6116 tflops=235.8
+BENCH layout=uniform_4096 impl=flex_docmask dir=fwd med_ms=1.9586 p10_ms=1.9481 p90_ms=1.9682 tflops=315.8
+BENCH layout=uniform_4096 impl=flex_docmask dir=bwd med_ms=4.7235 p10_ms=4.6405 p90_ms=4.7836 tflops=327.3
+BENCH layout=uniform_4096 impl=sdpa_flash_fullrow dir=fwd med_ms=1.9659 p10_ms=1.9532 p90_ms=1.9822 tflops=314.6
+BENCH layout=uniform_4096 impl=sdpa_flash_fullrow dir=bwd med_ms=6.4624 p10_ms=6.3631 p90_ms=6.5308 tflops=239.3
+BENCH layout=uniform_4096 impl=sdpa_cudnn_fullrow dir=fwd med_ms=1.1452 p10_ms=1.1420 p90_ms=1.1537 tflops=540.1
+BENCH layout=uniform_4096 impl=sdpa_cudnn_fullrow dir=bwd med_ms=3.5316 p10_ms=3.5126 p90_ms=3.5559 tflops=437.8
+BENCH layout=uniform_4096 impl=sdpa_cudnn_mask dir=fwd med_ms=3.9636 p10_ms=3.9495 p90_ms=3.9892 tflops=156.0
+BENCH layout=uniform_4096 impl=sdpa_cudnn_mask dir=bwd med_ms=11.0774 p10_ms=10.9848 p90_ms=11.1801 tflops=139.6
+BENCH layout=uniform_4096 impl=sdpa_efficient_fullrow dir=fwd med_ms=3.7754 p10_ms=3.7584 p90_ms=3.7879 tflops=163.8
+BENCH layout=uniform_4096 impl=sdpa_efficient_fullrow dir=bwd med_ms=13.0635 p10_ms=12.9949 p90_ms=13.2572 tflops=118.4
+BENCH layout=uniform_4096 impl=sdpa_efficient_mask dir=fwd med_ms=9.7464 p10_ms=9.7328 p90_ms=9.8772 tflops=63.5
+BENCH layout=uniform_4096 impl=sdpa_efficient_mask dir=bwd med_ms=26.4493 p10_ms=26.3902 p90_ms=26.6033 tflops=58.5
+AGREE layout=uniform_4096 fa4_varlen vs fa3_varlen: max|dO_out| 1.953e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_4096 cudnn_varlen_exp vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_4096 cudnn_varlen_expsum vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_4096 torch_varlen vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_4096 flex_docmask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 7.812e-03
+AGREE layout=uniform_4096 sdpa_cudnn_mask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02
+AGREE layout=uniform_4096 sdpa_efficient_mask vs fa3_varlen: max|dO_out| 3.906e-03  max|d dQ| 3.125e-02

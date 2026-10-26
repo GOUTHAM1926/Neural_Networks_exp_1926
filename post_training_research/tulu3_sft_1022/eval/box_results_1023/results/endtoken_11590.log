@@ -1,0 +1,20 @@
+200 prompts (first user turn of val chats), prompt length mean 226 tokens
+Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 9437.37it/s]
+[transformers] This is a friendly reminder - the current text generation call has exceeded the model's predefined maximum length (4096). Depending on the model, you may observe exceptions, performance degradation, or nothing at all.
+  32/200 done
+  64/200 done
+  96/200 done
+  128/200 done
+  160/200 done
+  192/200 done
+  200/200 done
+{
+ "n": 200,
+ "max_new": 2048,
+ "end_token_rate": 0.9,
+ "hit_limit_rate": 0.1,
+ "gen_len_mean": 496.71,
+ "gen_len_median": 257.0,
+ "real_len_mean": 384.83,
+ "real_len_median": 255.5
+}

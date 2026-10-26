@@ -1,0 +1,8 @@
+17:24:58 IST setup start | cores 44 | disk free 70G
+17:26:44 IST LOSSENV exit=0 | imports used by loss_rivals_1017.py: OK 17:26:44 IST SETUP DONE | env size 5.6G | disk free 55G 
+17:27:53 IST CKPT DONE | metadata.bin 129127 B md5 5119b20d (expect 129127 / 5119b20d) | data_rank_0.bin 6469415424 B (expect 6469415424)
+17:30:12 IST BENV exit=0 | 17:30:12 IST CHECK torch 2.14.1+cu130 | cuda 13.0 | cudnn 92400 | flash_attn_3 3.0.0 | flash-attn-4 4.0.0b34 | nvidia-cutlass-dsl 4.8.1 | quack-kernels 0.6.5 17:30:12 IST BENV READY | 6.0G 
+17:31:10 IST LIB build exit=0 | libtensor b5c9844c | LossKernels.cu 064590b4 (expect 064590b4) | GQA_fwd_sm90.cu 7e4197ea (expect 7e4197ea)
+17:31:55 IST TRAINER build exit=0 | bluscript_sft_bin 99db45fc | bluscript_sft.cpp 8a4a9776
+17:32:06 IST TVA build exit=0 | test source b7c752b3
+17:32:06 IST SETUP DONE

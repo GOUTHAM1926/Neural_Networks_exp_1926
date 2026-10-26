@@ -1,0 +1,8 @@
+layout real_rows_752-759: 24 segments
+torch 2.14.1+cu130 cudnn 92400 | gpu NVIDIA H200 
+RIVAL mode=packed impl=cudnn iters=2000 fwd_only=0 wall_s=4.39 per_iter_ms=2.1948
+Collecting data...
+Generating '/tmp/nsys-root/nsys-report-a108.qdstrm'
+[1/1] [0%                          ] packed_cudnn_r2.nsys-rep[1/1] [0%                          ] packed_cudnn_r2.nsys-rep[1/1] [1%                          ] packed_cudnn_r2.nsys-rep[1/1] [2%                          ] packed_cudnn_r2.nsys-rep[1/1] [5%                          ] packed_cudnn_r2.nsys-rep[1/1] [7%                          ] packed_cudnn_r2.nsys-rep[1/1] [9%                          ] packed_cudnn_r2.nsys-rep[1/1] [11%                         ] packed_cudnn_r2.nsys-rep[1/1] [13%                         ] packed_cudnn_r2.nsys-rep[1/1] [=15%                        ] packed_cudnn_r2.nsys-rep[1/1] [=17%                        ] packed_cudnn_r2.nsys-rep[1/1] [==19%                       ] packed_cudnn_r2.nsys-rep[1/1] [==20%                       ] packed_cudnn_r2.nsys-rep[1/1] [======================91%   ] packed_cudnn_r2.nsys-rep[1/1] [======================92%   ] packed_cudnn_r2.nsys-rep[1/1] [=======================96%  ] packed_cudnn_r2.nsys-rep[1/1] [========================98% ] packed_cudnn_r2.nsys-rep[1/1] [========================100%] packed_cudnn_r2.nsys-rep[1/1] [========================100%] packed_cudnn_r2.nsys-rep
+Generated:
+	/root/gautam_K/sft_v2/runs/sb2_1019/packed_cudnn_r2.nsys-rep

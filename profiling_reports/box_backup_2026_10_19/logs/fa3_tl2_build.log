@@ -1,0 +1,2 @@
+15:22:55 IST start level 2 | copy of FA3 94e22c9 in /root/gautam_K/fa3_tl2 | patched 5572bf6f + f5711129 | Build cuda_13.4.r13.4/compiler.38855100_0
+15:24:18 IST BUILT level 2: /root/gautam_K/fa3_tl2/flash-attention/hopper/flash_attn_3/_C.abi3.so (6.2M, md5 f99994dd) | exports: fa3_tl_level fa3_tl_read fa3_tl_words 

@@ -1,0 +1,16 @@
+eec5e38b1fedeafe5894be6f1a70f96f  sft_data/stage0_ultrachat_5k_T4096/train/labels.bin
+adf0faaf903db178d792286b2372d40b  sft_data/tiny_item3/val/meta.json
+3e77f664255cb5a8f8a2ef7632735e56  sft_data/tiny_item3/val/inputs.bin
+a4a3a90a128e815d685971ee50aff426  sft_data/tiny_item3/val/valid_counts.bin
+798739b891c3a05a03ac29d20c1a1f8b  sft_data/tiny_item3/val/labels.bin
+f3d227a3fa7b647e1ab6c5a69a86ea22  sft_data/tiny_item3/train/meta.json
+d0d27424eefe4ae806f7e5436533c3b2  sft_data/tiny_item3/train/inputs.bin
+6ff710dc6926ee52a2b4bb98333eace6  sft_data/tiny_item3/train/valid_counts.bin
+232a3077ead3ce6dd51a3bc60b0b0cb3  sft_data/tiny_item3/train/labels.bin
+
+1c2fbb7a440f75936a61ebd8fc1602f5  14013128  sft_v2/BluTrain_sft/bluscript_sft_bin_item3
+383f4f235870ff1a9afef1817485dfdd  14010688  sft_v2/BluTrain_sft/bluscript_sft_bin_old
+2d8baf0e809edab3dc3f7d53d04297a9  647848  sft_v2/BluTrain_sft/Tensor-Implementations/tva_a
+465cfa5658bf5b1d48de96f5b5593844  56826752  sft_v2/BluTrain_sft/Tensor-Implementations/lib/libtensor.so
+7f9f89c62e4f94a9ecfca324c0fcd9cc  37408  loss_bench/t_inplace_new
+01a96764c337b01e6f1f92efc140f108  37304  loss_bench/t_inplace_old

@@ -1,0 +1,12 @@
+== dense
+   vj2_PF         kernel  3720 instr | loop  481 instr,   0 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/0, I2F.RP 3/0/4, ISETP 71/5/100, FSEL 64/0/68, HGMMA 8/16/32
+   vj2_QP         kernel  3744 instr | loop  481 instr,   0 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/4, I2F.RP 3/0/4, ISETP 71/5/100, FSEL 64/0/68, HGMMA 8/16/32
+   vj2_QPU        kernel  3904 instr | loop  485 instr, 614 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/4, I2F.RP 1/0/10, ISETP 71/3/102, FSEL 64/0/68, HGMMA 8/16/32
+   vj2_QPD        kernel  3488 instr | loop  481 instr, 604 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/4, I2F.RP 3/0/4, ISETP 71/5/36, FSEL 64/0/4, HGMMA 8/16/32
+   vj2_QPUD       kernel  3616 instr | loop  486 instr, 707 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/4, I2F.RP 1/0/10, ISETP 74/5/62, FSEL 64/0/4, HGMMA 8/16/32
+== packed
+   vj2_PF         kernel  3480 instr | loop  465 instr,   0 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/0, I2F.RP 0/0/2, ISETP 71/3/109, FSEL 64/0/68, HGMMA 8/16/32
+   vj2_QP         kernel  3496 instr | loop  465 instr,   0 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/4, I2F.RP 0/0/2, ISETP 71/3/109, FSEL 64/0/68, HGMMA 8/16/32
+   vj2_QPU        kernel  3496 instr | loop  465 instr,   2 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/4, I2F.RP 0/0/2, ISETP 71/3/109, FSEL 64/0/68, HGMMA 8/16/32
+   vj2_QPD        kernel  3240 instr | loop  464 instr, 325 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/4, I2F.RP 0/0/2, ISETP 71/3/45, FSEL 64/0/4, HGMMA 8/16/32
+   vj2_QPUD       kernel  3240 instr | loop  464 instr, 327 lines differ from the base's loop | before/in/after the loop: UTMAPF 0/0/4, I2F.RP 0/0/2, ISETP 71/3/45, FSEL 64/0/4, HGMMA 8/16/32

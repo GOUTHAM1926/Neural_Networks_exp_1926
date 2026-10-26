@@ -1,0 +1,9 @@
+16:46:48 IST start | GPU 0 NVIDIA H200, 0 MiB | vj2_K5q 8dc36782  vj2_KOexp 46b3c630  vj2_KOmax af8e62ee  vj2_KOres 403141c9  vj2_KOall d001caf3  
+16:47:42 IST race round 01 done (vj2_KOexp vj2_KOmax vj2_KOres vj2_KOall vj2_K5q)
+16:48:38 IST race round 02 done (vj2_KOexp vj2_K5q vj2_KOall vj2_KOres vj2_KOmax)
+16:49:32 IST race round 03 done (vj2_KOres vj2_KOall vj2_K5q vj2_KOexp vj2_KOmax)
+16:50:28 IST race round 04 done (vj2_KOres vj2_KOmax vj2_KOexp vj2_K5q vj2_KOall)
+16:51:22 IST race round 05 done (vj2_K5q vj2_KOexp vj2_KOmax vj2_KOres vj2_KOall)
+16:52:15 IST race round 06 done (vj2_K5q vj2_KOall vj2_KOres vj2_KOmax vj2_KOexp)
+16:52:15 IST MULTI DONE
+16:52:34 IST PACKED ko_results.tgz

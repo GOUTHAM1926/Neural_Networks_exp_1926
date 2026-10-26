@@ -1,0 +1,412 @@
+\n\nlibblublas is up-to-date.
+Compiling [CXX  | tensor]: src/autograd/Engine.cpp
+Compiling [CXX  | tensor]: src/autograd/operations/LossOps.cpp
+g++ -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mfma -mf16c  -MMD -MP -c src/autograd/Engine.cpp -o lib/objects/src/autograd/Engine.o
+Compiling [CXX  | tensor]: src/autograd/Variable.cpp
+g++ -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mfma -mf16c  -MMD -MP -c src/autograd/operations/LossOps.cpp -o lib/objects/src/autograd/operations/LossOps.o
+g++ -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mfma -mf16c  -MMD -MP -c src/autograd/Variable.cpp -o lib/objects/src/autograd/Variable.o
+Compiling [CXX  | tensor]: src/autograd/backward/LossBackward.cpp
+g++ -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mfma -mf16c  -MMD -MP -c src/autograd/backward/LossBackward.cpp -o lib/objects/src/autograd/backward/LossBackward.o
+Compiling [CXX  | tensor]: src/nn/LayerNorm.cpp
+Compiling [CXX  | tensor]: src/nn/NN.cpp
+Compiling [CXX  | tensor]: src/nn/MultiHeadAttention.cpp
+g++ -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mfma -mf16c  -MMD -MP -c src/nn/LayerNorm.cpp -o lib/objects/src/nn/LayerNorm.o
+g++ -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mfma -mf16c  -MMD -MP -c src/nn/NN.cpp -o lib/objects/src/nn/NN.o
+g++ -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mfma -mf16c  -MMD -MP -c src/nn/MultiHeadAttention.cpp -o lib/objects/src/nn/MultiHeadAttention.o
+Compiling [CUDA sm_90 | tensor]: src/Kernels/cuda/loss/LossKernels.cu
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -c src/Kernels/cuda/loss/LossKernels.cu -o lib/objects/src/Kernels/cuda/loss/LossKernels.o
+Compiling [CUDA sm_90 | tensor]: src/Kernels/cuda/attention/FlashAttention.cu
+Compiling [CUDA sm_90 | tensor]: src/Kernels/cuda/attention/FusedKernels.cu
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -c src/Kernels/cuda/attention/FlashAttention.cu -o lib/objects/src/Kernels/cuda/attention/FlashAttention.o
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -c src/Kernels/cuda/attention/FusedKernels.cu -o lib/objects/src/Kernels/cuda/attention/FusedKernels.o
+Compiling [CUDA sm_90 | tensor]: src/Kernels/cuda/misc/TensorDropOut.cu
+/usr/local/cuda/bin/nvcc -Iinclude -I../Profiler/include -I../dist/Distributed_Checkpointing/include -I/usr/local/cuda/include -I/opt/nvidia/nsight-compute/2024.1.0/host/target-linux-x64/nvtx/include/ -DWITH_CUDA -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a -c src/Kernels/cuda/misc/TensorDropOut.cu -o lib/objects/src/Kernels/cuda/misc/TensorDropOut.o
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=int8_t]" at line 1169
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=int16_t]" at line 1169
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=int32_t]" at line 1169
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=int64_t]" at line 1169
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=int8_t]" at line 1170
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=int16_t]" at line 1170
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=int32_t]" at line 1170
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=int64_t]" at line 1170
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=int8_t]" at line 1169
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=int16_t]" at line 1169
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=int32_t]" at line 1169
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=int64_t]" at line 1169
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=int8_t]" at line 1170
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=int16_t]" at line 1170
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=int32_t]" at line 1170
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=int64_t]" at line 1170
+
+src/Kernels/cuda/loss/LossKernels.cu(233): warning #177-D: variable "bid" was declared but never referenced
+    const int bid = blockIdx.x;
+              ^
+          detected during instantiation of "void OwnTensor::cuda::sparse_cross_entropy_forward_cuda_impl_vec(const T *, const T_idx *, float *, int64_t, int64_t, cudaStream_t, int64_t, const float *) [with T=float, T_idx=uint16_t]" at line 1190
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=uint8_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, T_idx=uint8_t]" at line 1266
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=uint16_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, T_idx=uint16_t]" at line 1266
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=uint32_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, T_idx=uint32_t]" at line 1266
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, Tidx=uint64_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=float, T_idx=uint64_t]" at line 1266
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=uint8_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, T_idx=uint8_t]" at line 1267
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=uint16_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, T_idx=uint16_t]" at line 1267
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=uint32_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, T_idx=uint32_t]" at line 1267
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, Tidx=uint64_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=double, T_idx=uint64_t]" at line 1267
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, Tidx=uint8_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, T_idx=uint8_t]" at line 1268
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, Tidx=uint16_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, T_idx=uint16_t]" at line 1268
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, Tidx=uint32_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, T_idx=uint32_t]" at line 1268
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, Tidx=uint64_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, T_idx=uint64_t]" at line 1268
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, Tidx=int8_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, T_idx=int8_t]" at line 1268
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, Tidx=int16_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, T_idx=int16_t]" at line 1268
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, Tidx=int32_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, T_idx=int32_t]" at line 1268
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, Tidx=int64_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::float16_t, T_idx=int64_t]" at line 1268
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, Tidx=uint8_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, T_idx=uint8_t]" at line 1269
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, Tidx=uint16_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, T_idx=uint16_t]" at line 1269
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, Tidx=uint32_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, T_idx=uint32_t]" at line 1269
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, Tidx=uint64_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, T_idx=uint64_t]" at line 1269
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, Tidx=int8_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, T_idx=int8_t]" at line 1269
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, Tidx=int16_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, T_idx=int16_t]" at line 1269
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, Tidx=int32_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, T_idx=int32_t]" at line 1269
+
+src/Kernels/cuda/loss/LossKernels.cu(981): warning #2361-D: invalid narrowing conversion from "signed long" to "unsigned int"
+    dim3 grid_reduce{2, batch_size};
+                        ^
+          detected during:
+            instantiation of "void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T *, const Tidx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, Tidx=int64_t]" at line 1149
+            instantiation of "void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T *, const T_idx *, T *, int64_t, int64_t, const float *, const float *, cudaStream_t, int64_t) [with T=OwnTensor::bfloat16_t, T_idx=int64_t]" at line 1269
+
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; Tidx = signed char; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1169:261:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+  981 |   dim3 grid_reduce{2, batch_size}; //* lets split and then do a 2d grid...
+      |                     ^~~~~~~~~~
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; Tidx = short int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1169:525:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; Tidx = int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1169:787:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; Tidx = long int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1169:1050:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; Tidx = signed char; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1170:264:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; Tidx = short int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1170:531:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; Tidx = int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1170:796:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; Tidx = long int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1170:1062:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; Tidx = unsigned char; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; T_idx = unsigned char; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1266:271:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; Tidx = short unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; T_idx = short unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1266:545:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; Tidx = unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; T_idx = unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1266:813:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; Tidx = long unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = float; T_idx = long unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1266:1086:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; Tidx = unsigned char; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; T_idx = unsigned char; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1267:274:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; Tidx = short unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; T_idx = short unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1267:551:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; Tidx = unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; T_idx = unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1267:822:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; Tidx = long unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = double; T_idx = long unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1267:1098:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; Tidx = unsigned char; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; T_idx = unsigned char; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1268:283:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; Tidx = short unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; T_idx = short unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1268:569:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; Tidx = unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; T_idx = unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1268:849:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; Tidx = long unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; T_idx = long unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1268:1134:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; Tidx = signed char; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; T_idx = signed char; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1268:1415:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; Tidx = short int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; T_idx = short int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1268:1698:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; Tidx = int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; T_idx = int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1268:1979:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; Tidx = long int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::float16_t; T_idx = long int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1268:2261:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; Tidx = unsigned char; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; T_idx = unsigned char; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1269:286:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; Tidx = short unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; T_idx = short unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1269:575:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; Tidx = unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; T_idx = unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1269:858:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; Tidx = long unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; T_idx = long unsigned int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1269:1146:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; Tidx = signed char; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; T_idx = signed char; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1269:1430:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; Tidx = short int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; T_idx = short int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1269:1716:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; Tidx = int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; T_idx = int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1269:2000:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+src/Kernels/cuda/loss/LossKernels.cu: In instantiation of ‘void OwnTensor::cuda::sparse_ce_backward_cuda_vec(const T*, const Tidx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; Tidx = long int; int64_t = long int; cudaStream_t = CUstream_st*]’:
+src/Kernels/cuda/loss/LossKernels.cu:1147:40:   required from ‘void OwnTensor::cuda::sparse_cross_entropy_backward_cuda(const T*, const T_idx*, T*, int64_t, int64_t, const float*, const float*, cudaStream_t, int64_t) [with T = OwnTensor::bfloat16_t; T_idx = long int; int64_t = long int; cudaStream_t = CUstream_st*]’
+src/Kernels/cuda/loss/LossKernels.cu:1269:2285:   required from here
+src/Kernels/cuda/loss/LossKernels.cu:981:21: warning: narrowing conversion of ‘batch_size’ from ‘int64_t’ {aka ‘long int’} to ‘unsigned int’ [-Wnarrowing]
+\n\n--- Creating shared library: lib/libtensor.so
+\n\n--- Creating static library: lib/libtensor.a
+/usr/local/cuda/bin/nvcc -shared -std=c++17 -Xcompiler="-fPIC" --use_fast_math -O3 --expt-relaxed-constexpr -MMD -MP -gencode arch=compute_90a,code=sm_90a lib/objects/src/core/Storage.o lib/objects/src/core/ParallellismUtils.o lib/objects/src/core/TensorFactory.o lib/objects/src/core/TensorDelete.o lib/objects/src/core/TensorImpl.o lib/objects/src/core/AsTypeTensor.o lib/objects/src/core/AutogradMeta.o lib/objects/src/core/Tensor.o lib/objects/src/core/Serialization.o lib/objects/src/core/TensorUtils.o lib/objects/src/autograd/Node.o lib/objects/src/autograd/AnomalyMode.o lib/objects/src/autograd/Engine.o lib/objects/src/autograd/operations/ArithmeticsOps.o lib/objects/src/autograd/operations/EmbeddingOps.o lib/objects/src/autograd/operations/AttentionOps.o lib/objects/src/autograd/operations/ReshapeOps.o lib/objects/src/autograd/operations/RopeOps.o lib/objects/src/autograd/operations/TrilOps.o lib/objects/src/autograd/operations/BinaryOps.o lib/objects/src/autograd/operations/ReductionOps.o lib/objects/src/autograd/operations/NormalizationOps.o lib/objects/src/autograd/operations/ActivationOps.o lib/objects/src/autograd/operations/FlashAttentionOps.o lib/objects/src/autograd/operations/MatrixOps.o lib/objects/src/autograd/operations/LossOps.o lib/objects/src/autograd/operations/TrigonometryOps.o lib/objects/src/autograd/operations/ExponentsOps.o lib/objects/src/autograd/ops_template.o lib/objects/src/autograd/GraphComponent.o lib/objects/src/autograd/GraphRecorder.o lib/objects/src/autograd/Variable.o lib/objects/src/autograd/SavedVariable.o lib/objects/src/autograd/Hooks.o lib/objects/src/autograd/backward/FusedAttnSoftmaxMatmulBackward.o lib/objects/src/autograd/backward/LinearBackward.o lib/objects/src/autograd/backward/ExponentsBackward.o lib/objects/src/autograd/backward/TrilBackward.o lib/objects/src/autograd/backward/LossBackward.o lib/objects/src/autograd/backward/ActivationBackward.o lib/objects/src/autograd/backward/ShardingBackward.o lib/objects/src/autograd/backward/NormalizationBackward.o lib/objects/src/autograd/backward/ArithmeticsBackward.o lib/objects/src/autograd/backward/FusedTrilSoftmaxBackward.o lib/objects/src/autograd/backward/RoPEBackward.o lib/objects/src/autograd/backward/TransposeBackward.o lib/objects/src/autograd/backward/AttentionBackward.o lib/objects/src/autograd/backward/BinaryBackward.o lib/objects/src/autograd/backward/EmbeddingBackward.o lib/objects/src/autograd/backward/TrigonometryBackward.o lib/objects/src/autograd/backward/ReductionBackward.o lib/objects/src/autograd/backward/FlashAttentionBackward.o lib/objects/src/autograd/backward/GradAccumulator.o lib/objects/src/autograd/backward/MatrixBackward.o lib/objects/src/autograd/backward/parallelizeutilsBackward.o lib/objects/src/autograd/GraphArena.o lib/objects/src/compiler/cpu/ConditionalOps.o lib/objects/src/compiler/cpu/ConditionalOpsDispatcher.o lib/objects/src/utils/Profiler.o lib/objects/src/Views/ViewOps.o lib/objects/src/Views/ViewUtils.o lib/objects/src/ScalarOps/cpu/ScalarOps.o lib/objects/src/ScalarOps/cpu/ScalarOpsDispatcher.o lib/objects/src/device/CudaCachingAllocator.o lib/objects/src/device/CUDAAllocator.o lib/objects/src/device/DeviceTransfer.o lib/objects/src/device/PinnedCPUAllocator.o lib/objects/src/device/DeviceSet.o lib/objects/src/device/DeviceCore.o lib/objects/src/device/CPUAllocator.o lib/objects/src/device/CudaArena.o lib/objects/src/device/AllocatorRegistry.o lib/objects/src/device/NvmlMonitor.o lib/objects/src/UnaryOps/cpu/ExponentCore.o lib/objects/src/UnaryOps/cpu/Reduction.o lib/objects/src/UnaryOps/cpu/ConjugateCore.o lib/objects/src/UnaryOps/cpu/Activations.o lib/objects/src/UnaryOps/cpu/RoPE.o lib/objects/src/UnaryOps/cpu/TrigonometryCore.o lib/objects/src/UnaryOps/cpu/Normalizations.o lib/objects/src/UnaryOps/cpu/Arithmetics.o lib/objects/src/UnaryOps/cpu/Trigonometry.o lib/objects/src/UnaryOps/cpu/ArithmeticsCore.o lib/objects/src/UnaryOps/cpu/ReductionUtils.o lib/objects/src/UnaryOps/cpu/Exponents.o lib/objects/src/Kernels/cpu/GenMatmul.o lib/objects/src/checkpointing/RNG.o lib/objects/src/checkpointing/GradMode.o lib/objects/src/checkpointing/Checkpoint.o lib/objects/src/checkpointing/CheckpointNode.o lib/objects/src/nn/LayerNorm.o lib/objects/src/nn/NN.o lib/objects/src/nn/MultiHeadAttention.o lib/objects/src/nn/optimizer/LossScaler.o lib/objects/src/nn/optimizer/Optim.o lib/objects/src/TensorOps/cpu/TensorOps.o lib/objects/src/core/delay_kernel.o lib/objects/src/compiler/cuda/ConditionalOps.o lib/objects/src/ScalarOps/cuda/ScalarOps.o lib/objects/src/UnaryOps/cuda/Trigonometry.o lib/objects/src/UnaryOps/cuda/Arithmetics.o lib/objects/src/UnaryOps/cuda/Exponents.o lib/objects/src/Kernels/cuda/matmul/GenMatmul.o lib/objects/src/Kernels/cuda/matmul/LinearKernels.o lib/objects/src/Kernels/cuda/matmul/MatmulBackward.o lib/objects/src/Kernels/cuda/indexing/IndexingKernels.o lib/objects/src/Kernels/cuda/optimizer/arch/MultiTensorKernels_sm89.o lib/objects/src/Kernels/cuda/optimizer/arch/MultiTensorAdam_sm90.o lib/objects/src/Kernels/cuda/optimizer/MuonKernels.o lib/objects/src/Kernels/cuda/optimizer/MultiTensorKernels.o lib/objects/src/Kernels/cuda/optimizer/AdamKernels.o lib/objects/src/Kernels/cuda/optimizer/GradNormKernels.o lib/objects/src/Kernels/cuda/loss/arch/CrossEntropyKernels_sm103.o lib/objects/src/Kernels/cuda/loss/LossKernels.o lib/objects/src/Kernels/cuda/norm/arch/RMS_NormKernels_sm90.o lib/objects/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.o lib/objects/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.o lib/objects/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90.o lib/objects/src/Kernels/cuda/norm/arch/RMSNormKernels_sm120.o lib/objects/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.o lib/objects/src/Kernels/cuda/norm/arch/RMS_NormKernels_sm103.o lib/objects/src/Kernels/cuda/norm/arch/LayerNormKernels_sm89.o lib/objects/src/Kernels/cuda/norm/LayerNormKernels.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fwd_sm103.o lib/objects/src/Kernels/cuda/attention/arch/AttentionBackward_sm89.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_sm103.o lib/objects/src/Kernels/cuda/attention/arch/AttentionForward_sm89.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fwd_generic.o lib/objects/src/Kernels/cuda/attention/arch/RoPE_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_generic.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fused_bwd_sm103.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fused_fwd_sm103.o lib/objects/src/Kernels/cuda/attention/RoPEKernels.o lib/objects/src/Kernels/cuda/attention/FlashAttention.o lib/objects/src/Kernels/cuda/attention/AttentionForward.o lib/objects/src/Kernels/cuda/attention/AttentionBackward.o lib/objects/src/Kernels/cuda/attention/FusedKernels.o lib/objects/src/Kernels/cuda/activations/arch/FusedLinearGelu_sm89.o lib/objects/src/Kernels/cuda/activations/arch/SwiGLUKernels_sm120.o lib/objects/src/Kernels/cuda/activations/arch/GELUKernels_sm89.o lib/objects/src/Kernels/cuda/activations/arch/SwiGLUKernels_sm90.o lib/objects/src/Kernels/cuda/activations/SoftmaxKernels.o lib/objects/src/Kernels/cuda/activations/SigmoidKernels.o lib/objects/src/Kernels/cuda/activations/RELUKernels.o lib/objects/src/Kernels/cuda/activations/GELUKernels.o lib/objects/src/Kernels/cuda/activations/ActivationKernels.o lib/objects/src/Kernels/cuda/activations/SwiGLUKernels.o lib/objects/src/Kernels/cuda/misc/ConversionKernels.o lib/objects/src/Kernels/cuda/misc/ConversionKernelsSM90.o lib/objects/src/Kernels/cuda/misc/ConversionKernelsSM103.o lib/objects/src/Kernels/cuda/misc/FillKernel.o lib/objects/src/Kernels/cuda/misc/TensorDropOut.o lib/objects/src/Kernels/cuda/misc/BatchedCat.o lib/objects/src/Kernels/cuda/embedding/EmbeddingKernels.o lib/objects/src/ops/IndexingOps.o lib/objects/src/TensorOps/cuda/TensorBoolEq.o lib/objects/src/TensorOps/cuda/TensorOpsSub.o lib/objects/src/TensorOps/cuda/TensorOpsMul.o lib/objects/src/TensorOps/cuda/TensorBoolGt.o lib/objects/src/TensorOps/cuda/TensorTril.o lib/objects/src/TensorOps/cuda/TensorBoolLogXOR.o lib/objects/src/TensorOps/cuda/TensorOpsAdd.o lib/objects/src/TensorOps/cuda/TensorBoolLt.o lib/objects/src/TensorOps/cuda/TensorBoolLogNot.o lib/objects/src/TensorOps/cuda/TensorBoolGEq.o lib/objects/src/TensorOps/cuda/TensorBoolLEq.o lib/objects/src/TensorOps/cuda/TensorBoolNeq.o lib/objects/src/TensorOps/cuda/TensorBoolLogAND.o lib/objects/src/TensorOps/cuda/TensorOpsDiv.o lib/objects/src/TensorOps/cuda/TensorBoolLogOR.o lib/objects/src/Views/ContiguousKernel.o lib/objects/src/Views/arch/ContiguousKernel_sm90.o lib/objects/src/UnaryOps/cuda/ReductionImplGPU.o lib/objects/device_link.o \
+        -L/usr/local/cuda/lib64 -L/usr/local/cuda/targets/x86_64-linux/lib -Llib -L../Profiler/lib -Xlinker -rpath -Xlinker '$ORIGIN/lib' -Xlinker -rpath -Xlinker '$ORIGIN/../../Profiler/lib' -lcudart -lcurand -lcublas -lcublasLt -lgomp -lnvidia-ml -lprofiler -o lib/libtensor.so
+ar rcs lib/libtensor.a lib/objects/src/core/Storage.o lib/objects/src/core/ParallellismUtils.o lib/objects/src/core/TensorFactory.o lib/objects/src/core/TensorDelete.o lib/objects/src/core/TensorImpl.o lib/objects/src/core/AsTypeTensor.o lib/objects/src/core/AutogradMeta.o lib/objects/src/core/Tensor.o lib/objects/src/core/Serialization.o lib/objects/src/core/TensorUtils.o lib/objects/src/autograd/Node.o lib/objects/src/autograd/AnomalyMode.o lib/objects/src/autograd/Engine.o lib/objects/src/autograd/operations/ArithmeticsOps.o lib/objects/src/autograd/operations/EmbeddingOps.o lib/objects/src/autograd/operations/AttentionOps.o lib/objects/src/autograd/operations/ReshapeOps.o lib/objects/src/autograd/operations/RopeOps.o lib/objects/src/autograd/operations/TrilOps.o lib/objects/src/autograd/operations/BinaryOps.o lib/objects/src/autograd/operations/ReductionOps.o lib/objects/src/autograd/operations/NormalizationOps.o lib/objects/src/autograd/operations/ActivationOps.o lib/objects/src/autograd/operations/FlashAttentionOps.o lib/objects/src/autograd/operations/MatrixOps.o lib/objects/src/autograd/operations/LossOps.o lib/objects/src/autograd/operations/TrigonometryOps.o lib/objects/src/autograd/operations/ExponentsOps.o lib/objects/src/autograd/ops_template.o lib/objects/src/autograd/GraphComponent.o lib/objects/src/autograd/GraphRecorder.o lib/objects/src/autograd/Variable.o lib/objects/src/autograd/SavedVariable.o lib/objects/src/autograd/Hooks.o lib/objects/src/autograd/backward/FusedAttnSoftmaxMatmulBackward.o lib/objects/src/autograd/backward/LinearBackward.o lib/objects/src/autograd/backward/ExponentsBackward.o lib/objects/src/autograd/backward/TrilBackward.o lib/objects/src/autograd/backward/LossBackward.o lib/objects/src/autograd/backward/ActivationBackward.o lib/objects/src/autograd/backward/ShardingBackward.o lib/objects/src/autograd/backward/NormalizationBackward.o lib/objects/src/autograd/backward/ArithmeticsBackward.o lib/objects/src/autograd/backward/FusedTrilSoftmaxBackward.o lib/objects/src/autograd/backward/RoPEBackward.o lib/objects/src/autograd/backward/TransposeBackward.o lib/objects/src/autograd/backward/AttentionBackward.o lib/objects/src/autograd/backward/BinaryBackward.o lib/objects/src/autograd/backward/EmbeddingBackward.o lib/objects/src/autograd/backward/TrigonometryBackward.o lib/objects/src/autograd/backward/ReductionBackward.o lib/objects/src/autograd/backward/FlashAttentionBackward.o lib/objects/src/autograd/backward/GradAccumulator.o lib/objects/src/autograd/backward/MatrixBackward.o lib/objects/src/autograd/backward/parallelizeutilsBackward.o lib/objects/src/autograd/GraphArena.o lib/objects/src/compiler/cpu/ConditionalOps.o lib/objects/src/compiler/cpu/ConditionalOpsDispatcher.o lib/objects/src/utils/Profiler.o lib/objects/src/Views/ViewOps.o lib/objects/src/Views/ViewUtils.o lib/objects/src/ScalarOps/cpu/ScalarOps.o lib/objects/src/ScalarOps/cpu/ScalarOpsDispatcher.o lib/objects/src/device/CudaCachingAllocator.o lib/objects/src/device/CUDAAllocator.o lib/objects/src/device/DeviceTransfer.o lib/objects/src/device/PinnedCPUAllocator.o lib/objects/src/device/DeviceSet.o lib/objects/src/device/DeviceCore.o lib/objects/src/device/CPUAllocator.o lib/objects/src/device/CudaArena.o lib/objects/src/device/AllocatorRegistry.o lib/objects/src/device/NvmlMonitor.o lib/objects/src/UnaryOps/cpu/ExponentCore.o lib/objects/src/UnaryOps/cpu/Reduction.o lib/objects/src/UnaryOps/cpu/ConjugateCore.o lib/objects/src/UnaryOps/cpu/Activations.o lib/objects/src/UnaryOps/cpu/RoPE.o lib/objects/src/UnaryOps/cpu/TrigonometryCore.o lib/objects/src/UnaryOps/cpu/Normalizations.o lib/objects/src/UnaryOps/cpu/Arithmetics.o lib/objects/src/UnaryOps/cpu/Trigonometry.o lib/objects/src/UnaryOps/cpu/ArithmeticsCore.o lib/objects/src/UnaryOps/cpu/ReductionUtils.o lib/objects/src/UnaryOps/cpu/Exponents.o lib/objects/src/Kernels/cpu/GenMatmul.o lib/objects/src/checkpointing/RNG.o lib/objects/src/checkpointing/GradMode.o lib/objects/src/checkpointing/Checkpoint.o lib/objects/src/checkpointing/CheckpointNode.o lib/objects/src/nn/LayerNorm.o lib/objects/src/nn/NN.o lib/objects/src/nn/MultiHeadAttention.o lib/objects/src/nn/optimizer/LossScaler.o lib/objects/src/nn/optimizer/Optim.o lib/objects/src/TensorOps/cpu/TensorOps.o lib/objects/src/core/delay_kernel.o lib/objects/src/compiler/cuda/ConditionalOps.o lib/objects/src/ScalarOps/cuda/ScalarOps.o lib/objects/src/UnaryOps/cuda/Trigonometry.o lib/objects/src/UnaryOps/cuda/Arithmetics.o lib/objects/src/UnaryOps/cuda/Exponents.o lib/objects/src/Kernels/cuda/matmul/GenMatmul.o lib/objects/src/Kernels/cuda/matmul/LinearKernels.o lib/objects/src/Kernels/cuda/matmul/MatmulBackward.o lib/objects/src/Kernels/cuda/indexing/IndexingKernels.o lib/objects/src/Kernels/cuda/optimizer/arch/MultiTensorKernels_sm89.o lib/objects/src/Kernels/cuda/optimizer/arch/MultiTensorAdam_sm90.o lib/objects/src/Kernels/cuda/optimizer/MuonKernels.o lib/objects/src/Kernels/cuda/optimizer/MultiTensorKernels.o lib/objects/src/Kernels/cuda/optimizer/AdamKernels.o lib/objects/src/Kernels/cuda/optimizer/GradNormKernels.o lib/objects/src/Kernels/cuda/loss/arch/CrossEntropyKernels_sm103.o lib/objects/src/Kernels/cuda/loss/LossKernels.o lib/objects/src/Kernels/cuda/norm/arch/RMS_NormKernels_sm90.o lib/objects/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.o lib/objects/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.o lib/objects/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90.o lib/objects/src/Kernels/cuda/norm/arch/RMSNormKernels_sm120.o lib/objects/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.o lib/objects/src/Kernels/cuda/norm/arch/RMS_NormKernels_sm103.o lib/objects/src/Kernels/cuda/norm/arch/LayerNormKernels_sm89.o lib/objects/src/Kernels/cuda/norm/LayerNormKernels.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fwd_sm103.o lib/objects/src/Kernels/cuda/attention/arch/AttentionBackward_sm89.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_sm103.o lib/objects/src/Kernels/cuda/attention/arch/AttentionForward_sm89.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fwd_generic.o lib/objects/src/Kernels/cuda/attention/arch/RoPE_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_generic.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fused_bwd_sm103.o lib/objects/src/Kernels/cuda/attention/arch/GQA_bwd_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.o lib/objects/src/Kernels/cuda/attention/arch/GQA_fused_fwd_sm103.o lib/objects/src/Kernels/cuda/attention/RoPEKernels.o lib/objects/src/Kernels/cuda/attention/FlashAttention.o lib/objects/src/Kernels/cuda/attention/AttentionForward.o lib/objects/src/Kernels/cuda/attention/AttentionBackward.o lib/objects/src/Kernels/cuda/attention/FusedKernels.o lib/objects/src/Kernels/cuda/activations/arch/FusedLinearGelu_sm89.o lib/objects/src/Kernels/cuda/activations/arch/SwiGLUKernels_sm120.o lib/objects/src/Kernels/cuda/activations/arch/GELUKernels_sm89.o lib/objects/src/Kernels/cuda/activations/arch/SwiGLUKernels_sm90.o lib/objects/src/Kernels/cuda/activations/SoftmaxKernels.o lib/objects/src/Kernels/cuda/activations/SigmoidKernels.o lib/objects/src/Kernels/cuda/activations/RELUKernels.o lib/objects/src/Kernels/cuda/activations/GELUKernels.o lib/objects/src/Kernels/cuda/activations/ActivationKernels.o lib/objects/src/Kernels/cuda/activations/SwiGLUKernels.o lib/objects/src/Kernels/cuda/misc/ConversionKernels.o lib/objects/src/Kernels/cuda/misc/ConversionKernelsSM90.o lib/objects/src/Kernels/cuda/misc/ConversionKernelsSM103.o lib/objects/src/Kernels/cuda/misc/FillKernel.o lib/objects/src/Kernels/cuda/misc/TensorDropOut.o lib/objects/src/Kernels/cuda/misc/BatchedCat.o lib/objects/src/Kernels/cuda/embedding/EmbeddingKernels.o lib/objects/src/ops/IndexingOps.o lib/objects/src/TensorOps/cuda/TensorBoolEq.o lib/objects/src/TensorOps/cuda/TensorOpsSub.o lib/objects/src/TensorOps/cuda/TensorOpsMul.o lib/objects/src/TensorOps/cuda/TensorBoolGt.o lib/objects/src/TensorOps/cuda/TensorTril.o lib/objects/src/TensorOps/cuda/TensorBoolLogXOR.o lib/objects/src/TensorOps/cuda/TensorOpsAdd.o lib/objects/src/TensorOps/cuda/TensorBoolLt.o lib/objects/src/TensorOps/cuda/TensorBoolLogNot.o lib/objects/src/TensorOps/cuda/TensorBoolGEq.o lib/objects/src/TensorOps/cuda/TensorBoolLEq.o lib/objects/src/TensorOps/cuda/TensorBoolNeq.o lib/objects/src/TensorOps/cuda/TensorBoolLogAND.o lib/objects/src/TensorOps/cuda/TensorOpsDiv.o lib/objects/src/TensorOps/cuda/TensorBoolLogOR.o lib/objects/src/Views/ContiguousKernel.o lib/objects/src/Views/arch/ContiguousKernel_sm90.o lib/objects/src/UnaryOps/cuda/ReductionImplGPU.o
+\n\nlibtensor is up-to-date.
+\n\nAll libraries are up-to-date.
+   lib/libblublas.so
+   lib/libtensor.so
+   lib/libtensor.a

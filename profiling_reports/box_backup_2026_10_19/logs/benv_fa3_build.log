@@ -1,0 +1,150 @@
+Using pip 26.2.1 from /root/gautam_K/benv/lib/python3.12/site-packages/pip (python 3.12)
+Processing ./.
+  Preparing metadata (pyproject.toml): started
+  Running command Preparing metadata (pyproject.toml)
+  /root/gautam_K/benv/lib/python3.12/site-packages/wheel/bdist_wheel.py:4: FutureWarning: The 'wheel' package is no longer the canonical location of the 'bdist_wheel' command, and will be removed in a future release. Please update to setuptools v70.1 or later which contains an integrated version of this command.
+    warn(
+  /root/gautam_K/benv/lib/python3.12/site-packages/setuptools/dist.py:765: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+  !!
+
+          ********************************************************************************
+          Please consider removing the following classifiers in favor of a SPDX license expression:
+
+          License :: OSI Approved :: Apache Software License
+
+          See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+          ********************************************************************************
+
+  !!
+    self._finalize_license_expression()
+
+
+  torch.__version__  = 2.14.1+cu130
+
+
+  running dist_info
+  creating /tmp/pip-modern-metadata-2lx6d8b5/flash_attn_3.egg-info
+  writing /tmp/pip-modern-metadata-2lx6d8b5/flash_attn_3.egg-info/PKG-INFO
+  writing dependency_links to /tmp/pip-modern-metadata-2lx6d8b5/flash_attn_3.egg-info/dependency_links.txt
+  writing requirements to /tmp/pip-modern-metadata-2lx6d8b5/flash_attn_3.egg-info/requires.txt
+  writing top-level names to /tmp/pip-modern-metadata-2lx6d8b5/flash_attn_3.egg-info/top_level.txt
+  writing manifest file '/tmp/pip-modern-metadata-2lx6d8b5/flash_attn_3.egg-info/SOURCES.txt'
+  reading manifest file '/tmp/pip-modern-metadata-2lx6d8b5/flash_attn_3.egg-info/SOURCES.txt'
+  writing manifest file '/tmp/pip-modern-metadata-2lx6d8b5/flash_attn_3.egg-info/SOURCES.txt'
+  creating '/tmp/pip-modern-metadata-2lx6d8b5/flash_attn_3-3.0.0.dist-info'
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: torch in /root/gautam_K/benv/lib/python3.12/site-packages (from flash_attn_3==3.0.0) (2.14.1+cu130)
+Requirement already satisfied: einops in /root/gautam_K/benv/lib/python3.12/site-packages (from flash_attn_3==3.0.0) (0.8.2)
+Requirement already satisfied: packaging in /root/gautam_K/benv/lib/python3.12/site-packages (from flash_attn_3==3.0.0) (26.3)
+Requirement already satisfied: ninja in /root/gautam_K/benv/lib/python3.12/site-packages (from flash_attn_3==3.0.0) (1.13.2)
+Requirement already satisfied: filelock in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (3.32.3)
+Requirement already satisfied: typing-extensions>=4.10.0 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (4.16.0)
+Requirement already satisfied: setuptools>=77.0.3 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (84.0.0)
+Requirement already satisfied: sympy>=1.13.3 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (1.14.0)
+Requirement already satisfied: networkx>=2.5.1 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (3.6.1)
+Requirement already satisfied: jinja2 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (3.1.6)
+Requirement already satisfied: fsspec>=0.8.5 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (2026.7.0)
+Requirement already satisfied: cuda-toolkit==13.0.3 in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (13.0.3.0)
+Requirement already satisfied: cuda-bindings<14,>=13.0.3 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (13.3.1)
+Requirement already satisfied: nvidia-cudnn-cu13==9.24.0.43 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (9.24.0.43)
+Requirement already satisfied: nvidia-cusparselt-cu13==0.8.1 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (0.8.1)
+Requirement already satisfied: nvidia-nccl-cu13==2.30.7 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (2.30.7)
+Requirement already satisfied: nvidia-nvshmem-cu13==3.4.5 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (3.4.5)
+Requirement already satisfied: triton~=3.8.0 in /root/gautam_K/benv/lib/python3.12/site-packages (from torch->flash_attn_3==3.0.0) (3.8.0)
+Requirement already satisfied: nvidia-cublas==13.1.1.3.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (13.1.1.3)
+Requirement already satisfied: nvidia-cuda-nvrtc==13.0.88.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (13.0.88)
+Requirement already satisfied: nvidia-cuda-runtime==13.0.96.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (13.0.96)
+Requirement already satisfied: nvidia-cufft==12.0.0.61.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (12.0.0.61)
+Requirement already satisfied: nvidia-nvjitlink<14,>=13.0.88 in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (13.3.33)
+Requirement already satisfied: nvidia-cufile==1.15.1.6.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (1.15.1.6)
+Requirement already satisfied: nvidia-cuda-cupti==13.0.85.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (13.0.85)
+Requirement already satisfied: nvidia-curand==10.4.0.35.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (10.4.0.35)
+Requirement already satisfied: nvidia-cusolver==12.0.4.66.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (12.0.4.66)
+Requirement already satisfied: nvidia-cusparse==12.6.3.3.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (12.6.3.3)
+Requirement already satisfied: nvidia-nvtx==13.0.85.* in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash_attn_3==3.0.0) (13.0.85)
+Requirement already satisfied: cuda-pathfinder>=1.4.2 in /root/gautam_K/benv/lib/python3.12/site-packages (from cuda-bindings<14,>=13.0.3->torch->flash_attn_3==3.0.0) (1.6.0)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /root/gautam_K/benv/lib/python3.12/site-packages (from sympy>=1.13.3->torch->flash_attn_3==3.0.0) (1.3.0)
+Requirement already satisfied: MarkupSafe>=2.0 in /root/gautam_K/benv/lib/python3.12/site-packages (from jinja2->torch->flash_attn_3==3.0.0) (3.0.3)
+Building wheels for collected packages: flash_attn_3
+  Building wheel for flash_attn_3 (pyproject.toml): started
+  Running command Building wheel for flash_attn_3 (pyproject.toml)
+  /root/gautam_K/benv/lib/python3.12/site-packages/wheel/bdist_wheel.py:4: FutureWarning: The 'wheel' package is no longer the canonical location of the 'bdist_wheel' command, and will be removed in a future release. Please update to setuptools v70.1 or later which contains an integrated version of this command.
+    warn(
+  /root/gautam_K/benv/lib/python3.12/site-packages/setuptools/dist.py:765: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+  !!
+
+          ********************************************************************************
+          Please consider removing the following classifiers in favor of a SPDX license expression:
+
+          License :: OSI Approved :: Apache Software License
+
+          See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+          ********************************************************************************
+
+  !!
+    self._finalize_license_expression()
+
+
+  torch.__version__  = 2.14.1+cu130
+
+
+  running bdist_wheel
+  running build
+  running build_py
+  copying flash_attn_config.py -> build/lib.linux-x86_64-cpython-312
+  running build_ext
+  W1019 05:58:28.717000 524718 torch/utils/cpp_extension.py:652] The detected CUDA version (13.4) has a minor version mismatch with the version that was used to compile PyTorch (13.0). Most likely this shouldn't be a problem.
+  W1019 05:58:28.718000 524718 torch/utils/cpp_extension.py:662] There are no x86_64-linux-gnu-g++ version bounds defined for CUDA version 13.4
+  building 'flash_attn_3._C' extension
+  ninja: no work to do.
+  x86_64-linux-gnu-g++ -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -shared -Wl,-O1 -Wl,-Bsymbolic-functions /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/flash_api_stable.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/flash_fwd_combine.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/flash_prepare_scheduler.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_bwd_hdim128_bf16_softcapall_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_packgqa_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_paged_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_paged_softcap_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_paged_split_softcap_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_softcap_packgqa_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_softcap_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_split_sm90.o /root/gautam_K/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_split_softcap_sm90.o -L/root/gautam_K/benv/lib/python3.12/site-packages/torch/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -lc10 -ltorch -ltorch_cpu -lcudart -lc10_cuda -ltorch_cuda -o build/lib.linux-x86_64-cpython-312/flash_attn_3/_C.abi3.so
+  installing to build/bdist.linux-x86_64/wheel
+  running install
+  running install_lib
+  creating build/bdist.linux-x86_64/wheel
+  creating build/bdist.linux-x86_64/wheel/flash_attn_3
+  copying build/lib.linux-x86_64-cpython-312/flash_attn_3/flash_attn_config.py -> build/bdist.linux-x86_64/wheel/./flash_attn_3
+  copying build/lib.linux-x86_64-cpython-312/flash_attn_3/_C.abi3.so -> build/bdist.linux-x86_64/wheel/./flash_attn_3
+  copying build/lib.linux-x86_64-cpython-312/flash_attn_3/flash_attn_interface.py -> build/bdist.linux-x86_64/wheel/./flash_attn_3
+  copying build/lib.linux-x86_64-cpython-312/flash_attn_3/__init__.py -> build/bdist.linux-x86_64/wheel/./flash_attn_3
+  copying build/lib.linux-x86_64-cpython-312/flash_attn_config.py -> build/bdist.linux-x86_64/wheel/.
+  copying build/lib.linux-x86_64-cpython-312/flash_attn_interface.py -> build/bdist.linux-x86_64/wheel/.
+  running install_egg_info
+  running egg_info
+  writing flash_attn_3.egg-info/PKG-INFO
+  writing dependency_links to flash_attn_3.egg-info/dependency_links.txt
+  writing requirements to flash_attn_3.egg-info/requires.txt
+  writing top-level names to flash_attn_3.egg-info/top_level.txt
+  reading manifest file 'flash_attn_3.egg-info/SOURCES.txt'
+  writing manifest file 'flash_attn_3.egg-info/SOURCES.txt'
+  Copying flash_attn_3.egg-info to build/bdist.linux-x86_64/wheel/./flash_attn_3-3.0.0-py3.12.egg-info
+  running install_scripts
+  creating build/bdist.linux-x86_64/wheel/flash_attn_3-3.0.0.dist-info/WHEEL
+  creating '/tmp/pip-ephem-wheel-cache-hs3_ete0/wheels/e5/c2/b4/083899736700734cdd486e60de0a0bf60852e143b08a3ba7a0/tmpsnr1yx6l/.tmp-go9pxlgt/flash_attn_3-3.0.0-cp310-abi3-linux_x86_64.whl' and adding 'build/bdist.linux-x86_64/wheel' to it
+  adding 'flash_attn_config.py'
+  adding 'flash_attn_interface.py'
+  adding 'flash_attn_3/_C.abi3.so'
+  adding 'flash_attn_3/__init__.py'
+  adding 'flash_attn_3/flash_attn_config.py'
+  adding 'flash_attn_3/flash_attn_interface.py'
+  adding 'flash_attn_3-3.0.0.dist-info/METADATA'
+  adding 'flash_attn_3-3.0.0.dist-info/WHEEL'
+  adding 'flash_attn_3-3.0.0.dist-info/top_level.txt'
+  adding 'flash_attn_3-3.0.0.dist-info/RECORD'
+  removing build/bdist.linux-x86_64/wheel
+  Building wheel for flash_attn_3 (pyproject.toml): finished with status 'done'
+  Created wheel for flash_attn_3: filename=flash_attn_3-3.0.0-cp310-abi3-linux_x86_64.whl size=14314302 sha256=6dc65059ae81cf21f453364350802590ea9ee27214346d28f8245c790f28ae2e
+  Stored in directory: /tmp/pip-ephem-wheel-cache-hs3_ete0/wheels/e5/c2/b4/083899736700734cdd486e60de0a0bf60852e143b08a3ba7a0
+Successfully built flash_attn_3
+Installing collected packages: flash_attn_3
+  Attempting uninstall: flash_attn_3
+    Found existing installation: flash_attn_3 3.0.0
+    Uninstalling flash_attn_3-3.0.0:
+      Removing file or directory /root/gautam_K/benv/lib/python3.12/site-packages/__pycache__/flash_attn_config.cpython-312.pyc
+      Removing file or directory /root/gautam_K/benv/lib/python3.12/site-packages/__pycache__/flash_attn_interface.cpython-312.pyc
+      Removing file or directory /root/gautam_K/benv/lib/python3.12/site-packages/flash_attn_3-3.0.0.dist-info/
+      Removing file or directory /root/gautam_K/benv/lib/python3.12/site-packages/flash_attn_3/
+      Removing file or directory /root/gautam_K/benv/lib/python3.12/site-packages/flash_attn_config.py
+      Removing file or directory /root/gautam_K/benv/lib/python3.12/site-packages/flash_attn_interface.py
+      Successfully uninstalled flash_attn_3-3.0.0
+Successfully installed flash_attn_3-3.0.0

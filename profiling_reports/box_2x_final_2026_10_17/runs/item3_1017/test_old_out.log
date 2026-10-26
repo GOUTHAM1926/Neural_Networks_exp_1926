@@ -1,0 +1,4 @@
+device NVIDIA H200 | mode out (legacy 4-argument loss op) | micro-batch 458, 7577 of 32768 rows trained
+rep 1: loss 11.336594 | W.grad fp32 checksum 883fe7a5e3b70000 | X.grad fp32 checksum b017f1eacd9f0000 | backward 31.689 ms
+rep 2: loss 11.336594 | W.grad fp32 checksum 883fe7a5e3b70000 | X.grad fp32 checksum b017f1eacd9f0000 | backward 51.715 ms
+RESULT mode=out legacy=1 loss=11.336594 wgrad_cs=883fe7a5e3b70000 xgrad_cs=b017f1eacd9f0000 bwd_ms=51.715 active_peak_MiB=10536.0 allocated_peak_MiB=10536.0 reserved_peak_MiB=12952.0 allocated_peak_B=11047798272 reps_identical=1

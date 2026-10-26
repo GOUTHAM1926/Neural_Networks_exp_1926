@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+# make_boxes.py (2026-10-21): quick-check boxes of sft_kernel_benchmarks.md, one per kernel / test, for screenshots in a mail.
+# Every number is copied from the report (sources there). Ratio everywhere: their time / BluTrain time (> 1.00 = BluTrain faster).
+# usage: python3 make_boxes.py > sft_kernel_benchmarks_boxes.txt
+W = 98
+
+
+def box(title, lines):
+    out = ["┌" + "─" * (W - 2) + "┐", "│ " + title.ljust(W - 4) + " │", "├" + "─" * (W - 2) + "┤"]
+    for l in lines:
+        if l == "---":
+            out.append("├" + "─" * (W - 2) + "┤"); continue
+        assert len(l) <= W - 4, (len(l), l)
+        out.append("│ " + l.ljust(W - 4) + " │")
+    out.append("└" + "─" * (W - 2) + "┘")
+    print("\n".join(out) + "\n")
+
+
+R = "ratio = their time / BluTrain time  (above 1.00 = BluTrain faster)"
+
+box("0. SETUP (all boxes)", [
+    "GPU       1x NVIDIA H200 141 GB, 700 W limit, clocks not locked (as in training)",
+    "Software  CUDA 13.2, driver 580.178.04, PyTorch 2.14.1+cu130, Triton 3.8.0",
+    "Rivals    FlashAttention 3.0.0 (hopper), FlashAttention 4.0.0b34, cuDNN 9.24 (via PyTorch),",
+    "          Liger 0.8.5, Apple Cut Cross-Entropy 25.1.1, torch.compile, PyTorch eager",
+    "Model     1.6B: micro-batch 8 rows x 4,096 tokens, 18 query / 6 KV heads, head dim 128,",
+    "          vocabulary 50,304, bf16",
+    "Data      real stage-0 UltraChat SFT data: 5,000 chats (padded 5,000 rows / packed 1,517)",
+    "Timing    median of 30-2,000 calls after >= 4 s warm-up, same inputs for every library;",
+    "          attention: Nsight kernel times, one library per process, ABBA order x 2",
+    "Date      all measured fresh on 21 Oct 2026, current SFT branch code",
+])
+
+box("1. LOSS: sparse cross-entropy, forward + backward", [
+    "Kernel    BluTrain SFT loss: prompt/pad masking, one denominator per step, 16-byte loads,",
+    "          gradient written over the logits (in place)",
+    "Shape     logits [32,768 x 50,304] bf16 (8 rows x 4,096 tokens), uint16 targets",
+    "Rivals    Liger CE, torch.compile (fp32), PyTorch eager bf16, PyTorch eager fp32 (HF way)",
+    "Measured  forward + backward time (Liger computes its gradient inside the forward)",
+    "---",
+    "micro-batch (trained tokens)   BluTrain     Liger   compile   PyT bf16   PyT fp32",
+    "fewest      (8.9%)             1.003 ms     1.30x     3.86x      6.21x      21.1x",
+    "first      (18.7%)             1.173 ms     1.30x     3.30x      5.31x      18.0x",
+    "median     (23.1%)             1.255 ms     1.29x     3.09x      4.96x      16.8x",
+    "most       (38.8%)             1.530 ms     1.29x     2.55x      4.08x      13.8x",
+    "no mask     (100%)             2.603 ms     1.38x     1.51x      2.41x      8.14x",
+    "all masked    (0%)             0.789 ms     1.39x     4.91x      7.89x      26.8x",
+    "extra memory                   0.2 MiB    0.3 MiB  3,144 MiB  9,432 MiB  18,864 MiB",
+    "---",
+    R,
+    "Check     loss = PyTorch fp32 within 1e-6; 6 of 6 gradient checks pass",
+    "Result    BluTrain fastest in all 6 cases",
+])
+
+box("2. LM_HEAD + LOSS together (fused rivals)", [
+    "Measured  hidden [32,768 x 2,304] x lm_head [2,304 x 50,304] + loss, forward + backward",
+    "          BluTrain = the GEMMs (cuBLAS here, BluBLAS in training, same speed) + BluTrain loss",
+    "Rivals    PyTorch, Liger FLCE, Apple CCE (default and exact)",
+    "---",
+    "micro-batch (trained tokens)   BluTrain    PyTorch   Liger FLCE    CCE    CCE exact",
+    "median     (23.1%)             34.93 ms      1.40x        0.95x   0.91x       0.90x",
+    "most       (38.8%)             35.20 ms      1.41x        0.98x   1.50x       1.47x",
+    "no mask     (100%)             36.28 ms      1.44x        1.07x   3.73x       3.67x",
+    "peak memory                   3,144 MiB*  18,864 MiB     563 MiB  367 MiB",
+    "* BluTrain keeps the bf16 logits for the backward",
+    "---",
+    R,
+    "Result    median SFT batch: CCE 9% and Liger FLCE 5% faster (BluTrain's lm_head also computes",
+    "          the 77% masked tokens); every token trained: BluTrain fastest",
+    "Next      lm_head only on the trained tokens (gather, matmul, loss, scatter)",
+])
+
+box("3. ATTENTION, DENSE (pretraining + padded SFT rows)", [
+    "Kernel    BluTrain QPU forward + Vj2 backward, causal, grouped-query",
+    "Shape     8 rows x 4,096 tokens, 18 query / 6 KV heads, head dim 128, bf16, causal",
+    "Rivals    FlashAttention 3 (default backward), FlashAttention 4, cuDNN",
+    "Method    Nsight kernel time, one library per process, >= 4 s per run, ABBA x 2, steady state",
+    "---",
+    "pass                 BluTrain        FA3              FA4              cuDNN",
+    "forward              0.983 ms    0.977 (0.99x)    1.071 (1.09x)    1.188 (1.21x)",
+    "backward             3.190 ms    3.271 (1.03x)    3.230 (1.01x)    3.593 (1.13x)",
+    "forward + backward   4.173 ms    4.248 (1.02x)    4.301 (1.03x)    4.781 (1.15x)",
+    "---",
+    R,
+    "Result    forward: tie with FA3 (BluTrain 0.6% slower); everything else BluTrain faster",
+    "          same result as the 19 Oct scoreboard on the 8-GPU node (second machine)",
+])
+
+box("4. ATTENTION, PACKED ROWS (SFT packing: every chat attends only to itself)", [
+    "Kernel    BluTrain QPU forward + Vj2 backward with the per-chat plan",
+    "Shape     8 real packed rows x 4,096 tokens (rows 752-759, 24 chats), 18 / 6 heads, hd 128",
+    "Rivals    FA3, FA4, cuDNN through their varlen (cu_seqlens) interface = same attention",
+    "Method    as box 3",
+    "---",
+    "pass                 BluTrain        FA3              FA4              cuDNN",
+    "forward              0.408 ms    0.472 (1.16x)    0.525 (1.29x)    0.496 (1.22x)",
+    "backward             1.527 ms    1.597 (1.05x)    1.571 (1.03x)    1.700 (1.11x)",
+    "forward + backward   1.934 ms    2.069 (1.07x)    2.096 (1.08x)    2.196 (1.14x)",
+    "---",
+    R,
+    "Result    BluTrain faster in every pass",
+])
+
+box("5. ATTENTION, MORE LIBRARIES, 7 ROW LAYOUTS (packed, forward + backward)", [
+    "Layouts   3 sets of 8 real packed rows (longest / middle / shortest chats) and rows of",
+    "          chats with 512 / 1,024 / 2,048 / 4,096 tokens; 18 / 6 heads, hd 128, bf16",
+    "Note      libraries share one Python process here; the clean head-to-head is box 3 / 4",
+    "---",
+    "library (their time / BluTrain time)              real rows        uniform rows",
+    "FlashAttention 3                                  1.05 - 1.34x     1.00 - 1.35x",
+    "FlashAttention 3, deterministic                   1.13 - 1.32x     1.09 - 1.33x",
+    "FlashAttention 4                                  1.04 - 1.31x     1.02 - 1.31x",
+    "cuDNN                                             1.15 - 1.23x     1.12 - 1.21x",
+    "FlexAttention (document mask)                     1.65 - 1.80x     1.59 - 1.62x",
+    "PyTorch varlen_attn                               2.08 - 2.22x     2.04 - 2.25x",
+    "SDPA + block mask (HF packing), cuDNN backend     3.9 - 11.5x      3.6 - 12.0x",
+    "SDPA + block mask, memory-efficient backend       9.4 - 27.8x      8.6 - 29.1x",
+    "---",
+    R,
+    "Result    BluTrain fastest or tied on all 7 layouts",
+])
+
+box("6. QK RMSNORM + ROPE (fused, packed positions)", [
+    "Kernel    BluTrain fused RMSNorm (with gamma) + RoPE for q and k, one pass each way",
+    "Shape     q [8, 18, 4096, 128] + k [8, 6, 4096, 128] fp32, theta 10,000, eps 1e-6,",
+    "          positions of 8 real packed rows (29 chats, every chat restarts at 0)",
+    "Rivals    HF Qwen3 code (RMSNorm + apply_rotary_pos_emb) eager and torch.compile,",
+    "          Liger RMSNorm + Liger RoPE",
+    "---",
+    "pass        BluTrain     torch.compile        Liger               PyTorch eager",
+    "forward     0.210 ms     0.285 (1.36x)        0.780 (3.71x)       2.483 (11.8x)",
+    "backward    0.521 ms     0.786 (1.51x)        1.744 (3.35x)       5.013 (9.6x)",
+    "kept for backward: BluTrain 3 MiB, compile 3 MiB, Liger 3 MiB, eager 387 MiB",
+    "---",
+    R,
+    "Check     37 of 37 position tests pass; all libraries agree with fp64 to ~1e-6",
+    "Result    BluTrain fastest; forward at 3.8 TB/s (80% of H200 bandwidth)",
+])
+
+box("7. COST OF THE SFT FEATURES vs THE BLUTRAIN PRETRAINING KERNELS", [
+    "RoPE positions (packed vs none)          forward +0.7%, backward +2.5%",
+    "                                         positions = t is bit-identical to no positions",
+    "Packed attention on full 4,096-token     forward +1.5%, backward 0% vs the dense kernel",
+    "chats (nothing to save)",
+    "Dense attention                          the same code as pretraining (no SFT cost)",
+    "Loss                                     the same kernel for pretraining and SFT",
+    "---",
+    "Against the OLDER pretraining kernels (same box, same day; new / old time):",
+    "attention dense    forward 0.84, backward 0.71, forward + backward 0.74",
+    "loss (SFT batches) forward + backward 0.49 - 0.91, gradients bit-identical",
+    "loss in place      (what training runs) within 1.7% of out-of-place, bit-identical",
+])
+
+box("8. PADDING vs PACKING, KERNEL LEVEL (the same chats)", [
+    "Padded = chats x dense time for one 4,096-token row; packed = BluTrain packed kernel",
+    "Attention forward + backward:",
+    "---",
+    "rows                              chats     padded      packed     packed / padded",
+    "real rows 0-7 (longest chats)       15     7.69 ms     3.86 ms        0.50",
+    "real rows 752-759 (middle)          24    12.57 ms     2.01 ms        0.16",
+    "real rows 1504-1511 (shortest)      72    36.95 ms     1.29 ms        0.035",
+    "chats of 512 tokens                 64    32.83 ms     1.23 ms        0.038",
+    "chats of 1,024 tokens               32    16.58 ms     1.64 ms        0.099",
+    "chats of 2,048 tokens               16     8.35 ms     2.49 ms        0.30",
+    "chats of 4,096 tokens (no gain)      8     4.19 ms     4.21 ms        1.00",
+    "---",
+    "Loss per epoch: 0.78 s padded vs 0.42 s packed (about half)",
+    "Result    attention 2x to 28x less time packed on real rows",
+])
+
+box("9. SFT TRAINING, TEST 1: padding vs packing as used in practice", [
+    "Model     1.6B from blumodel_step_8000; AdamW 2e-5, 3% warm-up, cosine to 2e-6, 2 epochs;",
+    "          5,000 UltraChat chats; val every 10 steps; bf16; 1x H200",
+    "Setting   padding: 1 chat per row, 64 rows (= 64 chats) per step, 156 steps",
+    "          packing: 3.3 chats per row, 20 rows (54-78 chats) per step, 151 steps",
+    "---",
+    "                                  padding            packing            packing / padding",
+    "step time                         5.01 s             1.63 s             0.33",
+    "whole run (train + val)           17.0 min           5.1 min            0.30",
+    "chats per second                  12.8               40.7               3.2x",
+    "trained tokens per second         12,185             38,608             3.2x",
+    "MFU                               58.1%              55.9%",
+    "val loss drop                     0.1625             0.1629",
+    "train loss, epoch 1 / 2 mean      1.3158 / 1.2391    1.3171 / 1.2403",
+    "---",
+    "Result    same learning in 0.30x the time. Per-step curves differ because the two runs",
+    "          hold different chats in each step (see test 2)",
+])
+
+box("10. SFT TRAINING, TEST 2: the same chats in every step (reproducibility)", [
+    "Setting   packing gets exactly the 64 chats of padded step k in its step k (28 rows,",
+    "          1-6 chats per row); same 156 steps, same learning rates, same 496 val chats",
+    "Why       a whole run: any real difference in packing would add up over 156 updates",
+    "---",
+    "                                  padding               packing (same chats)",
+    "trained tokens per step           identical at all 156 steps",
+    "step 0 train loss                 1.449952              1.449952",
+    "train loss difference per step    mean 0.00008, largest 0.0003 (does not grow)",
+    "grad norm difference              largest 0.7%",
+    "train loss, epoch 1 / 2 mean      1.3158 / 1.2391       1.3158 / 1.2391",
+    "val loss, step 0 -> end           1.446384 -> 1.283890  1.446384 -> 1.283943",
+    "largest val difference (17)       0.000094",
+    "whole run                         17.0 min              9.7 min",
+    "---",
+    "Result    packing reproduces padding step by step: it trains the same model",
+])
+
+box("11. CORRECTNESS CHECKS", [
+    "Attention   quick suite on the SFT build: 296 / 296 pass (fp64 reference, packed == each",
+    "            chat alone bit for bit, isolation between chats)",
+    "            full suite, same attention code: 1,249 / 1,249 pass (incl. 1,000-repeat race test)",
+    "Loss        6 / 6 cases pass; = PyTorch fp32 within 1e-6; new vs old kernel bit-identical;",
+    "            in-place vs out-of-place bit-identical (12 / 12)",
+    "RoPE        37 / 37 pass (packed == each chat alone bit for bit, fp64 reference)",
+    "Pipeline    one step, same 500 chats padded vs packed: loss 1.445038 both, grad norm 0.7935",
+    "            whole run, same chats per step: within 0.0003 at every step (box 10)",
+])

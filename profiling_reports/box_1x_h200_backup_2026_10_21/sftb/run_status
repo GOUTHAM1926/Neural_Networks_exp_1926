@@ -1,0 +1,36 @@
+17:43:52 IST run start | steps: S1 A3 A5 B1 A1 A4 B2 C | GPU 0 NVIDIA H200, 0 MiB, 700.00 W, 1980 MHz | driver 580.178.04
+17:43:53 IST libs/sft_new: libtensor b5c9844c libblublas d15d3c4b | OLD (BLUCCL) libtensor d5423cd3 | tva_a 91f4342b | trainer 99db45fc
+17:43:58 IST prep done | built: bench_ce_v1 bench_ce_v2 bench_rope test_rope_positions 
+17:43:58 IST S1 start
+17:44:30 IST S1 quick suite exit=0 | backward mode: Vj2 (default)  |  quick: yes | checks passed 296, failed 0, skipped groups 0   (31 s total) | FAIL lines 0
+17:44:30 IST A3 start
+17:45:59 IST A3 ours exit=0 | 6 of 6 cases PASS | ALL CHECKS PASS (0 cases failed)
+17:51:13 IST A3 rivals exit=0 | 37 result lines | 0 skipped / failed
+17:51:13 IST A5 start
+17:51:17 IST A5 test_rope_positions exit=0 | SUMMARY: 37 cases, 0 failed  -> ALL PASS 
+17:51:21 IST A5 ours exit=0 | 3 cases | ROPE check identity_vs_nopos=BIT-IDENTICAL (q_out, k_out, dq, dk checksums)
+17:52:08 IST A5 rivals exit=0 | 6 result lines | 0 failed / skipped
+17:52:09 IST B1 start
+17:52:19 IST B1 ours exit=0 | 28 BENCH lines | segments vs segments_1012.txt: identical
+17:54:02 IST B1 rivals exit=0 | 168 BENCH lines | 7 error lines
+17:54:02 IST A1 start
+17:57:31 IST A1 scoreboard exit=0 | 17 of 16 runs exit 0 | summary 20 lines, steady 18 lines
+17:57:31 IST A4 start
+17:59:27 IST A4 old_r1 exit=0 | 6 of 6 cases PASS | lib d5423cd3
+18:00:56 IST A4 new_r1 exit=0 | 6 of 6 cases PASS | lib b5c9844c
+18:02:52 IST A4 old_r2 exit=0 | 6 of 6 cases PASS | lib d5423cd3
+18:04:21 IST A4 new_r2 exit=0 | 6 of 6 cases PASS | lib b5c9844c
+18:04:21 IST A4 summary: 6 of 6 cases bit-identical
+18:04:21 IST B2 start
+18:06:46 IST B2 exit=0 | 6 of 6 cases PASS | labels      : /root/gautam_k/sft_data/stage0_ultrachat_5k_T4096_packed/train/labels.bin, 1517 rows, 189 micro-batches, mean trained 0.7678
+18:06:46 IST C start
+18:06:46 IST C P_padded start | data stage0_ultrachat_5k_T4096 | B 8 | rows per step 64 | LD /usr/lib/x86_64-linux-gnu:/root/gautam_k/sft_v2/BluTrain_sft/Tensor-Implementations/lib:/root/gautam_k/sft_v2/BluTrain_sft/Profiler/lib:/root/gautam_k/sft_v2/BluTrain_sft/dist/lib
+18:24:48 IST C P_padded exit=0 | steps 156 | [SftLoader] /root/gautam_k/sft_data/stage0_ultrachat_5k_T4096/train: 5000 rows x T=4096, 4771516 trained token | last step    155 | train 1.262134 | val 1.283890 | tok/s 52369.86 | norm 0.1947 | dt 5005.63 ms | mfu 58.23% | | [val] step 155 | val_loss 1.283890 | 441382 trained tokens | peak GPU memory 123233 MiB | 1 'Training complete'
+18:24:48 IST C K_packed start | data stage0_ultrachat_5k_T4096_packed | B 4 | rows per step 20 | LD /usr/lib/x86_64-linux-gnu:/root/gautam_k/sft_v2/BluTrain_sft/Tensor-Implementations/lib:/root/gautam_k/sft_v2/BluTrain_sft/Profiler/lib:/root/gautam_k/sft_v2/BluTrain_sft/dist/lib
+18:30:59 IST C K_packed exit=0 | steps 151 | [SftLoader] /root/gautam_k/sft_data/stage0_ultrachat_5k_T4096_packed/train: 1517 rows x T=4096, 4771516 traine | last step    150 | train 1.317287 | val 1.286579 | tok/s 49953.68 | norm 0.1808 | dt 1639.92 ms | mfu 55.54% | | [val] step 150 | val_loss 1.286579 | 435043 trained tokens | peak GPU memory 85757 MiB | 1 'Training complete'
+18:30:59 IST ALL DONE | results /root/gautam_k/sftb_results.tgz (144K)
+18:33:11 IST A3b padded exit=0 | 6 of 6 cases PASS | in-place gradient bit-identical in 6 of 6 cases
+18:36:05 IST A3b packed exit=0 | 6 of 6 cases PASS | in-place gradient bit-identical in 6 of 6 cases
+18:36:05 IST A3b DONE | results re-packed /root/gautam_k/sftb_results.tgz
+19:16:02 IST S samesteps start | data stage0_5k_samesteps_as_padded | B 4 | rows per step 28 | epochs 1 | trainer 99db45fc
+19:26:46 IST S samesteps exit=0 | steps 156 | [SftLoader] /root/gautam_k/sft_data/stage0_5k_samesteps_as_padded/train: 4368 rows x T=4096, 9531228 trained t | last step    155 | train 1.261958 | val 1.283943 | tok/s 52505.43 | norm 0.1948 | dt 2184.31 ms | mfu 58.38% | | [val] step 155 | val_loss 1.283943 | 441382 trained tokens | peak GPU memory 85757 MiB | 1 'Training complete'

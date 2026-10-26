@@ -1,0 +1,121 @@
+2026-10-22 16:06:27 IST monitor start (checks every 5 min)
+2026-10-22 16:06:27 IST step 409 | train 0.879583 | norm 0.1370 | dt 1905.56 ms | trainer procs 2 | disk 129 GB | ETA 22:02 IST (5h56m, step 409/11590, mean dt 1913 ms)
+2026-10-22 16:06:27 IST VAL [val] step 0 | val_loss 1.175723 | 898276 trained tokens
+2026-10-22 16:06:27 IST VAL [val] step 200 | val_loss 1.048921 | 898276 trained tokens
+2026-10-22 16:06:27 IST VAL [val] step 400 | val_loss 0.992842 | 898276 trained tokens
+2026-10-22 16:11:28 IST step 567 | train 0.836265 | norm 0.1347 | dt 1875.88 ms | trainer procs 2 | disk 129 GB | ETA 22:01 IST (5h50m, step 567/11590, mean dt 1906 ms)
+2026-10-22 16:16:28 IST step 720 | train 0.930554 | norm 0.1425 | dt 1901.70 ms | trainer procs 2 | disk 129 GB | ETA 22:01 IST (5h44m, step 720/11590, mean dt 1902 ms)
+2026-10-22 16:16:28 IST VAL [val] step 600 | val_loss 0.969231 | 898276 trained tokens
+2026-10-22 16:21:28 IST step 872 | train 0.874895 | norm 0.1357 | dt 1892.52 ms | trainer procs 2 | disk 129 GB | ETA 22:01 IST (5h40m, step 872/11590, mean dt 1906 ms)
+2026-10-22 16:21:28 IST VAL [val] step 800 | val_loss 0.954320 | 898276 trained tokens
+2026-10-22 16:26:28 IST step 999 | train 1.144295 | norm 0.1571 | dt 1896.95 ms | trainer procs 2 | disk 117 GB | ETA 22:02 IST (5h35m, step 999/11590, mean dt 1903 ms)
+2026-10-22 16:31:28 IST step 1145 | train 0.842025 | norm 0.1451 | dt 1911.91 ms | trainer procs 2 | disk 113 GB | ETA 22:03 IST (5h32m, step 1145/11590, mean dt 1909 ms)
+2026-10-22 16:31:28 IST VAL [val] step 1000 | val_loss 0.943299 | 898276 trained tokens
+2026-10-22 16:36:28 IST step 1298 | train 0.952486 | norm 0.1412 | dt 1922.35 ms | trainer procs 2 | disk 113 GB | ETA 22:04 IST (5h28m, step 1298/11590, mean dt 1913 ms)
+2026-10-22 16:36:28 IST VAL [val] step 1200 | val_loss 0.934572 | 898276 trained tokens
+2026-10-22 16:41:28 IST step 1450 | train 0.925690 | norm 0.1470 | dt 1892.24 ms | trainer procs 2 | disk 113 GB | ETA 22:02 IST (5h21m, step 1450/11590, mean dt 1902 ms)
+2026-10-22 16:41:28 IST VAL [val] step 1400 | val_loss 0.926981 | 898276 trained tokens
+2026-10-22 16:46:29 IST step 1603 | train 0.871227 | norm 0.1365 | dt 1912.20 ms | trainer procs 2 | disk 113 GB | ETA 22:03 IST (5h17m, step 1603/11590, mean dt 1905 ms)
+2026-10-22 16:46:29 IST VAL [val] step 1600 | val_loss 0.920196 | 898276 trained tokens
+2026-10-22 16:51:29 IST step 1761 | train 0.887497 | norm 0.1446 | dt 1921.91 ms | trainer procs 2 | disk 113 GB | ETA 22:04 IST (5h13m, step 1761/11590, mean dt 1913 ms)
+2026-10-22 16:56:29 IST step 1914 | train 0.790422 | norm 0.1312 | dt 1886.53 ms | trainer procs 2 | disk 113 GB | ETA 22:03 IST (5h6m, step 1914/11590, mean dt 1902 ms)
+2026-10-22 16:56:29 IST VAL [val] step 1800 | val_loss 0.915098 | 898276 trained tokens
+2026-10-22 17:01:29 IST step 2040 | train 0.892452 | norm 0.1315 | dt 1879.73 ms | trainer procs 2 | disk 96 GB | ETA 22:02 IST (5h0m, step 2040/11590, mean dt 1890 ms)
+2026-10-22 17:01:29 IST VAL [val] step 2000 | val_loss 0.909609 | 898276 trained tokens
+2026-10-22 17:06:29 IST step 2198 | train 0.864690 | norm 0.1424 | dt 1888.75 ms | trainer procs 2 | disk 96 GB | ETA 22:03 IST (4h56m, step 2198/11590, mean dt 1897 ms)
+2026-10-22 17:11:29 IST step 2352 | train 1.020807 | norm 0.1607 | dt 1898.23 ms | trainer procs 2 | disk 96 GB | ETA 22:03 IST (4h52m, step 2352/11590, mean dt 1897 ms)
+2026-10-22 17:11:29 IST VAL [val] step 2200 | val_loss 0.904780 | 898276 trained tokens
+2026-10-22 17:16:30 IST step 2505 | train 0.853433 | norm 0.1495 | dt 1891.34 ms | trainer procs 2 | disk 96 GB | ETA 22:04 IST (4h47m, step 2505/11590, mean dt 1900 ms)
+2026-10-22 17:16:30 IST VAL [val] step 2400 | val_loss 0.901007 | 898276 trained tokens
+2026-10-22 17:21:30 IST step 2658 | train 0.802802 | norm 0.1358 | dt 1901.27 ms | trainer procs 2 | disk 96 GB | ETA 22:04 IST (4h43m, step 2658/11590, mean dt 1902 ms)
+2026-10-22 17:21:30 IST VAL [val] step 2600 | val_loss 0.897405 | 898276 trained tokens
+2026-10-22 17:26:30 IST step 2811 | train 0.894383 | norm 0.1335 | dt 1895.24 ms | trainer procs 2 | disk 96 GB | ETA 22:04 IST (4h37m, step 2811/11590, mean dt 1897 ms)
+2026-10-22 17:26:30 IST VAL [val] step 2800 | val_loss 0.893946 | 898276 trained tokens
+2026-10-22 17:31:30 IST step 2970 | train 1.081071 | norm 0.1664 | dt 1911.24 ms | trainer procs 2 | disk 96 GB | ETA 22:04 IST (4h32m, step 2970/11590, mean dt 1897 ms)
+2026-10-22 17:36:30 IST step 3095 | train 0.819725 | norm 0.1562 | dt 1887.88 ms | trainer procs 2 | disk 96 GB | ETA 22:04 IST (4h28m, step 3095/11590, mean dt 1894 ms)
+2026-10-22 17:36:30 IST VAL [val] step 3000 | val_loss 0.891017 | 898276 trained tokens
+2026-10-22 17:41:30 IST step 3248 | train 0.941789 | norm 0.1459 | dt 1887.13 ms | trainer procs 2 | disk 96 GB | ETA 22:05 IST (4h24m, step 3248/11590, mean dt 1901 ms)
+2026-10-22 17:41:30 IST VAL [val] step 3200 | val_loss 0.887352 | 898276 trained tokens
+2026-10-22 17:46:31 IST step 3401 | train 0.904500 | norm 0.1402 | dt 1907.36 ms | trainer procs 2 | disk 96 GB | ETA 22:05 IST (4h19m, step 3401/11590, mean dt 1898 ms)
+2026-10-22 17:46:31 IST VAL [val] step 3400 | val_loss 0.884336 | 898276 trained tokens
+2026-10-22 17:51:31 IST step 3560 | train 0.814518 | norm 0.1512 | dt 1904.46 ms | trainer procs 2 | disk 96 GB | ETA 22:05 IST (4h13m, step 3560/11590, mean dt 1898 ms)
+2026-10-22 17:56:31 IST step 3713 | train 0.899613 | norm 0.1368 | dt 1885.35 ms | trainer procs 2 | disk 96 GB | ETA 22:05 IST (4h9m, step 3713/11590, mean dt 1899 ms)
+2026-10-22 17:56:31 IST VAL [val] step 3600 | val_loss 0.881332 | 898276 trained tokens
+2026-10-22 18:01:31 IST step 3866 | train 0.994001 | norm 0.1498 | dt 1892.80 ms | trainer procs 2 | disk 96 GB | ETA 22:05 IST (4h4m, step 3866/11590, mean dt 1896 ms)
+2026-10-22 18:01:31 IST VAL [val] step 3800 | val_loss 0.878916 | 898276 trained tokens
+2026-10-22 18:06:31 IST step 3999 | train 0.740523 | norm 0.1341 | dt 1911.97 ms | trainer procs 2 | disk 80 GB | ETA 22:06 IST (3h59m, step 3999/11590, mean dt 1897 ms)
+2026-10-22 18:11:31 IST step 4150 | train 0.792174 | norm 0.1431 | dt 1890.01 ms | trainer procs 2 | disk 96 GB | ETA 22:06 IST (3h54m, step 4150/11590, mean dt 1894 ms)
+2026-10-22 18:11:31 IST VAL [val] step 4000 | val_loss 0.876790 | 898276 trained tokens
+2026-10-22 18:16:31 IST step 4304 | train 0.811427 | norm 0.1367 | dt 1902.58 ms | trainer procs 2 | disk 96 GB | ETA 22:07 IST (3h50m, step 4304/11590, mean dt 1901 ms)
+2026-10-22 18:16:31 IST VAL [val] step 4200 | val_loss 0.874740 | 898276 trained tokens
+2026-10-22 18:21:32 IST step 4457 | train 0.861547 | norm 0.1369 | dt 1896.79 ms | trainer procs 2 | disk 96 GB | ETA 22:07 IST (3h46m, step 4457/11590, mean dt 1904 ms)
+2026-10-22 18:21:32 IST VAL [val] step 4400 | val_loss 0.872757 | 898276 trained tokens
+2026-10-22 18:26:32 IST step 4610 | train 1.022501 | norm 0.1628 | dt 1892.78 ms | trainer procs 2 | disk 96 GB | ETA 22:08 IST (3h42m, step 4610/11590, mean dt 1911 ms)
+2026-10-22 18:26:32 IST VAL [val] step 4600 | val_loss 0.870493 | 898276 trained tokens
+2026-10-22 18:31:32 IST step 4768 | train 0.849462 | norm 0.1539 | dt 1907.53 ms | trainer procs 2 | disk 95 GB | ETA 22:07 IST (3h36m, step 4768/11590, mean dt 1901 ms)
+2026-10-22 18:36:32 IST step 4919 | train 0.957819 | norm 0.1529 | dt 1910.22 ms | trainer procs 2 | disk 95 GB | ETA 22:12 IST (3h35m, step 4919/11590, mean dt 1941 ms)
+2026-10-22 18:36:32 IST VAL [val] step 4800 | val_loss 0.868535 | 898276 trained tokens
+2026-10-22 18:41:32 IST step 5044 | train 0.924203 | norm 0.1502 | dt 1894.99 ms | trainer procs 2 | disk 95 GB | ETA 22:07 IST (3h26m, step 5044/11590, mean dt 1890 ms)
+2026-10-22 18:41:32 IST VAL [val] step 5000 | val_loss 0.866865 | 898276 trained tokens
+2026-10-22 18:46:32 IST step 5199 | train 0.864111 | norm 0.1446 | dt 1880.14 ms | trainer procs 2 | disk 95 GB | ETA 22:08 IST (3h22m, step 5199/11590, mean dt 1901 ms)
+2026-10-22 18:51:33 IST step 5354 | train 0.873849 | norm 0.1477 | dt 1889.55 ms | trainer procs 2 | disk 95 GB | ETA 22:08 IST (3h17m, step 5354/11590, mean dt 1899 ms)
+2026-10-22 18:51:33 IST VAL [val] step 5200 | val_loss 0.865136 | 898276 trained tokens
+2026-10-22 18:56:33 IST step 5508 | train 0.953048 | norm 0.1569 | dt 1908.26 ms | trainer procs 2 | disk 95 GB | ETA 22:09 IST (3h13m, step 5508/11590, mean dt 1908 ms)
+2026-10-22 18:56:33 IST VAL [val] step 5400 | val_loss 0.863679 | 898276 trained tokens
+2026-10-22 19:01:33 IST step 5660 | train 0.815464 | norm 0.1439 | dt 1903.81 ms | trainer procs 2 | disk 95 GB | ETA 22:10 IST (3h8m, step 5660/11590, mean dt 1912 ms)
+2026-10-22 19:01:33 IST VAL [val] step 5600 | val_loss 0.862259 | 898276 trained tokens
+2026-10-22 19:06:33 IST step 5813 | train 0.704423 | norm 0.1397 | dt 1911.97 ms | trainer procs 2 | disk 94 GB | ETA 22:09 IST (3h3m, step 5813/11590, mean dt 1905 ms)
+2026-10-22 19:06:33 IST VAL [val] step 5800 | val_loss 0.860730 | 898276 trained tokens
+2026-10-22 19:11:33 IST step 5971 | train 0.787296 | norm 0.1529 | dt 1891.39 ms | trainer procs 2 | disk 86 GB | ETA 22:09 IST (2h57m, step 5971/11590, mean dt 1901 ms)
+2026-10-22 19:16:33 IST step 6096 | train 0.787001 | norm 0.1409 | dt 1917.52 ms | trainer procs 2 | disk 86 GB | ETA 22:10 IST (2h53m, step 6096/11590, mean dt 1900 ms)
+2026-10-22 19:16:33 IST VAL [val] step 6000 | val_loss 0.859895 | 898276 trained tokens
+2026-10-22 19:21:34 IST step 6249 | train 0.843624 | norm 0.1477 | dt 1890.50 ms | trainer procs 2 | disk 86 GB | ETA 22:10 IST (2h49m, step 6249/11590, mean dt 1903 ms)
+2026-10-22 19:21:34 IST VAL [val] step 6200 | val_loss 0.860608 | 898276 trained tokens
+2026-10-22 19:26:34 IST step 6402 | train 0.867111 | norm 0.1562 | dt 1923.30 ms | trainer procs 2 | disk 86 GB | ETA 22:10 IST (2h44m, step 6402/11590, mean dt 1902 ms)
+2026-10-22 19:26:34 IST VAL [val] step 6400 | val_loss 0.860055 | 898276 trained tokens
+2026-10-22 19:31:34 IST step 6560 | train 0.690511 | norm 0.1464 | dt 1929.43 ms | trainer procs 2 | disk 86 GB | ETA 22:11 IST (2h39m, step 6560/11590, mean dt 1906 ms)
+2026-10-22 19:36:34 IST step 6712 | train 0.755265 | norm 0.1355 | dt 1900.54 ms | trainer procs 2 | disk 86 GB | ETA 22:11 IST (2h35m, step 6712/11590, mean dt 1912 ms)
+2026-10-22 19:36:34 IST VAL [val] step 6600 | val_loss 0.859872 | 898276 trained tokens
+2026-10-22 19:41:34 IST step 6865 | train 0.845026 | norm 0.1652 | dt 1919.22 ms | trainer procs 2 | disk 86 GB | ETA 22:11 IST (2h30m, step 6865/11590, mean dt 1910 ms)
+2026-10-22 19:41:34 IST VAL [val] step 6800 | val_loss 0.859558 | 898276 trained tokens
+2026-10-22 19:46:34 IST step 6999 | train 0.817520 | norm 0.1569 | dt 1921.74 ms | trainer procs 2 | disk 71 GB | ETA 22:12 IST (2h26m, step 6999/11590, mean dt 1910 ms)
+2026-10-22 19:51:35 IST step 7147 | train 0.808856 | norm 0.1901 | dt 1908.50 ms | trainer procs 2 | disk 69 GB | ETA 22:12 IST (2h20m, step 7147/11590, mean dt 1902 ms)
+2026-10-22 19:51:35 IST VAL [val] step 7000 | val_loss 0.858981 | 898276 trained tokens
+2026-10-22 19:56:35 IST step 7300 | train 0.779807 | norm 0.1561 | dt 1895.63 ms | trainer procs 2 | disk 69 GB | ETA 22:12 IST (2h15m, step 7300/11590, mean dt 1898 ms)
+2026-10-22 19:56:35 IST VAL [val] step 7200 | val_loss 0.858480 | 898276 trained tokens
+2026-10-22 20:01:35 IST step 7454 | train 0.706443 | norm 0.1516 | dt 1895.86 ms | trainer procs 2 | disk 61 GB | ETA 22:12 IST (2h10m, step 7454/11590, mean dt 1898 ms)
+2026-10-22 20:01:35 IST VAL [val] step 7400 | val_loss 0.857710 | 898276 trained tokens
+2026-10-22 20:06:35 IST step 7607 | train 0.844669 | norm 0.1513 | dt 1911.07 ms | trainer procs 2 | disk 61 GB | ETA 22:12 IST (2h5m, step 7607/11590, mean dt 1897 ms)
+2026-10-22 20:06:35 IST VAL [val] step 7600 | val_loss 0.857775 | 898276 trained tokens
+2026-10-22 20:11:35 IST step 7765 | train 0.690167 | norm 0.1442 | dt 1888.61 ms | trainer procs 2 | disk 61 GB | ETA 22:12 IST (2h1m, step 7765/11590, mean dt 1901 ms)
+2026-10-22 20:16:35 IST step 7918 | train 0.661125 | norm 0.1411 | dt 1895.02 ms | trainer procs 2 | disk 61 GB | ETA 22:12 IST (1h56m, step 7918/11590, mean dt 1899 ms)
+2026-10-22 20:16:35 IST VAL [val] step 7800 | val_loss 0.856951 | 898276 trained tokens
+2026-10-22 20:21:36 IST step 8043 | train 0.612846 | norm 0.1463 | dt 1905.42 ms | trainer procs 2 | disk 61 GB | ETA 22:13 IST (1h51m, step 8043/11590, mean dt 1887 ms)
+2026-10-22 20:21:36 IST VAL [val] step 8000 | val_loss 0.856308 | 898276 trained tokens
+2026-10-22 20:26:36 IST step 8199 | train 0.814917 | norm 0.1556 | dt 1874.26 ms | trainer procs 2 | disk 61 GB | ETA 22:13 IST (1h47m, step 8199/11590, mean dt 1899 ms)
+2026-10-22 20:31:36 IST step 8355 | train 0.716877 | norm 0.1632 | dt 1903.05 ms | trainer procs 2 | disk 61 GB | ETA 22:13 IST (1h42m, step 8355/11590, mean dt 1899 ms)
+2026-10-22 20:31:36 IST VAL [val] step 8200 | val_loss 0.856293 | 898276 trained tokens
+2026-10-22 20:36:36 IST step 8508 | train 0.763909 | norm 0.1620 | dt 1914.07 ms | trainer procs 2 | disk 60 GB | ETA 22:14 IST (1h37m, step 8508/11590, mean dt 1904 ms)
+2026-10-22 20:36:36 IST VAL [val] step 8400 | val_loss 0.855915 | 898276 trained tokens
+2026-10-22 20:41:36 IST step 8661 | train 0.759246 | norm 0.1500 | dt 1922.84 ms | trainer procs 2 | disk 60 GB | ETA 22:14 IST (1h32m, step 8661/11590, mean dt 1903 ms)
+2026-10-22 20:41:36 IST VAL [val] step 8600 | val_loss 0.855398 | 898276 trained tokens
+2026-10-22 20:46:36 IST step 8723 | train 0.783368 | norm 0.1601 | dt 1897.98 ms | trainer procs 0 | disk 60 GB | ETA 22:17 IST (1h31m, step 8723/11590, mean dt 1909 ms)
+2026-10-22 20:46:36 IST run ended: 2026-10-22 20:43:35 IST end | exit 1 | last: step   8723 | train 0.783368 | val 0.855398 
+2026-10-22 20:46:36 IST monitor stop
+2026-10-22 20:52:18 IST monitor start (checks every 5 min; 1 val lines already in the log, last val 0.856308)
+2026-10-22 20:52:18 IST step 8046 | train 0.734846 | norm 0.1616 | dt 1881.78 ms | trainer procs 2 | disk 60 GB | ETA 22:58 IST (2h6m, step 8046/11590, mean dt 2135 ms)
+2026-10-22 20:57:18 IST step 8200 | train 0.851845 | norm 0.1612 | dt 1906.60 ms | trainer procs 2 | disk 60 GB | ETA 22:44 IST (1h47m, step 8200/11590, mean dt 1897 ms)
+2026-10-22 20:57:18 IST VAL [val] step 8200 | val_loss 0.856344 | 898276 trained tokens
+2026-10-22 21:02:19 IST step 8358 | train 0.708603 | norm 0.1592 | dt 1896.32 ms | trainer procs 2 | disk 47 GB | ETA 22:44 IST (1h42m, step 8358/11590, mean dt 1896 ms)
+2026-10-22 21:07:19 IST step 8512 | train 0.737974 | norm 0.1735 | dt 1885.36 ms | trainer procs 2 | disk 47 GB | ETA 22:44 IST (1h37m, step 8512/11590, mean dt 1901 ms)
+2026-10-22 21:07:19 IST VAL [val] step 8400 | val_loss 0.855941 | 898276 trained tokens
+2026-10-22 21:12:19 IST step 8665 | train 0.908866 | norm 0.1747 | dt 1904.07 ms | trainer procs 2 | disk 45 GB | ETA 22:44 IST (1h32m, step 8665/11590, mean dt 1899 ms)
+2026-10-22 21:12:19 IST VAL [val] step 8600 | val_loss 0.855408 | 898276 trained tokens
+2026-10-22 21:17:19 IST step 8818 | train 0.902894 | norm 0.1743 | dt 1906.56 ms | trainer procs 2 | disk 42 GB | ETA 22:45 IST (1h27m, step 8818/11590, mean dt 1902 ms)
+2026-10-22 21:17:19 IST VAL [val] step 8800 | val_loss 0.854956 | 898276 trained tokens
+2026-10-22 21:22:19 IST step 8976 | train 0.796844 | norm 0.1700 | dt 1902.64 ms | trainer procs 2 | disk 35 GB | ETA 22:45 IST (1h22m, step 8976/11590, mean dt 1901 ms)
+2026-10-22 21:27:19 IST step 9091 | train 0.734854 | norm 0.1498 | dt 1896.48 ms | trainer procs 2 | disk 33 GB | ETA 22:46 IST (1h18m, step 9091/11590, mean dt 1895 ms)
+2026-10-22 21:27:19 IST VAL [val] step 9000 | val_loss 0.854744 | 898276 trained tokens
+2026-10-22 21:32:20 IST step 9194 | train 0.725632 | norm 0.1529 | dt 1897.13 ms | trainer procs 0 | disk 32 GB | ETA 22:48 IST (1h15m, step 9194/11590, mean dt 1901 ms)
+2026-10-22 21:32:20 IST run ended: 2026-10-22 21:30:37 IST end | exit 1 | last: step   9194 | train 0.725632 | val 0.854744 
+2026-10-22 21:32:20 IST monitor stop

@@ -1,0 +1,2 @@
+2026-10-22 15:51:33 IST start | lr 5e-5 | trainer 2e98b56b | 130 GB free
+2026-10-22 20:43:35 IST end | exit 1 | last: step   8723 | train 0.783368 | val 0.855398 

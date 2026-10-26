@@ -1,0 +1,15 @@
+12:46:36 IST built: SKV: source d05c0b23 | library 841bb583 F3c: source c6a67163 | library 3ce3dead 
+12:46:37 IST start | GPU 0 NVIDIA H200, 0 MiB | vj2_K5q a804ea04  vj2_SKV 841bb583  
+12:47:27 IST quick suite vj2_SKV exit=0 | checks passed 296, failed 0, skipped groups 0   (49 s total)
+12:47:49 IST race round 01 done (vj2_SKV vj2_K5q)
+12:48:11 IST race round 02 done (vj2_K5q vj2_SKV)
+12:48:33 IST race round 03 done (vj2_SKV vj2_K5q)
+12:48:55 IST race round 04 done (vj2_K5q vj2_SKV)
+12:49:17 IST race round 05 done (vj2_SKV vj2_K5q)
+12:49:39 IST race round 06 done (vj2_K5q vj2_SKV)
+12:50:01 IST race round 07 done (vj2_SKV vj2_K5q)
+12:50:23 IST race round 08 done (vj2_K5q vj2_SKV)
+12:50:37 IST ncu vj2_SKV dense | kernels profiled 1
+12:50:52 IST ncu vj2_SKV packed | kernels profiled 1
+12:50:52 IST MULTI DONE
+12:50:52 IST PACKED skv_results.tgz

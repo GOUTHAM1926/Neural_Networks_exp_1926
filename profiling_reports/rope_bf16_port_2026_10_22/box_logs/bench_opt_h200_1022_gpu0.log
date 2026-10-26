@@ -1,0 +1,42 @@
+device NVIDIA H200 | T 4096, 18 / 6 heads, hd 128, NeoX | 200 launches per round, median of 9 rounds
+CHECK B=1 no positions optimized vs original, 10 outputs: all bit-identical
+CHECK B=1 positions    optimized vs original, 10 outputs: all bit-identical
+TIME B=1
+  forward, no positions (pretraining) original     20.1 us | optimized     26.1 us |  0.77x
+  forward, positions (SFT)           original     20.3 us | optimized     24.0 us |  0.84x
+  backward, no positions             original     84.3 us | optimized     84.3 us |  1.00x
+  backward, positions                original    170.7 us | optimized     89.8 us |  1.90x
+  dgamma reduce (q + k)              original     14.9 us | optimized     10.1 us |  1.47x
+  TOTAL pretraining (fwd+bwd+reduce) original    119.3 us | optimized    120.5 us |  0.99x
+  TOTAL SFT (fwd+bwd+reduce)         original    205.9 us | optimized    124.0 us |  1.66x
+CHECK B=2 no positions optimized vs original, 10 outputs: all bit-identical
+CHECK B=2 positions    optimized vs original, 10 outputs: all bit-identical
+TIME B=2
+  forward, no positions (pretraining) original     36.7 us | optimized     49.1 us |  0.75x
+  forward, positions (SFT)           original     37.5 us | optimized     46.2 us |  0.81x
+  backward, no positions             original     91.8 us | optimized     92.4 us |  0.99x
+  backward, positions                original    179.7 us | optimized     97.6 us |  1.84x
+  dgamma reduce (q + k)              original     26.1 us | optimized     18.9 us |  1.38x
+  TOTAL pretraining (fwd+bwd+reduce) original    154.6 us | optimized    160.3 us |  0.96x
+  TOTAL SFT (fwd+bwd+reduce)         original    243.3 us | optimized    162.8 us |  1.49x
+CHECK B=4 no positions optimized vs original, 10 outputs: all bit-identical
+CHECK B=4 positions    optimized vs original, 10 outputs: all bit-identical
+TIME B=4
+  forward, no positions (pretraining) original     69.0 us | optimized     94.3 us |  0.73x
+  forward, positions (SFT)           original     70.6 us | optimized     88.0 us |  0.80x
+  backward, no positions             original    110.1 us | optimized    111.8 us |  0.99x
+  backward, positions                original    194.9 us | optimized    118.3 us |  1.65x
+  dgamma reduce (q + k)              original     48.7 us | optimized     36.0 us |  1.35x
+  TOTAL pretraining (fwd+bwd+reduce) original    227.8 us | optimized    242.1 us |  0.94x
+  TOTAL SFT (fwd+bwd+reduce)         original    314.1 us | optimized    242.4 us |  1.30x
+CHECK B=8 no positions optimized vs original, 10 outputs: all bit-identical
+CHECK B=8 positions    optimized vs original, 10 outputs: all bit-identical
+TIME B=8
+  forward, no positions (pretraining) original    133.7 us | optimized    182.7 us |  0.73x
+  forward, positions (SFT)           original    136.7 us | optimized    171.2 us |  0.80x
+  backward, no positions             original    220.9 us | optimized    224.0 us |  0.99x
+  backward, positions                original    368.2 us | optimized    237.5 us |  1.55x
+  dgamma reduce (q + k)              original     93.9 us | optimized     70.8 us |  1.33x
+  TOTAL pretraining (fwd+bwd+reduce) original    448.5 us | optimized    477.5 us |  0.94x
+  TOTAL SFT (fwd+bwd+reduce)         original    598.8 us | optimized    479.5 us |  1.25x
+RESULT: every optimized output bit-identical to the original; timings above

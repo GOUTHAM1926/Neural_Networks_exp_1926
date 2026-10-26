@@ -1,0 +1,44 @@
+device NVIDIA H200, 132 SMs | torch 2.14.1+cu130 (CUDA 13.0) | triton 3.8.0 | liger_kernel ? | cut_cross_entropy 25.1.1
+labels /root/gautam_k/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin: 625 micro-batches, mean trained 0.2330; cases: real_first (mb 0, 6112 trained), real_min (mb 287, 2920 trained), real_median (mb 458, 7577 trained), real_max (mb 415, 12729 trained), nomask (mb 0, 32768 trained), all_masked (mb -1, 0 trained)
+timing: >= 4.0 s of F+B warm-up, then F / B / F+B: 200 calls (part 1), 30 (part 2); CUDA events
+logit fill: 2004 points equal to the C++ bench's values (bit for bit)
+LOSSBENCH part=1 impl=torch_fp32 case=real_first mb=0 trained=6112 F=10.7854 Fmin=10.7741 B=10.3531 Bmin=10.3387 FB=21.1376 FBmin=21.1184 kept_MB=6288.0 peak_MB=18864.0 loss=12.742289 warm_calls=188
+LOSSBENCH part=1 impl=torch_fp32 case=real_min mb=287 trained=2920 F=10.7807 Fmin=10.7705 B=10.3578 Bmin=10.3386 FB=21.1372 FBmin=21.1158 kept_MB=6288.0 peak_MB=18864.0 loss=12.742343 warm_calls=192
+LOSSBENCH part=1 impl=torch_fp32 case=real_median mb=458 trained=7577 F=10.7852 Fmin=10.7761 B=10.3543 Bmin=10.3420 FB=21.1397 FBmin=21.1202 kept_MB=6288.0 peak_MB=18864.0 loss=12.740235 warm_calls=192
+LOSSBENCH part=1 impl=torch_fp32 case=real_max mb=415 trained=12729 F=10.7889 Fmin=10.7765 B=10.3623 Bmin=10.3427 FB=21.1508 FBmin=21.1271 kept_MB=6288.0 peak_MB=18864.0 loss=12.745140 warm_calls=192
+LOSSBENCH part=1 impl=torch_fp32 case=nomask mb=0 trained=32768 F=10.8000 Fmin=10.7899 B=10.3722 Bmin=10.3580 FB=21.1709 FBmin=21.1552 kept_MB=6288.0 peak_MB=18864.0 loss=12.750284 warm_calls=192
+LOSSBENCH part=1 impl=torch_fp32 case=all_masked mb=-1 trained=0 F=10.7771 Fmin=10.7641 B=10.3571 Bmin=10.3332 FB=21.1351 FBmin=21.1118 kept_MB=6288.0 peak_MB=18864.0 loss=nan warm_calls=192
+LOSSBENCH part=1 impl=torch_bf16 case=real_first mb=0 trained=6112 F=2.2386 Fmin=2.2331 B=3.9942 Bmin=3.9906 FB=6.2298 FBmin=6.2239 kept_MB=3144.0 peak_MB=9432.0 loss=12.750000 warm_calls=644 grad_maxdiff_rel=4.258e-06 row=95
+LOSSBENCH part=1 impl=torch_bf16 case=real_min mb=287 trained=2920 F=2.2378 Fmin=2.2323 B=3.9929 Bmin=3.9893 FB=6.2259 FBmin=6.2188 kept_MB=3144.0 peak_MB=9432.0 loss=12.750000 warm_calls=644 grad_maxdiff_rel=5.425e-06 row=406
+LOSSBENCH part=1 impl=torch_bf16 case=real_median mb=458 trained=7577 F=2.2439 Fmin=2.2344 B=3.9955 Bmin=3.9915 FB=6.2311 FBmin=6.2250 kept_MB=3144.0 peak_MB=9432.0 loss=12.750000 warm_calls=644 grad_maxdiff_rel=4.423e-06 row=69
+LOSSBENCH part=1 impl=torch_bf16 case=real_max mb=415 trained=12729 F=2.2410 Fmin=2.2352 B=3.9978 Bmin=3.9940 FB=6.2338 FBmin=6.2268 kept_MB=3144.0 peak_MB=9432.0 loss=12.750000 warm_calls=644 grad_maxdiff_rel=4.439e-06 row=103
+LOSSBENCH part=1 impl=torch_bf16 case=nomask mb=0 trained=32768 F=2.2609 Fmin=2.2512 B=4.0146 Bmin=4.0107 FB=6.2659 FBmin=6.2594 kept_MB=3144.0 peak_MB=9432.0 loss=12.750000 warm_calls=636 grad_maxdiff_rel=3.815e-06 row=0
+LOSSBENCH part=1 impl=torch_bf16 case=all_masked mb=-1 trained=0 F=2.2367 Fmin=2.2286 B=3.9923 Bmin=3.9888 FB=6.2203 FBmin=6.2152 kept_MB=3144.0 peak_MB=9432.0 loss=nan warm_calls=644
+LOSSBENCH part=1 impl=torch_compile case=real_first mb=0 trained=6112 F=1.9129 Fmin=1.8979 B=1.9698 Bmin=1.9541 FB=3.8971 FBmin=3.8724 kept_MB=0.3 peak_MB=3144.3 loss=12.742289 warm_calls=396 grad_maxdiff_rel=0.000e+00 row=95
+LOSSBENCH part=1 impl=torch_compile case=real_min mb=287 trained=2920 F=1.9130 Fmin=1.8978 B=1.9700 Bmin=1.9533 FB=3.8956 FBmin=3.8722 kept_MB=0.3 peak_MB=3144.3 loss=12.742343 warm_calls=1020 grad_maxdiff_rel=0.000e+00 row=406
+LOSSBENCH part=1 impl=torch_compile case=real_median mb=458 trained=7577 F=1.9128 Fmin=1.8978 B=1.9835 Bmin=1.9523 FB=3.9171 FBmin=3.8728 kept_MB=0.3 peak_MB=3144.3 loss=12.740236 warm_calls=1016 grad_maxdiff_rel=0.000e+00 row=69
+LOSSBENCH part=1 impl=torch_compile case=real_max mb=415 trained=12729 F=1.9129 Fmin=1.8981 B=1.9914 Bmin=1.9533 FB=3.9205 FBmin=3.8726 kept_MB=0.3 peak_MB=3144.3 loss=12.745142 warm_calls=1012 grad_maxdiff_rel=0.000e+00 row=103
+LOSSBENCH part=1 impl=torch_compile case=nomask mb=0 trained=32768 F=1.9127 Fmin=1.8976 B=2.0108 Bmin=1.9526 FB=3.9640 FBmin=3.8937 kept_MB=0.3 peak_MB=3144.3 loss=12.750284 warm_calls=1000 grad_maxdiff_rel=0.000e+00 row=0
+LOSSBENCH part=1 impl=torch_compile case=all_masked mb=-1 trained=0 F=1.9134 Fmin=1.9120 B=1.9689 Bmin=1.9532 FB=3.8959 FBmin=3.8732 kept_MB=0.3 peak_MB=3144.3 loss=nan warm_calls=1020
+Backend impl 'liger_kernel.ops.backends._cutedsl.cross_entropy' for op 'cross_entropy' could not be imported: ImportError: cutedsl backend requires the NVIDIA CUTLASS Python DSL (CuTe DSL). Install it with `pip install nvidia-cutlass-dsl`, or when installing Liger-Kernel use `pip install 'liger-kernel[cutedsl]'`.
+Backend impl 'liger_kernel.ops.backends._ascend.cross_entropy' for op 'cross_entropy' could not be imported: ImportError: cannot import name 'tanh' from 'triton.language.math' (/root/gautam_k/lossenv/lib/python3.12/site-packages/triton/language/math.py)
+LOSSBENCH part=1 impl=liger case=real_first mb=0 trained=6112 F=1.2973 Fmin=1.2840 B=0.1266 Bmin=0.1192 FB=1.4256 FBmin=1.4145 kept_MB=0.0 peak_MB=0.3 loss=12.750000 warm_calls=1252 grad_maxdiff_rel=0.000e+00 row=95
+LOSSBENCH part=1 impl=liger case=real_min mb=287 trained=2920 F=1.0791 Fmin=1.0675 B=0.1238 Bmin=0.1154 FB=1.2059 FBmin=1.1900 kept_MB=0.0 peak_MB=0.3 loss=12.750000 warm_calls=1372 grad_maxdiff_rel=0.000e+00 row=406
+LOSSBENCH part=1 impl=liger case=real_median mb=458 trained=7577 F=1.3960 Fmin=1.3829 B=0.1246 Bmin=0.1166 FB=1.5253 FBmin=1.5082 kept_MB=0.0 peak_MB=0.3 loss=12.750000 warm_calls=1288 grad_maxdiff_rel=0.000e+00 row=69
+LOSSBENCH part=1 impl=liger case=real_max mb=415 trained=12729 F=1.7549 Fmin=1.7397 B=0.1322 Bmin=0.1185 FB=1.8855 FBmin=1.8660 kept_MB=0.0 peak_MB=0.3 loss=12.750000 warm_calls=1160 grad_maxdiff_rel=0.000e+00 row=103
+LOSSBENCH part=1 impl=liger case=nomask mb=0 trained=32768 F=3.1453 Fmin=3.1201 B=0.1364 Bmin=0.1273 FB=3.2788 FBmin=3.2573 kept_MB=0.0 peak_MB=0.3 loss=12.750000 warm_calls=828 grad_maxdiff_rel=0.000e+00 row=0
+LOSSBENCH part=1 impl=liger case=all_masked mb=-1 trained=0 F=0.8784 Fmin=0.8670 B=0.1209 Bmin=0.1135 FB=1.0041 FBmin=0.9905 kept_MB=0.0 peak_MB=0.3 loss=0.000000 warm_calls=1560
+LOSSBENCH part=2 impl=gemm_only case=any mb=-1 trained=-1 F=11.8008 Fmin=11.6734 B=22.8876 Bmin=22.5138 FB=34.4365 FBmin=34.0275 kept_MB=3144.0 peak_MB=6653.1 loss=nan warm_calls=116 note=cuBLAS_GEMMs_only_add_ours_loss
+LOSSBENCH part=2 impl=torch case=real_median mb=458 trained=7577 F=20.6870 Fmin=20.5452 B=28.6207 Bmin=27.4392 FB=49.8236 FBmin=48.3048 kept_MB=6288.0 peak_MB=18864.0 loss=11.324553 warm_calls=84
+LOSSBENCH part=2 impl=torch case=real_max mb=415 trained=12729 F=20.7036 Fmin=20.5223 B=29.2530 Bmin=27.7268 FB=50.4267 FBmin=48.5973 kept_MB=6288.0 peak_MB=18864.0 loss=11.319285 warm_calls=80
+LOSSBENCH part=2 impl=torch case=nomask mb=0 trained=32768 F=20.7624 Fmin=20.6004 B=30.4303 Bmin=29.7844 FB=52.6290 FBmin=50.8653 kept_MB=6288.0 peak_MB=18864.0 loss=11.336454 warm_calls=76
+LOSSBENCH part=2 impl=liger_flce case=real_median mb=458 trained=7577 F=33.2987 Fmin=33.0244 B=0.2805 Bmin=0.2556 FB=33.6731 FBmin=32.3478 kept_MB=366.0 peak_MB=562.7 loss=11.324552 warm_calls=116
+LOSSBENCH part=2 impl=liger_flce case=real_max mb=415 trained=12729 F=34.3964 Fmin=33.7683 B=0.2712 Bmin=0.2541 FB=35.6641 FBmin=33.9276 kept_MB=366.0 peak_MB=562.7 loss=11.319285 warm_calls=116
+LOSSBENCH part=2 impl=liger_flce case=nomask mb=0 trained=32768 F=38.8728 Fmin=38.4826 B=0.3023 Bmin=0.2715 FB=39.0147 FBmin=38.6157 kept_MB=366.0 peak_MB=562.7 loss=11.336454 warm_calls=100
+LOSSBENCH part=2 impl=cce case=real_median mb=458 trained=7577 F=3.9398 Fmin=3.6660 B=27.8910 Bmin=27.8333 FB=31.6779 FBmin=31.6161 kept_MB=0.2 peak_MB=366.6 loss=11.324569 warm_calls=64
+LOSSBENCH part=2 impl=cce case=real_max mb=415 trained=12729 F=6.6167 Fmin=6.0487 B=46.1778 Bmin=46.0579 FB=52.3704 FBmin=52.2633 kept_MB=0.2 peak_MB=366.7 loss=11.319301 warm_calls=76
+LOSSBENCH part=2 impl=cce case=nomask mb=0 trained=32768 F=16.1586 Fmin=14.9828 B=120.2202 Bmin=119.7038 FB=135.5761 FBmin=134.9259 kept_MB=0.3 peak_MB=366.8 loss=11.336449 warm_calls=20
+LOSSBENCH part=2 impl=cce_exact case=real_median mb=458 trained=7577 F=3.6935 Fmin=3.4644 B=27.6545 Bmin=27.5660 FB=31.2320 FBmin=31.1624 kept_MB=0.0 peak_MB=366.3 loss=11.324569 warm_calls=76
+LOSSBENCH part=2 impl=cce_exact case=real_max mb=415 trained=12729 F=6.2454 Fmin=5.7556 B=45.7202 Bmin=45.5789 FB=51.6802 FBmin=51.4925 kept_MB=0.0 peak_MB=366.3 loss=11.319301 warm_calls=80
+LOSSBENCH part=2 impl=cce_exact case=nomask mb=0 trained=32768 F=15.3135 Fmin=14.1031 B=118.6051 Bmin=118.0405 FB=133.0344 FBmin=132.4987 kept_MB=0.1 peak_MB=366.4 loss=11.336449 warm_calls=20
+RIVALS DONE

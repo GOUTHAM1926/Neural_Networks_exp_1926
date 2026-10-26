@@ -1,0 +1,50 @@
+# =============================================================================
+# bluscript_zero_ckpt_parallelism.yaml — parallelism for the production_zero trainer.
+# Read only when parallelism.enabled is true in bluscript_zero_ckpt_config.yaml.
+# An environment variable already set in the shell wins over this file.
+# =============================================================================
+
+type:    "zero1"     # must be zero1
+backend: "nccl"      # BLU_BACKEND: nccl | bluccl
+                     #   bluccl: BluCCL picks each collective's algorithm for the machine at startup:
+                     #   NVLS/multicast on NVSwitch, P2P kernels on P2P-capable GPUs without multicast,
+                     #   host-memory kernels otherwise (BLUCCL_ALGO_REPORT=1 prints the plan).
+                     #   Single node only: this trainer stops at startup on a multi-node launch, since
+                     #   BluCCL's reduce-scatter is node-local across nodes unless BLU_IB_RS=1 (never run).
+                     #   Its process group has all-reduce, reduce-scatter, all-gather and all-to-all but no
+                     #   reduce/broadcast, so zero1.variant is forced to v2; zero1.symmetric is ignored
+                     #   (BluCCL allocates its own symmetric buffers); checkpoints use a separate NCCL group.
+
+zero1:
+  # --- set by the command ---
+  variant:     "v2"  # BLU_ZERO_V2: v1 reduce/broadcast | v2 reduce-scatter/all-gather
+  symmetric:   true  # BLU_SYMMETRIC: NCCL symmetric memory (NVLS); NCCL only
+  global_clip: true  # BLU_GLOBAL_CLIP: one clip coefficient across groups (Muon body exempt)
+  grad_view:   true  # BLU_GRAD_VIEW: accumulate grads in the wire buffer (bf16 accumulation on bf16 groups)
+
+  # --- not in the command: false = the command's behaviour ---
+  fp32_reduce:           false  # BLU_FP32_REDUCE: reduce grads in fp32 (more wire bytes and memory)
+  bf16_reduce:           false  # BLU_BF16_REDUCE: bf16 reduce even for fp32 groups (not with fp32_reduce)
+  no_overlap:            false  # BLU_NO_OVERLAP: turn off ALL comm/compute overlap
+  no_overlap_bwd:        false  # BLU_NO_OVERLAP_BWD: turn off the bucketed reduce-scatter during backward
+  overlap_refresh:       false  # BLU_OVERLAP_REFRESH: staged parameter refresh under the next forward
+                                #   (mutually exclusive with grad_view)
+  global_clip_strict:    false  # BLU_GLOBAL_CLIP_STRICT: clip coefficient from the full norm incl. the Muon body
+  no_inplace:            false  # BLU_ZERO_INPLACE=0 when true: separate RS/AG buffers instead of in place (NCCL)
+  muon_reduce_broadcast: false  # BLU_MUON_RB: Muon via reduce/broadcast instead of RS/AG (NCCL only)
+  no_muon_pipeline:      false  # BLU_MUON_PIPELINE=0 when true: all-gather Muon buckets only after all updates
+
+  # --- not in the command, not on/off: ~ = code default ---
+  bucket_mb:      ~  # BLU_COMM_BUCKET_MB: gradient bucket size (default 50); must match on resume
+  muon_buckets:   ~  # BLU_MUON_BUCKETS: Muon whole-tensor buckets (default 6)
+  muon_adjust_lr: ~  # BLU_MUON_ADJUST_LR: match_rms_adamw (default) | original
+  ckpt_align:     ~  # BLU_ZERO_CKPT_ALIGN: shard granule (default 3840); must match on resume
+
+bluccl:
+  fused_embedding_backward: false  # BLU_BLUCCL_FUSED_EMB: BluCCL's fused embedding backward (sorted segments, fp32
+                                   #   sums, deterministic). Only with backend: bluccl and more than one GPU; then it
+                                   #   overrides embedding.backward in the main config (same kernel as "segmented").
+  # The three below need backend: bluccl AND multicast (NVSwitch); otherwise they decline and the unfused path runs.
+  fused_adamw_allgather:    ~   # BLU_FUSED_ADAMW: AdamW + multicast all-gather in one kernel (fp32 groups only)
+  fused_clip_adamw:         ~   # BLU_FUSED_CLIP_ADAMW: fold the grad clip into it (needs fused_adamw_allgather)
+  fused_muon_publish:       ~   # BLU_FUSED_MUON_PUBLISH: Muon update + cast + multicast publish

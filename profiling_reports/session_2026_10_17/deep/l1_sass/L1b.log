@@ -1,0 +1,11 @@
+ptxas info    : 4 bytes gmem
+ptxas info    : Compiling entry function '_ZN9OwnTensor4cuda5gqa6212gqa_v62_sm90ILi0EEEv14CUtensorMap_stS3_S3_PK13__nv_bfloat16PS4_PfiiiifPK4int4i' for 'sm_90a'
+ptxas info    : Function properties for _ZN9OwnTensor4cuda5gqa6212gqa_v62_sm90ILi0EEEv14CUtensorMap_stS3_S3_PK13__nv_bfloat16PS4_PfiiiifPK4int4i
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers
+ptxas info    : Compile time = 260.658 ms
+ptxas info    : Compiling entry function '_ZN9OwnTensor4cuda5gqa6212gqa_v62_sm90ILi1EEEv14CUtensorMap_stS3_S3_PK13__nv_bfloat16PS4_PfiiiifPK4int4i' for 'sm_90a'
+ptxas info    : Function properties for _ZN9OwnTensor4cuda5gqa6212gqa_v62_sm90ILi1EEEv14CUtensorMap_stS3_S3_PK13__nv_bfloat16PS4_PfiiiifPK4int4i
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers
+ptxas info    : Compile time = 234.286 ms

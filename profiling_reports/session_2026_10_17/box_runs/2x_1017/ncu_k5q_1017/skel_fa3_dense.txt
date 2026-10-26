@@ -1,0 +1,107 @@
+
+######## FA3 dense: steady loop = executed 571392x; samples as % of the whole kernel
+    1558  0.75%  no_inst:445,branch_resolving:91,dispatch:90 UIADD3 UR4, UR6, 0x1, URZ
+    1559  0.06%  selected:38,dispatch:14                  ISETP.NE.AND P2, PT, RZ, UR9, PT
+    1560  0.07%  selected:27,no_inst:22,dispatch:7        VIADD R18, R2, 0x8
+    1561  0.20%  not_selected:52,dispatch:46,wait:45      UISETP.NE.AND UP0, UPT, UR4, 0x2, UPT
+    1562  0.29%  wait:185,selected:35,dispatch:26         USEL UR14, URZ, 0x1, UP0
+    1563  0.08%  wait:37,selected:27,not_selected:6       USEL UR4, UR4, URZ, UP0
+    1564  0.13%  selected:46,wait:36,not_selected:22      ULOP3.LUT UR14, UR7, UR14, URZ, 0x3c, !UPT
+    1565  0.09%  wait:37,selected:27,dispatch:11          @P2   BRA 0x709a5b020350
+    1573  0.21%  branch_resolving:85,no_inst:46,wait:44   BAR.SYNC.DEFER_BLOCKING R18, 0x100
+    1574  0.05%  selected:32,dispatch:11                  ULEA UR50, UR4, UR8, 0xb
+    1575  0.41%  wait:133,not_selected:123,dispatch:89    UIADD3 UR18, UR50, 0x2, URZ
+    1576  4.81%  barrier:4049,not_selected:293,dispatch:26 UMOV UR51, 0x40000040
+    1577  0.03%  selected:24,dispatch:3                   UMOV UR19, 0x40000040
+    1578  0.04%  selected:28,dispatch:4                   UIADD3 UR22, UR50, 0x4, URZ
+    1579  0.05%  selected:37,dispatch:5                   UMOV UR23, 0x40000040
+    1580  0.04%  selected:32,dispatch:5                   UIADD3 UR26, UR50, 0x6, URZ
+    1581  0.04%  selected:39                              UMOV UR27, 0x40000040
+    1582  0.04%  selected:36                              UIADD3 UR30, UR50, 0x400, URZ
+    1583  0.04%  selected:36                              UMOV UR31, 0x40000040
+    1584  0.05%  selected:47                              UIADD3 UR34, UR50, 0x402, URZ
+    1585  0.05%  selected:45                              UMOV UR35, 0x40000040
+    1586  0.03%  selected:30                              UIADD3 UR42, UR50, 0x404, URZ
+    1587  0.04%  selected:33                              UMOV UR43, 0x40000040
+    1588  0.04%  selected:37,dispatch:2                   WARPGROUP.ARRIVE
+    1589  0.03%  selected:27                              UIADD3 UR46, UR50, 0x406, URZ
+    1590  0.03%  selected:27                              UMOV UR47, 0x40000040
+    1591  1.02%  not_selected:356,wait:90,selected:34     HGMMA.64x128x16.F32.BF16 R24, gdesc[UR48], RZ, !UPT
+    1592  0.42%  not_selected:175,wait:114,mio:40         HGMMA.64x128x16.F32.BF16 R24, gdesc[UR16], R24
+    1593  0.50%  not_selected:154,wait:139,mio:83         HGMMA.64x128x16.F32.BF16 R24, gdesc[UR20], R24
+    1594  0.66%  not_selected:234,wait:132,dispatch:115   HGMMA.64x128x16.F32.BF16 R24, gdesc[UR24], R24
+    1595  0.59%  not_selected:148,wait:138,dispatch:123   HGMMA.64x128x16.F32.BF16 R24, gdesc[UR28], R24
+    1596  0.56%  wait:134,mio:116,not_selected:114        HGMMA.64x128x16.F32.BF16 R24, gdesc[UR32], R24
+    1597  0.53%  wait:139,mio:130,dispatch:98             HGMMA.64x128x16.F32.BF16 R24, gdesc[UR40], R24
+    1598  0.80%  mio:211,dispatch:167,wait:166            HGMMA.64x128x16.F32.BF16 R24, gdesc[UR44], R24.gsb0
+    1599  0.06%  selected:33,dispatch:21                  @P2   BRA 0x709a5b020570
+    1607  0.81%  dispatch:298,not_selected:218,branch_resolving:109 UIADD3 UR7, UR5, 0x400, URZ
+    1608  0.14%  dispatch:53,no_inst:30,selected:24       WARPGROUP.ARRIVE
+    1609  0.05%  selected:30,dispatch:16                  UMOV UR18, 0x3fff
+    1610  0.06%  selected:29,dispatch:20,no_inst:3        UMOV UR19, 0x40000040
+    1611  0.05%  selected:37,dispatch:10                  USHF.R.U32.HI UR7, URZ, 0x4, UR7
+    1612  0.05%  selected:37,dispatch:5                   IADD3 R20, -R2, 0xb, RZ
+    1613  0.03%  selected:24                              UMOV UR23, 0x40000040
+    1614  0.03%  selected:25,dispatch:1,no_inst:1         ISETP.LT.AND P1, PT, RZ, UR55, PT
+    1615  0.04%  selected:40,dispatch:1                   ULOP3.LUT UR7, UR7, 0x4000000, UR18, 0xec, !UPT
+    1616  0.57%  not_selected:184,dispatch:171,wait:123   ULEA UR18, UR6, UR7, 0xb
+    1617  0.36%  dispatch:128,not_selected:104,wait:73    UMOV UR7, UR14
+    1618  0.06%  selected:29,dispatch:24                  UIADD3 UR22, UR18, 0x80, URZ
+    1619  7.95%  dispatch:564,not_selected:438,selected:39 HGMMA.64x128x16.F32.BF16 R88, R180, gdesc[UR16].tnspB, R88
+    1620  0.05%  selected:29,dispatch:18                  UMOV UR19, 0x40000040
+    1621  0.43%  dispatch:142,not_selected:118,wait:86    HGMMA.64x128x16.F32.BF16 R88, R176, gdesc[UR20].tnspB, R88
+    1622  0.05%  selected:32,dispatch:16                  UIADD3 UR22, UR18, 0x100, URZ
+    1623  0.06%  selected:42,dispatch:9                   UMOV UR23, 0x40000040
+    1624  0.61%  wait:300,dispatch:122,not_selected:74    HGMMA.64x128x16.F32.BF16 R88, R172, gdesc[UR20].tnspB, R88
+    1625  0.05%  selected:28,dispatch:14                  UIADD3 UR22, UR18, 0x180, URZ
+    1626  0.07%  selected:44,dispatch:21                  UMOV UR23, 0x40000040
+    1627  0.44%  wait:273,mio:56,selected:30              HGMMA.64x128x16.F32.BF16 R88, R168, gdesc[UR20].tnspB, R88
+    1628  0.06%  selected:32,dispatch:24                  UIADD3 UR22, UR18, 0x200, URZ
+    1629  0.07%  dispatch:30,selected:30                  UMOV UR23, 0x40000040
+    1630  0.50%  wait:302,mio:77,selected:35              HGMMA.64x128x16.F32.BF16 R88, R152, gdesc[UR20].tnspB, R88
+    1631  0.05%  selected:33,dispatch:16                  UIADD3 UR22, UR18, 0x280, URZ
+    1632  0.07%  selected:37,dispatch:29                  UMOV UR23, 0x40000040
+    1633  0.51%  wait:297,mio:95,selected:36              HGMMA.64x128x16.F32.BF16 R88, R156, gdesc[UR20].tnspB, R88
+    1634  0.05%  selected:27,dispatch:18                  UIADD3 UR22, UR18, 0x300, URZ
+    1635  0.05%  selected:24,dispatch:23                  UMOV UR23, 0x40000040
+    1636  0.08%  selected:41,dispatch:31                  UIADD3 UR18, UR18, 0x380, URZ
+    1637  0.49%  wait:221,mio:164,selected:28             HGMMA.64x128x16.F32.BF16 R88, R160, gdesc[UR20].tnspB, R88
+    1638  0.51%  mio:259,wait:145,selected:24             HGMMA.64x128x16.F32.BF16 R88, R164, gdesc[UR16].tnspB, R88.gsb0
+    1639  0.05%  selected:36,dispatch:11                  BAR.ARV R20, 0x100
+    1640  3.53%  barrier:3056,wait:66,dispatch:50         WARPGROUP.DEPBAR.LE gsb0, 0x1
+          [ 32 math: FMNMX 32]   6.82%
+    1673  0.27%  wait:178,selected:36,dispatch:22         SHFL.BFLY PT, R9, R20, 0x2, 0x1f
+          [  1 math: FMNMX 1]   1.03%
+    1675  0.09%  wait:38,selected:29,dispatch:15          LDC R9, c[0x0][0x988]
+          [  1 math: FMNMX 1]   0.05%
+    1677  0.13%  dispatch:36,wait:34,selected:30          SHFL.BFLY PT, R18, R21, 0x1, 0x1f
+          [ 64 math: FMNMX 27, FFMA 23, MUFU 11, FMUL 2, FADD 1]   8.02%
+    1742  0.04%  selected:34                              IMAD.U32 R81, RZ, RZ, UR4
+          [  2 math: MUFU 1, FMNMX 1]   0.25%
+    1745  0.15%  wait:81,selected:34,dispatch:14          @!P0  LEA R81, R81, UR5, 0x3
+          [ 14 math: FFMA 10, FMNMX 4]   0.85%
+    1760  0.07%  dispatch:37,selected:25,no_inst:1        @!P0  VIADD R81, R81, 0x28840
+          [  1 math: MUFU 1]   0.04%
+    1762  0.07%  selected:37,dispatch:27                  IMAD.U32 R85, RZ, RZ, UR6
+    1763  0.04%  selected:31,dispatch:4                   SHFL.BFLY PT, R187, R20, 0x2, 0x1f
+    1764  0.07%  selected:37,dispatch:30                  UIADD3 UR6, UR55, -0x1, URZ
+    1765  0.05%  selected:37,dispatch:5                   @!P0  PRMT R81, RZ, 0x654, R81
+    1766  0.18%  wait:67,not_selected:54,selected:36      @!P0  LEA R85, R85, UR5, 0x3
+    1767  0.09%  wait:43,selected:33,dispatch:2           @!P0  SYNCS.ARRIVE.TRANS64.RED.A1T0 RZ, [R81+URZ], RZ
+    1768  0.32%  barrier:253,selected:34,no_inst:3        WARPGROUP.DEPBAR.LE gsb0, 0x0
+          [  2 math: MUFU 1, F2FP 1]   0.11%
+    1771  0.04%  selected:40                              @!P0  VIADD R85, R85, 0x28860
+    1772  0.03%  selected:29                              UMOV UR55, UR6
+    1773  0.04%  selected:36,not_selected:1               UMOV UR6, UR4
+          [  2 math: F2FP 1, FMUL 1]   0.10%
+    1776  0.05%  selected:35,no_inst:6,dispatch:5         @!P0  PRMT R85, RZ, 0x654, R85
+          [  3 math: MUFU 1, F2FP 1, FMUL 1]   0.13%
+    1780  0.03%  selected:26,dispatch:5                   @!P0  SYNCS.ARRIVE.TRANS64.RED.A1T0 RZ, [R85+URZ], RZ
+          [  9 math: FMUL 4, F2FP 3, FMNMX 1, MUFU 1]   0.62%
+    1790  0.05%  selected:29,dispatch:21                  SHFL.BFLY PT, R20, R187, 0x1, 0x1f
+          [133 math: FMUL 60, FFMA 33, MUFU 17, FADD 14, F2FP 8, FMNMX 1]   8.56%
+    1924  0.10%  dispatch:54,selected:37                  IMAD.MOV.U32 R185, RZ, RZ, R20
+          [ 28 math: FADD 18, MUFU 7, F2FP 3]   3.75%
+    1953  0.11%  dispatch:63,selected:34                  IMAD.MOV.U32 R19, RZ, RZ, R18
+          [ 72 math: FADD 31, MUFU 26, F2FP 15]  12.08%
+    2026  0.05%  selected:41,dispatch:3                   @P1   BRA 0x709a5b020260

@@ -1,0 +1,19 @@
+11:29:38 IST start | GPU 0 NVIDIA H200, 0 MiB | ours dense vj2_K5q a804ea04 packed vj2_K5q a804ea04
+11:29:48 IST dense_ours_r1 exit=0 | trace rows 6065 | busy clock samples 98
+11:30:01 IST dense_fa3_r1 exit=0 | trace rows 9189 | busy clock samples 122
+11:30:18 IST dense_fa4_r1 exit=0 | trace rows 8169 | busy clock samples 167
+11:30:32 IST dense_cudnn_r1 exit=0 | trace rows 8180 | busy clock samples 129
+11:30:44 IST dense_cudnn_r2 exit=0 | trace rows 8180 | busy clock samples 118
+11:31:02 IST dense_fa4_r2 exit=0 | trace rows 8169 | busy clock samples 167
+11:31:15 IST dense_fa3_r2 exit=0 | trace rows 9189 | busy clock samples 125
+11:31:25 IST dense_ours_r2 exit=0 | trace rows 6065 | busy clock samples 98
+11:31:36 IST packed_ours_r1 exit=0 | trace rows 12066 | busy clock samples 99
+11:31:49 IST packed_fa3_r1 exit=0 | trace rows 18190 | busy clock samples 119
+11:32:07 IST packed_fa4_r1 exit=0 | trace rows 16170 | busy clock samples 175
+11:32:21 IST packed_cudnn_r1 exit=0 | trace rows 36373 | busy clock samples 127
+11:32:34 IST packed_cudnn_r2 exit=0 | trace rows 36373 | busy clock samples 116
+11:32:53 IST packed_fa4_r2 exit=0 | trace rows 16170 | busy clock samples 175
+11:33:06 IST packed_fa3_r2 exit=0 | trace rows 18190 | busy clock samples 124
+11:33:17 IST packed_ours_r2 exit=0 | trace rows 12066 | busy clock samples 97
+11:33:20 IST summary exit=0 (20 lines)
+11:33:20 IST SCOREBOARD DONE

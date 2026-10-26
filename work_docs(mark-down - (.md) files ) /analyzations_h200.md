@@ -35307,3 +35307,487 @@ All 29 dense Qwen models (generations 1, 1.5, 2, 2.5, 3), forward + backward pas
 | 166 | (152064,3584,4096) | LMhead proj weight-grad [BWD-dW] | Qwen2-7B, Qwen2.5-7B |
 | 167 | (152064,5120,4096) | LMhead proj weight-grad [BWD-dW] | Qwen1-14B, Qwen1.5-14B, Qwen1.5-32B, Qwen2.5-14B, Qwen2.5-32B |
 | 168 | (152064,8192,4096) | LMhead proj weight-grad [BWD-dW] | Qwen1-72B, Qwen1.5-110B, Qwen1.5-72B, Qwen2-72B, Qwen2.5-72B |
+
+### §H235  GEMM PING-PONG, 2026-10-26 -- what it is, who has it (mine / Kota's / the compiler team's Nova), and the cross-check with the compiler team
+
+**Why this section exists (the trigger).**
+- Harshini (compiler team, "Nova") said Nova now has a ping-pong GEMM schedule, and that she took the
+  reference from "our BluBLAS in remote BluTrain".
+- I asked the Claude session on her machine about it. Its first reply said Nova's schedule is CUTLASS's
+  `KernelTmaWarpSpecializedPingpong`.
+- I checked that reply against CUTLASS, the team BLAS repo and my own old research.
+- I then sent her Claude a question document. Its full answer and her compiled kernel files came back
+  the same day. I checked all of it.
+
+This section records everything: the definition, who has what, every proof, the mistakes found on
+both sides, and what is still open.
+
+**My questions on 2026-10-26, in plain words:**
+1. When I worked on the SM90 matmul module, did I ever find ping-pong documented, and did I prove that
+   my kernel is not ping-pong?
+2. When I compared cuBLAS SASS, did I fail to find ping-pong, and is that why I never built it?
+3. Did Kota do something else and call it ping-pong?
+4. Is the BluBLAS on remote GitHub mine, my hybrid, or Kota's? Was any of my matmul work pushed there?
+5. Is the compiler team's version real ping-pong, as CUTLASS documents it? Is Kota's? Did Kota do
+   something wrong?
+
+The short answers are in part 10.
+
+#### 1. Three different things are called "ping-pong"
+
+| # | Name | What it is | Where |
+|---|---|---|---|
+| 1 | **GEMM ping-pong schedule** (the one in question) | 1 producer warpgroup + 2 consumer (math) warpgroups. **Each consumer owns a different output tile.** One consumer's epilogue runs while the other consumer does its MMAs. | CUTLASS `sm90_gemm_tma_warpspecialized_pingpong.hpp` |
+| 2 | **Attention ping-pong** (FlashAttention-3 §3.1) | Two warpgroups in an attention kernel take turns with `bar.sync`, so one does softmax while the other does its GEMMs | FA3, arXiv 2407.08608. My H200 attention forward also passes turns between warpgroups |
+| 3 | **Buffer ping-pong** (double buffering) | Two buffers used one after the other: epilogue store slots, or two TMEM accumulators | My `EPI_WL_STAGES=2` slots (cuBLAS `UR32 ±0x1000`), commit 569cdaa "fix slot ping-pong", Kota's B300 `EPI_PIPE_DEPTH=2` |
+
+Only #1 is a GEMM schedule. #3 is not a schedule at all.
+
+#### 2. The official definition (CUTLASS), verbatim
+
+My local CUTLASS checkout: commit `546c3ef` (2026-05-20).
+
+**CUTLASS docs, `media/docs/cpp/efficient_gemm.md` lines 240-245 (ping-pong):**
+
+> The distinctive feature of the Warp-Specialized Persistent Ping-Pong kernel is the following :
+> * The two *consumer* warp groups are assigned a different output tile using the Tile Scheduler.
+>   This allows for *epilogue* of one *consumer* warp group to be overlapped with the math
+>   operations of the other *consumer* warp group - thus maximizing tensor core utilization.
+> * The *producer* warp group synchronizes using the Ordered Sequence Barrier to fill buffers of
+>   the two *consumer* warp groups one after the other in order.
+
+**The same file, about cooperative:**
+
+> * Presence of two *consumer* warp groups cooperating on the same output tile by splitting the
+>   tile in half across the M dimension. This allows for larger tile sizes to be enabled - since
+>   the register pressure per *consumer* warp group is reduced - and hence improving performance.
+
+So the defining property is **who owns the tile**:
+- ping-pong: each consumer has its own tile;
+- cooperative: both consumers share one tile.
+
+**CUTLASS source, `include/cutlass/gemm/kernel/sm90_gemm_tma_warpspecialized_pingpong.hpp`:**
+- Lines 132-140: `NumLoadWarpGroups = 1`, `NumMmaWarpGroups = 2`,
+  `static_assert(MaxThreadsPerBlock == 384, "Pingpong kernel must have 384 threads in total.")`.
+- Lines 142-148: `RegsPerThread` = accumulator registers. `HeavyRegisterPressure = RegsPerThread >= 208`.
+  Registers are 40 (producer) / 232 (consumers), or 24 / 240 under heavy pressure.
+- Lines 155-158: `MathWarpGroupOrderBarrier = OrderedSequenceBarrier<2 stages, 2 warpgroups>`. One stage
+  orders the MMAs, the other orders the epilogues.
+- Lines 558-566: consumer 1 advances one tile at startup, and advances its pipeline state past consumer 0's
+  K-tiles.
+- Line 952: after each tile, both consumers step `advance_to_next_work(NumMmaWarpGroups)`, i.e. by 2.
+- Lines 849-880: `// Order two Math WG's MMA one after the other, helps hide Epilogue`. The order is
+  wait → `mma()` (issues all MMAs) → arrive → `mma_tail()` (waits for the MMAs).
+- Lines 898-936: `// Order two Math WG's Epilogue one after the other`, then wait → epilogue → arrive.
+
+**The turn barrier is an mbarrier.**
+- `include/cutlass/pipeline/sm90_pipeline.hpp` lines 1255-1257 say
+  `using Barrier = cutlass::arch::ClusterBarrier;`.
+- In SASS that shows up as `SYNCS.*` instructions, not `BAR.SYNC` / `BAR.ARV` (those are named barriers).
+
+**CUTLASS cooperative uses the same register split.**
+- `sm90_gemm_tma_warpspecialized_cooperative.hpp` has the same 40/232 at lines 150-151, the dealloc at
+  line 561 and the alloc at line 771.
+- It also has 384 threads: 1 producer + 2 consumers × 128 (line 372 asserts 256 MMA threads).
+- `grep -c MathWarpGroupOrderBarrier` on that file returns 0.
+- So 384 threads and setmaxnreg 40/232 do **not** prove ping-pong. Only two things do: each consumer
+  owns its own alternating tiles, and there is a turn barrier between the consumers.
+
+**PyTorch blog** "Deep Dive on CUTLASS Ping-Pong GEMM Kernel" (Less Wright and Adnan Hoque, 2024-11-01,
+https://pytorch.org/blog/cutlass-ping-pong-gemm-kernel/), fetched 2026-10-26, verbatim:
+
+> "...keeping only 40 registers, while consumers will get 232"
+
+> "Unique to Ping-Pong, each consumer works on separate C output tiles. (For reference, the
+> cooperative kernel is largely equivalent to Ping-Pong, but both consumer groups work on the
+> same C output tile)."
+
+#### 3. My own SM90 work: cooperative only. I never built or timed ping-pong.
+
+**What the code and history show:**
+- The template header `Bgemm_sm90_warpspecialized_template.cuh` lines 31-32 says: "Both consumer warpgroups
+  cooperate on ONE output tile (CUTLASS's "cooperative" scheme, not "pingpong")".
+- No commit in my blublas repo implements the ping-pong schedule. The only commit with "ping-pong" in
+  its message is 569cdaa ("fix slot ping-pong"), which is the epilogue double buffer (meaning #3 above).
+- The hybrid (Kota's ea666ab + my template and registry) is in my personal blublas repo only.
+  Commit history:
+  - 8683725, 2026-09-02: snapshot of the pristine production BLAS.
+  - 713f0f7, 2026-09-02: removed the 11 SM90 files that are never compiled (5,586 lines), including
+    Kota's `Bgemm_sm90_pingpong_template.cuh`.
+  - 6f39df4, 2026-09-02: removed coopB / coopB_v2.
+  - 2d271cb, 2026-09-10: the hybrid dispatcher became the only path.
+  - fee8c7c, 2026-09-11: the last hybrid kernel change.
+- The hybrid was never pushed to the team BluBridge-BLAS repo or to BluTrain. So the hybrid has no
+  ping-pong either.
+
+**What my notes say about ping-pong (all in this file):**
+
+| Note | What it says | Line |
+|---|---|---|
+| §H17 | "both coopB(odd-tiles) and pingpong are undone" (perf-matching, not correctness) | 5054-5059 |
+| §H23d | cuBLAS's untagged nvjet family IS ping-pong, by register arithmetic | 6352-6407 |
+| §H24 | quotes the CUTLASS doc for both schedules; CUTLASS issue #2181 ("why both?") has no answer | 6409 |
+| §H27e | ping-pong tiles = only 25/163 of cuBLAS's picks (the small tiles) | 6783-6787 |
+| Plan | "4. Ping-pong for 64x64 -- the only genuinely new structure needed" (4th priority) | 9186-9227 |
+| R3 | "ping-pong DEAD — needs 288 accumulator registers vs 232 available". **This is arithmetic, not a measurement:** 288 = 192×192/128, one warpgroup holding a whole 192×192 tile | 16762 |
+| §H56 | on the large 1.7B shapes I was already at cycle parity with cuBLAS, with the tensor pipe 92-99% busy, and "neither regsplit nor pingpong adds math throughput" | 26344-26348 |
+| §H158 | "We have no Pingpong ... Pingpong is the named, documented feature to build if BM=64 is ever wanted" | 31609-31610 |
+| §H159 | "1. Pingpong schedule — the documented CUTLASS mechanism for BM<128" | 31732 |
+
+**Why I did not build it.** It was **not** because I could not find ping-pong in the cuBLAS SASS.
+- §H23d concluded that cuBLAS does use ping-pong, for the small tiles.
+- The recorded reasons are:
+  1. On my main (large) shapes, my cooperative kernel already kept the tensor pipe 92-99% busy (§H56).
+  2. Ping-pong only matters for small tiles: 25/163 shapes, BM=64.
+  3. It was 4th in priority, behind a 10-14% gap that was worth more.
+- So: never implemented, never timed. There is no ping-pong speed result of my own, positive or
+  negative.
+
+**What the cuBLAS SASS study did and did not show (§H23d, §H24, §H25):**
+- **Shown:** every nvjet sm90 kernel runs 384 threads. Untagged kernels have blocks per warpgroup =
+  the whole grid (each consumer owns a whole tile); `coopA`/`coopB` have grid/2. And "max register =
+  blocks/WG × wgmmaN/2 + 26" holds exactly on 12 of 12 kernels. So untagged = ping-pong, proven by
+  register arithmetic.
+- **Shown:** the dispatch rule in that sweep. Ping-pong for every tile ≤ 22,528 elements (largest 128×176
+  in BM×BN), cooperative for every tile ≥ 24,576.
+- **Not shown:** an instruction that marks ping-pong.
+  - §H24: all kernels have identical barrier structure (46 BAR.SYNC, no BAR.ARV).
+  - §H25: across all 18 kernels only 3 opcodes differ (`WARPGROUP.WAIT` and `STSM.MT88/M88` follow
+    the layout; `USETMAXREG` follows register pressure ≥ 154), and none of them follows the schedule.
+- **Blind spot, found on 2026-10-26.** My SASS check could not have seen a CUTLASS-style turn barrier.
+  - §H24 counted only named barriers (`BAR.*`).
+  - §H25 compared which opcodes are present, not how many times.
+  - A CUTLASS turn barrier is an mbarrier (`SYNCS.*`), and `SYNCS.*` is present in every kernel anyway
+    for the TMA pipeline.
+  - So "not found" there does not mean "not there".
+  - It cannot be re-checked on the laptop: 0 of the 1,597 sm_90 cubins in the local libcublasLt 13.1
+    contain an `nvjet` name. It needs a SASS dump on an H200 and a `SYNCS.*` count per kernel.
+
+#### 4. The remote BluBLAS is Kota's (checked 2026-10-26 with `git ls-remote` and a bare clone)
+
+- **How it is wired:** BluTrain (`BlubridgeAI/BluTrain`) → submodule Tensor-Implementations →
+  submodule BluBridge-BLAS. The `.gitmodules` URL is `https://github.com/kathir-23s/BluBridge-BLAS`,
+  branch master; `BlubridgeAI/BluBridge-BLAS` returns the same refs.
+- **Remote master = `ea666ab`:** "Merge pull request #3 from BlubridgeAI/production_blas", Kathir,
+  2026-08-31 14:35:51 +0530. This is the exact commit in Harshini's screenshot (4 files, +247 / −22).
+- **Authorship:** the merged work is `969fda4` "optimized addmm kernel" by dhanakumarK777 (Kota
+  Dhanakumar), 2026-08-27.
+- **Branches:** the repo has **15** branches (plus 3 pull-request refs and HEAD). None is my hybrid.
+  The branch heads:
+  - master ea666ab (2026-08-31, Kathir)
+  - production_blas 969fda4 (2026-08-27, dhanakumarK777)
+  - prod_V 7d1f1b9 (2026-08-29, root)
+  - preproduction-135M 35e51a0 (2026-08-24, Kathir)
+  - present-25/8 35e51a0
+  - checkkkkkk 2b96901 (2026-09-08, Vishnu-BB)
+  - madhu_tried_compiler_fusions_gpt2 2b96901
+  - master_du 0ca2e29 (2026-08-22, vishn-BB)
+  - dhana 80547e5 (2026-08-01, dhanakumarK777)
+  - production_dhana 650bc5c (2026-08-01, root)
+  - production_kathir 3a2e494 (2026-07-31, kathir-23s)
+  - muon_blas 86ebe2e (2026-08-04, vishnu-BB)
+  - master_v2 fed19b6 (2026-06-10, kathir-23s)
+  - master-instance-move-test 16a4539 (2026-06-13, sairupesh36)
+  - master-instance 1be8c44 (2026-04-28, sairupesh36)
+
+#### 5. Kota's ping-pong file: real ping-pong, never finished
+
+**The file.** `src/level3/batched_gemm/BF16/SM90/Bgemm_sm90_pingpong_template.cuh`, 680 lines.
+- Added in 577d5e0 (2026-08-17); last changed in 526d8b4 (2026-08-24). Both by dhanakumarK777.
+- It is present on 8 of the 15 branches: master, production_blas, prod_V, preproduction-135M,
+  present-25/8, checkkkkkk, madhu_tried_compiler_fusions_gpt2, master_du.
+
+**It is never compiled.** On every one of those 8 branches:
+- no file includes it;
+- no file uses `Sm90PingpongConfig`, `bgemm_sm90_pingpong_kernel`, `launch_bgemm_sm90_pingpong` or its
+  include guard;
+- no build file (Makefile / CMake / .mk / .txt) mentions it.
+
+**It is a true CUTLASS-style ping-pong.** Line numbers are at ea666ab:
+
+| Part | Kota's file | CUTLASS pingpong.hpp |
+|---|---|---|
+| Each consumer owns alternating tiles | 410-412: `for (task_id = blockIdx.x + g*gridDim.x; task_id < total_tiles; task_id += 2*gridDim.x)` | 558-562 and 952 |
+| MMA turn | 460: `mbarrier_wait(mainloop_turn + g)` before the K loop; 514: `mbarrier_arrive(mainloop_turn + (1-g))` after it | 850 wait, 877 arrive |
+| Epilogue turn | 521: wait `epilogue_turn + g`; 600: arrive `epilogue_turn + (1-g)` | 899 wait, 936 arrive |
+| Register split | 321 `setmaxnreg_dec<PRODUCER_REGS>`, 364 `setmaxnreg_inc<CONSUMER_REGS>`, defaults 24/240 (line 137) | 147-148 (24/240 = CUTLASS's heavy-pressure value) |
+| Turn barrier type | mbarriers (lines 279-280, 291-294) | mbarrier (`ClusterBarrier`) |
+
+**What went wrong:**
+1. **It hung on its first hardware run.**
+   - The first version left out the MMA turn and relied on the load ring's backpressure to stagger the
+     two warpgroups.
+   - Header lines 60-66: that works at K=2048 (32 k-steps) but "FAILS at K<=384 (k_iters<=6): both
+     warpgroups enter MMA together … lock-order inversion -- the hang."
+   - He added `mainloop_turn`, copied from CUTLASS (lines 72-73).
+   - Header lines 112-118: "the fixed version has NEVER BEEN RE-RUN … tested, failed, fixed, unretested".
+2. **It waits for every MMA at every K step.** That is `wgmma_wait_group<0>()` inside the K loop
+   (line 502). CUTLASS keeps MMAs in flight and drains only in `mma_tail`. The compiler team's records
+   name exactly this pattern as the reason their first ping-pong (v1) was 17-20% slower: "in its turn
+   ONE warpgroup … drains it every stage (… wait 0 …)".
+3. **Both consumers share one epilogue store buffer**, so it needs the epilogue turn. His own comment
+   (lines 586-600) says per-warpgroup store buffers (STORE_BUF 32,768 → 65,536 B, load ring 6 → 5
+   stages) would remove the epilogue turn entirely, but that was "Deliberately NOT done in this pass".
+   The compiler team later did exactly this (part 6).
+4. **It was never compiled, never timed, and never part of his measured 98.4% of cuBLAS.**
+
+**Verdict:** the idea is right and the structure is real CUTLASS ping-pong. The implementation was never
+finished.
+
+**Kota's B300 "ping-pong" is a different thing.** In `BF16/SM103/Bgemm_sm103_cluster_dual_template.cuh`
+(526d8b4) lines 24 and 129-132, "ping-pong" means `EPI_PIPE_DEPTH=2`: two TMEM accumulator buffers, so
+the next tile's MMA starts while the previous tile's epilogue drains TMEM. The goal is the same overlap,
+but there are no two math warpgroups taking turns. It is meaning #3, and Blackwell only.
+
+#### 6. The compiler team's (Nova) ping-pong: real ping-pong, as the CUTLASS doc defines it
+
+Sources: her Claude's answer document (VERIFIED-NOW items were read or run in its session, on Nova
+`ac2ab83`, with a freshly rebuilt `nova-opt`), plus the kernel files she sent, which I checked myself
+(part 7).
+
+**Commits:**
+- `961e4ff`, 2026-10-23, harshini-v-m: "seed-tray,ping-pong,grid size check". This is her ping-pong.
+- `c54a485`, 2026-10-24, **Aparna-BB**: "persistence, stream-k and ping-pong". It rewrote the lowering
+  (14 files; `NovaGPUMapForallToGPU.cpp` 273 lines changed). Her Claude's first reply had wrongly called
+  this Harshini's.
+- `ac2ab83`, 2026-10-26, harshini-v-m: "rope+norm backward fusion" (current HEAD, branch `current`).
+
+**Where the design came from.**
+- Their records cite CUTLASS concepts (two consumer warpgroups, ordered math turn, 232 registers,
+  `K_PIPE_MMAS = 1`). They name no BluBLAS file.
+- The turn primitive is the named-barrier turn already in Nova's flash attention
+  (`pingPongFlashConsumers`, Mahesh's commit fbda5fe), generalized into `emitConsumerTurns`.
+- Their Claude had reviewed Kota's ping-pong file on 2026-10-10 and knew it is never included and that
+  it hung.
+- Whether Harshini personally read BluBLAS files can only be answered by her.
+
+**How it works** (`lib/Transforms/Lowering/NovaGPUMapForallToGPU.cpp` lines 418-459 @ ac2ab83, and the
+PTX below):
+- Each consumer warpgroup owns the CTA's tiles whose ordinal is `w mod 2`. That is the same as CUTLASS:
+  consumer 1 starts one tile ahead and both step by 2.
+- Before each owned K loop, a warpgroup does `barrier.sync (1+w), 256`. It gives the turn with
+  `barrier.arrive (2−w), 256` once per owned tile, and only if the CTA has a next tile.
+- Warpgroup 1 gives the very first turn before its tile loop.
+- Barrier IDs: 1 and 2 (`kPingPongBarrierBase = 1`), count 256 = both consumer warpgroups.
+- The loads are one shared ring filled by one producer in tile order. Both consumers keep the producer's
+  ring counter and skip the other warpgroup's K-steps.
+
+**Its three differences from CUTLASS's code:**
+1. **The turn is handed over early:** `slots` K-steps (= ring depth) before the end of the K loop. Example:
+   K=2304 with 5 stages is 36 steps, so the hand-off is after waiting step 31. CUTLASS hands over after
+   all MMAs are issued.
+2. **There is no epilogue turn.** Each consumer warp has its own 2 × 1 KB epilogue slots, protected by
+   `cp.async.bulk.wait_group.read`.
+3. **The turn uses a named barrier** (FA3 style), not an mbarrier.
+
+None of these breaks the CUTLASS doc definition. Both doc points hold: each consumer gets its own tile
+with epilogue/MMA overlap, and the producer fills the two consumers' buffers in order.
+
+**MMA pipelining:** `wgmma.wait_group 1` in the K loop (one group in flight, CUTLASS `K_PIPE_MMAS = 1`),
+and `wait_group 0` after the loop.
+
+**How Nova chooses ping-pong.** There are no shape thresholds: `tryBuildHopperTile` costs every candidate
+and keeps the cheapest.
+- Ping-pong is offered only when `takesTurns` holds: a zero-filled or tray-seeded accumulator, a single
+  elementwise reader, and A K-major. It also needs more tiles than resident CTAs.
+- Cost: `turns > 1 ? max(kLoop, epilogue) : kLoop + epilogue`.
+- On the current build, for the 1.58B one-layer graph, 9 of 15 GEMMs pick ping-pong 128×192 (S4/S5).
+  The 5 dW GEMMs and LM-head dX stay cooperative. All 15 are persistent, grid 132.
+
+**Their own numbers** (FROM-EARLIER records, not re-measured on 2026-10-26; I re-did every sum):
+
+- **v1, 2026-10-21** (ncu cycles, 9 GEMMs, one launch each, clocks not locked):
+  - +5.4% to +22.5% slower than Nova cooperative 128×256;
+  - sum +20.1% for 1 layer, +17.3% weighted to 26 layers;
+  - **different tile** (128×192 vs 128×256);
+  - cause recorded at the time: the per-stage drain (wait 0), not the strict ordering.
+- **v2:** −3.39% = summed ncu GEMM cycles weighted to 26 layers. Her Claude's first reply had wrongly
+  called this the step time.
+- **v3 step time:** 1.58B, 26 layers, d 2304, B 8, T 4096, AdamW; steps 2-7 of 8; 2 runs per side; clocks
+  1480-1496 MHz, power capped at 691-692 W.
+  - Ping-pong runs: 20,975.5 and 21,115.5 ms. Without ping-pong: 21,300.1 and 21,296.8 ms.
+  - Means: 21,045.5 vs 21,298.45, so **−1.19%**.
+  - The two ping-pong runs themselves differ by 0.67%.
+  - The baseline was Nova cooperative: not cuBLAS, not BluBLAS.
+- **Later, 2026-10-23** (final `kidd`, nsys, steps 2-5, one run each): d512 37 layers −2.00%; 1.58B 26
+  layers **−0.37%**. That −0.37% is inside the 0.67% run-to-run spread above.
+- **Per-GEMM ncu cycles**, v3 ping-pong 128×192 vs cooperative 128×256 (a **different tile**):
+
+| GEMM | cooperative | ping-pong | change |
+|---|---|---|---|
+| Q fwd | 725,510 | 690,750 | −4.79% |
+| K fwd | 251,905 | 239,384 | −4.97% |
+| V fwd | 250,147 | 237,657 | −4.99% |
+| gate/up fwd | 3,771,970 | 3,569,389 | −5.37% |
+| down dX | 1,888,967 | 1,816,101 | −3.86% |
+| O dX | 722,446 | 693,561 | −4.00% |
+| K/V dX | 278,464 | 240,454 | −13.65% |
+| gate/up dX | 3,672,794 | 3,658,370 | −0.39% |
+| LM-head dX | 14,835,152 | 14,975,153 | +0.94% |
+
+- **Tensor pipe busy (ncu):** gate/up fwd 91.0 → 96.1%, Q fwd 88.7 → 93.2%, K/V dX 77.0 → 89.2%.
+- **Nova vs cuBLAS:** only measured before ping-pong (their note of 2026-10-10): 21 GEMMs at **1.27×**
+  cuBLAS cycles.
+- **Correctness (2026-10-23, on 961e4ff, before Aparna's rewrite):**
+  - Double-precision reference, checking 2 rows per 128-row tile.
+  - Max 0.50 ULP, no element over 1 ULP, no NaN, no unwritten rows.
+  - Cases: K ≤ 384 (65536×256×512) ✓; odd tiles per CTA (32768×2304×2304, 96 of 132 CTAs run 23
+    tiles) ✓.
+  - Fewer tiles than 2 × CTAs (8192×K×768): only ran to completion, not checked for numbers.
+  - M or N not a multiple of the tile never uses ping-pong (`tryBuildHopperTile` divisibility rule).
+- **Never done:** compute-sanitizer racecheck / synccheck; a hang (timeout) test.
+
+#### 7. My own check of her kernel files (2026-10-26, laptop, CPU only)
+
+**Files:** `Neural_Networks_exp_1926/reports_harshini_ping_pong/`
+- `pingpong_16384x2304x2304.mlir/.ptx/.cubin/.sass`: A 16384×2304 × B 2304×2304, bf16.
+- `coop_16512x2304x576.mlir/.ptx/.cubin/.sass`: chosen so the cost model picks cooperative 128×192.
+  Nova has no switch to force a schedule, so the two kernels have different M and N.
+
+**Steps:**
+1. `ptxas -arch=sm_90a -v` (CUDA 13.0) on both PTX files: ping-pong 168 registers, 0 spill, 16 barriers;
+   cooperative 122 registers, 0 spill, 1 barrier.
+2. `cuobjdump -sass` on her cubins, and on my own recompile of her PTX: **the SASS is identical for both
+   kernels.** Her files are consistent with each other.
+3. Opcode counts from her cubins, ping-pong vs cooperative:
+   - `HGMMA.64x192x16` 16 vs 4
+   - `BAR.ARV` 2 vs 0
+   - `BAR.SYNC.DEFER_BLOCKING` 2 vs 1
+   - `USETMAXREG.TRY_ALLOC.CTAPOOL` 1 vs 0
+   - `USETMAXREG.DEALLOC.CTAPOOL` 1 vs 0
+   - `SYNCS.EXCH.64` 10 vs 10
+   - `SYNCS.PHASECHK.TRANS64` 4 vs 3
+   - `SYNCS.PHASECHK.TRANS64.TRYWAIT` 8 vs 6
+   - `SYNCS.ARRIVE.TRANS64` 2 vs 2
+   - `SYNCS.ARRIVE.TRANS64.A1T0` 2 vs 1
+   - `WARPGROUP.ARRIVE` 4 vs 1
+   - `WARPGROUP.DEPBAR.LE` 5 vs 2
+   - `UTMALDG.2D` 8 vs 8
+   - `UTMASTG.2D` 12 vs 6
+   - highest register R215 vs R119
+
+   All of these equal what her Claude reported.
+4. **Register check:**
+   - A ping-pong consumer holds the whole 128×192 tile: 128·192/128 = 192 accumulator registers; R215
+     means 216 registers are used under the 232 cap. My estimate (192 + 26 = 218) was 2 off.
+   - Nova cooperative 128×192 uses 122 registers. That is exactly cuBLAS's 122 for the same tile in
+     §H24 (96 + 26), an independent match.
+
+**The ping-pong PTX line by line** (`pingpong.ptx`; 16384×2304 with a 128×192 tile = 128 × 12 = 1,536 tiles,
+on 132 CTAs):
+- 19: `.maxntid 384, 1, 1`.
+- 81: `setp.lt.u32 %p2, %r1, 256`: threads 0-255 are consumers, 256-383 the producer.
+- 85: `setmaxnreg.inc.sync.aligned.u32 232` (consumers). Line 1036: `setmaxnreg.dec ... 40` (producer).
+- 86: `shr.u32 %r2, %r1, 7`: `w` = consumer warpgroup 0 or 1.
+- 88-89: if `w != 0`: `barrier.arrive 1, 256`, the first turn for warpgroup 0.
+- 92-93: `%r3 = w + 1` (own barrier), `%r4 = 2 − w` (the other's barrier).
+- 129-131: per tile, the ring counter += 36 (K steps); next tile = t + 132; stop after t ≥ 1404.
+- 137-141: `(t − ctaid) × 63551 >> 23` = ÷132, `& 1`, compared with `w`: skip tiles you do not own.
+- 150: `barrier.sync %r3, 256`: wait for my turn before the K loop.
+- 280-310 and 414-441: two accumulator sets (`%r160…` and `%r256…`) = two m64 blocks = the whole
+  128-row tile.
+- 446, 544: `wgmma.wait_group 1` in the K loop. 584, 592: `wait_group 0` after it.
+- 452: `%p7 = t > 1403`, i.e. "no next tile in this CTA".
+- 573-576: `if (!%p7 && counter == 1920) barrier.arrive %r4, 256`. 1920/64 = 30, so the turn is
+  handed over right after waiting K-step 31 of 36 (steps 0-35): 5 steps early, = the 5 ring stages.
+- After the K loop, the epilogue TMA stores run with no turn barrier.
+
+**New finding (not in her Claude's answer).** The two Nova kernels wait for their MMAs differently.
+- **Cooperative:** commits and then immediately waits for all MMAs at every K step:
+  `wgmma.commit_group` / `wgmma.wait_group.sync.aligned 0` at `coop.ptx:454-455`, inside the K loop
+  that runs from line 398 and branches back at line 464.
+- **Ping-pong:** keeps one group in flight (`wait_group 1`), like CUTLASS's mainloop.
+  - CUTLASS `sm90_mma_tma_gmma_ss_warpspecialized.hpp`, line 264: `K_PIPE_MMAS = 1`.
+  - Line 547: `warpgroup_wait<K_PIPE_MMAS>()` in the loop. Line 571: `warpgroup_wait<0>()` after it.
+- So Nova's ping-pong vs cooperative numbers mix three changes:
+  1. the schedule;
+  2. how the MMAs are drained (wait 0 right after commit vs wait 1);
+  3. in the D1/D3 tables, the tile (128×192 vs 128×256).
+- How much of the ~4-5% per GEMM comes from the ping-pong schedule itself is unknown.
+
+**Context from my own kernel, so this is not over-read.**
+- My cooperative kernel also drains with `wgmma_wait_group<0>()` every K step.
+- My template records two things:
+  - a `wait_group<1>` software pipeline "regressed on H200 -- full-drain is the baseline" (comment at
+    template line 7073, §H16.7);
+  - cuBLAS also uses "wait until zero". cuBLAS drains its last 8 wgmma at the **start of the next
+    iteration**, not right after commit, and that position, not the wait depth, made its drain 12.4×
+    cheaper on the same tile (template lines 7121-7131).
+- So "wait 0 every K step" is not wrong in a cooperative kernel.
+- Draining every step hurts ping-pong much more. During a ping-pong turn only ONE warpgroup issues MMAs,
+  so while it drains the tensor core sits idle. That is exactly the cause Nova recorded for v1, and it is
+  the pattern in Kota's file (line 502).
+
+#### 8. Her Claude's first reply: what was right and what was wrong
+
+| Statement in the first reply | Verdict |
+|---|---|
+| CUTLASS ping-pong: 1+2 warpgroups, 384 threads, 40/232 (24/240), the two "Order two Math WG's …" comments, consumer 1 one tile ahead, step 2 | ✓ verbatim in CUTLASS |
+| efficient_gemm.md quote; PyTorch blog 40/232 and "separate C output tiles"; FA3 §3.1 | ✓ |
+| CUTLASS mainloop ordering is mbarrier-based | ✓ |
+| "A cooperative kernel has neither the register split nor the consumer-to-consumer barriers" | ✗ for CUTLASS: cooperative also uses 40/232. True only for Nova's own cooperative kernels |
+| "named BAR.SYNC / BAR.ARV with 256 threads … (or a CUTLASS ping-pong kernel)" | ✗ for CUTLASS: its turn is an mbarrier (`SYNCS.*`). BAR.ARV identifies only Nova's own design |
+| "USETMAXREG.TRYALLOC" | ✗ spelling: `USETMAXREG.TRY_ALLOC.CTAPOOL` |
+| "your later c54a485" | ✗ that commit is Aparna's |
+| "v1 17-20% slower with CUTLASS-style strict ordering" | numbers ✓, cause ✗: the record blames the per-stage drain |
+| "v2: −3.4% on the 26-layer step" | ✗ that was GEMM ncu cycles; the step result is −1.19% |
+| Nova's structure = CUTLASS ping-pong with early hand-off and unordered epilogue | ✓ proven by code and PTX (parts 6 and 7) |
+
+Her Claude admitted all six mistakes. It checked §1-7 of my question document and found no error in
+it. It added two exact points:
+- CUTLASS cooperative does have an `OrderedSequenceBarrier`, but it is `LoadWarpOrderBarrier<1,2>`
+  inside the producer, not between consumers.
+- On the current build, ping-pong also covers the residual-seeded forward GEMMs (O and down forward),
+  from Aparna's c54a485.
+
+#### 9. Corrections to my own statements on 2026-10-26
+
+- I first told the user the remote BLAS repo has 17 branches. It has **15**: I had counted 3
+  pull-request refs and HEAD as branches.
+- I first labelled the "pingpong are undone" quote as §H16. It is in **§H17** (line 5054).
+- (An older one, already fixed at the time: §H24 said "no SETMAXNREG anywhere in the nvjet kernels"
+  because it searched for the PTX name. §H25 corrected this: `USETMAXREG` is present in 10 of 18
+  kernels.)
+
+#### 10. Answers to the five questions
+
+1. **Did I find it documented, and prove my kernel is not ping-pong?** Yes.
+   - The CUTLASS definition was found and quoted in §H24.
+   - My kernel is cooperative by its own header and by design: two warpgroups split one tile's M.
+2. **Did the cuBLAS SASS stop me?** No.
+   - The SASS showed no ping-pong instruction, but my check was blind to mbarrier-based turns.
+   - The register arithmetic did prove that cuBLAS uses ping-pong for small tiles.
+   - I never built or timed ping-pong because my large shapes were already near tensor-pipe parity and
+     ping-pong only helps small tiles. It was 4th priority.
+3. **Did Kota do something else and call it ping-pong?** His SM90 file is genuine CUTLASS-style
+   ping-pong, but unfinished:
+   - it hung once and the fix was never re-run;
+   - it drains every K step;
+   - it is never compiled.
+   His B300 "ping-pong" is TMEM double buffering, a different thing with the same name.
+4. **Remote BluBLAS = Kota's `ea666ab`.** My hybrid exists only in my personal blublas repo. None of my
+   SM90 matmul work is in the team BLAS repo or BluTrain.
+5. **The compiler team's version is real ping-pong by the CUTLASS doc's definition.** This is proven by
+   their source and by the compiled kernel. It is not a line-by-line copy of CUTLASS's code (early
+   hand-off, no epilogue turn, named barriers), and it is not taken from Kota's file. Kota's file is
+   closer to CUTLASS's code but has the drain problem and was never made to work.
+
+#### 11. Still open (to ask the compiler team, not my task)
+
+- A same-shape, same-tile A/B to isolate the schedule: cooperative 128×192 **with `wait_group 1`** vs
+  ping-pong 128×192, timed with nsys, several runs.
+- Numerics on the current HEAD: Aparna's c54a485 rewrote the lowering after the 2026-10-23 check.
+  Include the "fewer tiles than 2 × CTAs" case in the numbers check.
+- compute-sanitizer racecheck and synccheck on one ping-pong kernel; a timeout run as a hang test.
+- 5 or more interleaved step runs per side: −1.19% (2 runs) and −0.37% (1 run) are inside the noise.
+- Barrier ID 1 is both `kPingPongBarrierBase` and `kSplitKExchangeBarrierId`. It is safe today only
+  because no ping-pong kernel contains a split-K exchange. Ask for a code guard, since c54a485 also
+  added stream-K.
+
+#### 12. Files
+
+| File | What |
+|---|---|
+| `Neural_Networks_exp_1926/work_docs(mark-down - (.md) files ) /pingpong_crosscheck_for_nova_2026_10_26.md` | my question document to her Claude (870 lines; its first reply is in Appendix A) |
+| `Neural_Networks_exp_1926/pingpong_crosscheck_answer_2026-10-26.md` | her Claude's full answer (534 lines) |
+| `Neural_Networks_exp_1926/reports_harshini_ping_pong/` | the 8 kernel files (mlir, ptx, cubin, sass × ping-pong / cooperative) |

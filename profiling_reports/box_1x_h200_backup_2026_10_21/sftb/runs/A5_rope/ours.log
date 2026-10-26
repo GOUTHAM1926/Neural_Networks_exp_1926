@@ -1,0 +1,6 @@
+packed rows 0-7: 29 chats (3.62 per row)
+device NVIDIA H200 | q [8,18,4096,128] k [8,6,4096,128] fp32 | theta 10000 eps 1e-06 | warmup 50 iters 300
+ROPE case=nopos fwd_med_ms=0.2087 fwd_min_ms=0.2070 fwd_GBs=3859 bwd_med_ms=0.5080 bwd_min_ms=0.5039 bwd_GBs=2378 q_out_cs=c07b6eda64ed11d8 k_out_cs=1ecd1cad95f96145 dq_cs=ff9ef26f1f7080b7 dk_cs=c46ebd5a503254cf
+ROPE case=identity fwd_med_ms=0.2105 fwd_min_ms=0.2085 fwd_GBs=3826 bwd_med_ms=0.5207 bwd_min_ms=0.5160 bwd_GBs=2320 q_out_cs=c07b6eda64ed11d8 k_out_cs=1ecd1cad95f96145 dq_cs=ff9ef26f1f7080b7 dk_cs=c46ebd5a503254cf
+ROPE case=packed fwd_med_ms=0.2102 fwd_min_ms=0.2082 fwd_GBs=3831 bwd_med_ms=0.5209 bwd_min_ms=0.5165 bwd_GBs=2319 q_out_cs=b21104963d6c1ada k_out_cs=e4a86509743190d3 dq_cs=84960855c9806e7b dk_cs=099eef399a8c1eff
+ROPE check identity_vs_nopos=BIT-IDENTICAL (q_out, k_out, dq, dk checksums)

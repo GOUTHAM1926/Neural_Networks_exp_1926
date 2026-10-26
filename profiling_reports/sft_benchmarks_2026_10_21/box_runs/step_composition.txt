@@ -1,0 +1,9 @@
+train: 5000 of 5000 padded chats found in the packed file
+step reconstruction == trainer's trained_tokens column: True True
+chats per step: padding 64 always; packing 54-78 (median 66)
+trained tokens per step: padding 49,618-74,892; packing 57,543-67,333
+chats shared by padded step s and packed step s: mean 0.75 of 64, max 3
+step 0 (same weights): padding train 1.449952 on 60,263 trained tokens; packing 1.403362 on 64,520
+step-to-step change of the train loss (std, steps 10+): padding 0.0841, packing 0.0885
+last step: padding 1.262134, packing 1.317287; epoch means padding 1.3158 / 1.2391, packing 1.3171 / 1.2403
+val: padded run uses 496 chats, packed run 490, both 486, only padded 10, only packed 4

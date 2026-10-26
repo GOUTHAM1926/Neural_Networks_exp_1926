@@ -1,0 +1,2 @@
+device NVIDIA H200 | B 8 Hq 18 Hkv 6 T 4096 hd 128 causal | warmup 20 iters 200
+ATTN F_med_ms=1.0192 F_min_ms=0.9416 F_tflops=606.8 B_med_ms=3.0314 B_min_ms=3.0000 B_tflops=510.1 o_cs=e9784517bf11c98c lse_cs=479b8d551cc3e8e7 dq_cs=9a53013add32b419 dk_cs=29e173e8a2c9736d dv_cs=90a6724f80093662 repeat_o_lse_dk_dv=1 repeat_dq=0

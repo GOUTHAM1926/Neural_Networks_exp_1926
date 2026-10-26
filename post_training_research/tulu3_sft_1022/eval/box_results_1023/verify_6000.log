@@ -1,0 +1,6 @@
+val: 320 rows, 2000 chats, 898,276 trained tokens; using 320 rows
+Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 9617.97it/s]
+model: Qwen3ForCausalLM, 1.701B parameters (tied embedding counted once)
+val loss 0.859845 over 898,276 trained tokens (QK-norm eps 1e-6 = exactly our trainer; 99 s); largest probability on ids >= 50257: 8.06e-04 | trainer printed 0.859895, difference -0.000050
+val loss 0.859867 over 898,276 trained tokens (QK-norm eps 1e-5 = config.json, what HF tools use; 52 s); largest probability on ids >= 50257: 8.64e-04 | trainer printed 0.859895, difference -0.000028
+

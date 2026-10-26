@@ -1,0 +1,4 @@
+torch 2.14.1+cu130 | gpu NVIDIA H200 | FA3 traced build /root/gautam_K/fa3_tl2/flash-attention/hopper/flash_attn_3/_C.abi3.so | level 2
+TRACE iteration 900 -> /root/gautam_K/sft_v2/runs/tl_1019/fa3_l2/trace_dense_900.bin | copy rc=0 | steps with stamps 7680 | taken at 2026/10/19 09:57:09.117 | 4.2868 ms per iteration since the last mark
+TRACE iteration 950 -> /root/gautam_K/sft_v2/runs/tl_1019/fa3_l2/trace_dense_950.bin | copy rc=0 | steps with stamps 7680 | taken at 2026/10/19 09:57:09.343 | 4.5156 ms per iteration since the last mark
+FA3TL done: 1000 forward + backward in 4.31 s, 4.3055 ms per iteration

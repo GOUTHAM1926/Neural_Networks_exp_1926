@@ -6462,3 +6462,3502 @@ compare_versions.py, protocol_sim.py = CPU model of the forward's synchronisatio
 4. Open: dense DRAM still 454 MB vs FA3 367 MB after the cache hints (find the rest).
 5. If the 2x H200 box is deleted: the rivals' Python environments (/home/operator/envv, /home/operator/gautam_k/benv: torch
    2.14.1+cu130, cuDNN 9.24, FA3 / FA4 from FlashAttention 94e22c9) must be rebuilt; everything else is on the laptop.
+
+### 45.20 2026-10-17: the 2-node H200 box brought up to date, and the race F2 vs F3c vs C1
+
+**Box setup (operator@103.42.51.252 -p 2224, `~/gautam_k`, our GPU today = 7; no GPU board on this box).** The box had our
+10-15 code (forward eff8cdb6 = v62 before 10-16, backward 7667deec = before the mask fix, test 612b7d53); those three are kept
+as `*.bak_1015`. Copied from the laptop: forward F3c (c6a67163), backward version 3 (cc3a6125), test 5e072a54, the 4 candidates
+and box-independent copies of the 10-16 scripts (`profiling_reports/session_2026_10_17/`: build_cands.sh, ab_multi.sh,
+scoreboard_free.sh use `$HOME/gautam_k`, claim the GPU board only where it exists, and the packed race runs ours only with
+`VARLEN_BENCH_IMPL=ours_A_plan`, 2000 iterations = about 4 s). Built (10:3x IST): libraries vj2_F2 93fcf100, vj2_C1 e5d06be7,
+vj2_F3c 522f09a5 (the tree is left on F3c = the laptop), test binary tva_a efe49685. The library md5s differ from the 2x box's
+(different compiler install); every comparison below is inside one session on this box.
+
+**Race `multi_1017` (GPU 7, 10:51-11:26 IST, free clocks, 12 rounds, order rotating; records `session_2026_10_17/box_runs/multi_1017`).**
+Quick suite: F3c 296/296, C1 296/296. Paired per-round differences (median of the run; cross-checked with p10 and with
+rounds 1-6 vs 7-12, all agree in sign unless said):
+
+| pair | dense fwd | dense bwd | packed fwd | packed bwd |
+|---|---|---|---|---|
+| F3c vs F2 | -0.10% (t -0.7; p10 -0.28%, t -5.2) | +0.07% (null) | **-0.84% (t -11.8, 12/12)** | +0.09% (t 1.9) |
+| C1 vs F2 | -0.18% (t -1.7) | +0.09% (null) | -0.79% (t -10.1, 12/12) | +0.27% (t 6.1, 0/12) |
+| C1 vs F3c (= what E1 adds) | -0.07% (null) | +0.02% (null) | +0.05% (null) | **+0.18% (t 4.0, 0/12; p10 t 8.4)** |
+
+Medians: F2 dense fwd 1.1240 ms, F3c 1.1197, C1 1.1216; packed fwd F2 0.5000, F3c 0.4959, C1 0.4961; bwd dense ~3.101,
+packed F2 1.4934, F3c 1.4950, C1 1.4981.
+
+**ncu, forward main kernel (diagnostic; this box's ncu runs it at ~1.69-1.73 GHz, so not comparable to 10-16's ncu):**
+dense F3c 1,720,716 cycles, DRAM read 522 MB, L2 hit 83.2%; C1 1,718,548 cycles (-0.13%), DRAM read **449 MB (-14%)**, L2 hit
+85.6%; instructions equal (318.9M), tensor busy 69.7 vs 69.8%. Packed: DRAM 258 MB both, cycles -0.15%. The hints work (DRAM
+drops), but cutting 73 MB of DRAM gives ~0.1% of time: the dense forward is NOT memory-bound. Open item 4 of §45.19 (DRAM 454
+vs FA3 367 MB) is therefore not a speed lever; closed.
+
+**Verdict.** F3c is real on packed (-0.84%, robust in every check) and a small gain on dense (p10 only). E1 (the L2 cache hints,
+inside C1) gives nothing to the forward and makes the NEXT kernel, the backward (identical code in all three libraries),
++0.18% slower on packed. The bench runs forward then backward back to back, so the likely cause is the L2 state the forward
+leaves (Q loaded evict_first, K/V marked evict_last), not proven. Per packed forward+backward pair C1 costs ~2.9 us more than
+F3c; dense is a wash. Keep F3c (the laptop tree already is F3c); E1 not taken. Next forward candidates are built on F3c.
+
+**Fix to ab_multi.sh:** this box's ncu writes `.ncu-repz` (zstd); the script imported `.ncu-rep`, so the on-box CSVs were empty.
+Now it imports whichever exists. Locally: `zstd -d` the .ncu-repz first (laptop ncu 2025.3.1 cannot read .ncu-repz).
+
+### 45.21 2026-10-17: where the dense forward loses to FA3, from the profiles we already had (no GPU run)
+
+The 60-70 min measurement run (deep_1017.sh: trace build, knock-outs, scoreboard) was NOT run: the user asked for analysis from the
+sources and existing profiles first. Data: F3c ncu from this morning's race (`session_2026_10_17/box_runs/multi_1017`, reports are
+zstd `.ncu-repz`: decompress before importing locally) and FA3's ncu from 10-13 on the SAME box (`v2_bwd_rework_research_2026_10_12/
+gpu_runs/prof_1013/ncu_libs_fwd.*`, `ncu_fa3_packed_fwd.*`). Tools: `session_2026_10_17/deep/unit_blocks.py` (code cut into blocks at
+every wait, cycles = sample share x kernel cycles, executed instructions per tile / per unit), `deep/region_detail.py`.
+
+**Equal clock (ncu, same box):** dense F3c 1,720,716 cycles vs FA3 1,431,902 (+20.2%; tensor cores busy 69.7 vs 83.3%, the same
+~1.195M tensor cycles in both); packed 780,913 vs 747,987 (+4.4%; we execute fewer instructions, 125.8M vs 142.2M). The free-clock
+packed 1.11x of 10-16 was mostly our lower clock in that bench (~1,700 vs ~1,800 MHz). The big gap is DENSE.
+
+**Dense gap, M cycles (ours - FA3 = +0.288):** loop +0.127, unit end +0.073, unit start +0.047, loader / other +0.040.
+- Loop, per key tile (executed instructions per tile: ours 487, FA3 460). FA3's source order (mainloop_fwd_sm90_tma_gmma_ws.hpp
+  1170-1206) is the same as ours since F1. The difference is the SASS: AFTER the P.V wait ours runs 328 instructions (569k cycles),
+  FA3 258 (371k), +0.198M. FA3 finishes the whole row max (66 FMNMX) and starts 13 exps (33 FFMA) BEFORE the wait; ours finishes 49
+  of 68 FMNMX and no exp before it. Likely causes: (a) our `if (diag)` branch inside softmax_tile splits the softmax into blocks
+  ptxas cannot schedule across (FA3: separate masked / unmasked loops, no branch in the unmasked one); (b) 16 partial row sums
+  (sA/sB) + 16 partial maxes vs FA3's 2 + 2 registers: register pressure makes ptxas move the P.V wait up to reuse P(n-1)'s 32
+  registers. Before the wait we are equal or better (issue + wait QK + max: -0.093M).
+  Loop top: both our groups wait for K/V every tile (31.6k + 26.3k); FA3 only warpgroup 0 waits (line 1175/1180), +0.022M.
+- Unit end: our epilogue 109k cycles (32 STG.E of 4 B per thread: stalls long_sb 31% = waiting for stored registers, lg 29% =
+  store queue full) vs FA3's ~32k (FMUL, F2FP, 8 STSM into shared memory, one named barrier, TMA store).
+- Unit start: prologue softmax(0) 69k vs FA3 39k (ours latency-bound, FA3 issue-bound; ours also rescales O = 0 with 64 FMUL);
+  last P.V + next-unit read 55.6k vs 32.3k.
+
+**Fix list (all checkable on the laptop in SASS before any GPU run):** loop: peel the diagonal tile out of the loop (mask-free
+loop body), row sums / maxes in few registers as FA3, only group 0 waits for K/V; unit end: O through shared memory (stmatrix) +
+wide stores / TMA store (needs 16 KB per group: shared memory is full with 3 K/V stages, so reuse the last tile's V stage or go to
+2 stages as FA3); unit start: no O rescale in the prologue. Target: the +0.288M.
+
+### 45.22 2026-10-17: K1 (the loop) and K2 (the O store): what was built, and the ptxas finding
+
+**The loop problem, in SASS** (tool `session_2026_10_17/deep/sass_shape.py`: per opcode, what sits between the wait for QK(n) and
+the wait for P.V(n-1), and after it). F3c: 61 instructions before the P.V wait (part of the row max), 328 after (rest of the max,
+all 64 exps, the packs, the O rescale). FA3 (its 10-13 profile): 127 before (the whole max, 33 FFMA, 13 exps), 258 after.
+
+**What did NOT move the wait** (each compiled and checked on the laptop, CUDA 13.0 and 12.8 alike): the diagonal tile peeled
+out of the loop (mask-free body); one / four / eight max chains; row-by-row softmax; 4 + 4 registers for max / sum instead of
+32; two P register sets; the empty arrive moved; an independent arrive; a never-taken branch before the wait (that one SPILLED
+400 B and made ptxas put a wait after every single HGMMA). Registers were not the limit (184 of 232 used in the loop). The PTX
+always had the whole softmax before the wait: ptxas moves the wait up on its own.
+
+**What moves it:** an mbarrier arrive placed before the wait whose ADDRESS depends on a value computed at the end of the
+softmax. ptxas keeps the wait after it. K1 uses two barriers of count 1 that nobody waits on (`order_bar[2]`, 16 B of shared
+memory; every arrive just completes a phase), index `(bits(l0 + l1) ^ pa[0] ^ pa[31]) == 0xffffffff`: both choices harmless.
+Result: before the wait 314 instructions (68 FMNMX, 66 MUFU, 66 FFMA, 65 FADD, 32 F2FP = the whole softmax and the packs),
+after it 95 (the 64-FMUL O rescale). FA3's SASS shows the same mechanism by accident: its K-release arrive (mainloop :1185) is
+scheduled late and its P.V wait right after it.
+
+**K1 = F3c +** (source `session_2026_10_17/candidates/fwd_K1.cu`): the order arrive; the diagonal tile peeled (the loop body
+has no mask branch; the diagonal is always a group's last active tile: q-tile 2*pair + c, my_nkv - 1 = pair); two P register
+sets (P(n) packed while P.V(n-1) reads the other set; loop unrolled by two, +32 registers); only group 0 waits for the K/V of
+tile n (FA3 :1175 / :1180; group 1 follows group 0's baton); no O rescale in the prologue (O is 0). 0 spills, no warnings.
+Variants: K1s (one P set: 279 before / 144 after), K1n2 (2 K/V stages, as FA3).
+
+**K2 = K1n2 + the O store through shared memory** (as FA3's epilogue): normalise + convert, 8 stmatrix.x4 per thread into the
+group's 16 KB block (rows of 256 B, 16-byte chunk index XOR (row & 7): conflict-free), __syncwarp, then 8 x (16-byte shared load +
+16-byte global store) per thread, each warp only its own 16 rows (no barrier). Needs 32 KB of shared memory -> only with 2 K/V
+stages (static_assert). SASS: 8 STSM, 8 LDS.128, 8 STG.E.128 (+2 LSE) instead of 32 STG.E. A plain uint4 store was split by the
+compiler into four 4-byte stores; an explicit st.global.v4.b32 fixed it. Packed instance: 8 B spill outside the loop (setup /
+epilogue), dense 0.
+
+**Race k1_1017** (GPU 7, started 12:30:14 IST): F3c vs K1 vs K1s vs K1n2, quick suite on K1, 8 rounds, ncu after.
+Note: two builds of the same source give different object md5s but identical SASS (nvcc output is not bit-reproducible),
+which is why vj2_F3c's library md5 changed (522f09a5 -> d00d7209).
+
+### 45.23 2026-10-17 afternoon: race k1_1017, the K1 timing trace, and the split softmax (K3)
+
+**Race k1_1017** (GPU 7, 12:30-12:58 IST, 8 rounds, free clocks; K1 quick suite 296/296): vs F3c, K1 dense fwd **-0.95%**
+(t -7.5, 8/8; p10 -1.26%), packed fwd 0.00%, bwd +0.28% / +0.07% (weak). K1s (one P set) +0.94% / +2.81% worse. K1n2 (2 K/V
+stages) **+39% / +22% worse** (bwd -4.2% / -1.8%: a lighter forward leaves the backward more clock). Equal clock (ncu): K1 dense
+1.698M cycles vs F3c 1.721M, tensor busy 70.6% vs 69.7%; FA3 1.432M / 83.3%. Packed: K1 0.781M = F3c, FA3 0.748M (+4.4%).
+Two stages fail for us because one stage holds K AND V of a tile and stays busy two steps (V(n) is read in step n+1); FA3 has
+separate K and V pipelines (producer: K(n) then V(n-1), mainloop :871-874), so its 2+2 stages have the slack of our 3. K2 (which
+needed 2 stages for 32 KB of O staging) is therefore dropped as built. FA3 stages O in the V buffer (smem_o aliases smem_v,
+`barrier_O`, :848-852).
+
+**Stall reasons, K1 vs FA3 (dense, M cycle-equivalents):** wait +0.110, long_sb +0.095, short_sb +0.059, mio +0.054. The
+long_sb excess is the PRODUCER warp spinning on empty[] / qempty (barrier offsets 0x38018 / 0x38040, out-of-line try-wait loops):
+idle by design; FA3's producer sleeps (NANOSLEEP.SYNCS: its 'sleep' 0.037).
+
+**Timing trace of K1** (library vj2_TRK1 = K1 + clock stamps, deep/make_trace.py, same SASS shape; GPU 7 14:12-14:13 IST;
+records `session_2026_10_17/box_runs/trace_1017/`, reader deep/trace_read.py; the two launches per shape agree to a few cycles;
+the trace build is ~3-5% slower than K1). SM clock under this load: **~1.40-1.45 GHz** on this box. Dense, per group per tile:
+wait K/V + baton 118 | issue + wait QK 813 | **softmax (+pack) 1,413** | wait P.V 8 | rescale 104 | between steps 75 = **2,531**
+per step; tensor-bound would be 2,048. Group 0's softmax 1,533, group 1's 1,294. Per pair: prologue 2,101 (4.5%), loop 39,245
+(83.8%), last P.V + fetch 925, **epilogue 4,230 (9.0%; packed 20.8%)**, gap between pairs mean 1,862; tail 0.4% (packed 2.3%).
+An in-order issue model (deep/sass_timing.py, same latencies for both) gives K1's softmax ~750 cycles ALONE (MUFU: 66 x 8) and
+FA3's softmax + rescale ~850: the code is not slower alone; the measured 1,413 is interference (the two groups' softmaxes
+overlap on the special-function unit / MIO; the other group's GEMM issue). The ncu issue share confirms it: K1's softmax lines
+run at 22% issue (~1,400 cycles per tile), FA3's after-wait block at 34% with its 64 rescale FMULs between the exps.
+A step must satisfy softmax + rescale + K/V/baton + overhead <= ~1,536 for the loop to be tensor-bound: we are at ~1,710.
+
+**K3 = K1 + split softmax** (switch K1_SPLIT = exps before the wait): part A (mask, max, rescale factors, the first K1_SPLIT exps)
+before the P.V wait, pinned by the order arrive on part A's row sums; part B (the other exps) after it, pinned there by a
+bias + (O_acc[0] - O_acc[0]) (an O register, readable only after the wait: ptxas had pulled part B in front of the wait in one of
+the two unrolled loop copies). Part B, the 64-FMUL rescale and the packs then interleave as in FA3. Exact splits in all 5 loop
+copies, 0 spills: K3h (32) 34 MUFU before / 32 after, K3q (16) 17 / 49, K3e (8) 9 / 57. Model: K3h before ~460 (< P.V's ~512)
++ after ~310; K3q / K3e push more behind the wait. Next: race K1 vs K3h / K3q / K3e + a trace of K3h.
+
+**O store (unit end, 4,230 cycles per pair): the plan.** Stage O through the LAST TILE'S K BUFFER: after a group's last P.V,
+wait for a 'K(last) free' handshake from the other group (its QK(last) done: one mbarrier arrive after its wait-QK of the last
+step), stmatrix O there, 16-byte stores out, and only then release that stage (empty arrive). 32 KB with no change to the 3
+stages. Packed's inactive groups need care (a group with no active tile has no epilogue).
+
+### 45.24 2026-10-17 15:00 IST: moved to a new 2x box; K4 (O staged in the last K buffer) and its hang
+
+**Box:** the 8x node is busy with colleagues for ~5 h; work moved to a NEW 2x H200 box root@86.38.238.36 (tall-door-completes-fin-02,
+not yesterday's .80): 80 GB free of 193 GB, CUDA 13.0, 88 cores, 334 GB RAM, H200 700 W / 1980 MHz, no GPU board; only GPU 0 may be
+used. Setup = source tree without .git / lib (68 MB), labels.bin, scripts, candidates; full build ~10 min with -j88. Timings here
+are compared only within this box (K1 raced again as the base).
+
+**K4** = K1 + the O store through shared memory (K2's stmatrix + 16-byte stores), staged in the group's half of the LAST tile's K
+buffer (keeps the 3 stages); that stage is released (empty arrive) only after the epilogue has read it back (proxy fence + group
+barrier `bar.sync 3+c, 128`); each group signals 'my last QK of this pair is done' and waits for the other group's signal before
+writing. K4h = K4 + the half split. SASS: 8 STSM + 8 LDS.128 + 8 STG.E.128 (+2 LSE) instead of 32 STG.E; spills only outside the
+loop (K4 16 / 64 B).
+
+**The hang (run kall_1017, GPU 0, 14:45 IST): K4h's quick suite timed out (exit 124, 600 s) and was dropped.** Cause: the first
+handshake was an mbarrier with parity waits. An inactive group (A) signals at the very start of its pair and can run a whole pair
+ahead; its second arrival completes the phase the other group is about to wait for, parity says 'not done', and that group waits
+for ever (then nobody can move). The CPU protocol model (session_2026_10_17/deep/protocol_sim_k4.py, extended from 10-16's with K1
+and K4 rules; 1000 random unit lists each): F3fix 0 / 0 deadlocks (dense / packed), K1 0 / 0, **K4 (mbarrier) 9 / 385**, K4b
+(monotonic counter) 0 / 0. **K4b**: the signal is `st.release.cta.shared` of kcount[c] = pairs done, the wait spins on
+`ld.acquire.cta.shared` until kcount[1-c] >= j + 1 (then a proxy fence): a count that only grows cannot be overtaken. K4b /
+K4hb / TRK4b compiled, same loop SASS as K1 / K3h. The race kall_1017 still contains the old K4 (it may hang; each hang = 600 s).
+
+**Race kall_1017 results** (2x box GPU 0, 14:56-15:01 IST, 8 rounds, free clocks; K4h dropped: quick suite hung = the K4
+handshake bug; K3h / K3q / K4 had no quick suite; all 64 race logs complete). Forward vs K1 (all 8/8 rounds):
+| | dense fwd | packed fwd | dense bwd | packed bwd |
+|---|---|---|---|---|
+| **K4** (O through the last K buffer) | **-5.30%** (t -30) | **-7.33%** (t -80) | +0.20% | +0.19% |
+| K3h (split 32) | -1.26% (t -13) | -1.97% (t -12) | +0.10% | +0.15% |
+| K3q (split 16) | -1.45% (t -24) | -0.86% (t -3) | +0.11% | +0.09% |
+Medians: dense fwd K1 1.1123 ms, K3h 1.0970, K3q 1.0958, K4 1.0511; packed K1 0.4925, K3h 0.4833, K3q 0.4873, K4 0.4567. K3q vs
+K3h: dense -0.19% (null), packed +1.13% (worse) -> the half split stays. The backward after a faster forward is +0.1-0.2% (power).
+Expected K4hb (K4b + split 32): about -6.5% dense / -9% packed vs K1 (to be raced: K4b / K4hb with full quick suites).
+
+**K3h trace** (vj2_TRK3h, dense, 1.44 GHz; 3 of 4 trace files copied: this box's link is ~50 KB/s): per step 2,399 cycles (K1
+2,457 on the 8x box): issue + wait QK 839 | part A (max + 32 exps) 825 | wait P.V 8 | part B + rescale + packs 601 | K/V + baton
+125. Softmax + rescale 1,426 vs K1's 1,517; still ~1.8x the single-warp model (the two groups' softmaxes overlap ~400 cycles per
+step on the same SM sub-partitions). Per pair: epilogue 3,864 dense (8.4%) / 4,874 packed (22.5%), prologue 4.3% / 9.2%, gap
+between pairs 1,262 / 1,841 of which fetch_unit 568 (dense): the producer publishes the next unit only after issuing all loads
+of the current one (and those wait for stage releases); FA3 claims its next tile earlier -> next lever after K4.
+
+### 45.25 2026-10-17 15:10-15:16 IST: K4b (fixed handshake) is the new best forward
+
+Run k4b_1017 (2x box, GPU 0; sources K4b 936de1d7, K4hb 877a9a72, TRK4b 57f8e0d2; records box_runs/2x_1017/k4b_1017,
+k4b_results.tgz): **quick suite K4b 296/296, K4hb 296/296** (40 s / 37 s on this box), no hang. 8 rounds, free clocks:
+| vs K1 | dense fwd | packed fwd | dense bwd | packed bwd |
+|---|---|---|---|---|
+| **K4b** | **-5.26%** (t -37, 8/8) | **-7.37%** (t -73, 8/8) | +0.51% (t 3.0) | +0.01% |
+| K4hb (K4b + split 32) | -2.58% | **+8.38% worse** | +0.36% | -0.89% |
+Medians: dense fwd K1 1.1144 ms, K4b 1.0558, K4hb 1.0861; packed K1 0.4962, K4b 0.4599, K4hb 0.5383. K4b reproduces K4
+(-5.30 / -7.33% in kall_1017) with a correct handshake. The split does not stack on K4 yet: K4hb spills ~6x more than K4b
+(108 / 76 B vs 16 / 64 B) at every unit's start and end, and packed (many short units) pays +17% vs K4b. Per forward + backward
+pair: dense -58 us fwd, +16 us bwd (-1.0% of fwd+bwd), packed -36 / +1 us (-1.8%).
+**Chain today (forward, free clocks):** F3c -> K1 -0.95% dense / 0% packed (8x box) -> K4b -5.26% / -7.37% (2x box): about
+**-6.2% dense / -7.4% packed vs F3c**. Not yet measured against FA3 on one box (the rivals' environment is on the 8x box).
+Trace TRK4b: like TRK4 it spills in exactly the epilogue it should measure (100-120 B), so its epilogue (4,028 / 4,447 cycles) is
+not K4b's; the loop is unchanged (2,429 cycles per step, softmax 1,373). An uninstrumented ncu of K4b would show the real unit end.
+**Next, in order:** (1) the user's call: K4b into the laptop master; (2) cut K4's register pressure at the unit start / end so
+the split (-1.3 / -2.0% alone) stacks; (3) unit boundaries: the next unit's index published earlier, packed: prefetch the unit
+descriptor during the last P.V; (4) a fair scoreboard vs FA3 / FA4 / cuDNN once the 8x box is free.
+
+### 45.26 2026-10-17 15:33-15:41 IST: K5 / K5q / K6 (single P set + split on top of K4b) -> K5q is the new best
+
+Run k5_1017 (2x box GPU 0; libs K5 f3a7f34a, K5q 8dc36782, K6 534c44cc; quick suite 296/296 each; 8 rounds; records
+box_runs/2x_1017/k5_results.tgz). K5 = K4b + split 32 + ONE P register set (with the split all of P(n) is packed after the P.V wait,
+so the second set only cost registers: K5 / K5q 0 B spills vs K4b 16 / 64 B, K4hb 108 / 76 B; no 2x unrolled loop). K5q = split 16.
+K6 = K5 + design A: the next unit's descriptor loaded during the last P.V.
+| vs K4b | dense fwd | packed fwd | dense bwd | packed bwd |
+|---|---|---|---|---|
+| **K5q** | -0.36% (t -2.4, 7/8) | **-4.33%** (t -64, 8/8) | -0.04% | +0.20% |
+| K5 | +0.84% (t +6.4) | -4.63% (t -30) | -0.23% | +0.18% |
+| K6 | +0.95% | -4.20% (+0.46% vs K5: prefetch not kept) | -0.19% | +0.16% |
+Medians: dense fwd K4b 1.0582, K5 1.0681, K5q 1.0552, K6 1.0684 ms; packed K4b 0.4606, K5 0.4389, K5q 0.4406, K6 0.4411. In dense
+the smaller split is better (K5q vs K5 -1.20%, t -13.6); packed gains come mostly from the removed spills (many short units).
+**Chain, forward:** K5q vs K1 about -5.6% dense / -11.4% packed; vs F3c about -6.5% / -11.4%.
+
+**Spill-free trace (TRK5, 0 B dense):** per pair dense: epilogue **1,411 cycles (3.2%)** (K1-era 4,230 = 9%), prologue 2,029 (4.6%),
+loop 38,869 (88.5%), last P.V + fetch 910, gap 935; packed: epilogue 2,058 (11.2%, was 22.5%), prologue 1,949 (10.6%), loop
+71.0%, gap 512. Loop step: dense 2,401 cycles (kv/baton 118 | issue + wait QK 892 | part A 792 | wait P.V 8 | part B + rescale +
+packs 591), packed 2,445; tensor-bound would be 2,048. The O-store fix removed ~2/3 of the unit end; **the dense gap to FA3 is now
+the loop step** (88.5% of the time; equal-clock estimate K5q 1.60M cycles vs FA3 1.43M). Next: cut the post-QK work per step
+(FA4-style conditional rescale: skip the 64-FMUL O rescale unless a row max grows by > 8 in log2 units; a smaller split; the
+per-step stage broadcast on the critical path at the loop top).
+
+### 45.27 2026-10-17 15:59-16:08 IST: split 8 and FA4's conditional rescale (K5e / K7 / K7e)
+
+Run k7_1017 (2x box GPU 0; quick suite 296/296 for K5e, K7, K7e; 8 rounds vs K5q; records box_runs/2x_1017/k7_results.tgz).
+K7 = K5q + FA4's conditional rescale (a warp keeps its row maxima unless one grows by > 8 in log2 units; P then <= 2^8; the
+64-FMUL O rescale and its 2 exps run only when needed; LSE exact with the max used). K5e / K7e = split 8.
+| vs K5q | dense fwd | packed fwd |
+|---|---|---|
+| K5e | +1.22% (t +18) | +0.39% |
+| K7 | -0.49% (t -3.8, 7/8) | +0.48% (t +3.2) |
+| **K7e** | **-0.81%** (t -13.6, 8/8) | +0.63% (t +5.1) |
+Backward unchanged (within +-0.24%). Medians: dense K5q 1.0476, K5e 1.0615, K7 1.0436, K7e 1.0403 ms; packed K5q 0.4384,
+K5e 0.4396, K7 0.4405, K7e 0.4412. The conditional rescale pays in dense (long rows: the max settles) and costs in packed (short
+chats: maxima keep growing; the vote and branch remain). Smaller than expected: dropping the 64 FMULs barely shortens the step's
+critical path. Best per mode: dense K7e, packed K5q (a per-MODE build: about -0.8% dense, 0 packed).
+
+### 45.28 2026-10-17 16:21-16:24 IST: K8 / K9 / K9h rejected (they break the packed == alone bit-exact checks)
+
+Run k9_1017 (records box_runs/2x_1017/k9_results.tgz): quick suite **K8 278/296, K9 277/296, K9h 274/296 -> all dropped**; the race
+ran K5q only. K8 = per-mode build (dense split 8 + conditional rescale = K7e's SASS, packed split 16 = K5q's SASS, both verified
+instruction for instruction on the laptop); K9 / K9h = K8 + every 4th / 2nd exp by a degree-3 polynomial (max rel. error 7.5e-5).
+**Every failed check is a BIT-EXACT one:** G10 / G11 "every segment bitwise = alone" (a chat in a packed row must give exactly the
+O / LSE / dQ / dK / dV of the same chat run alone through the DENSE kernel), and for K9h also G6c "filler independence". The
+differences are rounding-sized (worst dQ diff 0.25-0.5 of atol), not wrong results. Cause: with per-mode settings the dense
+reference and the packed kernel compute the softmax differently, so packed != alone bit for bit; the polynomial adds a few more
+position-dependent differences (G11 D5, G6c). **A per-mode numerics split is incompatible with the bit-exact guarantee that
+proves packing correct; kept rule: dense and packed must use the same softmax arithmetic.** Usable (296/296): K5q (best for packed
+SFT: -4.3% packed vs K4b, dense about equal) and K7e (dense -0.8% vs K5q, packed +0.6%).
+
+### 45.29 2026-10-17 16:46-16:52 IST: what limits the dense forward step (knock-outs + per-step timeline)
+
+Run ko_1017 (2x box GPU 0; records box_runs/2x_1017/ko_results.tgz, unpacked to ko_1017/ and trace_1017_vj2_TLK5q/). Knock-out
+builds = K5q minus one part of the softmax (results WRONG on purpose, so forward-only timing, VARLEN_BENCH_DIR=fwd, no quick suite),
+6 rounds, 4000 dense / 8000 packed forwards per run, every candidate faster in 6 of 6 rounds:
+
+| removed from K5q | dense fwd | packed fwd |
+|---|---|---|
+| the 64 exps per tile (KOexp: P = the exp's argument, no MUFU) | **-6.76%** (t -41) | **-6.83%** (t -38) |
+| the row max (KOmax: no FMNMX, no shuffles) | -4.12% (t -18) | -3.52% (t -53) |
+| the O rescale (KOres: no 64 FMUL) | -2.38% (t -15) | -2.18% (t -29) |
+| all three (KOall) | **-11.18%** (t -73) | **-11.58%** (t -97) |
+
+Medians (ms): dense K5q 1.0867, KOexp 1.0135, KOmax 1.0396, KOres 1.0599, KOall 0.9637; packed 0.4571 / 0.4260 / 0.4409 / 0.4472 /
+0.4040. The parts do not add up (6.8 + 4.1 + 2.4 = 13.3 > 11.2): when one is removed, the next limit shows. So the softmax IS on
+the critical path; if it were hidden under the other group's GEMMs, removing it would change nothing.
+
+Timeline TLK5q (K5q + clock stamps at 6 points of every loop step, both groups, first pair of every CTA; 0 spills; SM clock 1.45
+GHz during the traced launch = power-limited). Steady state, dense, cycles per step (period 2,706 in this build):
+
+| | wait K/V + baton | issue + wait QK | softmax part A | wait P.V | part B (exps + rescale + pack) |
+|---|---|---|---|---|---|
+| group 0 | 301 | 675 | 640 | 8 | **856** |
+| group 1 | 203 | 1079 | 623 | 8 | 529 |
+
+What it shows:
+1. **The P.V wait is 8 cycles**: P.V(n-1) is finished long before part A ends. The tensor cores have no queued work ~24% of the loop.
+2. **Group 1 gets the baton 716 cycles after group 0**: issuing the 16 HGMMAs blocks (the tensor-core queue holds about one 8-HGMMA
+   group), so group 0's baton arrive comes only when its QK is nearly done. Same structure as FA3 (its arrive is also after both issues).
+3. **Group 0's part B takes 856 cycles, group 1's 529**: group 0's part B runs while group 1's part A runs (both use the MUFU unit
+   and the issue slots of the same 4 sub-partitions); group 1's part B runs alone. Part B is mostly MUFU time even alone (49 MUFU x
+   8 cycles = 392 of 529).
+4. **The step-start wait is bimodal**: group 0 waits either ~100-150 or ~275-300 cycles and almost never in between (dense: the long
+   one on 3,799 of 3,972 steps; packed: 193 short / 130 long, nothing in 150-275). The values repeat to +-1 cycle on every SM.
+   A wait for memory would spread; a fixed cost after a FAILED first check of the barrier would not.
+   Caveat: the stamps are S2UR clock reads, which can themselves be delayed in a busy queue; strong evidence, not proof.
+
+Static check of the softmax code itself (deep/sass_timing.py, one warp alone, same latency model for both): K5q part A 132
+instructions -> 350 cycles, part B 250 -> 426 (sum 776); FA3's unmasked loop: 127 -> 403 and 257 -> 447 (sum 850). **Our
+softmax instruction stream is now as short as FA3's**; the remaining gap is in how the two groups' work overlaps and in the waits.
+
+**The wait code differs from FA3's.** Our mbar_wait = try_wait WITHOUT a suspend-time hint; the SASS is a TRYWAIT loop.
+CUTLASS (cutlass/arch/barrier.h ClusterBarrier::wait, used by FA3's pipelines) passes 0x989680; the SASS is TRYWAIT, then
+`NANOSLEEP.SYNCS 0x989680` (a sleep the barrier event ends), then a re-check. FA3, FA4 (cute DSL) and cuDNN all use that form
+(ncu 2026-10-13 SASS: 21 / 14 / 6 NANOSLEEP.SYNCS). **FA3's in-loop K and V waits ran 285,696 first checks and never took the retry
+path**: its data is always there when it looks. Ours misses ~95% of the time in dense. FA3 also keeps K and V on SEPARATE
+barriers (pipeline_k / pipeline_v): its QK(n) waits for K(n) only, while ours waits for all 64 KB of K(n) + V(n) although V(n) is
+first read one step later.
+
+Correction to 45.28: K9h's G6c failure has a concrete cause: ex2_poly clamped x to -126, so a MASKED key got P = 2^-126 instead of
+0 and the filler's V leaked into O (by ~1e-38). Fixed in the master: x <= -127 returns exactly 0 (checked in Python: -inf -> 0,
+max rel. error on [-120, 8] still 7.5e-5). The bit-exact failures of K8 / K9 are still the per-mode split (45.28).
+
+Next run (run_w.sh, built and SASS-checked on the laptop, 0 spills, K5q's SASS unchanged by the new switches):
+- **W1** = K5q + CUTLASS's wait (W1_WAIT 1: try_wait + 0x989680 -> NANOSLEEP.SYNCS, as FA3)
+- **W1s** = K5q + test_wait spin (W1_WAIT 2: never sleeps)
+- **W2** = W1 + separate K and V barriers (W2_KV 1): group 0 waits only for K(n) at the step start; both groups wait V(n-1)
+  between the QK and P.V issues (FA3's place, hidden under QK). The producer still loads K and V of a tile together and the stage
+  is still released after P.V, so the producer has no new wait (no new deadlock); every place that waited full[s] before
+  releasing stage s also waits full_v[s]. SASS: 8 QK HGMMAs, the V check, 8 P.V HGMMAs, groups intact. +24 B shared memory (229,536 B)
+- **P8w / P4w** = W1 + every 8th / 4th exp by the fixed polynomial (MUFU per tile 66 -> 58 / 50; same code in dense and packed,
+  so packed == alone stays bit-exact by construction; the quick suite checks it)
+- **TLW2** = W2 + timeline (spills 44 B only at the pair start and in the epilogue, none in the loop)
+
+### 45.30 2026-10-17: checkpoint questions (CRC32, our 22.2 GB SFT checkpoint, what DPO / a resume needs)
+
+- **CRC32** = cyclic redundancy check, 32 bits: a fingerprint of a tensor's bytes. DCP stores one per tensor in metadata.bin
+  (dist/Distributed_Checkpointing/include/Checksums.h). BLU_INIT_VERIFY=1 recomputes it on the weights after they land in GPU
+  memory: 262/262 matched for Navin's step 8000 (any flipped bit changes it).
+- **Our SFT checkpoint** stage0_adamw_full/ckpt/blumodel_step_156 (10-07 run: 5,000 chats, 2 epochs, 156 steps, AdamW, 1 GPU):
+  same DCP format as Navin's: metadata.bin + ONE data_rank_0.bin (1 GPU). Holds the weights (same 262 tensors) + the full AdamW
+  state (fp32 master + m + v = 12 B per parameter) + step and loss = 22.2 GB. Navin's is 16.35 GB because Muon keeps less state
+  per parameter. The step-78 checkpoint was deleted; step 156 is the END of that run (156 of 156).
+- **DPO or any next stage needs the weights only.** BLU_INIT_FROM=<step folder> loads only the weight tensors (param_NNNNNN) by
+  name from metadata.bin and reads only their bytes; the optimizer records stay on disk unread (DCP load with optimizer = nullptr:
+  LoadPlanning.cpp build_load_items returns before the optimizer part). No preprocessing or stripping is needed. It also restores
+  the saved random-number-generator state (DistributedCheckpointing.cpp load). The new run starts at step 0 with a new AdamW;
+  its fp32 master copy is built from the bf16 weights (each weight differs from the SFT run's master by at most one bf16 rounding).
+  DPO uses the SFT weights twice: the trained policy and the frozen reference (its log-probs can be computed once before training).
+  bluscript_sft.cpp has no DPO loss yet.
+- **Continuing the same SFT run needs weights + optimizer state + step.** That is NOT BLU_INIT_FROM: it is the trainer's
+  auto-resume. BLU_CKPT_DIR=<folder that holds blumodel_step_N> -> the newest complete checkpoint is loaded with its optimizer
+  state and step, the bf16 weights are rebuilt from the fp32 masters, and the chats already used are skipped
+  (bluscript_sft.cpp: auto-resume block). A wrong folder gives no error: the run silently starts at step 0.
+- **Trap for a new stage**: give it a NEW, empty BLU_CKPT_DIR. If its BLU_CKPT_DIR holds an older checkpoint, auto-resume loads
+  that one (weights + optimizer + step) and overwrites what BLU_INIT_FROM loaded.
+- Resuming step 156 with the same settings runs 0 steps (the run is complete). A 3rd epoch (BLU_SFT_EPOCHS=3, 234 steps) re-stretches
+  the cosine: the LR jumps from 0.10x peak (where the run ended) to 0.33x peak at step 156.
+
+### 45.31 2026-10-17 17:57-18:12 IST: the wait form, separate K/V barriers and the polynomial exp -- all rejected
+
+Run w_1017 (2x box GPU 0; records box_runs/2x_1017/w_results.tgz). Quick suite **296/296 for all five** (W1, W1s, W2, P8w, P4w:
+the fixed polynomial keeps packed == alone bit-exact, as expected with the same code in both modes). Forward-only race, 8 rounds:
+
+| vs K5q | dense fwd | packed fwd | verdict |
+|---|---|---|---|
+| W1 = CUTLASS's wait (try_wait + hint -> NANOSLEEP.SYNCS, as FA3) | -0.07% (t -0.8, 4/8) | -0.04% (t -0.8) | null |
+| W1s = test_wait spin | +0.14% | **+0.44%** (t +5.5, 0/8) | worse |
+| W2 = W1 + separate K / V barriers | -0.11% (t -0.6; p10 -0.56%) | +0.10% | null |
+| P8w = W1 + every 8th exp by the polynomial | **+2.69%** (t +15) | **+3.40%** (t +53) | worse |
+| P4w = W1 + every 4th exp by the polynomial | **+7.07%** (t +37) | **+7.44%** (t +104) | worse |
+
+Medians (ms): dense K5q 1.1008, W1 1.1010, W1s 1.1019, W2 1.0993, P8w 1.1289, P4w 1.1772; packed 0.4583 / 0.4582 / 0.4607 /
+0.4594 / 0.4744 / 0.4926.
+
+What the trace of W2 (TLW2) shows: group 0's step-start wait did get shorter (bimodal ~100-125 / **~225-275**, was ~100-150 /
+~275-300), but the time moved into the next phases (part A 640 -> 748, issue + wait QK 675 -> 711 cycles) and the period stayed
+the same. **So the step-start wait of 45.29 is slack, not the cause**: something else sets the loop period, and the wait only
+shows where the spare time ends up. The 45.29 hypothesis (fix the wait -> faster step) is refuted by measurement.
+
+The polynomial result says what the limit is: each polynomial exp is ~11 FP32 / integer instructions instead of 1 MUFU. Replacing
+8 MUFU per tile with ~88 instructions costs +2.7%; 16 with ~176 costs +7.1% (~0.03-0.04% per added instruction per tile, the
+same as the rescale knock-out: 64 FMUL = 2.3%). **On H200 the loop is limited by instruction issue in the softmax phases (the two
+consumer groups share each sub-partition's one-instruction-per-cycle issue), not by the exp unit.** FA4's trick pays on B200, whose
+tensor cores are twice as fast relative to the exp unit; not here. What remains for the dense forward: fewer instructions per
+tile (the softmax stream is already as short as FA3's in the static model, 45.29; our loop carries ~40 more non-math
+instructions per tile: order_after, loop control, descriptors), and a same-box FA3 measurement to fix the real size of the gap
+(the ~7-8% is chained across boxes and days).
+
+### 45.32 2026-10-17 evening: why the dense forward still loses to FA3 (data we already had)
+
+1. **Not the clock.** Same-box fair scoreboard 10-16 (8x box, free clocks, sbfree_1016): ours 1,665-1,680 MHz at 692 W, FA3
+   1,650-1,665 MHz at 693 W. Same clock, same power cap: the 1.17x of that day was extra CYCLES. (The two boxes are equivalent:
+   K1 dense fwd 1.1127 ms on the 8x box, 1.1123 on the 2x box.) Chained to today: K5q / F2 = 0.939 -> about 1.10x FA3's time.
+2. **Not extra work.** ncu at locked clock (dense B8 18/6): FA3 (10-13) 306.5M warp instructions, 1.42M cycles; our K1 (10-17)
+   311.9M instructions (+1.8%), 1.68M cycles (+18%). Same work, more waiting: issue active 41.1% (FA3) vs 35.4% (K1) of cycles,
+   tensor pipe busy 83.3% vs 70.6%.
+3. **Where K1's warps wait more** (stall samples, in units where FA3's whole kernel = 100): fixed-latency waits +7.5, memory-result
+   waits (long scoreboard) +6.5, exp / shuffle / shared-memory results (short scoreboard) +4.0, MIO queue full +3.7, global-store
+   queue full +1.8, named barriers +1.3; FA3 waits more at warpgroup_arrive (-4.8) and sleeps (-2.6).
+4. **Where in the code**: by executed-count groups (same sampling, so samples = warp-time), K1's main loop held 72,023 samples
+   vs FA3's 68,742 (+5%), but the per-pair code (pair start, prologue, diagonal tile, epilogue, waits) held ~31,300 vs ~18,700
+   (+67%): **~77% of K1's excess was at pair start / end, not in the loop.** Hottest single spots in K1: the instruction after the
+   epilogue's 32 four-byte O stores per thread (2,011 samples: the store queue was full and that instruction had to wait until
+   the stores had read its register), the pair-start stage shuffle stuck behind that store traffic (1,092), the epilogue's row-sum
+   shuffles (1,507). K2/K4b (stmatrix + 8 sixteen-byte stores per thread) targeted exactly this and gave -5.3% dense.
+5. **Still different from FA3 (K5q):** (a) FA3 writes O of a dense tile with ONE TMA store issued by one thread (asynchronous; the
+   warps go on at once) and keeps per-row stores only for varlen; ours still issues 8 x 16 B stores + 8 shared loads per thread;
+   (b) our pair start waits for Q (~160 cycles) and tile 0's K/V (~430) per pair (trace TLK5q); (c) ~44 more non-math instructions
+   per loop step (descriptor setup, the ordering arrive, two predicated barriers instead of one).
+6. K4b / K5q have not been profiled with ncu yet; the next measurement is one ncu run of K5q (dense + packed, ~3 min) to repeat
+   this split for the current kernel before choosing the fix (TMA store for the dense O, earlier Q / tile-0 prefetch, fewer
+   instructions per step). Changing how O is stored does not change any value, so packed == alone stays bit-exact.
+
+### 45.33 2026-10-17 18:34-18:41 IST: our SFT loss vs PyTorch / torch.compile / Liger / Apple CCE
+
+Run loss_1017 (2x box GPU 0; records profiling_reports/sft_loss_vs_rivals_2026_10_17/: scripts, box_runs/loss_results.tgz;
+tables: `python3 loss_compare.py box_runs/loss_1017`). Ours = the trainer's pair (forward save_stats + backward with stats),
+bench_sparse_ce_sft.cu of 10-09 unchanged, 2000 warm-up + 500 timed calls per pass. Others = loss_rivals_1017.py: torch
+2.14.1 + cu130, triton 3.8.0, liger-kernel 0.8.4 (its Triton kernels; the new CuTe-DSL backend was not installed),
+cut-cross-entropy 25.1.1; >= 4 s warm-up, then 200 (part 1) / 30 (part 2) timed calls each. SM clock median 1,980 MHz in both
+phases, power median 579 W (ours) / 624 W (others): memory-bound, not power-limited.
+
+**Same inputs, same answers.** The logits are the C++ bench's hash fill (checked bit for bit at 2,004 points) and the micro-batches
+are ours (0 / 287 / 458 / 415): PyTorch fp32's loss equals ours to 6 decimals in all 5 trained cases (median 12.740235 both).
+torch.compile and Liger gradients = PyTorch fp32's at the checked row (max diff 0); PyTorch bf16 4e-6.
+
+Part 1, loss only (logits given), F+B in ms (the like-for-like number; ours / theirs in brackets):
+
+| case (trained rows) | ours | Liger | torch.compile | PyTorch bf16 | PyTorch fp32 (HF) |
+|---|---|---|---|---|---|
+| real_min (8.9%) | 1.232 | 1.206 (ours 1.02x) | 3.896 | 6.226 | 21.137 |
+| real_first (18.7%) | 1.683 | 1.426 (1.18x) | 3.897 | 6.230 | 21.138 |
+| **real_median (23.1%)** | **1.885** | **1.525 (1.24x)** | 3.917 | 6.231 | 21.140 |
+| real_max (38.9%) | 2.597 | 1.886 (1.38x) | 3.921 | 6.234 | 21.151 |
+| nomask (100%) | 5.387 | 3.279 (1.64x) | 3.964 (1.36x) | 6.266 | 21.171 |
+| all_masked (0%) | 0.859 | 1.004 (0.86x) | 3.896 | 6.220 | 21.135 |
+
+Memory above the logits: ours keeps 0.25 MiB from F to B (row max + sum), peak +3,144 MiB (the separate gradient buffer);
+Liger 0 / +0.3 MiB (it writes the gradient INTO the logits during the forward); torch.compile 0.3 MiB (it also saves only the
+row LSE) / +3,144; PyTorch bf16 3,144 / 9,432; PyTorch fp32 6,288 / 18,864.
+
+Verdict: ours beats every PyTorch variant at SFT masking (2.1-3.2x torch.compile, 3.3-5x bf16, 8-17x fp32 at 9-39% trained) and
+is the fastest with everything masked, but **Liger is faster in every trained case (median batch 1.525 vs 1.885 ms, -19%)**, and
+with no masking torch.compile is also faster (3.96 vs 5.39 ms).
+
+Why, with the same bytes: Liger moves exactly what ours moves (trained rows read twice, every gradient row written once: 4.82 GB
+at the median batch) in 1.525 ms = 3.2 TB/s; ours needs 1.885 ms = 2.6 TB/s. The loss is in our BACKWARD on trained rows: no-mask
+B = 4.36 ms for 6.6 GB = 1.5 TB/s (31% of HBM peak), while torch.compile's backward does the same reads and writes in 2.01 ms
+(3.3 TB/s). The code (LossKernels.cu sparseCENormalize_from_stats): one 256-thread block per row, a loop that loads one 16-byte
+vector, computes, stores, and only then loads the next: one load in flight per thread, too few to keep HBM busy. Masked rows are
+zeroed with 2-byte stores. The forward is fine (no-mask 1.03 ms for 3.3 GB = 3.2 TB/s; zero-writing alone runs at 4.0 TB/s).
+
+Part 2, lm_head (X [32768, 2304] x W^T, d_model 2304) + loss, F+B in ms (ours = cuBLAS GEMMs measured in the same run + ours'
+loss pair; our trainer uses our BLAS at about cuBLAS speed). cuBLAS GEMMs alone: F 11.80 (644 TFLOPS), B 22.89, F+B 34.44.
+
+| case | ours | Liger fused linear CE | CCE (default) | CCE exact | PyTorch (GEMM + fp32 CE) |
+|---|---|---|---|---|---|
+| real_median (23.1%) | 36.32 | 33.67 (-7%) | **31.68 (-13%)** | 31.23 | 49.82 (+37%) |
+| real_max (38.9%) | 37.03 | 35.66 (-4%) | 52.37 (+41%) | 51.68 | 50.43 (+36%) |
+| nomask (100%) | 39.82 | 39.01 (-2%) | 135.58 (+240%) | 133.03 | 52.63 (+32%) |
+
+Peak memory above X and W: ours 6,653 MiB (logits + their gradient + dX + dW), Liger fused 563, CCE 367, PyTorch 18,864.
+CCE wins at the median batch only because it skips the masked tokens INSIDE the lm_head: its forward is 3.9 ms vs cuBLAS's
+11.8 ms for all rows; its own kernels are about half cuBLAS's speed (backward ~315 TFLOPS), which is why it loses badly at
+39% / 100% trained. **Biggest SFT lever found: run the lm_head + loss only on the trained positions** (gather the hidden states of
+the trained tokens, GEMM with our BLAS, loss, scatter dX back). Estimate at the median batch: GEMMs 23% of 34.4 = ~8 ms + loss
+~1 ms + gather / scatter ~0.2 ms = ~9.5 ms instead of 36.3 ms per micro-batch, ~0.2 s per 8-micro-batch step (roughly 4-5% of
+a step, estimate; not measured).
+
+Fix list, in order of value (none started; the user decides): (1) trainer: lm_head + loss on trained positions only;
+(2) backward kernel: several 16-byte loads in flight per thread (unroll 4-8) and 16-byte zero stores, target ~3.3 TB/s like
+torch.compile's (median B 1.61 -> ~1.1 ms, F+B ~1.4 ms, below Liger's 1.525); (3) write the gradient into the logits buffer
+(-3.1 GiB peak, Liger's memory). Not compared: Liger's CuTe-DSL backend (needs nvidia-cutlass-dsl).
+
+### 45.34 2026-10-17: decisions on the loss findings + the order of the remaining work
+
+**FUTURE TASK (after the v1 SFT pipeline; user decision 10-17): logits only at the trained positions (= Q11, planned in §33).**
+Today the lm_head GEMM computes logits for all 32,768 positions of a micro-batch and only the loss kernel skips the masked
+rows, so the GEMM work for prompt (and, in v1, pad) positions is spent and thrown away: ~77% of the lm_head work at the median
+stage-0 batch (§37 arithmetic). Packing (v2) removes the pads, but the prompt positions' logits are still wasted. Plan (§33,
+unchanged): gather the hidden states of the trained positions -> lm_head GEMM on [M x 2304] -> our loss -> scatter dX back
+(zeros elsewhere); round M up to a multiple of 256 (filler label 65535) because BluBLAS silently gives wrong numbers for a
+transposed operand when M or N is not a multiple of 64 (memory: FUTURE BluBLAS transposed GEMM at M/N not %64). New evidence
+(45.33): Apple CCE does exactly this skip and beats our GEMM + loss by 13% at the median batch although its own kernels run at
+about half of cuBLAS's speed; with our BLAS the estimate is ~36 -> ~9.5 ms per micro-batch. Not bit-identical to today (the sums
+run in a different order); measure in all 3 stages, with and without (6 cases, §33).
+
+**Loss kernel, to do after the attention work (user decision 10-17):**
+- (2) backward `sparseCENormalize_from_stats`: keep 4-8 independent 16-byte loads in flight per thread (today one: the loop
+  loads, computes, stores, then loads the next) and zero the masked rows with 16-byte stores (today 2-byte). This is NOT the
+  §28 vectorisation (that made each access 16 bytes, for correctness); it is how many accesses wait at once. Never tried
+  before (10-09 noted "~33% of HBM peak, never profiled"). Same arithmetic per element, so the gradient must stay bit-identical:
+  check bitwise against today's kernel. Target ~3.3 TB/s (torch.compile's backward): median B 1.61 -> ~1.1 ms, F+B ~1.4 ms.
+- (3) gradient in place: write dL/dlogits into the logits buffer instead of a new one. Today LossBackward.cpp allocates
+  `grad_logits_2d = Tensor::empty(logits_2d.shape(), opts)`: during the loss backward both the logits (3.1 GiB) and the gradient
+  (3.1 GiB) exist, at the moment the step's memory is highest (all saved activations are still alive). Each gradient value needs
+  only its own logit (+ the row's max, sum, target) and nothing reads the logits after the loss backward (the lm_head backward
+  needs X, W and the gradient), so overwriting is safe; -3.1 GiB peak, no speed change. Liger does this (45.33: peak +0.3 MiB vs
+  ours +3,144 MiB). Conditions: no metric may read the logits after the backward; logits and gradient same dtype (bf16 both).
+
+**Agreed order (10-17 evening):** 1. attention forward: the K5q ncu profile -> fix -> race; 2. same-box attention benchmark
+(forward, backward, forward + backward vs FA3 / FA4 / cuDNN); 3. loss kernel (2) then (3), measured with the 45.33 scripts;
+4. wrap up. Item (1) above after the v1 pipeline.
+
+### 45.35 2026-10-17 ~19:15 IST: loss backward fix (item 2) -- the real cause was 2-byte memory accesses
+
+Done on the laptop (Tensor-Implementations/src/Kernels/cuda/loss/LossKernels.cu, md5 27d06bef; git diff +~70 lines), box test pending.
+- **Root cause (SASS, nvcc 13.0, sm_90a):** in `sparseCENormalize_from_stats<bfloat16_t, uint16_t>` -- the backward the trainers run
+  -- every "16-byte vector" access was EIGHT 2-byte accesses: 8 x `LDG.E.U16` and 8 x `STG.E.U16` per vector, no `LDG.E.128` at all.
+  `bfloat16_t` (and `float16_t`) has a user-written copy constructor (Types.h:451), so `LossVec<bfloat16_t>` is not trivially
+  copyable and the compiler copies it element by element. The float instantiation was one `LDG.E.128` / `STG.E.128`. So the §28
+  vectorisation never took effect for 2-byte types in this kernel (§28 fixed correctness; nobody checked the SASS for the width).
+- **Fix:** `loss_ld16` / `loss_st16` move the 16 bytes as one `uint4` (memcpy only moves registers); masked rows are zeroed with
+  `uint4` stores; the trained-row loop is unrolled by `LOSS_BWD_UNROLL` (default 4) so several loads are in flight per thread.
+  SASS after: 5 `LDG.E.128` + 6 `STG.E.128` in the bf16 kernel, no local memory. The arithmetic of every element is unchanged.
+- **Bit-identical, checked on the laptop GPU (RTX 3060):** old kernel (git HEAD) vs new, extracted into one test
+  (scratchpad lossk/test_bwd.cu): 20 configurations -- bf16 and fp32; V = 50,304 / 50,257 (unaligned rows) / 4,096 / 13;
+  0%, ~23%, 100% trained; masking on / off -- 0 differing bytes in all. RTX 3060 speed: fully trained bf16 V 50,304 0.912 -> 0.624 ms
+  (1.46x, 63% -> 92% of that GPU's bandwidth); masked-heavy cases about equal (zero writes were already at its bandwidth); V = 13
+  0.8x (tiny rows; not our case).
+- **Who gains:** every trainer that calls `autograd::sparse_cross_entropy_loss` (bluscript_sft, bluscript_zero_ckpt,
+  bluscript_single): SFT and pretraining, bf16 and fp32 logits. Largest kernel gain where every row is trained (pretraining):
+  the H200 no-mask backward was 4.36 ms vs torch.compile's 2.01 ms. In a whole training step the loss is small (~2-5 ms of a
+  ~600 ms micro-batch), so the step-level gain is below 1%; the kernel-level gain is large.
+- **H200 test (run_loss_v2.sh):** rebuild the library with the new file, then bench_sparse_ce_sft_v2.cu (= the 10-09 bench + a
+  checksum of the trainer pair's gradient per case) with OLD (libs/vj2_K5q) and NEW library: old, new, old, new; summary = B and
+  F+B per case + whether all 4 gradient checksums are equal.
+- **Same type problem elsewhere (later, not now):** the bf16 forward `sparse_ce_forward_kernel_vec_save_stats` copies 16 bytes into
+  shared memory with cp.async (fine) but reads them back as 8 x `LDS.U16`; it already runs at 66% of HBM peak.
+
+### 45.36 2026-10-17 19:19-19:27 IST: the loss backward fix on the H200 -- bit-identical, 1.6x at the median batch, now ahead of Liger
+
+Run loss_v2_1017 (2x box GPU 0; records sft_loss_vs_rivals_2026_10_17/box_runs/loss_v2_results.tgz, corrected summary in
+loss_v2_1017/summary_fixed.txt). Library rebuilt from the tree with the new LossKernels.cu (27d06bef) -> libtensor cd0bb2a9; old =
+libs/vj2_K5q (8dc36782). Same bench binary (bench_sparse_ce_sft_v2.cu = the 10-09 bench + a checksum of the trainer pair's gradient
+per case), old / new / old / new, 2000 warm-up + 500 timed calls per pass; SM 1,968 MHz average, power 601 W average (not capped).
+
+**Gradient bit-identical in all 6 cases, all 4 runs** (each case's 4 checksums equal; all_masked = 0, all zeros). The status line
+"5 of 6" was a bug in the summary script, not in the kernel: the bench prints a case's checksum just BEFORE that case's header, the
+parser gave each checksum to the previous case and crashed on the last (fixed in run_loss_v2.sh; the per-case pairing was rechecked).
+
+| case (trained) | B old -> new (ms) | B faster | B bandwidth old -> new | F+B old -> new (ms) | F+B faster | Liger F+B | torch.compile F+B |
+|---|---|---|---|---|---|---|---|
+| real_min (8.9%) | 1.099 -> 0.883 | 1.24x | | 1.233 -> 1.013 | 1.22x | 1.206 | 3.896 |
+| real_first (18.7%) | 1.450 -> 0.965 | 1.50x | | 1.685 -> 1.196 | 1.41x | 1.426 | 3.897 |
+| **real_median (23.1%)** | **1.607 -> 1.008** | **1.60x** | 2.53 -> 4.03 TB/s | **1.883 -> 1.281** | **1.47x** | 1.525 | 3.917 |
+| real_max (38.8%) | 2.169 -> 1.148 | 1.89x | 2.11 -> 3.99 TB/s | 2.596 -> 1.571 | 1.65x | 1.885 | 3.921 |
+| nomask (100%, pretraining) | 4.362 -> 1.645 | **2.65x** | 1.51 -> 4.01 TB/s | 5.386 -> 2.719 | **1.98x** | 3.279 | 3.964 |
+| all_masked (0%) | 0.815 -> 0.745 | 1.09x | 4.04 -> 4.43 TB/s | 0.859 -> 0.788 | 1.09x | 1.004 | 3.896 |
+
+The forward is unchanged (same kernel: median 0.2768 vs 0.2771 ms). **With the fix our pair is faster than Liger in every case**
+(Liger now needs 19-27% more time; before, it was 19% faster at the median batch) and 1.46x-4.9x faster than torch.compile. The
+backward now moves its bytes at ~4.0 TB/s (~84% of the 4.8 TB/s HBM peak) on trained rows (was 1.5-2.5) and 4.4 TB/s for zero rows.
+Remaining loss items: (3) gradient into the logits buffer (memory, next); the forward's 8 x LDS.U16 reads (45.35; later).
+
+### 45.37 2026-10-17 evening: item 3 -- the loss gradient written over the logits (opt-in) + a double allocation found
+
+Written on the laptop (BluTrain_sft, not committed; the user commits), compile-checked for sm_90a, box test pending.
+- **Found while writing it:** `SparseCrossEntropyLossBackward::apply` (LossBackward.cpp) allocated the gradient TWICE on the CUDA
+  path: `Tensor::empty(logits shape)` before the CPU / CUDA branch (only the CPU path used it) and again inside the CUDA branch.
+  `Tensor::empty` allocates at once (Tensor ctor -> allocator), and the first buffer is freed only when the second is assigned,
+  so for a moment the loss backward held the logits plus TWO gradient-sized tensors (3 x 3,144 MiB at 8 x 4096 x 50,304 bf16).
+  This fits the "3-tensor model" of the 09-24 bf16-logits measurement (-4,716 MiB = 3 x 1,572 at B=4). Now each path allocates
+  once (CPU in its branch; CUDA once, or not at all with the switch on).
+- **The switch:** `autograd::sparse_cross_entropy_loss(..., bool grad_into_logits = false)` -> the node's `grad_into_logits_` ->
+  on the CUDA stats path the returned gradient shares the logits' storage and the new kernel
+  `sparseCENormalize_from_stats_inplace` writes each gradient over its logit (read once, then written once, by the same thread).
+  The row code is shared (`normalize_from_stats_row`): the out-of-place kernel keeps its `__restrict__` parameters and its SASS
+  is IDENTICAL to item 2's (0 differing lines, bf16 and fp32); the in-place kernel uses plain (not read-only-cache) 16-byte loads.
+  Trainer: `BLU_LOSS_GRAD_INPLACE=1` (default 0) passes it in the training step only (bluscript_sft.cpp; validation has no
+  backward). Safe there: the logits feed only the loss and are not read after backward().
+- **Checks (run_item3.sh):** standalone `Tests/kernel_tests/test_loss_grad_inplace.cu` = the trainer's lm_head + loss through
+  autograd (X [8,4096,2304] x W [2304,50304] bf16, real stage-0 targets, micro-batch 458), one process per arm: OLD library
+  (libs/loss_v2, item 2 only, legacy 4-argument API) / NEW switch off / NEW switch on; same loss and W / X gradient checksums
+  expected in all, two reps each (determinism), allocator peaks per arm. Then the SFT trainer on a tiny stage-0 set (64 / 16 rows,
+  2 steps of 8 micro-batches, random init), switch off / on / off / on, its [MEM] allocator peaks and step losses.
+- Expected: 'on' one logits-sized tensor (3,144 MiB) below 'off' wherever the loss backward sets the peak; OLD up to one more.
+  If the peak sits elsewhere in a run (e.g. the matmul backward or the optimizer), the drop is smaller; that says where the peak is.
+- **Trainer A/B gets the OLD binary too (user, 10-17):** so the whole 6.1 GiB shows in one session, on one box, on one data set.
+  `old_trainer/bluscript_sft_old.cpp` = today's bluscript_sft.cpp with ONLY the item-3 lines removed (diff checked; git HEAD is
+  from 09-28 and lacks the SFT / packing work, so it is not the "old" trainer), built with the pre-item-3 `LossOps.h`
+  (`old_trainer/old_inc`, 4-argument declaration) and linked to libs/loss_v2 (item 2, double allocation); it calls the 4-argument
+  loss op (nm). Runs: old / new-off / new-on, twice. Expected at the loss-backward moment: old 3 logits-sized tensors, new-off 2,
+  new-on 1 (3,144 MiB each).
+
+### 45.38 2026-10-17 20:06 IST: item 3 checked -- standalone: bit-identical, -5,926 MiB (old -> new switch on)
+
+Run item3_1017 (2x box GPU 0; started by me at the user's request while the user was on a break, both phases as one command
+`run_item3.sh 0 all`, after checking that all 11 files on the box were byte-identical to the laptop's and that both GPUs were
+idle). Library with item 3: libs/loss_v3 (465cfa56); old = libs/loss_v2 (cd0bb2a9, item 2 only).
+
+Standalone, test_loss_grad_inplace.cu (lm_head + loss through autograd: X [8,4096,2304] x W [2304,50304] bf16, real stage-0
+targets of micro-batch 458 = 7,577 trained rows; one process per arm, forward + backward twice per process):
+
+| arm | loss | W.grad (fp32) checksum | X.grad (fp32) checksum | reps identical | allocated peak | vs old |
+|---|---|---|---|---|---|---|
+| old library (double allocation), gradient into a new tensor | 11.336594 | 883fe7a5e3b70000 | b017f1eacd9f0000 | yes | 10,536 MiB | |
+| new library, switch off | 11.336594 | 883fe7a5e3b70000 | b017f1eacd9f0000 | yes | 7,754 MiB | -2,782 |
+| new library, switch on (gradient over the logits) | 11.336594 | 883fe7a5e3b70000 | b017f1eacd9f0000 | yes | **4,610 MiB** | **-5,926** |
+
+- **Bit-identical in all arms and reps** (loss and both gradient checksums).
+- **The switch saves exactly 3,144 MiB** (7,754 -> 4,610 = one 8 x 4096 x 50,304 bf16 tensor).
+- **The double-allocation fix saves 2,782 MiB here**, not the full 3,144: the old peak was at the loss backward (X, W, their fp32
+  gradients from rep 1 = 730 MiB, logits + 2 gradient buffers: 365 + 730 + 9,432 = 10,527 ~ 10,536); with the fix the peak moves
+  to the matmul backward (logits + gradient + ~370 MiB of the matmul's new gradient temporaries: 7,754 = 7,383 + 371), and the
+  in-place peak is the same moment minus the gradient buffer (4,610 = 7,754 - 3,144).
+- The backward times in these logs are single cold calls (16-52 ms, jumping between reps): not a speed measurement (that was
+  45.36's job).
+- Reserved peaks (what the allocator holds from the GPU, close to what nvidia-smi shows): old 12,952 -> new switch off 10,174 ->
+  new switch on **4,618 MiB (-8,334 MiB)**. With the switch on, reserved = allocated (4,618 vs 4,610): no logits-sized block is
+  freed and cached any more, so nothing big sits unused in the cache.
+
+**Trainer phase, try 1 (20:07-20:09 IST): FAILED before step 0. The cause was my script, not item 3.** Both trainers built fine
+(new bluscript_sft_bin_item3 1c2fbb7a, old bluscript_sft_bin_old 383f4f23, each loading the intended library: new 465cfa56,
+old cd0bb2a9). All 6 runs then stopped in about 3 s with exit 134:
+`SftDataLoader: /root/gautam_k/sft_data/tiny_item3/train/inputs.bin has 0 bytes, meta.json says it should have 524288`.
+- Why: the script made the tiny set on the box with `head -c` from `stage0_ultrachat_5k_T4096/{train,val}/`. This box has
+  only `train/labels.bin` of stage 0 (copied for the loss benchmark), so `head` failed on the missing files and its error went
+  to /dev/null. The redirect still created the files empty. The script checked only that labels.bin exists, and it kept going
+  after each failed run instead of stopping.
+- A second problem the run never reached: 64 rows at 64 rows per step and the default 2 epochs give max_steps = 2 and
+  warmup = max(1, round(0.03 x 2)) = 1. The trainer refuses that (`warmup + stable >= max_steps - 1`, bluscript_sft.cpp:1080,
+  "leaves no decay tail"). So even with good data, try 1 would have stopped.
+- Fixes (laptop, run_item3.sh md5 fdf019ec, item3_summary.py 685ecd76):
+  1. The tiny set is made on the laptop from the same files: `~/Downloads/sft_data/tiny_item3/` = the first 64 train rows and
+     the first 16 val rows of stage 0, meta.json `{"N": .., "T": 4096}` (the loader reads only N and T). Checked with a
+     plain-Python copy of the loader's checks: sizes, valid_counts = non-65535 labels in every row, rows byte-identical to the
+     full set (the full labels.bin is byte-identical to the box copy, md5 eec5e38b). Trained tokens: train 60,263, val 11,808.
+     The check fails on a changed label and on an empty inputs.bin (tested). The box script no longer makes the set; it
+     checks all 6 file sizes and both N values before the builds, and prints the md5 of the set (laptop: 90d39b16).
+  2. `BLU_SFT_EPOCHS=4` -> 4 steps of 8 micro-batches, warmup 1 (1 < 3, passes the decay-tail check).
+  3. The script now stops at the first trainer run that exits non-zero or prints no [MEM] line.
+- Try-1 artefacts on the laptop: box_runs/item3_1017_try1/ (+ item3_results_try1.tgz).
+- Expected time for the trainer phase alone: ~2 min of builds + 6 runs x ~1-1.5 min (the stage-0 full run took 5.3 s per
+  step on one H200, 37.4) = ~10 min. Not run yet: copying the tiny set and the script to the box, and re-running
+  the trainer phase, wait for the user's OK.
+
+**Trainer phase, try 2 (20:42-20:52 IST, GPU 0): PASSED.** The user copied the tiny set and the fixed script and ran
+`run_item3.sh 0 trainer` (one more stop at 20:41:34: the set was not there yet; the new size check caught it before any build).
+Trainers rebuilt (new 1c2fbb7a, old 383f4f23, same as try 1); all 6 runs exit 0 with 4 step lines. Results in
+`sft_loss_vs_rivals_2026_10_17/box_runs/item3_1017/` (summary: `python3 item3_summary.py box_runs/item3_1017`).
+
+| run | allocated peak | reserved peak | step 0 train loss | step 0 grad norm | step 3 train loss |
+|---|---|---|---|---|---|
+| old r1 / r2 | 125,046 / 125,046 MiB | 126,986 / 126,986 | 11.236371 / 11.236371 | 33.8707 / 33.8711 | 9.830540 / 9.831098 |
+| new, switch off r1 / r2 | 122,264 / 122,264 (**-2,782**) | 123,312 / 123,312 | 11.236371 / 11.236371 | 33.8712 / 33.8718 | 9.829689 / 9.831923 |
+| new, switch on r1 / r2 | 119,376 / 119,376 (**-2,888** more) | 121,866 / 121,866 | 11.236371 / 11.236371 | 33.8728 / 33.8720 | 9.830827 / 9.831545 |
+
+- **Memory: -5,670 MiB allocated peak (-4.5%) and -5,120 MiB reserved peak in the real trainer** (B 8 x T 4096, bf16 logits),
+  the same in both reps. The double-allocation fix alone gives -2,782 MiB (exactly the standalone number); the switch gives
+  -2,888 MiB more. That is 256 MiB less than one logits tensor (3,144): with the switch on, the step's peak moves to another
+  moment of the backward that holds 256 MiB more than "the old peak minus the gradient buffer".
+- **Numbers: the step-0 loss is identical in all 6 runs** (the forward is unchanged). The grad norms differ in the 5th digit,
+  but they differ by the same amount between two runs of the SAME binary (old r1 33.8707 vs old r2 33.8711; steps 1-3 drift a
+  little more because the random-init model has grad norms up to 159). That is run-to-run noise in the trainer: the attention
+  backward's default dQ accumulation uses atomic adds (there is a separate USE_DETERMINISTIC_DQ=1 mode), so the order of the
+  sums changes between runs. The loss backward itself is bit-identical with and without the switch (standalone test above).
+- The old trainer's peak (125,046 MiB) matches the 10-07 full stage-0 run (125,026 MiB, 37.4), so the tiny run shows the same
+  peak as a real run.
+- Decision for the user: keep BLU_LOSS_GRAD_INPLACE opt-in (default 0) or make it the default in bluscript_sft.cpp. It is safe
+  in this trainer because nothing reads `logits` after backward(); any future code that reads the logits after the backward
+  (for example a token-accuracy metric) must run before it or turn the switch off.
+- Changed files to commit (user commits): Tensor-Implementations/src/Kernels/cuda/loss/LossKernels.cu (cf947bf4),
+  include/ops/helpers/LossKernels.h, include/autograd/backward/LossBackward.h, src/autograd/backward/LossBackward.cpp (c59dffd7),
+  include/autograd/operations/LossOps.h, src/autograd/operations/LossOps.cpp (81e27dfd), Tests/kernel_tests/
+  test_loss_grad_inplace.cu (40010b31, new), bluscript_sft.cpp (6f94d3ab).
+
+### 45.39 2026-10-17 20:46-21:20 IST: ncu of K5q vs FA3 -- packed already ~10% ahead, dense ~8% behind; where, and fix L1b
+
+ncu run `ncu_k5q_1017` on GPU 1 (user ran it, twice: 20:46 and 20:47; both copies on the laptop, numbers equal to 0.1%):
+`AB_QUICK=0 AB_ROUNDS=0 ab_multi.sh 1 ncu_k5q_1017 vj2_K4b vj2_K5q`. Locked clock here was ~1,336 MHz; FA3's reference (10-13)
+ran at ~1,620 (dense) / ~1,730 MHz (packed). F3c at both clocks: +1.7% cycles dense / +0.5% packed at the higher clock, so the
+cycle comparisons below hold to ~1-2% (FA3 would be ~1% fewer cycles at 1,336 MHz). Script: session_2026_10_17/deep/
+ncu_k5q_vs_fa3.py (tables in box_runs/2x_1017/ncu_k5q_1017/analysis_vs_fa3.txt). A local nvcc 13.0 build of the box's
+fwd_K5q.cu (f35982af) gives the SAME SASS as the profiled library (3,672 / 3,504 lines, only `.reuse` flags differ), so
+candidate SASS can be checked on the laptop before any GPU run.
+
+| | FA3 | K5q | K5q / FA3 |
+|---|---|---|---|
+| packed real_rows_752: cycles | 0.744M | **0.670M** | **0.90 (ours ~10% faster)** |
+| packed: instructions | 142.2M | 130.9M | 0.92 |
+| dense B8 18/6: cycles | 1.423M | 1.538M | **1.08** |
+| dense: instructions | 306.5M | 322.4M | 1.05 |
+| dense: tensor pipe busy | 83.3% | 77.1% | cycles x busy = 1.186M both: same tensor work, more idle time |
+
+**Where the dense +8.1 points go** (cycle-equivalents = share of stall samples x cycles, FA3 = 100; tile counts matched: both
+kernels process 608,256 warp-tiles; FA3's loop holds 571,392 of them, K5q's 535,680, the rest sit in per-unit code):
+1. Steady loop, **+4.0**: a K5q step costs 146.6 vs FA3 139.0 per million steps (+5.5%). By phase (per million steps):
+   - QK issue (baton -> last QK HGMMA): FA3 41 instructions 26.1 | K5q 72 instructions 31.7 = **+5.5**. K5q rebuilt BOTH
+     descriptors of every QK HGMMA every step (4 uniform instructions each, one 4-register group gdesc[UR20] for all 8);
+     FA3 keeps Q's 8 descriptors in 8 groups (UR16..UR48, built once per unit) and writes only K's half (2 per HGMMA).
+   - PV issue: FA3 41 instructions 28.8 | K5q 28 instructions 25.0 = **-3.8** (FA3's warps wait longer at warpgroup arrive).
+   - softmax (QK wait -> loop end): FA3 387 / 84.1 | K5q 385 / 89.9 = **+5.9**, same instruction count. By opcode: MUFU
+     +7.5 (of it "wait" +7.2: K5q's 66 exps sit closer to their inputs / each other than FA3's, which are spread among FMA
+     work), FMNMX -1.7, the WARPGROUP waits -4.3.
+2. Unit boundaries (prologue tile 0, diagonal tile, unit start / end), **+4.0**: mostly long-scoreboard waits on Q and on
+   tile 0's K/V (+3.5 vs FA3) = the "earlier Q / tile-0 prefetch" item of 45.32.
+So the 45.32 picture (77% of K1's excess at pair start/end) has changed: K4b/K5q fixed most of that; half of K5q's excess is
+now in the loop step.
+
+**Fix 1 = L1b** (candidates/fwd_L1b.cu 069772b7; from the box's K5q source f35982af; switch L1_DESC). Q's 8 descriptors are
+made once per consumer group (its Q buffer never moves); a K or V tile's descriptor = the stage-0 descriptor + the stage
+offset (one add). First try L1 (fwd_L1.cu 19c0c3fb) did NOT change the SASS: ptxas rebuilt the "once" values inside the loop
+from the smem base (still live there for K/V). L1b passes each Q descriptor half through `__shfl_sync(.., 0)` once: ptxas can
+no longer rebuild it and keeps it uniform. Local SASS: steady QK issue **72 -> 42 instructions** (FA3 41), Q descriptors in 8
+groups like FA3 (gdesc[UR40], [UR12] .. [UR36]), 168 registers, 0 spills, dense 3,648 instructions (K5q 3,672), packed 3,504.
+Same descriptor values (every smem address < 0x40000: the 14-bit field never carries) -> bit-identical results; the quick
+suite (296 checks, incl. packed == alone bit-exact) must confirm. Expected gain: the QK-issue phase's +5.5 per million steps
+is ~2.7% of the dense kernel; how much of it goes is for the race to say (estimate 1-2% dense, small packed).
+Next items after L1b: the exp scheduling in the softmax (+3.2 points), the unit-boundary waits (+4.0).
+
+### 45.40 2026-10-17 ~21:15 IST: END OF DAY -- where we stopped, all numbers, and the plan for Monday
+
+The 2x H200 box (root@86.38.238.36) is being closed by the user. Before that, everything of ours was copied to
+`profiling_reports/box_2x_final_2026_10_17/` (622 files, md5 identical to the box; README.md there lists what is and is not
+in it). The box's source tree was identical to the laptop master (1,496 of 1,496 source files same md5). Not copied, because
+they are rebuilt: the 35 libraries (1.9 GB; md5 list kept) and the loss-rivals venv (5.6 GB; pip freeze kept).
+
+**WHERE WE STOPPED (exactly):**
+- Attention forward: candidate **L1b** (candidates/fwd_L1b.cu 069772b7) is written and its SASS checked on the laptop
+  (45.39), but **NOT built on a box and NOT raced**. The next action is the race L1b vs K5q.
+- Loss kernel: items 2 and 3 are DONE and verified on the H200 (45.36, 45.38). Waiting for 2 user decisions: (a) make
+  BLU_LOSS_GRAD_INPLACE=1 the default in bluscript_sft.cpp or keep it opt-in; (b) commit the 8 changed files.
+
+**All numbers of the day (details in the sections named):**
+- Attention forward (base at the start of the day = F3c, the laptop master):
+  - 45.20-45.28: race F2 / F3c / C1 -> F3c kept (E1's L2 hints made the packed backward +0.18%); K1 (FA3 loop order) -0.95%
+    dense; K4b (O staged in the last K buffer, fixed handshake) -5.26% dense / -7.37% packed vs K1; **K5q** (K4b + split 16 +
+    one P set) = best overall; K7e (split 8 + FA4 conditional rescale) -0.81% dense but +0.63% packed; per-mode builds K8 / K9
+    rejected (they break packed == alone bit-exact). **K5q vs F3c: about -6.5% dense, -11.4% packed.**
+  - 45.29: knock-outs: no exp -6.8%, no max -4%, no rescale -2.3%, all three -11.2% (the softmax is on the critical path).
+  - 45.31: the wait form (W1, W1s), separate K/V barriers (W2) and the polynomial exp (P8w +2.7%, P4w +7.1%): all rejected.
+  - 45.32 + 45.39: ncu. **Packed: K5q ~10% FEWER cycles than FA3 (0.670M vs 0.744M) and 8% fewer instructions. Dense: K5q
+    +8% cycles (1.538M vs 1.423M).** Dense excess = steady loop +4.0 points (QK descriptors +3.0, exp scheduling +3.2, PV
+    issue -2.0) + unit boundaries +4.0 (Q / tile-0 K/V waits +3.5).
+  - Estimated position vs FA3 in time (free clocks, chained from the 10-16 scoreboard; NOT yet measured on one box): dense
+    about 1.10x FA3, packed about level or better.
+- Attention backward: unchanged today; beats everyone (10-16 scoreboard: dense 0.963x FA3, packed 0.984x).
+- Loss kernel:
+  - 45.33: vs PyTorch / torch.compile / Liger / Apple CCE at our SFT shape: ours beat every PyTorch variant; Liger was 19%
+    faster at the median batch (our backward ran at 1.5 TB/s).
+  - 45.35-45.36: **item 2** (bf16's user copy constructor made LossVec<bf16> load/store as 8 x 2-byte accesses; now uint4 +
+    4 loads in flight): bit-identical, backward 1.607 -> 1.008 ms (1.6x) at the median batch, forward + backward 1.883 ->
+    1.281 ms; **ours now beats Liger in every case**.
+  - 45.37-45.38: **item 3** (opt-in gradient over the logits + the double allocation removed for everyone): standalone
+    bit-identical, -5,926 MiB; **real trainer -5,670 MiB allocated peak (125,046 -> 119,376), -5,120 MiB reserved, loss
+    identical**.
+  - Item 1 (lm_head + loss on trained positions only): FUTURE task after the v1 SFT pipeline (45.34).
+- Checkpoints (45.30): DPO / next stage needs only the weights (BLU_INIT_FROM loads weights only, automatically); continuing
+  SFT = auto-resume from BLU_CKPT_DIR (weights + AdamW state + step); a new stage needs a new empty BLU_CKPT_DIR.
+
+**Designs decided / found today (keep):**
+- K4b: the dense O goes through the last K buffer (stmatrix + 16-byte stores) with a monotonic counter handshake
+  (protocol_sim_k4.py: 0 deadlocks in 1000; K4's handshake deadlocked 385/1000 packed).
+- K5q: softmax split 16 (16 exps before the P.V wait) + one P register set.
+- ptxas tricks: (1) a data-dependent mbarrier arrive pins the P.V wait after the softmax (45.22); (2) NEW (45.39): ptxas
+  rebuilds "computed once" wgmma descriptors inside the loop when it can rebuild them cheaply from a live value; passing
+  each value once through `__shfl_sync(.., 0)` stops that and keeps it in a uniform register (L1b: QK issue 72 -> 42).
+- Local check: an nvcc 13.0 build of a candidate on the laptop gives the same SASS as the box build (45.39), so a candidate's
+  SASS can be checked before any GPU run.
+- Loss: LossVec loads / stores through uint4 + memcpy (never through the bf16 copy constructor); the gradient-in-place switch
+  is safe only while nothing reads the logits after backward().
+
+**Uncommitted code on the laptop (the user commits; ~/Downloads/BluTrain_sft is the master):**
+- Tensor-Implementations: 27 modified + 5 new files (attention fwd/bwd, loss items 2+3, norm/RoPE, tests). The tree's
+  GQA_fwd_sm90.cu is still **F3c**; K5q / L1b live only in profiling_reports/session_2026_10_17/candidates/ until the user
+  decides to adopt one.
+- BluTrain: bluscript_sft.cpp and sft/ are untracked; bluscript_zero_ckpt.cpp modified.
+- This work has not been committed since 09-28 (it exists only on the laptop): commit + push soon.
+
+**MONDAY: set up again and continue from the stop point (in this order):**
+1. New box: claim our GPU(s) as the user says. Copy the laptop master tree (`~/Downloads/BluTrain_sft`) to the box, build
+   the library (`make -j$(nproc)` in Tensor-Implementations), build the test binary tva_a (build_cands.sh `tva` option, or
+   the nvcc line in build_cands.sh), copy `stage0_ultrachat_5k_T4096/train/labels.bin` (the packed bench case needs it).
+2. Copy `box_2x_final_2026_10_17/scripts/` to `~/gautam_k/scripts/` (it holds cands/ with fwd_K5q.cu f35982af and F3c) and
+   add `candidates/fwd_L1b.cu`. Build: `bash build_cands.sh K5q L1b F3c` (F3c last: puts the tree back to the master's file).
+3. **Race L1b vs K5q** (forward only, 8 rounds, quick suite first: 296 checks incl. packed == alone bit-exact):
+   `AB_ROUNDS=8 AB_ENV="VARLEN_BENCH_DIR=fwd" AB_DENSE_ITERS=4000 AB_PACKED_ITERS=8000 bash ab_multi.sh <gpu> l1b vj2_K5q vj2_L1b`
+   (~10 min; ends with an ncu of L1b). Expected: dense -1..-2%, packed small.
+4. Next forward fixes, from 45.39: (a) the exp scheduling in the softmax (MUFU "wait" +7.2 per million steps vs FA3);
+   (b) the unit-boundary waits for Q and tile 0's K/V (+3.5 points). Each: build -> SASS check on the laptop -> race.
+5. The same-box scoreboard vs FA3 / FA4 / cuDNN (forward, backward, forward + backward, dense + packed, free clocks):
+   needs the rivals' environment on the new box (FA3 / FA4 from flash-attention 94e22c9, cuDNN through torch 2.14.1+cu130;
+   loss_env_setup.sh is the starting point).
+6. Loss: the user's two decisions (default switch, commit); later the forward loss kernel's 8 x LDS.U16 (same bf16 copy issue
+   as item 2's backward); item 1 after the v1 pipeline.
+7. The user decides whether K5q (or L1b if it wins) replaces F3c in the laptop master GQA_fwd_sm90.cu.
+- Analysis scripts of 45.39 (run from profiling_reports/): session_2026_10_17/deep/ncu_k5q_vs_fa3.py (4 views),
+  k5q_loopdiff.py (loop bodies by opcode), k5q_skeleton.py (loop skeleton: GEMM issue, barriers, waits), k5q_pergroup_stalls.py
+  (per code group by stall reason), k5q_loop_phases.py (QK issue / PV issue / softmax per million steps); loop skeletons in
+  box_runs/2x_1017/ncu_k5q_1017/skel_*.txt; local SASS + ptxas logs of K5q (box source), L1, L1b in deep/l1_sass/.
+  sft_loss_vs_rivals_2026_10_17/check_tiny_set.py = the tiny-set check of 45.38.
+
+### 45.41 2026-10-19 (Monday): new 2x H200 box set up; race L1b vs K5q -> L1b REJECTED
+
+**New box:** root@31.56.109.89 (dull-tree-fades-fin-02), 2x H200, driver 580.178.04, **CUDA 13.4** (old box 13.0), 88 cores,
+113 GB free. Our folder = `/root/gautam_K` (capital K, the user's choice; a gautam_k link was made and removed: one folder
+only). Others on the box: /root/harshini, /root/Ananya (BluTrain trainers; both GPUs were theirs until ~10:30 IST), Documents.
+Scripts switched to gautam_K in a fresh copy `profiling_reports/session_2026_10_19/{scripts,loss_bench}` (12 files; the
+10-17 archive is untouched). Copied (user ran the commands): the laptop master tree (no .o/.so/.a), scripts (cands/ with
+fwd_K5q.cu f35982af + fwd_L1b.cu 069772b7), loss_bench, stage0 data + tiny_item3; md5-checked: 3,589 / 54 / 13 / 16 files
+identical. Built: top-level `make -j48 all SM_ARCH=90` exit 0; `build_cands.sh tva K5q L1b F3c` -> K5q a804ea04, L1b 2e2d2544,
+F3c d12fe6cb, tva_a c267b5db (test source b7c752b3). The user said GPU 0 is ours; at launch both GPUs were at 0 MiB twice.
+
+**CUDA 13.4 compiles K5q differently** (cuobjdump of the box libraries): steady QK issue (baton -> last QK HGMMA) dense K5q
+**59** (13.0: 72) vs L1b 43; packed K5q **40, already in 8 descriptor groups like FA3** vs L1b 43. So all comparisons from
+now on are against libraries built on this box.
+
+**Race l1b_1019** (GPU 0, 10:35-10:39 IST, forward only, 8 rounds, 4000 dense / 8000 packed forwards per run, free clocks;
+quick suite L1b 296/296; results in session_2026_10_19/box_runs/l1b_1019):
+
+| | K5q median | L1b median | L1b vs K5q (paired) | p10 | rounds L1b faster |
+|---|---|---|---|---|---|
+| dense B8 18/6 | 1.0905 ms | 1.0934 ms | **+0.36%** (t 2.2) | +0.55% (t 4.4) | 2/8 |
+| packed real_rows_752 | 0.4570 ms | 0.4608 ms | **+0.90%** (t 11.3) | +0.79% (t 7.3) | 0/8 |
+
+**Verdict: L1b rejected.** Order note: with only 2 libraries ab_multi.sh's rotation and its odd-round reversal cancel, so L1b
+ran first in every round (status lines "(vj2_L1b vj2_K5q)"); any first-position advantage went to L1b, so the verdict
+stands. (For future 2-library races: use 3 libraries or fix the order rule.)
+
+**What it teaches:** the 45.39 split counted WARP time (stall samples), not tensor-pipe idle time. The QK-issue phase's
++5.5 per million steps was time the warps would have waited anyway (for the baton / the tensor pipe), so removing ~16
+instructions there did not shorten the step; the same caution applies to the other two items (exp scheduling, unit-start
+waits). The next lever must be judged by what it does to the tensor pipe's idle time (dense: FA3 busy 83.3% vs K5q 77.1%),
+not by stall shares. Same lesson as the 4B BLAS work (memory: instruction cuts converted at zero).
+
+### 45.42 2026-10-19: item 2 re-checked -- the loss module never used the library's CUDA-type mapping
+
+The user asked whether our GPU kernels use CUDA's own types (as the reduction module does) and whether item 2's cause and
+gain are real. Checked from source, fresh compiles and the raw logs (scratchpad item2_recheck):
+- **The library rule exists:** `include/dtype/CudaTraits.h:17-22` maps `bfloat16_t -> __nv_bfloat16`, `float16_t -> __half`
+  (`CudaNativeType<T>`). Reduction uses it (`ReductionImplGPU.cu:130` `using CudaT = CudaNativeType<T>;`, `:153`
+  reinterpret_cast of the data pointers, then the kernel launch); so do dropout, embedding, attention, LayerNorm, conversion.
+- **The loss module does not:** `LossKernels.cu` has 0 uses of CudaNativeType / __nv_bfloat16 (now and at git HEAD ad10e7d);
+  its kernels are instantiated with our `bfloat16_t` (lines 1192-1269) and the compiled names say `OwnTensor::bfloat16_t`.
+  Same for the B300 file `loss/arch/CrossEntropyKernels_sm103.cu`. These are the only GPU files with our bf16 and no mapping.
+- **Why it matters (test typetest.cu, sm_90a):** our `bfloat16_t` / `float16_t` are NOT trivially copyable (user copy
+  constructor, `Types.h:451`); copying a 16-byte struct of 8 of them = 8 x LDG.E.U16 + 8 x STG.E.U16. With `__nv_bfloat16` /
+  `__half` (trivially copyable) the same copy = 1 x LDG.E.128 + 1 x STG.E.128. Following the rule would have avoided it.
+- **Old vs new loss backward, fresh compile:** old bf16 kernel 0 x 16-byte loads/stores, 10 x 2-byte loads + 10 x 2-byte
+  stores; the SAME code for fp32 had 16-byte accesses; new kernel 5 x 16-byte loads + 6 x 16-byte stores.
+- **Gain (raw logs loss_v2_1017, H200, old/new/old/new, 2000 warm-up + 500 timed calls, all 4 gradient checksums equal in
+  all 6 cases):** median batch backward 1.6072 / 1.6075 -> 1.0077 / 1.0075 ms; max batch 2.169 -> 1.147; no mask 4.361 -> 1.645.
+  Per training step this is ~0.6 ms per micro-batch (~5 ms of a ~5.3 s step); not measured inside a trainer (all 10-17
+  trainer arms already had item 2).
+- **Library-wide audit (today's box build d12fe6cb, 5,960 kernels, 600 built with our bf16/fp16):** the elementwise kernels
+  (scalar_*, add/sub/mul/div, compare) do 1 value per thread per step with neighbours reading neighbours, so their 2-byte
+  accesses combine across the warp by design (checked: ScalarOps.cu scalar_add_inplace, 4x unrolled grid-stride). The
+  split-vector problem only hits code that packs several values into one struct of our type: the loss kernels. Still open
+  there: the forward `sparse_ce_forward_kernel_vec_save_stats` (8 x LDS.U16 reads, 45.35) and the B300 forward
+  `sparse_ce_fwd_kernel_sm103_save_stats` (14 x 2-byte global accesses, 2 wide; not testable without a B300).
+- **Cleaner fix, proposed:** launch the loss kernels with `CudaNativeType<T>` like reduction; plain LossVec copies then become
+  16-byte by themselves and the forward's 2-byte shared-memory reads should go too. Bit-identity expected: since 09-26 our
+  bf16/fp16 GPU conversions call CUDA's intrinsics, checked bit-for-bit on every non-NaN input (Types.h notes). Must be
+  re-verified with the 20-config test + the H200 old/new bench before it replaces item 2's uint4 helpers.
+
+**FUTURE (user decision 10-19): all pending loss-kernel work waits until the attention work is complete.** In order:
+1. Loss module -> the library rule `CudaNativeType<T>` (forward + backward; the B300 file too), keeping 4 loads in flight;
+   verify bit-identical (the 20-config laptop test) + the H200 old-vs-new bench (~10 min GPU) before it replaces item 2's
+   uint4 helpers (45.42).
+2. Full-length SFT validation run with BLU_LOSS_GRAD_INPLACE=1 (stage 0, 156 steps from the step-8000 checkpoint) against the
+   10-07 reference (val 1.4464 -> 1.2839, 5.3 s/step, peak 125,026 MiB; expect ~119.4k MiB). Needs the 6.5 GB checkpoint.
+3. User decisions: BLU_LOSS_GRAD_INPLACE default on or opt-in; commit the 8 files of 45.38.
+4. The forward loss kernel's 2-byte shared-memory reads (likely fixed by 1); the B300 forward (needs a B300).
+5. After the v1 pipeline: logits + loss only at the trained positions (45.34).
+
+### 45.43 2026-10-19 11:29-11:33 IST: same-box scoreboard on the new H200 -- ours vs FA3 / FA4 / cuDNN, forward, backward, both
+
+**Setup.** Box root@31.56.109.89 GPU 0 (GPU 1 had a colleague's run; separate 700 W limits). Rivals' environment rebuilt
+today with `session_2026_10_19/scripts/benv_setup.sh` (57f0bc3a -> 883a5468 -> 346f625b): `/root/gautam_K/benv` = torch
+2.14.1+cu130, cuDNN 9.24.0 (92400), FA3 `flash_attn_3 3.0.0` built from flash-attention 94e22c9 `hopper/` (bf16 + head dim
+128 + sm90, all features of that configuration; CUTLASS submodule 7127592; built with the box's nvcc 13.4, the same compiler as
+ours), FA4 `flash-attn-4 4.0.0b34` (nvidia-cutlass-dsl 4.8.1, quack-kernels 0.6.5). Three fixes on the way: git refused the
+rsync'd clone ("dubious ownership": a per-run `GIT_CONFIG_*` safe.directory, no global change); the box has no Python
+headers (python3.12-dev / libpython3.12-dev 3.12.3-1ubuntu0.17 downloaded and UNPACKED into /root/gautam_K/pydev, used via
+CPATH; nothing installed); the import check ran inside hopper/ (whose source flash_attn_3/ shadowed the installed one).
+Ours = vj2_K5q (a804ea04: forward K5q, backward version 3) for both shapes. Method = the 10-16 scoreboard
+(`scoreboard_free.sh 0 sb_1019 vj2_K5q vj2_K5q`, 12c2f6ba): free clocks, one contender per process under nsys (kernel times,
+no Python overhead), forward + backward back to back, 1000 (dense) / 2000 (packed) iterations, ABBA order (ours fa3 fa4 cudnn |
+cudnn fa4 fa3 ours), clock/power sampled every 100 ms. All 16 runs exit 0. Results:
+`session_2026_10_19/box_runs/sb_1019/` (summary.txt; summary_steady.txt).
+
+**Clock-log artefact (not a slowdown):** nvidia-smi reported 345 MHz (the idle clock) for the first ~2 s of OUR runs while the
+same samples show 100% utilisation and ~700 W; our C++ bench starts GPU work within ~1 s of launch, the rivals after ~5 s of
+Python start-up. The nsys trace shows our kernels were in fact a bit FASTER in those 2 s (dense forward 1,036.9 vs 1,052.6 us
+after; packed 431.2 vs 443.9), i.e. a cooler GPU. With the stale samples removed, our clocks are 1,635-1,755 MHz like the
+rivals'. To rule out any cool-phase advantage the table below uses the STEADY state only (calls starting >= 2 s after the first
+forward; `scripts/scoreboard_steady.py`); it differs from the full-run medians by <= 0.016 in every ratio.
+
+| steady state, kernel time in us (mean of r1/r2) | ours | FA3 | FA4 | cuDNN |
+|---|---|---|---|---|
+| dense B8 x 4096, 18/6 heads: forward | 1,055.2 | **974.0** | 1,070.9 | 1,139.2 |
+| dense: backward call (helpers incl.) | **3,177.6** | 3,291.7 | 3,229.9 | 3,600.3 |
+| packed real_rows_752: forward | **442.9** | 473.2 | 526.1 | 494.0 |
+| packed: backward call | **1,524.5** | 1,601.5 | 1,573.9 | 1,693.4 |
+
+| ours / rival (below 1 = ours faster) | forward | backward call | forward + backward |
+|---|---|---|---|
+| dense vs FA3 | **1.084** | 0.965 | 0.992 |
+| dense vs FA4 | 0.985 | 0.984 | 0.984 |
+| dense vs cuDNN | 0.926 | 0.883 | 0.893 |
+| packed vs FA3 | **0.936** | 0.952 | 0.948 |
+| packed vs FA4 | 0.842 | 0.969 | 0.937 |
+| packed vs cuDNN | 0.897 | 0.900 | 0.899 |
+
+**Where we stand (measured on one box, not chained):** ours is the fastest of the four in 11 of 12 entries; the ONLY loss is
+the dense forward vs FA3 (8.4% more time). SFT-packed (the case we train with): ours beats FA3 by 6.4% forward, 4.8% backward,
+5.2% both together. Versus the 10-16 scoreboard (forward 1.17x / 1.11x FA3, fwd+bwd 1.009x / 1.012x): the 10-17 forward work
+moved dense to 1.08x and packed to 0.94x, and fwd+bwd is now ahead of FA3 in both shapes (0.992x / 0.948x). The packed
+backward ratio also improved (0.98x -> 0.95x) with the same backward code: on 10-16 our packed bench also ran full-row dense
+kernels in the same process (noted as pessimistic then); today it runs only the packed path.
+Next: the dense forward gap to FA3 (8.4%), judged by tensor-pipe idle time (45.41).
+
+### 45.44 2026-10-19 11:41 IST: ncu FA3 vs K5q on the same box -- the dense gap is idle tensor time in every LOOP STEP
+
+Run `scripts/ncu_fa3_k5q.sh 0` (a010c18f; GPU 0; ncu 2026.3.1 --set full, 4th launch; FA3 = benv flash_attn_3 3.0.0, ours =
+vj2_K5q a804ea04, both built with nvcc 13.4; inputs as in the 45.43 scoreboard). Files: `session_2026_10_19/box_runs/
+ncu_fa3_k5q_1019/` (raw + source CSV; the .ncu-repz need ncu >= 2026.3, the laptop has 2025.3.1).
+
+| dense B8 18/6 forward | ours K5q | FA3 | ours / FA3 |
+|---|---|---|---|
+| time (ncu clock: ours 1.68, FA3 1.63 GHz) | 934.9 us | 871.3 us | 1.073 |
+| cycles per SM | 1,574,797 | 1,423,158 | 1.107 |
+| instructions | 322.0M | 306.5M | 1.050 |
+| tensor pipe busy | 75.3% | 83.3% | |
+| tensor-BUSY cycles (cycles x busy) | 1,186,028 | 1,184,951 | 1.001 (same work: 579 tiles x 2,048) |
+| tensor-IDLE cycles | **388,769** | **238,208** | **+150,561 = the whole gap** (151,639) |
+| DRAM read | 520 MB | 365 MB | 1.43 |
+Packed real_rows_752 (we win): cycles 685,282 vs 745,727 (0.919), tensor-idle 235,614 vs 303,581 (-67,967).
+
+**Where the idle time goes (fit over dense + packed):** idle per SM = a x units + b x tiles, with units = 128-row blocks
+(dense 4,608 = 34.9/SM; packed: 24 chats of 1,024-1,536 tokens x 18 heads = 4,734 = 35.9/SM) and causal tiles (dense 76,032 =
+576/SM; packed 28,782 = 218/SM, matching the tensor-busy cycles / 2,048 = 216-220). Ours: **a = 3,905 cycles per unit
+boundary, b = 438 cycles per tile step**; FA3: **a = 9,422, b = -158 (~0: its steady step is tensor-bound)**.
+- Dense: ours 136K (boundaries) + 252K (steps) = 389K; FA3 329K + ~0 = 238K. Packed: ours 140K + 96K = 236K; FA3 338K + ~0.
+- So: our unit boundaries are 2.4x cheaper than FA3's (K4b's O path, the prologue work of 10-16/17), which is why we win
+  packed (many short units); but every steady step leaves the tensor pipe idle ~438 cycles (of ~2,490), which is why we lose
+  dense (16.5 steps per unit). Consistent with the 10-17 trace (TRK5): step 2,401 cycles vs the 2,048 tensor-bound minimum,
+  per-pair non-loop time ~5,300 cycles.
+- Mechanism: with the two consumer groups in ping-pong, a group's work between its GEMM issues (QK wait, softmax part A,
+  P.V wait, part B + rescale + packs, baton) must fit in the window in which the tensor pipe runs its own P.V(n-1) and the
+  other group's QK + P.V (~1,536 cycles). FA3's softmax (1,186 cycles per tile, 10-16) fits; ours (1,363 then; part A 792 +
+  part B 591 in TRK5) plus the baton and issue overruns it by ~440 cycles per step.
+- This also explains 45.41: the QK-issue instructions L1b removed were not on this overrun path, so they did not convert.
+**Target:** shorten each group's per-step critical path by ~440 cycles (softmax + rescale/packs + issue), measured as tensor
+idle per step. Next: a fresh per-step timeline on this box (CUDA 13.4 changed the SASS) to see which part overruns.
+
+### 45.45 2026-10-19 11:48 IST: per-step timeline of K5q on the new box -- what fills the ~440 idle cycles per dense step
+
+Build `build_cands.sh TLK5q F3c` (TLK5q = K5q + clock stamps, source 7297dfbb -> library 97765067; F3c back in the tree,
+c791440a: the same F3c source as this morning's d12fe6cb, the library bytes differ between builds). Trace `trace_1017.sh 0
+vj2_TLK5q` (GPU 0, free clocks, launches 900 and 950, dense + packed). Files: session_2026_10_19/box_runs/trace_1019_vj2_TLK5q.
+Read with deep/timeline_read.py (steady steps of each CTA's first pair, both groups, 3,048 steps, 132 CTAs).
+
+| dense loop step, cycles | group 0 | group 1 |
+|---|---|---|
+| s0->s1: K/V wait (group 0 only) + baton | 299 | 195 |
+| s1->s2: issue QK(n) + P.V(n-1), wait for QK(n) | 673 | 1,057 (queued behind group 0's GEMMs) |
+| s2->s3: softmax part A (mask, max, 16 exps) | 640 | 643 |
+| s3->s4: wait for P.V(n-1) | 8 | 8 |
+| s4->s5: part B (48 exps + sums) + O rescale + P pack | **853** | 535 |
+| period (incl. ~250 of trace bookkeeping between s5 and the next s0) | 2,699 | 2,699 |
+Launch 950 identical (2,700); the 10-17 trace of the same source with CUDA 13.0 identical too (2,706): CUDA 13.4 did not
+change the step. Packed: no steady steps in the first pair (units too short), as expected.
+
+- Without the ~250 cycles of trace bookkeeping (the timeline stores + accumulators sit between s5 and the next s0), the step
+  is ~2,465 cycles, matching the ncu fit of 45.44 (2,048 + 438 = 2,486) from an independent measurement.
+- The chain that sets the period is group 0's: QK 673 + part A 640 + 8 + part B 853 + K/V wait 299 = 2,473 vs the 2,048 a
+  tensor-bound step allows: **~430 cycles too long**. Two pieces stand out:
+  1. **Group 0's part B is 853 vs group 1's 535** for the same work: it runs while group 1 does its part A (group 1's QK is done
+     at 1,771, its part A runs 1,771-2,414; group 0's part B runs ~1,321-2,174, ~400 cycles of overlap). Two softmax warps per
+     SMSP then share the issue slot and the exp unit. Root: our softmax (A + B = 1,493) is longer than the other group's GEMM
+     window (1,024), so the two softmaxes overlap; FA3's softmax (~1,186, 45.32) overlaps far less.
+  2. **Group 0's K/V wait at the step start (299)** = the TMA load of tile n+1 not yet landed (group 1 waits only for the
+     baton, 195, and the baton from group 1 is available long before). The 10-17 experiments (W1 / W2, 45.31) showed this
+     wait alone is slack (shortening it made part A longer by the same amount), consistent with point 1: the groups are
+     coupled through the shared pipes.
+- So the lever is the softmax length per group (fewer / better-scheduled exp-phase instructions: our exps carry +7.2 per
+  million steps of MUFU "wait" stalls vs FA3's, 45.39), judged by tensor idle per step in this trace, then raced.
+
+### 45.46 2026-10-19: the softmax schedule, ours vs FA3 (same-box ncu SASS), and the row-split candidates R8 / R16 / R32
+
+Script `session_2026_10_19/deep/softmax_sched.py` on the 45.44 source CSVs (steady loop, from the QK wait to the loop end;
+M = exp, x = row-max FMNMX, f FFMA, a FADD, m FMUL, p F2FP pack, s SHFL, W wait):
+- FA3 (387 instr, 66 exps): `W x*32 s x . x s x m a f f x f f f x f m M x x f f M x x M x x f f M x f x M ...`: after row 1's
+  max (32 FMNMX + shuffles) it runs row 1's exps WHILE computing row 2's max (2 FMNMX between exps); 13 exps before its P.V
+  wait; exps with 0-1 other instructions before the next: 11 of 66; median gap 3; the rescale FMULs and packs fill the gaps
+  after the wait (`M p m m s m m m M p m m m m m m M ...`).
+- Ours K5q (385 instr): `W x*47 s x*15 s x s x x x m s f*8 M M x M x m M f*6 M f f M a M M a M M a M M ...`: BOTH rows' max
+  first (62 FMNMX + 4 shuffles), then part A's 16 exps nearly back to back; 25 of 66 exps have 0-1 instructions before the
+  next (one exp keeps the exp unit busy ~8 cycles per warp, 10-17 note), so the warp waits: exps carry 14.2% of the kernel's
+  stall samples, 71% of it "wait" (FA3 12.9%, 64%). Part B is interleaved like FA3's except its tail (`M a p M a p ...`).
+- Cause in the source: part A = registers [0, K1_SPLIT), which hold BOTH rows (reg % 4 < 2 = row 0), so its first exp needs
+  both maxes.
+**Candidates (switch K10_ROWSPLIT, from the box K5q f35982af):** part A = the first K1_SPLIT scores of ROW 0 only; the ordering
+arrive also depends on row 1's max (this_bb1, cc1) so that max stays before the wait; each row sum still adds its registers in
+increasing order and every exp is the same expression -> bit-identical to K5q expected. R8 (817be23a), R16 (35ed6226), R32
+(1276f48b). Local SASS (nvcc 13.0): 168 registers, 0 spills each; R16 part A = `x*32 s x*10 s x*20 m x f x f f f x f f M x f f f
+x f f M f s f f f f M M M a x s M a M M a x M a x a M ...` (row 1's max partly mixed in; 0-1 gaps 22 vs 25); R8 22; R32 31
+(its tail `M a M a ...` is worse). ptxas still puts most of row 1's max first, so FA3's "2 FMNMX per exp" pattern is not
+reproduced; the race decides. Run: `scripts/run_r_1019.sh` (b54fa916): build, quick suite, forward race vs K5q (8 rounds,
+4 libraries, rotating order), ncu of each, packed into r_results.tgz.
+**R race result (r2_1019, 12:06-12:14 IST, GPU 0, 8 rounds, 4 libraries rotating; the first attempt r_1019 was stopped at
+12:05 because Mahesh's 2-GPU job (/root/mahesh/BluTrain, mpirun -np 2) started on GPU 0 13 s after our race; its quick suites
+had passed):** quick suite 296/296 for R8 (be25425b), R16 (d99ddebe), R32 (9f5e6f46). vs K5q: R8 dense +0.34% (t 1.8, 2/8),
+packed -0.07% (t -0.8); R16 dense **+0.76%** (t 4.3, 0/8), packed 0.00%; R32 dense +0.12% (t 0.7), packed **+2.54%** (t 27,
+0/8). K5q's own rounds 1.077-1.090 / 0.455-0.457 ms (= this morning): no interference. **Rejected**: changing which exps sit
+before the wait does not shorten the step. Note: group 1's softmax alone (643 + 535 = 1,178 cycles in 45.45) is already about
+FA3's (~1,186): the softmax code is not slower than FA3's; the extra comes from group 0's ~299-cycle K/V wait and the overlap.
+
+### 45.47 2026-10-19: what FA3 really does with K and V (read from its source, flash-attention 94e22c9 hopper/)
+
+- Head dim 128, causal: tile 128 x 128, P.V from registers, IntraWGOverlap on (tile_size.h:31-33), **kStages = 2**
+  (flash_fwd_launch_template.h:47), **separate pipelines for K and V** (MainloopPipelineK / MainloopPipelineV,
+  mainloop_fwd_sm90_tma_gmma_ws.hpp:284-285).
+- Loader (mainloop:860-880): per tile `load_K(n_block, smem_pipe_write)` then `load_V(n_block_prev, smem_pipe_write_v)`
+  ("write_v is always 1 step behind"): K(n), then V of the PREVIOUS tile; V runs one tile behind K.
+- Consumer fwd_step (mainloop:1170-1206): group 0 alone waits K(n) (1175) -> baton sync -> QK(n) -> group 0 alone waits
+  V(prev) (1180) -> P.V(prev) -> baton arrive -> warpgroup_wait<1> -> **pipeline_k.consumer_release: K(n) freed right after
+  QK(n), before the softmax (1185)** -> mask, max, online softmax -> warpgroup_wait<0> -> pipeline_v.consumer_release (1199)
+  -> convert P -> rescale O.
+- Ours (K5q): 3 stages of K+V together; group 0 waits for K(n) AND V(n) before QK(n) although V(n) is used one step later;
+  the K+V slot is released only after P.V, one step + part A later than FA3 releases K.
+- Caution: with 3 slots our K has MORE lead time (in steps) than FA3's 2-stage K ring; what differs is that we wait for 64 KB
+  (K+V) instead of 32 KB, and our loads miss L2 more (DRAM 520 vs 365 MB, 45.44). W2 (45.31: waiting V separately) only
+  trimmed 50-75 cycles. So first the knock-out below: does the step get faster with NO K/V wait at all?
+**Knock-out KOkv** (cands/fwd_KOkv.cu 8820517e, MEASUREMENT ONLY, results wrong on purpose): K5q without group 0's in-loop
+K/V wait. Run `scripts/run_kokv_1019.sh` (3565dd99). Also fixed: `ab_multi.sh` (8e859127) reverses the order on even rounds
+only for 3+ libraries, so a 2-library race now alternates A B / B A (before, the candidate ran first in every round).
+**KOkv result (kokv_1019, 12:32-12:34 IST, GPU 0; stopped by the user after 3 of 8 rounds; the order alternated KOkv K5q /
+K5q KOkv as intended).** First launch 12:31 failed at build_cands' check (fwd_KOkv.cu not yet copied). Verified that the
+knock-out is in the binary: dense kernel 3,632 vs 3,648 instructions, 44 vs 48 mbarrier TRYWAIT (one in-loop wait removed);
+the build log shows GQA_fwd_sm90.cu compiled (this box compiles the one file in seconds; "libtensor is up-to-date" is the
+Makefile's closing summary). Per round, KOkv vs K5q: dense -0.19 / -0.45 / -0.24% (**mean -0.30%**), packed -1.97 / -1.64 /
+-1.76% (**mean -1.79%**). Even with NO K/V wait at all (the upper bound of any K/V pipeline change, FA3's included) the
+dense forward gains only ~0.3%: the wait is slack there (its time moves into the overlapping softmax phases, as W2 showed
+on 10-17). **FA3's split K/V pipeline is not the lever for the dense gap (8.4%)**; it could give up to ~1.8% on packed, where
+we already beat FA3 (0.936x). Remaining dense explanation: the two groups' softmax phases overlap and share each SMSP's
+issue slot and exp unit (45.45); FA3 reaches a tensor-bound step with the same instruction counts.
+
+### 45.48 2026-10-19: SKV -- FA3's split K / V pipeline in K5q (user's choice A), protocol checked on the CPU first
+
+**Design** (`session_2026_10_19/scripts/cands/fwd_SKV.cu` d05c0b23, switch `SKV`, from the box K5q f35982af; FA3 45.47):
+- Barriers: `full` / `empty` become K's ring; new `full_v` / `empty_v` = V's ring (3 slots each, same slot index per tile;
+  +48 B shared memory). With SKV 0, full_v / empty_v alias full / empty.
+- Loader: per tile K(n) (32 KB, its own barrier), then V(n-1); V(last) on the last pass (FA3 mainloop:860-880).
+- Loop step: group 0 waits K(n) -> baton -> QK(n) -> group 0 waits V(n-1) -> P.V(n-1) -> baton -> wait QK(n) -> **release
+  K(n)** (FA3 :1185) unless it is the unit's last tile (K4: O is staged in that K buffer, released after the O store as
+  before) -> softmax -> wait P.V(n-1) -> release V(n-1). Prologue: K(0) released after QK(0) (unless last). Tail: both groups
+  wait V(last) before the last P.V and release it after; K(last) after the O store (K4). Inactive tail (packed): wait K(next)
+  and V(cur), release both.
+**CPU protocol model** (`session_2026_10_19/deep/protocol_sim_skv.py`, extended from 10-17's protocol_sim_k4.py): + SKV, +
+CORRUPTION checks (every K / V read at QK / P.V issue, again at its release, and the K4 O staging must find the expected tile
+still in the slot). 3,000 dense + 3,000 packed random unit lists each: K4cnt (today's K5q) clean; **SKV clean (no deadlock, no
+corruption)**; SKV_noVwait (inactive tail without the V wait) also clean (the per-tile baton already paces it; the wait is
+kept as cheap insurance); **SKV_lastK (K(last) released after its QK, ignoring K4) is CAUGHT** in ~half the runs ("O staged
+in K(tile 53): slot 2 holds tile 56"): the checks are not vacuous. (A first SKV run deadlocked everywhere: a model bug, the
+K4 counter signal did not know the new version name; fixed.)
+**Local build (nvcc 13.0):** SKV / K5q both 168 registers, 0 spills; **SKV with the switch off compiles to the SAME SASS as
+K5q** (3,672 / 3,504 lines identical); SKV: 66 vs 48 mbarrier TRYWAIT, 33 vs 24 arrives (V's ring). Expected results
+bit-identical to K5q (only the synchronisation changes). Run: `scripts/run_skv_1019.sh` (build, quick suite, race, ncu).
+**SKV race result (skv_1019, 12:46-12:51 IST, GPU 0, free clocks, 8 rounds, order alternating SKV K5q / K5q SKV).** Built SKV
+(source d05c0b23 -> library 841bb583; F3c back in the tree). Quick suite **296 / 296** (packed == alone bit-exact included).
+| SKV vs K5q, forward only | mean of 8 paired rounds | t | faster rounds | medians K5q / SKV (ms) |
+|---|---|---|---|---|
+| dense B8 18/6 | +0.20% | 1.5 | 1 / 8 | 1.0825 / 1.0865 |
+| packed real_rows_752 | **+0.87%** | 9.1 | 0 / 8 | 0.4555 / 0.4598 |
+K5q's own rounds 1.0775-1.0884 / 0.4548-0.4569 ms (as in the morning races: no interference). **SKV is REJECTED**: correct,
+but no faster on dense and slower on packed (KOkv's bound was -0.30% / -1.79%).
+**Why (ncu, same box, `session_2026_10_19/deep/ncu_skv_vs_k5q.py` fd3139ba; K5q = ncu_fa3_k5q_1019, SKV = skv_1019):**
+| ncu, one launch | dense K5q | dense SKV | packed K5q | packed SKV |
+|---|---|---|---|---|
+| cycles (average SM) | 1,574,797 | 1,556,227 (**-1.18%**) | 685,282 | 690,168 (+0.71%) |
+| tensor-idle cycles | 388,769 | 370,966 (-17,803) | 235,614 | 240,826 (+5,212) |
+| warp instructions | 322.0M | 329.0M (+2.2%) | 130.7M | 133.3M (+1.9%) |
+| average SM clock during the launch | 1,685 MHz | 1,678 MHz | 1,718 MHz | 1,727 MHz |
+- Dense: SKV does what FA3's split is for: group 0 starts QK(n) as soon as K(n) is in (stall time at the mbarrier waits -25,682
+  cycle-equivalents per SM; the step-start K/V wait site 46,056 -> 16,201), and 4.6% of the tensor-idle time goes. But the
+  free-clock race shows no gain (see 45.49: the forward runs at the 700 W power cap, so removed waiting is paid back in clock
+  unless energy per forward also drops; SKV adds 2.2% instructions). **[CORRECTED in 45.50: the measured clock of SKV is NOT
+  lower (+0.3% vs K5q). At the real power-capped clock (~1.55 GHz; ncu ran ~1.68 GHz) a memory wait is ~8% fewer cycles, so
+  the K / V wait SKV removes is mostly gone already, and SKV's extra instructions make it +0.4% cycles per forward.]**
+- The extra instructions are the second ring's bookkeeping, per tile and group: BRA +1.2M, BSSY / BSYNC +1.5M (the
+  `if (lane_wg == 0) mbar_arrive` blocks), ISETP / LEA / ULEA / SHF (V barrier addresses), SYNCS.ARRIVE +0.6M, TRYWAIT +0.34M.
+- Packed: short units, so the per-tile extra work is not covered: +0.71% cycles at ncu, +0.87% in the race.
+**Protocol model, parked variant:** `protocol_sim_skv.py` (bcd9479e) also has SKV2 (V(n) loaded right after K(n), K released
+after QK, V after P.V): clean on 3,000 dense + 3,000 packed lists; its wrong twin SKV2_lastK is caught (corruption, ~half the
+runs; the negative-test switches now match by suffix, so a new version name cannot skip them). Not built: SKV's result says
+a second ring costs more instructions than it saves at free clocks.
+
+### 45.49 2026-10-19 13:10 IST: the forward runs at the 700 W power cap; FA3 tells the L2 to keep K / V, we do not (candidate LH)
+
+**1. The forward is power-capped at free clocks.** Same-box scoreboard sb_1019 (nvidia-smi every 100 ms, samples 2 s after the
+start of GPU work): every one of the 16 runs (dense / packed x ours / FA3 / FA4 / cuDNN x 2) has a median power of **691-695 W**
+(limit 700 W) and an SM clock of **1,560-1,755 MHz** (the H200's maximum is 1,980). Effective clock of the dense forward alone =
+ncu cycles / free-clock kernel time: K5q 1,574,797 / 1,055 us = **~1.49 GHz**, FA3 1,423,158 / 974 us = **~1.46 GHz** (under ncu,
+single launches with gaps, the same kernels averaged 1.685 / 1.633 GHz). Consequences:
+- At the cap, time = energy per forward / ~700 W. Removing idle cycles helps only as far as the clock does not drop to pay for
+  the higher power per cycle; extra instructions or memory traffic cost time even if the cycles do not change. FA3 converts its
+  9.6% fewer cycles into 7.7% less time and runs ~2% lower clock than ours; SKV's 1.2% fewer cycles converted to nothing.
+  **[CORRECTED in 45.50 by direct measurement: SKV's clock is not lower; its ncu cycle saving does not exist at the real clock.
+  FA3, forward alone at the cap: 3.8% LOWER clock than K5q and 8.1% fewer cycles per forward.]**
+- Correction to 45.44 / 45.47: on this box ncu did NOT run every kernel at one locked clock: the average SM clock per profiled
+  launch is 1,633-1,735 MHz depending on the kernel (FA3 dense 1,633, K5q dense 1,685, SKV dense 1,678, packed 1,718-1,735).
+  The cycle comparisons stand (cycles are counted per kernel), but ncu clocks are not "the locked base clock".
+- Next measurement (in run_lh_1019 below): the steady clock each forward actually gets, per library, with power and the
+  driver's "power cap active" flag (`clocks_event_reasons.sw_power_cap`).
+
+**2. FA3 tells the L2 to keep K and V and to drop Q first; we give no hint.** Source (flash-attention 94e22c9
+hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp): K and V TMA loads `TMA::CacheHintSm90::EVICT_LAST` (753, 767), Q `EVICT_FIRST`
+(820, when not split); O = TMA store without a hint (epilogue_fwd.hpp:48 / 322). FA3's SASS (ncu source page): `UTMALDG.4D
+[..], [..], desc[UR35]` with UR35 = 0x14f00000.. (8 + 1 sites) or 0x12f00000.. (1 site, Q). Ours: `UTMALDG.2D [..], [..]`, no
+policy. ncu, dense B8 18/6, same box:
+| L2 / DRAM, dense | K5q | FA3 | ours / FA3 |
+|---|---|---|---|
+| L2 sectors with evict_last / evict_first / normal | 0 / 0.02M / 156.1M | 145.6M / 7.1M / 14.3M | |
+| L2 lookup misses (sectors) | 29.9M | 23.1M | **1.30x** |
+| L2 hit rate | 80.6% | 86.6% | |
+| DRAM reads | 520 MB | 365 MB | **1.43x** |
+| cross-partition L2 fabric sectors | 16.3M | 13.9M | 1.18x |
+Packed (real_rows_752): DRAM 258 vs 255 MB, misses 13.6M vs 13.5M: no difference there (short segments, K / V reused at once).
+The work ORDER is already FA3's (our G5: sections of 48 (batch, head) pairs = 16 kv heads x 2 MB = 32 MB of K / V, longest
+query pair first, a work counter; FA3 DynamicPersistentTileScheduler, tile_scheduler.hpp:218-310, the same 48), so the hint
+is the remaining L2 difference: without it, Q (151 MB, read once) and O (151 MB, written once) push K / V (reused by every
+query pair of the section) out of the L2. At the power cap, the extra ~155 MB of DRAM reads and the misses cost energy.
+Also seen in FA3, not copied yet: an L2 PREFETCH of each new Q tile at the start of the producer's load (mainloop:668,
+`UTMAPF.L2`), before the Q buffer is free.
+
+**3. Candidates (from the box K5q f35982af, switch `L2_HINT`; `session_2026_10_19/scripts/cands/`):**
+- **LH** (fwd_LH.cu 785bd68b, L2_HINT 1): FA3's hints exactly: Q loads evict-first, K and V loads evict-last; policy values =
+  CUTLASS `CacheHintSm90` (EVICT_FIRST 0x12F0000000000000, EVICT_LAST 0x14F0000000000000; FA4's copy_utils.py uses the same).
+- **LHO** (fwd_LHO.cu daadb501, L2_HINT 2): LH + the O stores (`st.global.v4`) evict-first.
+- LH0 (fwd_LH0.cu 5baf9b5c, L2_HINT 0, check only).
+Local build (nvcc 13.0, sm_90a): **LH0 = K5q's SASS exactly** (7,178 lines, 0 differ); LH: the 64 `UTMALDG.2D` now carry the
+policy operand `desc[URx]` (the same form as FA3's), +128 lines = `UMOV`s of the policy values in the producer warp; LHO: also
+`STG.E.128 desc[UR12]` (the policy descriptor) for the O stores; all 168 registers, 0 spills. Only the L2 policy changes, the
+values cannot: results bit-identical to K5q expected (the quick suite checks).
+**Run** `scripts/run_lh_1019.sh` (3987f98e, GPU 0, ~17 min): build LH LHO (F3c back in the tree), quick suite each, forward-only
+race K5q / LH / LHO (8 rounds, rotating order), ncu of each, then `scripts/clock_power_check.sh` (b0dca7ab): K5q, SKV, LH, LHO
+and FA3, dense + packed forwards, ~16 s per run, order A B C D E E D C B A, nvidia-smi every 500 ms (clocks.sm,
+power.draw.instant, sw_power_cap flag, temperature, utilisation) + each run's start / end; read with
+`deep/clock_power_read.py` (4ea49733; checked on a synthetic run: it recovers the planted clocks). For FA3 forward-only,
+`rivals_free_1016.py` got an opt-in switch RIVAL_FWD_ONLY=1 (de42be66, was fbd31e90; default unchanged = forward + backward).
+
+### 45.50 2026-10-19 14:05 IST: LH / LHO result -- the L2 hints help dense through ENERGY (same cycles), hurt packed; LHOd
+
+**Run lh_1019** (`scripts/run_lh_1019.sh`, GPU 0, 13:49-14:04 IST). Built LH (785bd68b -> library e7ba3123), LHO (daadb501 ->
+544d4e5e), F3c back in the tree (a0908d99). Quick suites **296 / 296** both. Files: session_2026_10_19/box_runs/lh_1019.
+**Race** (forward only, 8 rounds, 3 libraries in rotating order, 4,000 dense / 8,000 packed forwards per run = ~4.3 s):
+| vs K5q, forward | dense | packed |
+|---|---|---|
+| LH (Q evict-first, K / V evict-last = FA3's) | **-1.18%** (t -5.5, faster 8/8) | +0.56% (t 6.9, 0/8) |
+| LHO (LH + O stores evict-first) | **-1.49%** (t -6.3, 8/8) | +0.68% (t 8.7, 0/8) |
+| LHO vs LH | -0.31% (t -3.4, 7/8) | +0.12% (t 1.3) |
+Medians (ms): dense K5q 1.0909, LH 1.0772, LHO 1.0726; packed K5q 0.4567, LH 0.4592, LHO 0.4598.
+**ncu** (`deep/ncu_cand_vs_k5q.py` 0b4b775a = ncu_skv_vs_k5q.py for any candidate; same SKV output):
+| dense | K5q | LH | LHO | FA3 |
+|---|---|---|---|---|
+| cycles (average SM) | 1,574,797 | 1,576,997 (+0.14%) | 1,575,826 (+0.07%) | 1,423,158 |
+| DRAM reads | 520 MB | **447 MB** | **432 MB** | 365 MB |
+| L2 misses (sectors) / hit rate | 29.9M / 80.6% | 26.0M / 82.8% | 24.5M / 84.1% | 23.1M / 86.6% |
+| L2 sectors evict-last | 0 | 138.3M | 137.4M | 145.6M |
+| cross-partition fabric sectors | 16.3M | 14.3M | 13.6M | 13.9M |
+Packed: cycles 685,282 / 688,953 (+0.54%) / 691,573 (+0.92%); DRAM 258.2 MB in all three (nothing to save); the extra time is
+at ONE place, each unit's wait for its first K / V tile (`full[]`, 37,872 executions): 18,813 -> 23,144 (LH) / 21,382 (LHO)
+cycle-equivalents per SM. Why the first tile arrives later with the hints is not known (misses unchanged, fabric +3%).
+**Clock / power check** (`scripts/clock_power_check.sh` b0dca7ab, read by `deep/clock_power_read.py` 4ea49733; 13:58-14:04 IST;
+each entry twice, mirrored order, ~16 s of forwards per run, samples from 4 s after the start; the driver's sw_power_cap
+flag was active in 100% of the samples of every run, power 671-695 W):
+| forward alone, steady state | SM clock | time per forward | cycles per forward (clock x time) |
+|---|---|---|---|
+| dense K5q | 1,552.9 MHz | 1.1024 ms | = 100 |
+| dense SKV | +0.32% | +0.11% | +0.44% |
+| dense LH | **+0.98%** | **-0.44%** | +0.55% |
+| dense LHO | **+0.88%** | **-0.59%** | +0.30% |
+| dense FA3 | **-3.77%** (1,494) | **-4.53%** (1.0524) | **-8.14%** |
+| packed K5q | 1,637.7 MHz | 0.4633 ms | = 100 |
+| packed SKV / LH / LHO | +1.06 / +0.43 / +0.82% | +1.07 / +0.59 / +0.95% | +2.13 / +1.03 / +1.78% |
+| packed FA3 | +2.39% | +5.91% | +8.45% |
+(Our time = the harness's median per forward; FA3's = wall time / 16,400 or 34,000 forwards from rivals_free_1016.py with
+RIVAL_FWD_ONLY=1. Clock x time is 8.7% (ours) / 10.5% (FA3) above ncu's cycle counts: launch gaps, sampled vs effective
+clock, different timers; compare within one harness.)
+**What this shows:**
+1. **Dense: the hints save ENERGY, not cycles.** Same cycles (ncu +0.07-0.14%), 14-17% fewer DRAM reads; at the 700 W cap the
+   GPU then runs ~0.9-1.0% faster clock. In 4.3-s races that is -1.2 / -1.5%; in 16-s steady runs -0.44 / -0.59% (2 runs each,
+   noisier; the first seconds of a run are not yet at the steady power: H200 power settles after ~4 s).
+2. **Packed: the hints cost cycles** (+0.5 / +0.9% ncu, +1.0 / +1.8% at free clocks) and save nothing -> no hints in packed.
+3. **SKV, corrected:** its clock is not lower (+0.32%); at the real clock (~1.55 GHz vs ncu's ~1.68) a memory wait is fewer
+   cycles, so the K / V wait SKV removes is mostly gone, and its extra instructions cost +0.44% cycles (inline corrections
+   in 45.48 / 45.49).
+4. **FA3, forward alone at the cap: 3.8% LOWER clock than K5q, 8.1% fewer cycles, 4.5% faster.** Its busier tensor pipe draws
+   more power per cycle. In the fwd + bwd scoreboard (45.43) the forward ratio was 1.084, near the cycle ratio: consistent
+   with the clock being set by the fwd + bwd MIX there, not by the forward alone. In training the clock is set by the whole
+   step (GEMMs, attention, ...): cycle savings in the forward convert ~fully, energy savings (like LH) only partly.
+5. **The dense gap is cycles: FA3 needs ~8% fewer per forward** (45.45: ~420 cycles per step on group 0's chain).
+**LHOd** (`cands/fwd_LHOd.cu` 8a7b4312, from LHO + switch `L2_HINT_DENSE` 1): `tma_load_2d<HINT>` / `stg128<HINT>` take the hint
+as a template flag, `HINT_LD` / `HINT_O` = on except in the packed kernel. Local nvcc 13.0, per kernel: **LHOd dense == LHO
+dense (0 differing SASS lines), LHOd packed == K5q packed (0)**; checks fwd_LHOd_off.cu (036db397, L2_HINT 0) == K5q in both
+kernels, fwd_LHOd_all.cu (f1fea0e0, L2_HINT 2) == LHO in both; negative control dense LHOd vs K5q = 756 lines. 168 registers,
+0 spills. So LHOd = LHO's measured dense speed + K5q's packed speed, by construction.
+**Run** `scripts/run_lhod_1019.sh` (7321d9ed, ~8 min): build LHOd (F3c back), the same per-kernel SASS check on the
+box's CUDA 13.4 build (cuobjdump of libs/vj2_LHOd vs vj2_LHO / vj2_K5q; aborts if a dump is empty), quick suite, then a
+FORWARD + BACKWARD race vs K5q (8 rounds; the scoreboard's regime, where the backward shares the clock), no ncu.
+**LHOd result (lhod_1019, 14:10-14:17 IST, GPU 0).** Built LHOd (8a7b4312 -> library 00be51bd; F3c back, 5eb66f27). Box SASS
+check (CUDA 13.4 build): **dense LHOd vs LHO 0 differing lines (3,713), packed LHOd vs K5q 0 (3,481)**. Quick suite **296 / 296**.
+Forward + backward race, 8 rounds, A B / B A (1,000 dense / 2,000 packed iterations of forward + backward per run):
+| LHOd vs K5q | forward | backward (code unchanged) |
+|---|---|---|
+| dense B8 18/6 | **-0.34%** (t -2.9, faster 6/8) | **-0.33%** (t -2.3, 6/8) |
+| packed real_rows_752 | +0.03% (t 0.6, 3/8) | -0.00% (t 0.0, 3/8) |
+Medians (ms): dense fwd K5q 1.0532 / LHOd 1.0483, bwd 3.1568 / 3.1376; packed fwd 0.4394 / 0.4393, bwd 1.5006 / 1.5009.
+- In this regime the backward shares the clock: the forward's DRAM saving lowers the average power, the clock rises for both
+  kernels, so the UNCHANGED backward is 0.33% faster too (the expected sign of an energy gain). The forward's gain is
+  smaller than in the forward-only race (-1.49%), as 45.50 point 4 predicted. Packed: identical code, null, as designed.
+- (The forward runs ~3.5% faster in this regime than in forward-only loops: dense K5q 1.0532 vs 1.0909 ms, packed 0.4394
+  vs 0.4567: alone, the forward is the most power-dense kernel and sets a lower clock.)
+- **LHOd is the new best forward** (K5q + FA3's L2 hints in the dense kernel; packed = K5q exactly). Adoption into the laptop
+  master GQA_fwd_sm90.cu (still F3c) is the user's decision.
+**Also found:** FA3's BACKWARD uses L2 hints too (mainloop_bwd_sm90_tma_gmma_ws.hpp: Q and dO loaded EVICT_LAST 512 / 533 / 540
+/ 550, the dQ accumulation bulk-reduce EVICT_LAST 647; epilogue_bwd.hpp: dK / dV accumulation EVICT_LAST 471 / 502); in the
+backward Q and dO are the operands re-read by every K / V block. Our backward has no hints. Not measured yet (needs an ncu
+of our backward vs FA3's DRAM / L2 first).
+
+### 45.51 2026-10-19 15:20 IST: measuring FA3's own per-step timeline on the same box (the dense CYCLE gap), plan + checks
+
+**Why.** After 45.50 the dense gap is cycles: FA3 needs ~8% fewer per forward. Our per-step timeline (45.45) shows WHERE we
+lose (group 0's chain ~420 cycles over the 2,048-cycle tensor step), but FA3's schedule was so far only inferred from its
+source and ncu, and the fixes built on those inferences (L1b, R8-R32, SKV) all failed. So: measure FA3's step the same way.
+**FA3 measurement build** (`session_2026_10_19/fa3_tl/`: mainloop_fwd_sm90_tma_gmma_ws.hpp 5572bf6f, patch base 2ed79549 =
+flash-attention 94e22c9; instantiations flash_fwd_hdim128_bf16_sm90_tl2.cu f5711129 / _tl3.cu 4a1faea9, base 1ecaa31c):
+clock stamps in FA3's fwd_step (mainloop :1170-1207) for each consumer warpgroup's FIRST tile in every CTA, written to a
+device buffer read back through an exported `fa3_tl_read` (ctypes); file layout = our V62_TRACE dumps, so
+deep/timeline_read.py reads FA3's and ours the same way. Points: s0 step start | s1 scheduler barrier passed (+ K landed
+for warpgroup 0) | s2 QK(n) done (level 3 only) | step end = the next step's s0.
+**Placement rules found by checking the SASS** (laptop nvcc 13.0, FA3's pinned CUTLASS 7127592 downloaded to the scratch
+area, FA3's setup.py nvcc flags + torch's default flags): FA3's own loop puts **13 of its 66 exps before the wait for
+P.V(n-1), 53 after** (mixed with the 64 rescale FMULs), the same as the box SASS of 45.46. A clock read anywhere inside the
+softmax made ptxas put all 66 before the wait; stamps kept in registers to the step end: 23; so stamps are taken only at
+synchronisation points and each is stored the moment it is read. **Level 2** (s0, s1): 16 / 66 before the wait, the loop's
+instructions otherwise FA3's (482 vs 483 in the steady loop, one PLOP3); **level 3** (+ s2): 27 / 66 (cross-check only).
+Compute and sync instructions (HGMMA, MUFU, FMNMX, FMUL, FFMA, FADD, F2FP, SHFL, BAR, WARPGROUP, SYNCS) unchanged at both
+levels; 168 registers.
+**Ours with the same stamps:** `cands/fwd_TL2.cu` (c08c978b) / `fwd_TL3.cu` (91d6f0c5) = LHOd + switch `V62_TL` 2 / 3, the
+same points and rules, file via V62_TRACE_FILE / V62_TRACE_AT (as trace_1017.sh). Local SASS: exps before / after the P.V
+wait 17 / 49 at both levels = LHOd exactly (our split is pinned by the order_bar trick), compute / sync instructions
+unchanged, 168 registers, 0 spills; host + device compile checked.
+**Laptop toolchain note:** the laptop got a package upgrade today 14:56-15:00 IST (glibc 2.39 -> 2.43, libc6-dev
+2.43-2ubuntu2.4, linux-libc-dev 7.0.0-38). glibc 2.43 declares `rsqrt` / `rsqrtf` (C23), which CUDA 13.0's
+crt/math_functions.h also declares -> EVERY local CUDA compile now fails ("exception specification is incompatible with
+that of previous function rsqrt"). Local checks use a shadow copy of bits/mathcalls.h without that one line
+(-I<scratch>/sysfix); proven harmless: LHOd built with it = the pre-upgrade SASS, 0 lines differ. The box (CUDA 13.4) is
+not affected.
+**Box scripts:** `scripts/fa3_tl_build.sh <2|3>` (1ba5cb48: copies /root/gautam_K/flash-attention to fa3_tl<level>, checks the
+patch base md5s, builds IN PLACE, benv's FA3 untouched; switches: benv's + no split / paged / softcap / PackGQA / append-KV /
+local / varlen / cluster, none of them in the dense causal kernel), `scripts/build_tl_1019.sh` (5ee9352f: both FA3 levels in
+parallel + build_cands TL2 TL3 F3c, CPU only), `scripts/run_tl_1019.sh` (51b089dd: GPU 0, ~3 min: trace_1017.sh for vj2_TL2 /
+vj2_TL3, `scripts/fa3_tl_run.py` (67a7eadd) for FA3 levels 2 / 3, all in the forward + backward regime, launches 900 / 950,
+nvidia-smi every 200 ms). Comparison: the period, each group's wait for K / baton (s0 -> s1), the offset between the groups,
+the chain s1 -> next s0, and (level 3) QK latency vs softmax; levels 2 vs 3 show whether the s2 stamp changes the timing.
+**RESULT (tl_1019, 15:22-15:27 IST, GPU 0).** Build (build_tl_1019.sh): ours TL2 c08c978b -> library b3dd6667, TL3 91d6f0c5 ->
+12e6b4f7 (F3c back, ceb62227); FA3 level 2 _C.abi3.so f99994dd, level 3 a5f569e9 (13 backward kernels each; benv's FA3 files
+unchanged). Read-only checks on the box: dense kernel clock reads TL2 4 / TL3 6 / LHOd 0; FA3 .so clock reads 6 / 9.
+Run: our traces with trace_1017.sh (forward + backward bench, launches 900 / 950: TL2 fwd med 1.0876 / 1.0892 ms, TL3 1.0981 /
+1.0983), FA3 with fa3_tl_run.py (1,000 forward + backward: level 2 4.3055 ms per iteration, level 3 4.3325). Each trace 2,916
+steady steps over 132 CTAs (deep/timeline_read.py); launches 900 and 950 identical to the cycle.
+| dense, steady loop step (cycles), level 2 | ours (LHOd + stamps) | FA3 (+ the same stamps) |
+|---|---|---|
+| period | **2,551** | **2,367** |
+| group 0: wait for K + baton (s0 -> s1) | 122 | 176 |
+| group 1: wait for the baton | 229 | 117 |
+| group 0: baton -> next step (issue, QK, softmax, P.V wait, rescale, packs, loop) | **2,429** | **2,191** |
+| group 1: the same | 2,322 | 2,250 |
+| group 1 gets the baton after group 0 | 914 | 852 |
+| "no GEMM queued" estimate | 19.0% | 13.1% |
+- **Our step is 7.8% longer than FA3's: the whole dense gap (~8% cycles) sits in the steady loop step**, on group 0's chain
+  (+238). The 45.44 fit ("FA3's step is tensor-bound, ~0 idle per step") was wrong: FA3 too idles ~300 cycles per step; the
+  2-point fit had no residual to show the error.
+- Level 3: ours 2,551 again (the s2 stamp changes nothing in ours: issue + QK wait 870 / 1,020, the rest 1,556 / 1,254 for
+  groups 0 / 1); FA3 2,616 (+249 per step: the s2 stamp moves FA3's exps, as the SASS check predicted) -> FA3's level-3
+  split is not used.
+**Where one step's time goes, from ncu's stall sampling (no instrumentation; same-box ncu of 45.44 / 45.50; share of the
+steady-loop samples x the traced period; both groups' average):** `deep/loop_wait_split.py` (by stall REASON: the baton
+BAR.SYNC is DEFER_BLOCKING, its wait shows as "barrier" samples on the next instructions, so a split by position mislabels it).
+| cycles per step | FA3 | ours (LHOd) | ours - FA3 |
+|---|---|---|---|
+| baton wait ("barrier" samples) | 239 | 173 | -66 |
+| K / V wait (group 0's TRYWAIT) | 88 | 24 | -64 |
+| issue phase (loop top .. last HGMMA, other samples) | 716 | 834 | +118 |
+|   of it the 16 HGMMA instructions | 489 | 499 | +10 |
+|   of it the other instructions (loop control, stage, descriptors) | 227 | 335 | **+108** |
+| QK wait (+ between issue and it) | 7 | 18 | +11 |
+| softmax before the P.V wait | 544 | 650 | **+106** |
+| P.V wait | 2 | 1 | -1 |
+| after the P.V wait (exps, rescale, packs, loop) | 771 | 850 | **+79** |
+| period | 2,367 | 2,551 | +184 |
+- Our warps WORK ~300 cycles more per step and WAIT ~130 less; FA3's warps run out of work and wait for the tensor pipe
+  (an unlabeled stall reason on its first P.V HGMMA = 204 cycles per step, ours 78 there): FA3 is closer to tensor-bound.
+- The HGMMA issue itself is not the difference (both ~500 cycles per step: issuing 16 HGMMAs is paced by the tensor pipe).
+  FA3 issues its 8 QK HGMMAs back to back (8 descriptor registers prepared before), ours with 4 descriptor instructions
+  between each (all through UR20); L1b made our QK HGMMAs back to back too (QK stalls 116 -> 73) but the P.V issue absorbed
+  it (394 -> 422): issue time is set by the pipe, not by the instruction count (why L1b did not help).
+- The +108 of other issue-phase instructions: after the baton our stage lives in a regular register and goes through R2UR
+  into the uniform datapath before the descriptors (R2UR, ULEA, ULOP3, ULEA.HI chains with dispatch stalls); FA3 keeps its
+  pipeline state in uniform registers (UIADD3 / USEL / ULOP3) and its descriptors ready.
+- The softmax (+185 in total): the same instruction count (385 vs 383; 66 exps each); ours has more fixed-latency
+  dependency waits (+97) and more dispatch stalls (+100: register-file / dispatch conflicts in the FMUL / FFMA / FADD
+  stretches), +24 not-selected. Not the row max: FA3's max is ONE linear chain per row (depth 36, `deep` check), ours two
+  interleaved chains (depth 21).
+- `deep/loop_region_reasons.py` (stall reasons per region, instruction mix), `deep/loop_regions_ncu.py` (first, position-
+  based version: kept for the record, its "baton" figure is wrong for the reason above).
+**Next levers (cheap first):** (1) consumers' register budget FA3's way (setmaxnreg 24 / 240 instead of 40 / 232; tried on
+F3 10-16 = +1.1%, but the code has changed since and the dispatch stalls point at register-file conflicts), (2) loop state
+and descriptors in uniform registers, prepared before the baton (the +108), (3) the softmax's dependency waits.
+
+### 45.52 2026-10-19 16:20 IST: FA3's loop vs ours, instruction by instruction (PC sampling) -> the exp packing; candidate SM3
+
+**User's direction (16:00):** no more candidates built on assumptions: FA3's source is local; find exactly what we do
+differently, with proof, then change only that. Method: ncu PC sampling (= the "Warp Stall Sampling" columns of the ncu
+source page: the stall reason of each warp at each instruction, no instrumentation) of FA3's real kernel and ours, same box
+(fa3_dense / ncu_vj2_LHO_dense, LHO dense == LHOd dense), the steady loop body (instructions run once per step per warp),
+times scaled by the traced period (45.51: FA3 2,367, ours 2,551).
+**1. Same work.** `deep/loop_diff_fa3.py` (6cf7ee4c): per step and warp, both run 66 exps, 68 FMNMX, 66 FFMA, 68 FMUL, 32
+F2FP, 4 SHFL, 16 HGMMA (FADD 64 vs 70, uniform 46 vs 65, integer 17 vs 15). The extra 184 cycles are STALLS on the same
+instructions: exps +125, F2FP +38, FMUL +34, HGMMA P.V +48 / QK -37, FADD +13, FFMA +14, FMNMX -32, waits -130.
+**2. The exps: +120 cycles of "wait" stalls** (ours 367, FA3 247 per step). Not their input: the FFMA producing an exp's
+argument is far away in both (median 80 / 109 instructions; `deep/exp_producer_distance.py` 95237995). It is the exp unit's
+throughput: an exp issued 0-2 instructions after the previous one waits ~7-9 cycles (`deep/exp_spacing.py` 56520ca9):
+| exps issued ... after the previous exp | FA3: count / "wait" cycles | ours: count / "wait" cycles |
+|---|---|---|
+| 0 instructions between | 0 / 0 | 4 / 37 |
+| 1 | 11 / 92 | 21 / 198 |
+| 2 | 19 / 125 | 13 / 111 |
+| 3-4 | 13 / 30 | 5 / 14 |
+| 5+ | 23 / 1 | 23 / 7 |
+| total | 248 | 367 (+119) |
+**3. The cause in the source.** FA3 hopper/softmax.h: `thread_reduce_` = the row max as ONE dependent chain per row from the
+previous max (columns in order; measured chain depth 36 incl. shuffles); `scale_apply_exp2` = exps ROW BY ROW; `reduce_sum`
+after the exps, one chain per row from row_sum * scale. Its compiled loop: row 0's max (32 FMNMX), then row 0's exps WHILE
+row 1's max chain runs (`M x x M x x M x x f f M`): 2 FMNMX between exps. Ours (K5q / LHOd softmax_tile): the max in 4
+short interleaved chains (depth 21, finished fast), the exps of BOTH rows mixed (`reg % 4`), the sums right after each exp:
+after the max nothing is left to overlap, so the exps go nearly back to back (`M M x M x m M ... M a M M a M M a`). (Not the
+row max itself: ours is the faster one, -32 cycles.)
+**4. Local SASS = box SASS for this measure** (`deep/sass_exp_pattern.py` d39e8e11 on cuobjdump listings, the mask-free step):
+LHOd local 4 / 21 / 13 / 5 / 22 = box 4 / 21 / 13 / 5 / 22; FA3 local (CUTLASS 7127592) 0 / 11 / 19 / 13 / 22 = box. So a
+change can be checked on the laptop before any GPU run.
+**Candidate SM3** (`cands/fwd_SM3.cu` 4ef6ec49 = LHOd + switch `SM3`): FA3's structure exactly: max = one chain per row from the
+previous max, columns in order, then quad_max; exps row by row (part A = row 0's first K1_SPLIT = 16 exps); sums = FA3's
+order (l * cc, then the row's values in column order; row 0's first 16 adds in part A, which also pins the P.V wait through
+order_after(rs0), the rest + row 1 in part B). Local SASS: **exps 0 / 13 / 22 / 7 / 23** (FA3 0 / 11 / 19 / 13 / 22), the
+pattern `x*32 s ... M x x M x x M x x M` = FA3's, 17 exps before the P.V wait (FA3 13), same instruction counts, 168
+registers, 0 spills; fwd_SM3off.cu (c366a999, switch off) = LHOd's SASS in both kernels (0 lines differ). Numerics: the row
+sums are added in FA3's order (rounding differs from LHOd at the last bits); dense and packed run the same code, so packed ==
+alone stays bit-exact (the quick suite checks it). Expected: part of the +119 exp wait (by the per-distance costs above,
+~30-100 cycles per step = ~1-4% dense); measured by the run, not assumed.
+**Run** `scripts/run_sm3_1019.sh` (b4042c5a, GPU 0, ~9 min): build, quick suite, forward race vs LHOd + ncu of SM3 (PC sampling:
+did the exp waits drop?), forward + backward race vs LHOd.
+**Still open (from the same table, next after SM3):** F2FP / FMUL dispatch stalls (+72: same instructions, more dispatch
+stalls), the P.V HGMMA issue (+48), the issue-phase instructions (stage through R2UR, descriptors per HGMMA).
+**SM3 RESULT (sm3_1019 forward-only + sm3fb_1019 forward + backward, 15:52-16:00 IST, GPU 0).** Built SM3 (4ef6ec49 -> library
+a54c3ff8; F3c back, 9e2e6349). Quick suite **296 / 296**.
+| SM3 vs LHOd, 8 rounds each | dense forward | packed forward | dense backward | packed backward |
+|---|---|---|---|---|
+| forward-only race | **-0.70%** (t -5.0, 8/8) | +0.48% (t 5.9, 0/8) | | |
+| forward + backward race (training-like) | **-3.05%** (t -21.1, 8/8) | +0.45% (t 4.8, 0/8) | +0.46% (t 3.3, 1/8) | +0.16% (t 2.2) |
+Medians, forward + backward race (ms): dense fwd LHOd 1.0447 / SM3 1.0139, bwd 3.1320 / 3.1578; packed fwd 0.4393 / 0.4407.
+- **The prediction holds** (ncu PC sampling of SM3, same method): the exps' "wait" stalls 367 -> **245** cycles per step
+  (FA3 247), exps 15.6% of the loop's samples (FA3 16.2%, LHOd 19.9%); ncu cycles dense **-3.8%**, packed -0.9%.
+- Forward-only, the forward sets its own clock at the 700 W cap and gives back most of the cycle cut (-0.70%); with the
+  backward in the loop (the scoreboard's and the trainer's regime) it shows (-3.05%). The unchanged backward is +0.46% in the
+  same race: the faster forward draws more power, the shared clock drops a little (the mirror of LHOd's -0.33%; both t ~3,
+  consistent with 45.50's power model); dense forward + backward together about -0.1%.
+- **Packed +0.45%, cause proven (PC sampling, packed kernel):** exps -32k cycle-equivalents per SM, but integer / predicate
+  +28k: in SM3 the diagonal (masked) tiles build the causal mask as a BITMASK (`@P6 LOP3.LUT R2, R2, 0x2000, ...`, 64 per
+  masked step, executed 33,912 times): our mask loop kept the mixed-row order (`reg % 4`) while the max now goes row by row,
+  and ptxas parked the 64 conditions in a register. Packed has a diagonal tile in every (short) unit, dense rarely.
+**SM3m** (`cands/fwd_SM3m.cu` 86a2d73d = SM3 + FA3's mask order, hopper/mask.h causal: row by row, each element's column offset
+(a constant) against ONE per-row limit; same condition): local SASS: mask-bitmask LOP3 **64 -> 0**; packed kernel **3,432**
+instructions (LHOd 3,504, SM3 3,688), dense 3,672 (LHOd 3,736); steady-loop exp spacing unchanged (0 / 13 / 22 / 7 / 23); 168
+registers, 0 spills. **Run** `scripts/run_sm3m_1019.sh` (00d63d34, ~9 min): build, quick suite on SM3m, forward + backward race
+LHOd / SM3 / SM3m (8 rounds, rotating), ncu of SM3 and SM3m.
+**SM3m RESULT (sm3m_1019, 16:04-16:10 IST, GPU 0; GPU 1 had a colleague's process, 656 MiB, separate GPU and power limit).**
+Built SM3m (86a2d73d -> library b9815e38; F3c back, 096123e0). Quick suite **296 / 296** (packed == alone bit-exact incl.).
+Forward + backward race, 8 rounds, LHOd / SM3 / SM3m in rotating order:
+| vs LHOd | dense fwd | packed fwd | dense bwd (code unchanged) | packed bwd (code unchanged) |
+|---|---|---|---|---|
+| SM3 | -3.30% (t -25.1, 8/8) | +0.27% (t 2.7, 1/8) | +0.27% (t 2.1) | -0.02% |
+| **SM3m** | **-3.51%** (t -31.3, 8/8) | **-4.48%** (t -60.0, 8/8) | +0.56% (t 5.4, 0/8) | +0.17% (t 3.1) |
+Medians (ms): dense fwd LHOd 1.0487 / SM3 1.0123 / SM3m 1.0110, bwd 3.1371 / 3.1467 / 3.1592; packed fwd 0.4395 / 0.4405 / **0.4198**,
+bwd 1.5016 / 1.5016 / 1.5036. Forward + backward per iteration, SM3m vs LHOd: dense 4.1858 -> 4.1702 ms (**-0.37%**), packed 1.9411
+-> 1.9234 ms (**-0.91%**). The unchanged backward is slower again by the shared clock (power cap, as for SM3).
+ncu (same box): dense cycles -4.02% vs LHOd (instructions -1.07%), packed **-6.28%** (instructions -2.09%); the mask bitmask:
+SM3 64 LOP3 executed 2,170,368 times, SM3m 0. vs FA3 (ncu cycles): dense 1.107x -> **1.063x**, packed 0.927x -> **0.869x**.
+Chained to the 45.43 scoreboard (forward, fwd + bwd regime): dense ~1.084 x 0.9966 x 0.9649 = **~1.042x FA3**, packed ~0.936 x 0.955 =
+**~0.894x FA3** (estimates until a new scoreboard measures them directly).
+**What is left vs FA3 (SM3m's PC sampling, `loop_diff_fa3.py` with SM3m; SM3m's period estimated 2,449 = 2,551 x 0.960):** exps
++1 and row max +2 cycles per step (= FA3 now); remaining: uniform datapath +75 (65 vs 46 instructions per step: descriptors
+built per HGMMA, the stage through R2UR), integer +34, branch / control +109 and named barrier +21 (mostly the deferred baton
+wait of group 1), FMUL / FFMA / FADD / F2FP +71 (dispatch stalls); offset by less waiting on the tensor pipe (P.V HGMMA -146,
+QK wait -66).
+
+### 45.53 2026-10-19 16:45 IST: after SM3m the loop step equals FA3's; the rest is at UNIT BOUNDARIES (the first K / V tile); PF
+
+**Note (user's question):** the backward code is byte-identical in all these libraries (only GQA_fwd_sm90.cu differs); its
++0.2-0.6% in the forward + backward races is the shared clock at the 700 W cap. A backward-only benchmark shows no change.
+**1. Where the remaining gap is: the whole kernel, not just the loop** (ncu PC sampling, same box; consumer warps only, the
+producer warp's samples left out; `deep/kernel_map.py` f581bc56 = blocks by executed count, `deep/unit_budget.py` da64b86a):
+| per unit / per plain step (ncu clock) | FA3 | LHOd | SM3m |
+|---|---|---|---|
+| plain loop step | 2,299 | 2,402 | **2,282** |
+| unit start (Q wait etc.) | 619 | 74 | 73 |
+| first tile (QK + softmax; FA3: the diagonal block, masked) | 2,449 | 4,874 | **4,843** (tile 0, plain) |
+| diagonal step (ours runs it LAST, separately) | (in its first tile) | 2,985 | 2,879 |
+| last P.V + epilogue | 2,059 | 2,308 | 2,368 |
+Units per SM 34.91; plain steps per consumer warp per SM FA3 541.1, ours 507.3 (FA3 has one more plain step per unit: its
+diagonal is the first tile). SM3m's plain step = LHOd's - 120 = exactly the exp-wait fix (367 -> 245), and = FA3's (-17).
+Per unit: FA3 ~40,760 cycles, SM3m ~43,320 (+2,560 = the +6.3% of ncu cycles): **the remaining dense gap is at the unit
+boundaries**, mainly ours' first tile + diagonal step (7,722) vs FA3's first tile + one plain step (4,748): +2,974; unit start
+-546; epilogue +309.
+**2. What: one wait** (`deep/boundary_reasons.py` a3f510ae): SM3m's unit start + first tile has 1,961 cycles per unit of
+long-scoreboard stalls (FA3 155), on ONE site: `SYNCS.PHASECHK.TRANS64.TRYWAIT P0, [R25+URZ+0x38000]` + its retry branch =
+the wait for tile 0's K / V (full[stage]): **1,498 cycles per unit** (FA3's wait for its first K: 50; Q's wait: ~3 in both).
+= ~50k cycles per SM = ~57% of the remaining gap.
+**3. Why (source):** FA3's producer for a new tile (hopper/mainloop_fwd_sm90_tma_gmma_ws.hpp): an L2 prefetch of Q (:668),
+`load_K` of the first block as soon as a K slot is free (:769), THEN the QueryEmpty barrier (consumers done with the old Q,
+:776), then Q (:780). Ours: `if (j > 0) { mbar_wait(&qempty[0]...); mbar_wait(&qempty[1]...); }` -> Q -> K / V(0): the first
+tile's 64 KB were requested only after both groups' last QK of the previous unit (qempty is arrived after the last loop
+step), i.e. one unit-tail + epilogue (~2,400 cycles) before they are needed, too late for a 64 KB DRAM fetch while all SMs
+fetch (Q, 16 KB, arrives in time).
+**PF** (`cands/fwd_PF.cu` 1888246a = SM3m + switch `KV0_FIRST`): the producer loads the unit's first K / V tile (waiting for
+its slot) BEFORE the qempty waits, then Q, then the other tiles = FA3's order; nothing else. Proofs before any GPU run:
+(a) protocol model `deep/protocol_sim_pf.py` (9890281f): PF clean on 3,000 dense + 3,000 packed random unit lists (no deadlock,
+every K / V / O-staging read finds its tile); its twin PF_noempty (tile 0 loaded without the slot wait) is CAUGHT in ~89% of
+runs; (b) local SASS: the producer's first events SM3m `wait qempty x2, TMA x4 (Q), wait slot, TMA x4 (K / V 0)` -> PF
+`wait slot, TMA x4 (K / V 0), wait qempty x2, TMA x4 (Q)`; consumer code: packed identical to SM3m, dense 3 setup
+instructions reordered, the steady loop identical (exp spacing 0 / 13 / 22 / 7 / 23); 168 registers, 0 spills. Expected: up to
+~1,450 cycles per unit (~3% of dense in ncu; packed has more, shorter units). Run `scripts/run_pf_1019.sh` (eb7303ae, ~7 min):
+build, quick suite, forward + backward race vs SM3m, ncu of PF.
+**Rest of the boundary gap (next, same method):** ours runs the diagonal block as a separate LAST step (2,879) while FA3
+makes it the first tile (no extra step); epilogue +309.
+**PF RESULT (pf_1019, 16:39-16:44 IST, GPU 0).** Built PF (1888246a -> library 6653f9f2; F3c back, b33a8a53). Quick suite **296 / 296**.
+Forward + backward race vs SM3m, 8 rounds, A B / B A: **dense forward -2.60%** (t -50.1, faster 8/8), **packed forward -3.01%**
+(t -34.5, 8/8); backward (code unchanged) +0.19% (t 1.5) / +0.16% (t 2.2). Medians (ms): dense fwd SM3m 1.0060 / PF 0.9809, bwd
+3.1353 / 3.1461; packed fwd 0.4194 / 0.4069, bwd 1.5038 / 1.5058. **PF is the new best forward.** Chained vs FA3 (forward):
+dense ~1.040 x 0.974 = **~1.013x**, packed ~0.894 x 0.970 = **~0.867x** -> a direct same-box scoreboard on GPU 1 next (sb2_1019).
+
+### 45.54 2026-10-19 16:50 IST: same-box scoreboard with PF (GPU 1) -- dense forward 1.025x FA3 (was 1.084x), everything else won
+
+**Run sb2_1019** (`scripts/scoreboard_free.sh 1 sb2_1019 vj2_PF vj2_PF`, GPU 1, 16:45-16:50 IST, free clocks, nsys kernel times, one
+contender per process, forward + backward back to back, ABBA order; all 16 runs exit 0; power 691-695 W = the cap in every
+run). Steady state (calls >= 2 s after the first forward, `scripts/scoreboard_steady.py`), ratio = ours (PF) / rival:
+| | vs FA3 | vs FA4 | vs cuDNN |
+|---|---|---|---|
+| dense forward | **1.025** (10-19 morning, K5q: 1.084) | 0.928 | 0.872 |
+| dense backward call | 0.973 | 0.987 | 0.888 |
+| dense forward + backward | **0.985** | 0.972 | 0.884 |
+| packed forward | **0.866** (morning 0.936) | 0.778 | 0.823 |
+| packed backward call | 0.955 | 0.971 | 0.898 |
+| packed forward + backward | **0.935** | 0.923 | 0.881 |
+Kernel times (us, steady, r1 / r2): dense fwd ours 971.4 / 978.2, FA3 952.4 / 950.5, FA4 1051.0 / 1050.3, cuDNN 1113.2 / 1122.8;
+packed fwd ours 400.8 / 401.0, FA3 463.3 / 462.2. (This ran on GPU 1, the morning's on GPU 0: FA3's own dense forward is 2.3%
+faster here, so compare ratios within a run.) The chained estimate (1.013) was a little optimistic; 1.025 is the measured one.
+**PF's ncu (same box):** the wait for tile 0's K / V **1,498 -> 48 cycles per unit** (FA3 50); dense cycles 1,449,041 (SM3m
+1,512,445, FA3 1,423,158: **1.018x**). Per unit (`deep/unit_budget.py` with PF): plain step 2,273 (FA3 2,299); unit start +
+first tile 3,134 (FA3 3,068, its first tile = the masked diagonal); our diagonal step 2,908 = a plain step + 635; last P.V +
+epilogue 2,442 (FA3 2,059). The remaining ~750 cycles per unit (1.8%) = our separate diagonal-last step and the epilogue.
+**Today's chain (dense / packed forward vs FA3):** K5q 1.084 / 0.936 -> LHOd (L2 hints) -> SM3 (FA3 softmax structure) -> SM3m
+(+ FA3 mask order) -> PF (+ FA3 producer order) 1.025 / 0.866; each step proven first (source + SASS + PC sampling), then raced.
+
+### 45.55 2026-10-19 17:20 IST: the remaining boundary gap item by item -- the diagonal step (no proven win yet) and the epilogue (PFT)
+
+**Diagonal step** (`deep/step_vs_diag.py`, PF dense ncu, per execution): our masked last step costs 2,565 + 343 (its start: stage,
+group 1's baton) = 2,908 per unit vs a plain step's 2,273 (+635). Of that, the mask itself (64 ISETP + 64 FSEL) = ~347; the rest
+is waiting moved around (baton +265 at the QK wait, tensor back-pressure +163 on P.V, less elsewhere). FA3 does the same mask
+work (68 select / compare + integer) in its first tile (the diagonal block), and its start + first tile (3,068) is about our
+start + unmasked first tile (3,134, `deep/boundary_jobs.py`). Moving our diagonal block first (FA3 walks the keys backwards)
+would only save what the mask costs in the pipelined last step minus its cost in the prologue: NOT proven to be positive; a
+large change (reverse key order in producer and consumers, K4's O staging, numerics order) -> not proposed now.
+**Epilogue** (`deep/boundary_jobs.py` 05d275ab; `deep/step_vs_diag.py` 693c6cc0 for the diagonal step above; per unit): ours 2,442 vs FA3 2,059 (+383): memory 28 vs 11 instructions
+(+239 cycles: 8 x 16-byte shared load + 8 x 16-byte global store per lane, short-scoreboard waits), FENCE.VIEW.ASYNC 2 vs 1
+(+125: long-scoreboard waits), the group bar.sync (+49), integer / branch +396; offset by less waiting at the last P.V wait (-438)
+and uniform (-270). FA3 (hopper/epilogue_fwd.hpp :250-264, :310-326, dense = Use_TMA_O): every thread stmatrix -> O in smem,
+fence_view_async_shared, NamedBarrier::ARRIVE (non-blocking); only the last warp syncs and one elected lane issues the TMA store,
+tma_store_wait<0> (smem read done), then barrier_O.arrive (smem free). Varlen: no TMA store (other sequences' rows).
+**PFT** (`cands/fwd_PFT.cu` 541a4f5e = PF + switch `TMA_O`, dense only): stmatrix in the TMA SW128 layout (two 64-column halves
+of 8 KB, as Qt), fence.proxy.async, warps 1-3 bar.arrive and go on, warp 0 (index broadcast from lane 0, as FA3's warp_idx_sync)
+bar.sync, lane 0: 2 x cp.async.bulk.tensor store (O's map = make_tma_q64(O): box 64 x 64, SW128), commit + wait_group.read 0,
+then the K slot's empty arrive; packed keeps the per-lane stores. First build used `if (warp == 0)` directly: ptxas compiled the
+whole kernel as possibly divergent (WARPSYNC.COLLECTIVE fallbacks, +200 instructions, the loop rescheduled) -> fixed by the
+broadcast. Local SASS (final): dense 2 UTMASTG, 0 LDS.128 / STG.128 for O (PF 8 + 8 per lane), 3,720 instructions (PF 3,744), no
+collective fallbacks, steady-loop exp spacing 1 / 13 / 18 / 10 / 23 (PF 0 / 13 / 22 / 7 / 23: by the per-spacing costs about
+-17 cycles, neutral); packed kernel identical to PF except the parameter offsets (0 of 3,504 lines); TMA_O 0 (fwd_PFToff.cu) =
+PF's SASS exactly; 168 registers, 0 spills. Expected: up to ~380 cycles per unit (~0.9% dense, ncu); packed unchanged.
+Run `scripts/run_pft_1019.sh` (6ce228b1, GPU 0, ~10 min): build PFT (F3c back in the tree), the same SASS check on the box
+build (CUDA 13.4; stops unless dense UTMASTG 2 / STG.E.128 0 / COLLECTIVE 0 and packed PFT == PF with the parameter offsets
+ignored; dry run on the local cubins: passes, and fails on PF vs SM3m packed with 1,120 lines, so the check is not vacuous),
+quick suite, forward + backward race vs PF (8 rounds, A B / B A), ncu of PFT (dense + packed).
+
+### 45.56 2026-10-19 17:15-17:45 IST: PFT RESULT -- dense forward SLOWER (+1.60%); why, from ncu + FA3's source; box backup
+
+**Run** (`box_runs/pft_1019`, GPU 0, 17:08-17:12 IST; run_pft_1019.sh 6ce228b1): build PFT b29aa706 (F3c back in the tree); box SASS
+check passed (box CUDA 13.4: dense PF 3,720 instructions, PFT 3,696, UTMASTG 2, STG.E.128 0, LDS.128 0, COLLECTIVE 0; packed PFT ==
+PF, 0 of 3,480 lines); quick suite 296/296; race forward + backward vs PF, 8 rounds A B / B A (`session_2026_10_17/deep/race_stats.py`):
+
+| PFT vs PF | % change | t | rounds faster |
+|---|---|---|---|
+| dense forward | **+1.60%** (0.9819 -> 0.9970 ms) | +25.3 | 0 / 8 |
+| dense backward | -0.25% (unchanged code: shared clock) | -2.7 | 8 / 8 |
+| packed forward | -0.02% (identical kernel) | -0.2 | 3 / 8 |
+| packed backward | -0.04% | -0.6 | 4 / 8 |
+
+ncu (same box; PF from pf_1019, PFT from pft_1019): dense 1,449,041 -> 1,473,819 cycles per SM (+1.71%; per unit 41,509 -> 42,219,
++710), packed -0.28% (identical kernel). Instructions +0.03%.
+**Where** (`deep/kernel_map.py` regions, paired in order; `deep/align_pf_pft.py`, `deep/regions_pf_pft.py`; per unit = cycles per
+SM / 34.9):
+
+| region | PF | PFT | change |
+|---|---|---|---|
+| epilogue (stmatrix .. release; PFT incl. the store warp's path + LSE) | 1,363 | 879 | **-484** (the intended gain, > the 383 expected) |
+| next unit's start + tile 0 (part 1) | 1,915 | 2,583 | **+668** |
+| steady loop (481 instructions, 14.53 steps per unit) | 30,286 | 30,875 | **+590** (+40.5 per step) |
+| diagonal step / loop exit / last P.V / rest | | | about -64 |
+
+1. **Unit start +668: the store warp's wait.** PFT SASS: lane 0 of warp 0 (each group): 2 x UTMASTG.2D, UTMACMDFLUSH, DEPBAR.LE
+SB0 0x0 (= cp.async.bulk.wait_group.read 0), then SYNCS.ARRIVE (empty[s_last]): 140 cycles per unit of samples stall on that
+arrive (long scoreboard = the DEPBAR), i.e. about 630 cycles of real waiting per store warp per unit (2 store warps of ~9 sampled
+warps). The next unit's first QK (HGMMA) needs all 4 warps of the group, and the baton barriers (bar 1 / 2, 256 threads) couple
+both groups, so the late warp holds back both: the wait for Q (mbarrier 0x38030) 286 -> 610 (+324, part of it is warps 1-3
+arriving earlier because they skip the old read-back) and the baton sync before the first QK 15 -> 248 (+233).
+2. **Steady loop +590: the compiler re-ordered the loop** (same 481 instructions, different order; box SASS). Per step: dispatch
++61, wait +40, mio +36 (exps bunched), not_selected +15, baton -94. The laptop check (45.55) saw the changed exp spacing
+(PF 0/13/22/7/23 -> PFT 1/13/18/10/23) and estimated "-17 cycles, neutral": WRONG. Lesson: a candidate that does not target the
+loop must leave the loop's SASS IDENTICAL to the base's (0 differing lines), checked on the laptop and again on the box build
+before any GPU time; an estimate from the exp spacing is not a proof.
+**FA3's source** (hopper/epilogue_fwd.hpp, 94e22c9): :249 named_barrier_sync(NumEpilogueThreads) (all 8 MMA warps), :251-262 every
+thread stmatrix -> fence_view_async_shared -> NamedBarrier::arrive(NumEpilogueThreads + 32) (non-blocking), :277-301 LSE stores,
+:317-327 ONLY the last warp (warp_idx_sync == NumEpilogueThreads / 32 - 1 = the last warp of the SECOND MMA warpgroup) syncs on
+that barrier (288 = 256 arrivals + its own 32), one elected lane stores the whole 128-row O tile (32 KB), tma_store_wait<0>, then
+barrier_O.arrive; the producer waits barrier_O only before the next tile's V (mainloop :865; O aliases V,
+flash_fwd_kernel_sm90.h :90-101). So FA3 has ONE waiting warp, in the warpgroup that goes second; PFT has one in EACH group, and
+group 0 (first at the next unit: baton bar 1, SASS `@!P2 BAR.SYNC 0x1, 0x100`) waits for its own warp 0.
+**Next candidate (PFT2, proposed):** FA3's exact arrangement: both groups stmatrix + fence + bar.arrive on one barrier of 288; only
+group 1's last warp syncs, one lane stores all 4 boxes (both groups' 64 rows), waits for the read, arrives empty[s_last] twice
+(count 2, one per group as before); + the hard gate above (steady loop SASS == PF's on the laptop and on the box build) + the
+protocol model for the new barrier.
+**Box backup** (instance may close, credits ending; 17:20-17:40 IST): every run folder on the box is now byte-identical on the
+laptop (rsync --checksum dry run: 0 differences): new pft_1019 (46 files), the 16 scoreboard nsys reports of sb2_1019 (24 MB, left
+out before), and trace_1017_vj2_TLK5q of 10-19 11:48 IST (a re-run on this box under the 10-17 name, library 97765067; the laptop
+had only the 10-17 run in box_2x_final_2026_10_17/) -> session_2026_10_19/box_runs/. `profiling_reports/box_backup_2026_10_19/`
+(6.3 MB): logs/ (20 build / setup logs incl. benv_pip_freeze.txt), step6/, loss_bench/, box_scripts_snapshot/ (96 files; all equal
+to the laptop's except __pycache__ and the fa3_tl patch, which is in session_2026_10_19/fa3_tl/, same md5s). Outside git:
+~/Downloads/box_backup_2026_10_19_bin/flash_attn_3/ (the scoreboard's FA3 build, _C.abi3.so 67 MB: skips the long FA3 build on a
+new box with the same benv). Checked equal, not copied: the code tree (sft_v2/BluTrain_sft, checksums), sft_data (md5s = the
+laptop's ~/Downloads/sft_data). Not copied (rebuildable): libs/ (18 candidate builds x 55 MB: build_cands.sh from the local
+cands/), benv (5.9 GB; benv_setup.sh + the pip freeze), flash-attention source (94e22c9) and fa3_tl2/3 builds, pydev, *.tgz
+(= the run folders).
+
+### 45.57 2026-10-19 18:40-19:30 IST: the remaining dense gap, exact -- one consistent accounting, every wait labelled, FA3's source line for each cause
+
+**Why again:** the user (after PFT failed): one last chance, find the EXACT culprit with proofs, no assumptions. All from data already
+on the laptop: the same-box ncu source pages (FA3 `box_runs/ncu_fa3_k5q_1019`, PF `box_runs/pf_1019`), the scoreboard clock logs
+(`box_runs/sb2_1019/*.clocks.csv`), FA3's source (94e22c9). Scripts (deep/): waits_fa3_pf.py 19288f63, regions_fa3_pf.py bd944979, align_pf_pft.py b2074201, regions_pf_pft.py d56c374e.
+
+**Stats (scoreboard sb2_1019, ours = PF):** vs FA3 dense fwd **1.025** (974.8 vs 951.5 us; the ONLY loss), bwd 0.973, f+b 0.985;
+packed fwd 0.866, bwd 0.955, f+b 0.935. vs FA4 and cuDNN every entry < 1. Best forward = PF (chain F3c -> K5q -> LHOd -> SM3m -> PF);
+PFT rejected (45.56).
+**Time vs cycles vs clock:** ncu cycles PF / FA3 = 1,449,041 / 1,423,158 = **1.018**; scoreboard SM clock (nvidia-smi, busy samples
+from 2 s on, both runs): ours 1,646.9 vs FA3 1,652.3 MHz = **-0.33%** (run-to-run: ours 1,664 / 1,630, FA3 1,663 / 1,642: the noise
+is larger than the difference). So the dense forward gap is CYCLES (1.8%) + ~0.3% shared clock + noise. (Forward alone FA3 runs at
+a LOWER clock than ours, 45.50.)
+
+**One accounting for both kernels** (`regions_fa3_pf.py`: the same cut points in a unit's life, cycles per unit = share of ALL
+samples x SM cycles / 34.9 units per SM):
+
+| region | FA3 | PF | difference |
+|---|---|---|---|
+| unit start (after the previous epilogue .. first K landed) | 503 | 869 | **+366** |
+| first tile (FA3: the diagonal, MASKED; PF: tile 0, unmasked) | 2,226 | 1,941 | -285 |
+| steady loop (FA3 15.5 steps, PF 14.53) | 32,397 (2,090 / step) | 30,286 (2,084 / step) | -2,111 |
+| diagonal (PF only: loop exit + the masked last step) | 0 | 2,667 | +2,667 |
+| end (last P.V + epilogue + FA3's TMA-store warp) | 2,207 | 2,240 | +32 |
+| producer warp + prologue | 3,434 | 3,506 | +72 |
+| total | 40,768 | 41,509 | +741 (1.8%) |
+
+**CORRECTION of 45.55:** "epilogue +383" was a measuring error: FA3's region was cut at instruction 2302 and left out FA3's own
+TMA-store warp (2302-2323, 208 cycles / unit) and its exit code, and the two kernels were normalised differently. With the same
+cut points the end of a unit costs the same (+32). PFT (45.56) targeted a non-problem.
+**Cause 1 -- the unit start, +366 (49% of the cycle gap)** (`waits_fa3_pf.py`, each mbarrier wait followed to its retry branch):
+- **Q comes from DRAM.** Consumers' wait for Q: PF 286 cycles / unit (BRA after `TRYWAIT [0x38030]` = qfull), FA3 103 (barrier_Q,
+  0x28800). Both release the old Q at the same point (FA3 mainloop_fwd_sm90_tma_gmma_ws.hpp:1237 NamedBarrier::arrive QueryEmpty
+  after the loop; ours fwd_PF.cu:1072 qempty after the last QK); both producers are already WAITING for that release (PF 172 / unit
+  on qempty 0x38040/48, FA3 117 on QueryEmpty), so both issue the Q load at the same moment. The one difference: **FA3 prefetches
+  the tile's Q into L2 when its producer STARTS the tile** (:681 `prefetch(params.tma_load_Q, tQgQ)`, before load_K :769 and the
+  QueryEmpty sync :776), so its Q load hits L2; ours reads DRAM.
+- **7 runtime integer divisions per unit in the consumer** (decode_u, fwd_PF.cu:529-535, called :704 just before the Q wait :716):
+  two I2F.RP / MUFU.RCP / ... sequences in the SASS, ~190 cycles / unit. FA3 decodes with precomputed constants (ULDC
+  c[0x0][0xdd0] ...: FastDivmod), no division. Today this is hidden inside the Q wait; it shows as soon as Q arrives earlier.
+**Cause 2 -- the diagonal tile LAST, +271 net (37%):** PF's masked diagonal step costs 2,667 = a plain step (2,084) + 583; FA3
+processes the diagonal FIRST (mainloop :1150 mask.apply on the first tile, then fwd_step from n_block_max - 2 down, causal 128 x 128:
+no other masked tile), where the same mask costs only +285 (2,226 vs our unmasked 1,941): there the mask overlaps the other
+group's first QK instead of sitting on the pipelined step's critical path. Net (583 - 285) - our faster loop = +271.
+**Not causes:** the steady loop (2,084 vs 2,090 per step), the end of unit (+32), the producer (+68; it mostly waits for free slots).
+Instructions: PF +4.1% (69,275 vs 66,521 warp instructions per unit), almost all uniform (ULEA +1,342, UMOV +884), inside the loop,
+which is still as fast as FA3's.
+**Expected value of each fix (cycles per unit, of 41,509):** Q L2 prefetch -183 .. -286 (0.45-0.7%); division-free consumer decode
+-47 .. -190 (only together with the prefetch); diagonal first ~-298 (0.7%). Together ~-530 .. -770 (1.3-1.9%): about parity.
+
+### 45.58 2026-10-19 19:30-20:45 IST: the last forward candidates (QP / QPU / QPD / QPUD), laptop proofs, the loop gate; node setup
+
+**Node (8x H200, innmi1srh2-p032, GPU 4):** one folder /localstorage/gautam_k (~/gautam_k is a link), tree = the laptop master
+(rsync checksum: 0 files differ), build OK (PF 1888246a -> lib e9248d27, PFT 541a4f5e -> f071bd1d, F3c c6a67163 -> 42641cb5,
+tva_a b7c752b3 -> 74f3cdc3). **PF's SASS built here == Verda's** (dense 3,720 / packed 3,480 instructions, 0 differing lines,
+box_runs/node_setup_1019/ vs box_runs/pft_1019/): the node's CUDA 13.4 (compiler 38657139, Verda 38855100) compiles our kernels
+identically, so every Verda measurement holds here.
+**Candidates** (`patches/make_pfq.py`: anchored edits of PF, each anchor exactly once; files: patches/make_pfq.py fbc5f7d8, deep/loop_sass.py a99f7937, deep/loop_order_diff.py 5f6a25bd, scripts/run_qp_1019.sh e039121d, scripts/cands/fwd_QP.cu f345c965, scripts/cands/fwd_QPU.cu 7e4197ea, scripts/cands/fwd_QPD.cu 34640bc5, scripts/cands/fwd_QPUD.cu 1899e6a7, scripts/cands/fwd_QPoff.cu 9621c861). Three switches, each
+one proven cause of 45.57:
+- **Q_PREF** (FA3 mainloop :681): `cp.async.bulk.prefetch.tensor.2d.L2.global` (CUTLASS SM90_TMA_LOAD_2D::PREFETCH) of the pair's
+  2 x 2 Q boxes when the producer starts the pair, before its first K / V and before qempty; both kernels (packed waits on Q too:
+  1.27% of its samples, dense 0.80%).
+- **DEC_PUB**: the producer publishes (b, hq, pair) of each dense unit in a 3-int slot next to sched_unit (same mbarrier); the
+  consumers read their unit's slot (ju & 1) at its top (safe: the producer rewrites slot k & 1 only after both groups' last QK of
+  unit k-2, the G5 rule), no decode_u. First version (A) carried next_* registers through the epilogue and moved the dense loop
+  (49 changed blocks after register renaming); version B (read at the top) is the one built.
+- **DIAG_FIRST** (FA3 :1150): the producer's n-th tile is tile nkv - 1 - n (the stage / slot / mbarrier sequence is unchanged), the
+  prologue masks with nt = my_nkv - 1, no later tile is masked, the last step keeps the K4 count. Both kernels (packed == alone
+  stays bit-exact); the online-softmax order changes (results not bit-identical to PF's).
+**Laptop proofs** (nvcc 13.0, PF's flags; `deep/loop_sass.py` finds the steady loop = the smallest backward-branch range with 16
+HGMMA and >= 64 exps; `deep/loop_order_diff.py` renames registers canonically): all 168 registers, 0 spills. **QPoff (all off) ==
+PF**: 0 differing lines of 3,744 / 3,504. **QP: dense AND packed steady loops identical to PF's (even the register numbers)**,
+4 UTMAPF (producer), +16 instructions. QPU: the consumers' division sequences gone (I2F.RP before the loop 3 -> 1; the producer
++6 for publishing), packed loop identical after renaming. QPD: the mask moved (FSEL after the loop 68 -> 4, the prologue's 64
+kept). How far each moves the steady loop (instructions out of PF's order, opcode alignment after renaming) vs **PFT (the known
++40 cycles / step, 45.56): 197 dense**:
+
+| | dense | packed |
+|---|---|---|
+| QP | 0 | 0 |
+| QPU | 143 | 0 |
+| QPD | 57 | 23 |
+| QPUD | 132 | 23 |
+
+A reorder cannot be priced on the laptop (the exp-spacing estimate failed for PFT), so each fix is RACED on its own: QP (fix 1
+alone, loop-clean), QPU (+ fix 2), QPD (+ fix 3), QPUD (all), one session vs PF, with ncu of all five (PF too, same day).
+**Run** `scripts/run_qp_1019.sh` (GPU 4, ~30 min: builds ~8 min CPU, then ~20 min GPU): build, box SASS gate (stops unless QP's
+two loops equal PF's and all 8 candidate kernels hold the 4 prefetches; dry run on the laptop cubins: passes; with QPD's cubin
+in QP's place it fails, so the gate is not vacuous), quick suite per candidate, forward + backward race (8 rounds, rotating),
+ncu. **Expected (45.57):** QP dense -183 .. -286 cycles per unit (0.45-0.7%); QPD about -300 more if its 57-instruction reorder
+is free; QPU -47 .. -190 more once Q is early. Together about parity with FA3 (dense fwd 1.025 today).
+**Split (user, 20:50 IST: CPU work first, the GPU only when needed, colleagues share the node):** `scripts/build_qp_1019.sh`
+(11031e0e, CPU only, ~8 min: build + the SASS gate + the libraries' md5s in qp_1019/gate_libs.md5, "GATE PASSED") and
+`scripts/run_qp_1019.sh` (5e68bdaf, GPU, ~20 min: refuses without "GATE PASSED" and if any library's md5 changed since the
+gate; then quick suites, race, ncu incl. PF). Dry-tested on the laptop cubins in a fake ~/gautam_k: gate passes (2 of 2, 8 of
+8), the GPU script refuses a library changed after the gate, starts with the gated ones. The dry run found that cuobjdump needs
+a writable TMPDIR (else it prints only the header and the gate fails closed); the build script now creates ~/gautam_k/tmp.
+`scripts/loop_sass.py` (a99f7937) = deep/loop_sass.py (reads only the two forward kernels with -fun; names libraries by folder).
+
+### 45.59 2026-10-19 19:54-20:42 IST: RESULT of the last candidates (8x node, GPU 4) -- QPU is the new best dense forward
+
+**Run** (`box_runs/qp_1019`, pulled 127 files): build_qp_1019.sh 19:53-19:54 (gate passed on the node build: QP loops == PF's,
+4 prefetches in all 8 kernels; libs PF e9248d27, QP 46fb93a1, QPU 4956db18, QPD b4e82daf, QPUD 9e49098b), run_qp_1019.sh:
+quick suites **296/296 for all four** (QPD / QPUD with the diagonal first included; each suite took 224-294 s here vs ~50 s on
+Verda: the CPU references on the node's shared CPUs), race 8 rounds x 5 libraries (80 runs, 20:15-20:39), ncu of all five incl.
+PF. GPU 4 held only our processes (one watcher alarm 20:16 was a pid that had already exited: ours; the watcher then alerted only
+on a non-ours process seen twice; none).
+**Race** (`session_2026_10_17/deep/race_stats.py`, paired per round vs PF, forward + backward back to back; median ms PF: dense
+fwd 0.9918, bwd 3.1817, packed fwd 0.4179, bwd 1.5341):
+
+| candidate | dense fwd | packed fwd | dense bwd | packed bwd |
+|---|---|---|---|---|
+| QP (Q L2 prefetch) | +0.08% (t +0.8, 2/8) | -0.24% (t -2.6) | +0.01% | -0.16% |
+| **QPU** (+ unit decoded by the producer) | **-0.81% (t -3.8, 7/8; p10 -1.27%, t -10.4)** | -0.13% (t -1.3) | +0.24% (t +1.9) | -0.05% |
+| QPD (+ diagonal first) | +0.32% (t +3.4, 1/8) | -0.43% (t -4.2, 8/8) | -0.07% | -0.14% |
+| QPUD (all three) | -0.31% (t -4.6, 7/8) | -0.44% (t -6.2, 8/8) | +0.01% | -0.16% |
+
+Forward + backward totals (medians): dense PF 4.1735 ms, QPU 4.1650 (-0.20%), QPUD 4.1694 (-0.10%); packed PF 1.9520, QPU 1.9511
+(-0.05%), QPUD 1.9463 (-0.29%). The backward code is unchanged in all (its shifts = the shared clock).
+**ncu, same session** (`deep/qp_ncu.py`; dense per unit, regions: consumer code before the steady loop, the loop, after it, the
+producer warp; Q wait = qfull's retry branch). PF here 1,449,507 cycles/SM = Verda's 1,449,041 (same SASS, same cycles):
+
+| dense | kernel cycles | before loop | loop per step | after loop | Q wait |
+|---|---|---|---|---|---|
+| PF | 1,449,507 | 2,770 | 2,084.2 | 4,951 | 275 |
+| QP | -0.17% | 2,661 | 2,084.0 (loop identical) | 4,988 | 171 |
+| QPU | **-1.51%** | 2,548 | **2,065.4** (reordered loop, 19 faster) | 4,854 | 308 |
+| QPD | -0.12% | 2,782 | 2,103.0 (reordered loop, 19 slower) | 4,618 | 167 |
+| QPUD | -0.51% | 2,614 | 2,097.8 | 4,703 | 327 |
+
+Packed (cycles/SM): PF 626,033; QP -0.35%, QPU -0.17%, QPD -0.20%, QPUD -0.23% (Q wait 7,287 -> 6,091 QP).
+**Reading, exactly as 45.57 predicted for the start:** the prefetch makes Q land early (wait 275 -> 171 per unit, FA3 103-144),
+but alone it gains nothing in time because the 7 divisions were then on the path; with them removed (QPU) the unit start is 222
+cycles cheaper (the Q wait rises to 308 because the consumers arrive earlier; that is moved time). QPU's compiler-reordered loop
+turned out FASTER (2,065 vs 2,084 per step: -273 per unit). **The diagonal-first fix works where it acts** (after the loop
+-333 per unit: the masked last step is gone) **but its masked first tile costs +121 and its reordered loop +19 per step (+275 per
+unit)** -> no net gain in dense; packed gains a little (race -0.43%). Cycles convert to time only about half here (QPU: -1.51%
+cycles, -0.81% time; effective clock from cycles / race time ~0.5% lower than PF's): under the 700 W cap a faster kernel draws
+more power per unit time. **QPU vs FA3 in cycles: 1,427,607 vs 1,423,158 = +0.31% (PF was +1.85%)**; in time, estimated from the
+race, dense forward ~1.017x FA3 (PF 1.025x): to be measured by a scoreboard on this node. What is left in cycles: our masked
+diagonal step (+583 over a plain step) against our now-faster loop (-19 per step vs PF, -25 vs FA3's 2,090) and start.
+
+### 45.60 2026-10-19 20:49-21:11 IST: scoreboard on the 8x node with ours = QPU (`box_runs/sb_qpu_1019`)
+
+`scripts/scoreboard_free.sh` (8cd5ecb0: GK = ~/gautam_k, else = the Verda script) on GPU 4: 16 runs (2 shapes x 2 rounds, ABBA x 4
+contenders), all exit=0; ours = vj2_QPU (forward QPU, backward Vj2 unchanged); rivals from ~/gautam_k/benv (torch 2.14.1+cu130,
+cuDNN 9.24, FA3 / FA4 from step6/fa_src 94e22c9; step6 bench files = the laptop's, md5 4d667815 / 93367592). Each run ~80 s, of
+which ~4.5 s on the GPU (caught with nvidia-smi -lms 500: 100%, 692 W). Summary `scoreboard_steady.py` (calls >= 2 s after the
+first forward):
+
+| ours / rival | dense fwd | dense bwd | dense f+b | packed fwd | packed bwd | packed f+b |
+|---|---|---|---|---|---|---|
+| FA3 | **1.004** (984.2 vs 980.4 us; r1 +0.44%, r2 +0.34%) | 0.968 | 0.976 | 0.865 | 0.953 | 0.933 |
+| FA4 | 0.919 | 0.989 | 0.972 | 0.781 | 0.971 | 0.923 |
+| cuDNN | 0.863 | 0.891 | 0.884 | 0.827 | 0.899 | 0.883 |
+
+**Same 11 of 12 wins; the dense forward vs FA3 is now 1.004 (Verda, PF: 1.025).** Split of that move: QPU's own gain is -0.81%
+(same-node race, 45.59); the rest is the box: this node's GPU 4 runs every kernel at a lower clock at the same ~690 W (dense: ours
+-2.2%, FA3 -2.3%, FA4 -0.8%, cuDNN -0.9%; packed -3.1 .. -3.6%), and FA3's dense forward lost more (+3.04% time vs Verda) than ours
+would have (PF-equivalent ~+1.8%), so PF here would be ~1.012 (984.2 x 1.0082 = 992 us vs 980.4). FA3's build here is its own
+(same source, the node's compiler build); ours compiles to the same SASS on both boxes (45.58).
+
+### 45.61 2026-10-19 21:45 IST: end of day -- what is saved where, and how to resume (8x node or a new Verda box)
+
+**Saved on the laptop:** every run of the day (`session_2026_10_19/box_runs/`: the 19 Verda runs, `qp_1019`, `sb_qpu_1019`,
+`node_setup_1019` with the node's build logs and PF's SASS dumps; the node's run folder checked equal by an rsync checksum dry run),
+the candidates (`scripts/cands/fwd_QP*.cu`, made by `patches/make_pfq.py`), the tools (`deep/loop_sass.py`, `loop_order_diff.py`,
+`qp_ncu.py`, `regions_fa3_pf.py`, `waits_fa3_pf.py`), the scripts. The colleague package `~/Downloads/attention_kernels_2026_10_19.zip`
+(PF forward, Vj2 backward, dispatch, API, README with shapes and the speed table).
+**Made box-independent tonight:** `scripts/benv_setup.sh` (fd09e69f: GK = $HOME/gautam_k), new `scripts/run_full_suite.sh`
+(223b9f3d: full suite on any library, `run_full_suite.sh <gpu> <lib>`, 4 h limit: the node runs the CPU references ~5x slower).
+**Resume:** `session_2026_10_19/RESUME_2026_10_20.md` (state, next tasks, exact commands for A = the 8x node, nothing to set up,
+and B = a new Verda box: folders, rsyncs incl. the FA clone ~/Downloads/sft_research/flash-attention 94e22c9 and the step-6
+files, build, the SASS check against the node's known counts, benv_setup.sh). Next: full suite on QPU, adoption (user), then
+the diagonal tile first with QPU's loop order kept.
+
+### 45.62 2026-10-21: pretraining hand-over -- branch `dist_side_gautam_lottn` (BLUCCL + our attention and loss work), tested, pushed
+
+**Why:** the colleagues start pretraining (the user calls it the 1435M model) on `dist_side_merge_BLUCCL`. Only what helps
+pretraining goes on a NEW branch from the latest BLUCCL; SFT-only work (packed RoPE positions, logits only at trained
+positions, CudaNativeType in the loss) comes later with the SFT push.
+
+**What went in (15 Tensor-Implementations files; BluTrain needed no code change):**
+
+| change | files | measured on the 1x H200 |
+|---|---|---|
+| QPU attention forward (45.58-45.60) | `GQA_fwd_sm90.cu` 7e4197ea | forward +18.9% vs BLUCCL's v62 |
+| Vj2 attention backward as the default (`USE_VJ2=0` = Vj1d) | `GQA_bwd_vj2_sm90.cu` (new), `GQA_bwd_generic.cu`, Vj1d / Vj1, `GQA_fwd_generic.cu`, the API headers / ops / backward node | backward +40.5% |
+| loss: the gradient allocated once (it was allocated twice) | `LossBackward.cpp` | part of the memory below |
+| loss: gradient written OVER the logits, the ONLY training path (no switch) | `LossKernels.cu/.h`, `LossBackward.cpp`, `LossOps.h` (contract comment) | -5.8 GiB allocated peak (bf16 logits) |
+| loss: 16-byte loads / stores + 4 in flight, backward | `LossKernels.cu` | bf16 backward kernel 4.35 -> 1.64 ms |
+| loss: 16-byte loads straight to registers, forward | `LossKernels.cu` | bf16 forward kernel 1.03 -> 0.93 ms |
+
+Left out on purpose: the 11 norm / RoPE files (checked line by line: ONLY the per-chat positions plumbing for packed SFT rows),
+the SFT trainer / loader / schedule, our test files. Same-day edits made in the master too (`BluTrain_sft`): the always-true
+`if (inplace)` folded away in `LossBackward.cpp`, Vj1d's stale "this is the DEFAULT" comment fixed, the master forward = QPU (F3c
+kept as `scripts/cands/fwd_F3c.cu` c6a67163).
+
+**Branch creation (laptop, `~/Downloads/BluTrain_lottn`; frozen OLD copy `~/Downloads/BluTrain_lottn_old`):** copy of the master,
+checked out at BLUCCL `afc462d` (10-10) with TI `02d0d18`, BluBLAS `ea666ab`, Context_Parallelism `661b6ef`; upstream tracking
+removed so a bare `git push` cannot hit the colleagues' branch. The colleagues changed 16 TI files since our base `d96b991`, none
+of them attention or loss, so the port is a copy (md5 = master). Traps met: the laptop has no git-lfs but `~/.gitconfig` makes the
+LFS filter required, and BLUCCL's only LFS file (`dist/Orchestrator/BluRun/deploy/obs/dcgm/counters.csv`, a DCGM counter list)
+broke the checkout -> the copies carry `filter.lfs.process=""`, `filter.lfs.required=false` (the file stays a pointer; not used by
+build or training); `set -e` is ignored by this shell, so every step is chained with `&&`. Compile check: the 22 TUs that changed or
+include a changed header, sm_90a, the BLUCCL tree: 0 errors. Laptop glibc is 2.39 again (no rsqrt workaround needed).
+In-place safety checked in the production trainer `train/production_zero/bluscript_zero_ckpt.cpp` (also after the colleagues'
+4f45a88): `logits` feeds only the loss and goes out of scope after `loss32.backward`; validation runs no backward.
+
+**Box:** 1x H200 `root@86.38.238.55` (GPU 0, CUDA 13.2, GCC 13.3, 44 cores, 167 GB RAM), `~/gautam_k/lottn/{old,new,ab,runs}`,
+data `~/gautam_k/pt_data/mix/{commoncrawl,edufineweb,code,math}` = links to the laptop's 4 edufineweb train shards + the val shard.
+Build `make -j22 profiler tensor dist SM_ARCH=90` per tree (not `all`: `ensure-blurun` / `ensure-tmux` touch PATH / apt on a shared
+box): libtensor OLD d5423cd3 (55,994,520 B), NEW 77af65f9 (56,649,024 B). yaml-cpp was missing: built 0.8.0 from GitHub into
+`~/gautam_k/local` (static, `-include cstdint`), trainers by `CPATH=... LIBRARY_PATH=... make _ablation_compile MODE=production_zero
+ABLATION_OUT=...` -> `pz_old` 0e197a4f, `pz_new` b1faa246. `libblublas.so` is found only through `LD_LIBRARY_PATH` (libtensor's
+RUNPATH is `$ORIGIN/lib`), as the Makefile's own `RUN_LD_PATH` does.
+**The production config, read by `--print-config` (exits before MPI / GPU):** 2304 wide, 26 layers, 18 / 6 heads, hd 128, ffn 6144,
+vocab 50,304 (tied), T 4096, B 8, 1,048,576 tokens per step, Muon, 8000 steps, mix c2; `mixed_precision` -> `BLU_ALL_BF16=1`,
+`BLU_BF16_LOGITS=1` (bf16 logits). ~1.59B parameters with the tied embedding (the user's "1435M" not confirmed). It also found a
+**BLUCCL bug**: the YAML's `monitoring.production` (added in dba5cf4, 10-10) is unknown to `ConfigBridge.h`, so the trainer stops
+at startup with its own default YAML ("unknown key"); still there in 4f45a88. Fix = one line in `env_table()`:
+`{"monitoring", "production", "BLU_PRODUCTION", Kind::Bool},` (told to the user for the colleague). `BLU_PARALLELISM` is
+`parallelism.enabled` (an int), never a path; the parallelism YAML is resolved relative to the main YAML.
+
+**Tests (scripts `profiling_reports/pretrain_branch_2026_10_21/ab/`, results `.../box_runs/`):**
+- **A loss** (`run_loss_ab.sh`, `loss_ab_1021_1444`, old / new / old / new, one binary, `ldd` checked per run): every loss bit
+  pattern and gradient checksum BIT-IDENTICAL in all 4 runs, fp32 and bf16 logits, kernel level and through autograd (W.grad,
+  X.grad). bf16: forward kernel 1.032 -> 0.931 ms, backward kernel 4.349 -> 1.640 ms (1.5 -> 4.0 TB/s, 84% of HBM peak), lm_head +
+  loss backward in steady state (3rd repeat) 23.82 -> 21.09 ms per micro-step (OLD's 2nd repeat was still slower: allocator
+  warm-up), allocated peak 10,536 -> 4,610 MiB (-5.8 GiB), reserved 12,954 -> 4,620 MiB. fp32: forward -4.6%, backward unchanged
+  (fp32 already moved 16 bytes), allocated peak -8.9 GiB (not -12.3: the peak moves to the fp32 -> bf16 gradient cast; the MiB
+  accounting adds up for all four cases). Clock 1965-1980 MHz, <= 640 W.
+- **B attention** (`run_attn_ab.sh quick`, `attn_ab_quick_1021_1508`; the first try `..._1449` failed at link: `-lblublas` was
+  missing in my build line): B 8, 18 / 6 heads, T 4096, hd 128: forward 1.215 -> 1.022 ms (507 -> 605 TFLOP/s), backward 4.296 ->
+  3.058 ms (360 -> 506 TFLOP/s), forward + backward -26% (+35.1% faster); O, LSE, dK, dV bit-identical run to run in both, dQ not
+  (by design in both). Quick suite on NEW 296 / 296 (31 s).
+- **C production trainer** (`ab_trainer.sh 12`, `trainer_ab_1021_1515`): the colleagues' trainer and YAML, ONLY `validation_freq`
+  250 -> 4 and the broken `monitoring.production` line removed; env: data path, no checkpoints / monitoring / CSV; the real LR
+  schedule (no `BLU_MAX_STEPS`), each run stopped after step 12; old / new / old / new, ~7 min each.
+
+| | OLD r1 / r2 | NEW r1 / r2 | |
+|---|---|---|---|
+| step time, steps 3-11 without validation | 22,827 / 22,833 ms | 21,463 / 21,467 ms | **-5.98%** (0.9402 in both pairs) |
+| tok/s | 45,936 / 45,923 | 48,855 / 48,845 | **+6.4%** |
+| MFU / TF per GPU (step 12) | 51.1% / 505 | 54.3% / 537 | |
+| peak GPU memory (nvidia-smi) | 103,893 MiB | 96,725 MiB | **-7.0 GiB** (same in both pairs) |
+| SM clock while busy, power | 1,526 MHz, 692 W | 1,493-1,497 MHz, 691-692 W | NEW slowed 2% by the 700 W cap |
+
+  Precision: step 0 (forward only, same weights) 11.288473 (both OLD) vs 11.288469 (both NEW): each side reproducible, the 4e-6 is
+  the attention forward's rounding (the loss is bit-identical). Over steps 0-12 the largest |NEW - OLD| (train 1.1-1.7e-4, norm
+  2.6-3.6e-3, val 0.4-1.0e-4) matches OLD's own run-to-run spread (1.2e-4, 3.9e-3, 0.9e-4). The trainer's `[MEM]` / `[ALLOC]`
+  lines print only after "Training complete", so the memory number is nvidia-smi's (reserved + context).
+- **D full attention suite** (`run_attn_ab.sh full`, `attn_ab_full_1021_1551`): **1249 / 1249** in 546 s incl. the 1000-repeat
+  race test at 8 x 4096 (the QPU adoption gate); the bench repeat: forward +18.6%, backward +40.9%.
+
+**Commits (the user's; company identity; one per change, each compile-checked ALONE on BLUCCL's TI + the stages in order, the
+tip byte-identical to the tested files; stage files in `profiling_reports/pretrain_branch_2026_10_21/commits/c1..c6`):** TI on
+`02d0d18`: e857c77 single gradient allocation, 43a5c3f backward 16-byte, 37f2196 in-place only, fc4459b forward 16-byte, c435578
+attention (Vj2 default, packed-row plan, v62 forward up to F3c: these three share headers and were never built apart), b1443a5 QPU.
+BluTrain: a987851 (TI pointer), then the merge of BLUCCL **4f45a88** (the colleague's multinode BluCCL commit, pushed 10-21 15:55,
+AFTER we had branched from afc462d; it does not touch the TI pointer; 0 conflicts, checked first with `git merge-tree`) ->
+**3b80f15**, which differs from 4f45a88 by exactly one line, the TI pointer (Context_Parallelism -> their cf1372d).
+**Pushed** with a new PAT kept in `~/.config/blubridge/github_pat` (chmod 600, outside every repo; pushes read it with `$(cat ...)`);
+GitHub verified: TI `dist_side_gautam_lottn` = b1443a5, BluTrain = 3b80f15.
+**For the colleague:** `git fetch origin && git checkout dist_side_gautam_lottn && git submodule update --init --recursive`, then
+`make -j$(nproc) all SM_ARCH=90`; plus the `monitoring.production` fix above.
+**Also re-checked (pretraining fixes from earlier, inside what the colleagues run):** Muon V1n (a9bc08c is an ancestor of 02d0d18,
+0 racy `atomicAdd(acc`), the F1 non-finite-gradient fix in both ZeRO optimizers, the optimizer grad cast converting straight into
+`shard_grad_fp32_` (no 5.9 GB temp), F4 (W = 1); the GEMM library is Kota's BluBLAS `ea666ab` (accepted for BluTrain, newer than
+the master's 35e51a0).
+
+### 45.63 2026-10-21: FUTURE TASKS for pretraining (user: "we will do one by one") + what the colleague's DPO loss kernel uses
+
+1. **Casts on H200: ALREADY FAST (checked the same day; this item was wrong as first written).** `ConversionKernelsSM90.cu`
+   (kathir-23s, d8506d5, 2026-08-06) gives H100 / H200 their own vector casts: fp32 -> bf16 `sm90::vec8_convert_to_bf16` (8 per
+   thread), bf16 -> fp32 `sm90::vec4_convert_to_fp32` (4 per thread), 128-bit accesses, bit-exact round-to-nearest-even.
+   `ConversionKernels.cu:198 / :229` take them by default when both pointers are 16-byte aligned (off only with
+   `BLUTRAIN_NO_SM90_CONVERT` / `BLUTRAIN_NO_SM90`); B300 has its own vec8 path (`:183 / :213`); the scalar `convert_type_kernel`
+   (one element per thread) is only the fallback (other dtype pairs, unaligned data). My 08-26 note (23.6% casts on the 4B
+   trainer, scalar kernel) was older than this path. Left (low priority): an nsys run to confirm the production casts take the
+   vector path and what they cost now. **Wiring verified the same day:** `to_dtype` (no kernel when the dtype already matches)
+   -> `as_type` -> `convert_type_cuda_generic` -> `convert_type_cuda<float, bfloat16_t>` (and back) -> sm90 vec8 / vec4; the cast's
+   backward is `as_type` too; the ZeRO optimizers call `convert_type_cuda_generic` directly; `BLUTRAIN_NO_SM90*` is set only by the
+   older `train/production/bluscript.cpp`, never by production_zero; leftovers are handled inside the vector kernel; both kernels
+   are in the box's built OLD and NEW `libtensor.so` (cuobjdump -sass -fun). Only runtime condition: 16-byte aligned pointers. Casts happen in `as_type` / `autograd::to_dtype` (trainer: around RoPE, Linears and the
+   residual, embedding, wte for the lm_head, logits, loss; many are no-ops in the all-bf16 config) and in the ZeRO optimizers.
+2. **PDL (programmatic dependent launch) on the remaining kernels** (convert, attention, norm, SwiGLU, add, copy). 08-25: 0.06%
+   measured under nsys = a lower bound (the profiler spreads kernels apart); the decisive test is unprofiled tok/s on vs off.
+3. **Attention: we already beat FA3 / FA4 / cuDNN everywhere except ONE tie** (corrected the same day: 0.968 is ours / FA3 TIME,
+   below 1 = ours faster; `session_2026_10_19/box_runs/sb_qpu_1019/summary_steady.txt`). Dense ours / FA3: forward 1.004 (986 vs
+   982 us = the tie), backward 0.968, f+b 0.976; ours / FA4: 0.919, 0.989, 0.972; ours / cuDNN: 0.863, 0.891, 0.884; packed: ours
+   faster than all three in every column (vs FA3 0.865 / 0.953 / 0.933). The only open idea is for that tie: diagonal tile first
+   (QPD, 45.59, lost to a compiler loop reorder, +19 cycles per step) retried with QPU's loop order kept; gate `scripts/loop_sass.py`.
+4. **GEMM hybrid** (our 967-line pin table + Kota's grid-keyed dispatcher): PAUSED since 09-17 when the work moved to SFT; only on
+   the user's word. Production already uses Kota's BluBLAS `ea666ab`.
+- Correctness to-do (not speed): racecheck warnings inside TI's `matmul_bf16_optimized` (used by Muon's Newton-Schulz); never a wrong
+  result in 12,000 calls (10-05), still unexamined.
+
+**The colleague's DPO loss kernel** (`DPOLossKernels(1).cu`, 546 lines; this one file answers the type question -- her header only
+declares the same functions): instantiated for OUR types (`float`, `bfloat16_t`); memory moves as raw `uint4` (16 bytes, the same
+idea as our `loss_ld16` / `loss_st16`); bf16 -> fp32 by a bit shift of the raw word; fp32 -> bf16 by the CUDA hardware intrinsics
+`__floats2bfloat162_rn` (two values per instruction, vectors) and `__float2bfloat16_rn` (scalar tail). Her comment says our
+`bfloat16_t`'s "software conversion" made her kernels issue-bound: true for TIs before **b975be5 (09-29)**, which made our type use
+the hardware conversion on the GPU (`Types.h:111-114`; bf16 -> fp32 was always a shift). Our pretraining / SFT loss kernels use our
+types (`LossVec<bfloat16_t>` through `uint4`), no CudaNativeType. **Corrected the same day, from the SASS:** there is NO
+conversion difference. ptxas pairs our per-element `__float2bfloat16_rn` (Types.h) into `F2FP.BF16.F32.PACK_AB` with TWO source
+registers: the bf16 backward (in-place and out-of-place) has 21 F2FP, 20 of them two values, 1 with RZ (the scalar tail) -- the
+same instruction her `__floats2bfloat162_rn` gives. Two values per instruction is the sm90 maximum (one 32-bit result); 8 values
+= 4 instructions in both kernels. So CudaNativeType in our loss kernels would change the code's spelling, not its instructions.
+Task 1 is a different kernel: the trainer's whole-tensor cast `convert_type_kernel` converts ONE element per thread (2-4 byte
+accesses); the B300 vec8 kernel reads 2 x float4 per thread, converts in pairs (`__float22bfloat162_rn`), writes 16 bytes.
+
+### 45.64 2026-10-21 17:24-18:36 IST: SFT kernel stats against the other libraries (Kathirvel's ask), fresh on the 1x H200
+
+**Ask** (Kathirvel's email, 10-21): "need the kernels stats for SFT kernels against the peers". User: fresh, robust numbers;
+standalone benchmarks of every modified kernel against the other frameworks and against our pretraining kernels; padding vs
+packing; full SFT runs on the 5,000 chats (padding and packing) with a loss-curve graph. GPU use approved for **the 1x H200
+root@86.38.238.55 only** (not the 8x node); I launched and monitored the queue myself under that approval.
+
+**Report for Kathirvel** (my voice, "I", no we/our): `profiling_reports/sft_benchmarks_2026_10_21/sft_kernel_benchmarks.md`
+-> `sft_kernel_benchmarks.docx` (python-docx; the laptop has no LibreOffice / pandoc now), figure
+`box_runs/sft_padding_vs_packing.png`, all raw logs under `box_runs/` (+ `sftb_results.tgz` from the box).
+
+**Scripts** (all in `profiling_reports/sft_benchmarks_2026_10_21/`, box copies in `~/gautam_k/sftb/`): `PLAN.md` (126203c0),
+`setup_sftb.sh` (fa8f1d16: CPU-only setup in parallel -- library + trainer + `tva_a` build of the laptop master, the loss rivals'
+env, the attention rivals' env, the base checkpoint; 17:24:58-17:32:06 = 7 min), `run_all_sftb.sh` (22a6bc58: the GPU queue, a
+GPU-free check before every step, a status line per step in `sftb/run_status`), `run_extra_sftb.sh` (744714df: A3b),
+`bench_rope_sft.cu` (d6d4a5dd), `bench_rope_rivals.py` (3d122dd8), `bench_sparse_ce_sft_v3.cu` (2d644d88 = the 10-17 v2 bench +
+the trainer's in-place backward), `plot_sft_runs.py` (25185260), `summarize_sftb.py` (87c143b9), `build_report_docx.py` (f78bb3f0).
+Library under test: master build `libtensor` b5c9844c (LossKernels.cu 064590b4, GQA_fwd_sm90.cu 7e4197ea = QPU, Vj2 default),
+`libblublas` d15d3c4b; OLD = BLUCCL lib `d5423cd3` (`~/gautam_k/lottn/old`); trainer `bluscript_sft_bin` 99db45fc.
+Box: CUDA 13.2, driver 580.178.04, torch 2.14.1+cu130, Triton 3.8.0, FA3 3.0.0, FA4 4.0.0b34, cuDNN 9.24 (92400), Liger 0.8.5,
+CCE 25.1.1; H200 700 W, free clocks.
+
+**Timeline (box `run_status`)**: S1 17:43:58-17:44:30 | A3 -17:51:13 | A5 -17:52:08 | B1 -17:54:02 | A1 -17:57:31 (16 runs x ~12 s,
+not the 21 min I planned) | A4 -18:04:21 | B2 -18:06:46 | C padded 18:06:46-18:24:48, packed -18:30:59 | A3b 18:31-18:36:05.
+GPU free afterwards (no process of mine left).
+
+**S1 attention quick suite (master build):** 296 / 296, 31 s, backward mode Vj2 (default).
+
+**A3 loss vs the rivals** (bf16 logits [32,768 x 50,304], real stage-0 labels; `box_runs/A3_loss_rivals`, table by
+`sft_loss_vs_rivals_2026_10_17/loss_compare.py`), forward + backward ms, theirs / ours:
+
+| case (trained of 32,768) | ours | Liger | torch.compile | PyTorch bf16 | PyTorch fp32 |
+| --- | --- | --- | --- | --- | --- |
+| real_min (2,920) | 1.003 | 1.304 (1.30x) | 3.875 (3.86x) | 6.227 (6.21x) | 21.14 (21.1x) |
+| real_first (6,112) | 1.173 | 1.523 (1.30x) | 3.874 (3.30x) | 6.231 (5.31x) | 21.14 (18.0x) |
+| real_median (7,577) | 1.255 | 1.623 (1.29x) | 3.878 (3.09x) | 6.232 (4.96x) | 21.14 (16.8x) |
+| real_max (12,729) | 1.530 | 1.968 (1.29x) | 3.900 (2.55x) | 6.237 (4.08x) | 21.16 (13.8x) |
+| nomask (32,768) | 2.603 | 3.603 (1.38x) | 3.942 (1.51x) | 6.266 (2.41x) | 21.18 (8.14x) |
+| all_masked (0) | 0.789 | 1.097 (1.39x) | 3.876 (4.91x) | 6.220 (7.89x) | 21.14 (26.8x) |
+
+On 10-17 (before the 16-byte backward) Liger was FASTER than ours (0.61-0.98x); now ours wins every case. Backward at 83-85%
+of 4.8 TB/s. Extra memory: ours 0.2 MiB with the in-place trainer path (the bench's out-of-place entry adds the 3,144 MiB
+gradient buffer), Liger 0.3, compile 3,144, bf16 9,432, fp32 18,864 MiB. Loss = PyTorch fp32 within 1e-6; 6 / 6 checks pass.
+**Part 2, lm_head + loss** (forward + backward ms, theirs / ours): median 34.93 vs PyTorch 49.01 (1.40x), Liger FLCE 33.19
+(0.95x), CCE 31.86 (0.91x), CCE exact 31.37 (0.90x); real_max 35.20 vs 49.53 / 34.50 (0.98x) / 52.66 (1.50x) / 51.89; nomask 36.28
+vs 52.39 / 38.85 (1.07x) / 135.21 (3.73x) / 132.97. **The one place others win:** on the median SFT micro-batch CCE is 9% and
+Liger FLCE 5% faster, and they peak at 367 / 563 MiB (ours keeps the 3,144 MiB bf16 logits): our lm_head GEMMs compute logits for
+the 77% masked tokens. CCE's time scales with trained tokens (31.9 ms at 23% -> 135 ms at 100%); FLCE drops 38.9 -> 33.2 ms
+(mechanism not checked). Fix = the recorded future item "logits only at trained positions" (needs the BluBLAS M/N%64 guard).
+
+**A3b in-place backward** (the trainer's path since 10-21) vs the out-of-place entry the benches call
+(`box_runs/A3b_loss_inplace`): in / out 0.983-1.007 over 6 padded + 6 packed micro-batches; F+B in-place 0.4-1.3% lower; the
+gradient checksum bit-identical in 12 / 12.
+
+**A4 loss OLD (BLUCCL) vs NEW**, same binary, old / new / old / new (`box_runs/A4_loss_old_new/summary.txt`), F+B new / old:
+real_min 0.813, real_first 0.697, real_median 0.666 (1.882 -> 1.254 ms; B 1.605 -> 1.007), real_max 0.589, nomask 0.485
+(5.376 -> 2.610), all_masked 0.911; gradients bit-identical in all 4 runs, 6 / 6 cases.
+
+**B2 loss on the packed labels** (1,517 rows, 189 micro-batches, mean trained 76.8%; `box_runs/B2_loss_packed`): median packed
+micro-batch F+B 2.203 ms (real_first 2.245, real_min 1.966, real_max 2.397, nomask 2.607, all_masked 0.787); 6 / 6 PASS. Per
+epoch: 625 x 1.255 = 0.78 s padded vs 189 x 2.203 = 0.42 s packed -> packing about halves the loss kernel time (our forward
+skips masked rows, the backward only zero-writes them, so padded rows are already cheap for the loss).
+
+**A5 QK RMSNorm + RoPE** (q [8,18,4096,128], k [8,6,4096,128] fp32, theta 10,000, eps 1e-6; `box_runs/A5_rope`):
+`test_rope_positions` 37 / 37 PASS. Ours fwd / bwd ms: nopos 0.2087 / 0.5080, identity 0.2105 / 0.5207, packed (rows 0-7 of the
+packed data, 29 chats) 0.2102 / 0.5209; identity == nopos BIT-IDENTICAL (q_out, k_out, dq, dk). Positions cost +0.7% fwd /
++2.5% bwd. Forward 3.8 TB/s (80% of peak). Rivals (packed; identity within 6%): torch.compile 0.2852 / 0.7860 (F+B call 0.9163),
+Liger 0.7795 / 1.7442 (2.3376), HF eager 2.4829 / 5.0130 (7.3208). Ours / theirs: compile fwd 0.74, bwd 0.66; Liger 0.27 / 0.30;
+eager 0.08 / 0.10. Kept for backward: ours 3 MiB (rstd), compile 3, Liger 3, eager 387 MiB; all rivals vs fp64 ~1e-6. Liger's
+cutedsl backend is not installed -> its Triton backend ran (warning in rivals.log).
+
+**A1 attention scoreboard** (`scoreboard_free.sh 0 sb_sft_1021 sft_new sft_new`, steady state; `box_runs/A1_scoreboard`), ours /
+rival time: dense vs FA3 fwd 1.006, bwd call 0.975, f+b 0.982; vs FA4 0.918 / 0.988 / 0.970; vs cuDNN 0.828 / 0.888 / 0.873.
+Packed (real_rows_752) vs FA3 0.863 / 0.956 / 0.935; vs FA4 0.776 / 0.972 / 0.923; vs cuDNN 0.821 / 0.898 / 0.881. ms: dense ours
+0.983 / 3.190 / 4.173, FA3 0.977 / 3.271 / 4.248, FA4 1.071 / 3.230 / 4.301, cuDNN 1.188 / 3.593 / 4.781; packed ours 0.408 /
+1.527 / 1.934, FA3 0.472 / 1.597 / 2.069, FA4 0.525 / 1.571 / 2.096, cuDNN 0.496 / 1.700 / 2.196. Same as the 10-19 node
+scoreboard within 0.5% (dense fwd 1.004, packed f+b 0.933) -> holds on a second machine. Only open item: the dense-fwd tie.
+
+**B1 attention, 7 layouts** (`tva_a VARLEN_ONLY=BENCH` + `step6/bench_step6_libs.py`; segments export == segments_1012.txt;
+`box_runs/B1_attn_layouts`). Chats per layout from the test's own FFD packing (recomputed in `summarize_sftb.py`: 5,000 rows ->
+1,517 packed rows): real_rows_0-7 15, 752-759 24, 1504-1511 72, uniform 512/1024/2048/4096 = 64/32/16/8. Packed f+b, theirs /
+ours: FA3 1.05-1.34x real, 1.00-1.35x uniform; FA3-det 1.13-1.32 / 1.09-1.33; FA4 1.04-1.31 / 1.02-1.31; cuDNN 1.15-1.23 /
+1.12-1.21; cuDNN+expsum 1.24-1.49 / 1.20-1.50; Flex doc mask 1.65-1.80 / 1.59-1.62; torch varlen 2.08-2.22 / 2.04-2.25; SDPA
+cuDNN mask 3.89-11.48 / 3.58-12.04; SDPA efficient mask 9.38-27.78 / 8.60-29.11; SDPA flash full row 2.18-6.38 / 2.00-6.68 (flash
+refuses a mask: the 7 "error" lines). Backward alone: FA4 0.6-2.4% ahead on real_rows_0-7, 752, uniform_2048; FA3 / FA4 4.5% /
+4.2% ahead on uniform_4096. **Caveat found today:** in B1 our process ran at a median 1,635 MHz (691 W, power-capped) and the
+rivals' Python process at 1,980 MHz (622 W, pauses between calls) -- `B1/clocks.csv` -- so B1 favours the rivals; quote A1.
+GATE lines: 21 / 21 PASS (FA4 and cuDNN vs FA3), 7 / 7 negative controls FAIL as they must.
+Padding vs packing for the same chats (ours, f+b; padded = chats x dense time per row): real 0-7 7.69 vs 3.86 ms (0.50), 752
+12.57 vs 2.01 (0.16), 1504 36.95 vs 1.29 (0.035); uniform 512 0.038, 1024 0.099, 2048 0.30, 4096 1.003. Plan overhead on full
+chats (uniform_4096 A vs dense): fwd +1.5%, bwd 0%.
+**Our older attention, same box today** (test B of 45.62): fwd 1.215 -> 1.022 ms (0.841), bwd 4.296 -> 3.058 (0.712), f+b 0.740.
+
+**C full SFT runs** (from `blumodel_step_8000`, AdamW 2e-5, warmup 0.03, cosine to 2e-6, 2 epochs, val every 10 steps, BLU_ALL_BF16,
+1 GPU; `box_runs/C_P_padded`, `box_runs/C_K_packed`; `plot_sft_runs.py` -> `sft_padding_vs_packing.png` / `.txt`):
+
+| | padding (B 8 x 8 = 64 rows/step) | packing (B 4 x 5 = 20 rows/step) |
+| --- | --- | --- |
+| steps | 156 (78/epoch) | 151 (~75.5/epoch) |
+| trained tokens seen | 9,531,228 | 9,498,277 |
+| step time, median | 5.014 s | 1.629 s (0.325) |
+| trainer clock, whole run | 16.99 min | 5.14 min (0.302) |
+| wall clock incl. process start + 6.5 GB checkpoint load | 18.0 min | 6.2 min |
+| chats/s; trained tok/s; all tok/s | 12.78; 12,185; 52,282 | 40.65; 38,608; 50,281 |
+| MFU median | 58.1% | 55.9% |
+| train mean epoch 1 / 2 | 1.3158 / 1.2391 | 1.3171 / 1.2403 |
+| val start -> end (drop) | 1.446384 -> 1.283890 (0.1625) | 1.449444 -> 1.286579 (0.1629) |
+| peak GPU memory | 123,233 MiB | 85,757 MiB |
+| max grad norm | 0.919 | 0.946 |
+
+Same learning, 0.30x the time. The ~0.003 val gap is already there at step 0 (same weights): the loader drops the last
+incomplete micro-batch, so the padded val uses 441,382 of 444,233 val tokens (B 8: 4 rows dropped) and the packed val 435,043
+(B 4: 3 rows dropped). For an exact val comparison next time: val B must divide the row count (500 rows: B 4/5/10; 147 rows: B
+1/3/7), or B 1 as in the 10-16 e2e test. Packing's 4% lower all-tokens/s: fixed per-step work (optimizer) is a bigger share of a
+1.6 s step + the smaller micro-batch -- not separated. Lower peak memory = mostly the smaller micro-batch (4 vs 8 rows), not a
+packing gain. The padded run repeats 10-07 (final val 1.2839, epoch means 1.316 / 1.239) at 5.0 s/step (was 5.3) and 58% MFU (was
+53%); no empty_cache slow steps any more (all steps ~5.0 s).
+
+**Lessons recorded:** (1) a single-process multi-library sweep can hide a 17% clock difference -- always log clocks per process;
+(2) `loss_compare.py` counts ours' peak with an out-of-place gradient -- with the in-place trainer path it is 0.2 MiB; (3) the
+`head -c` cut of `segments_1012.txt` ("153" = "1536") looked like a packing mismatch -- it was not (the file has 1536/1536/1024).
+
+**45.64 addendum (19:00-19:15 IST): why the padding / packing curves differ, and the exact-comparison run (prepared, not run).**
+User's question: the kernels give the same numbers padded or packed, so why do the per-step train losses of the two runs differ
+(figure panel a), why the small val gap (b), and what (c) shows. Answer, measured (`step_composition.py` -> `box_runs/step_composition.txt`;
+every padded chat found in the packed file by token hash, 5,000 / 5,000; every step of both runs rebuilt and checked against the
+trainer's trained_tokens column, equal for all 156 / 151 steps):
+- the runs train on DIFFERENT chats at the same step: the padded file is one random chat order (seed 1234), step k = chats
+  64k..64k+63; the packed file is FFD + its rows shuffled (seed 1236), step k = 20 rows. Padded step k and packed step k share
+  0.75 of 64 chats on average (max 3). Packed steps hold 54-78 chats (padded 64), 57,543-67,333 trained tokens (padded 49,618-74,892).
+- proof: step 0 has IDENTICAL weights in both runs, yet train loss 1.449952 (60,263 tokens) vs 1.403362 (64,520 tokens) -> only the
+  chats differ. One step's train loss moves ~0.08 from step to step (std of differences 0.084 / 0.089). Last steps differ (1.262 /
+  1.317, different chats); epoch means agree (1.3158 / 1.3171, 1.2391 / 1.2403).
+- (b): the loader drops the last incomplete micro-batch -> padded val (B 8) = val chats 0-495 (496), packed val (B 4) = 144 of 147
+  packed rows = 490 chats; 486 in both, 10 only padded, 4 only packed -> the constant ~0.003 gap, present at step 0 with identical
+  weights. Same drop (0.1625 / 0.1629). (c) = (b) against minutes.
+- What proves equal numbers: kernel tests (packed == alone bit-exact: attention G10/G11, RoPE test_rope_positions) + the 10-16 same-500-
+  chats test (step-0 val 1.445038 both, grad norm 0.7935 both). A whole run with the same chats per step is the missing proof.
+**Prepared exact run** (`build_samesteps.py`, laptop, CPU only): `~/Downloads/sft_data/stage0_5k_samesteps_as_padded` (77 MB):
+train = 156 groups x 28 rows = 4,368 rows, group s = exactly the 64 chats of padded step s (incl. the epoch-wrap step 78), worst-fit
+decreasing so every row has >= 1 chat (the loader refuses a row without a trained token, SftDataLoader.h:218; empty filler rows are
+impossible); chat slices copied from the packed file; val = padded val rows 0-495 (= what the padded run used), dense. Checks
+passed: loader rules, every group == the padded step's chats by token hash, trained tokens per step == the padded run's column.
+Run (NOT started; needs the user's OK + a free GPU): `BLU_SFT_DATA=<that folder> BLU_SFT_B=4 BLU_SFT_ROWS_PER_STEP=28 BLU_SFT_EPOCHS=1`
+(max_steps = 1 x 1,092 / 7 = 156, same LR per step as the padded run), rest as phase C; ~11 min; compare step by step with
+`box_runs/C_P_padded` (trained tokens must be equal; train loss, grad norm, val expected equal to 3-4 digits).
+Report updated (sections 5-7) and rebuilt; root copies `sft_kernel_benchmarks.md/.docx` (image path fixed for the root). Antigravity:
+both docx viewers were already installed; added `workbench.editorAssociations` `*.docx -> docxViewer.DocxEdit` (Docx Renderer).
+
+**45.64 addendum 2 (19:16-19:27 IST): test 2 RUN -- the same chats in every step, padding vs packing REPRODUCE.**
+User's OK ("start the run now"); GPU free at 19:14 (the colleague's job had ended). Data `stage0_5k_samesteps_as_padded`
+copied to the box (md5 equal, 10 files), `run_samesteps.sh` (ad6dd325): B 4, 28 rows per step, 1 epoch, val = the padded run's
+496 val rows (dense; `packed_rows_of` returns an empty plan for a non-packed loader, so a packed train + dense val folder works).
+Run 19:16:02-19:26:46, exit 0, 156 steps, 9,531,228 trained tokens (= the padded run), peak 85,757 MiB, 2.18 s/step, 9.69 min.
+Against `C_P_padded` (`compare_samesteps.py` -> `box_runs/sft_padding_vs_packing_same_chats.txt` / `.png`):
+- trained tokens equal at all 156 steps; step 0 train 1.449952 both (diff 0), grad norm 0.7446 / 0.7445, val 1.446384 both;
+- train loss |diff| mean 8.27e-05, max 3.08e-04 (step 21); by range 0-9 7.3e-05, 10-49 7.7e-05, 50-99 8.3e-05, 100-155 8.8e-05
+  (does not grow); grad norm |diff| mean 1.6e-04, max 1.35e-03 (0.67% relative); epoch means 1.3158 / 1.2391 in BOTH;
+- val at all 17 checks within 9.4e-05 (end 1.283890 / 1.283943); last train 1.262134 / 1.261958.
+Remaining difference = order of additions (8 x 8-row vs 7 x 4-row micro-batches, GEMMs with other row counts, atomic dQ in the
+attention backward), bf16 last bits. Verdict: packing trains the same model as padding; test 1's per-step differences came only
+from the step composition. Report section 5 rewritten (5.1 test 1 setting / figure 1 / results, 5.2 figure 1 graph by graph =
+the user's doubts, 5.3 why a second test, 5.4 test 2 setting + how the steps were built + figure 2 + results, 5.5 figure 2 graph
+by graph, 5.6 result), correctness table + summary updated, the old "next" item removed; master + root copies rebuilt (docx
+2 figures, 14 tables). GPU free after the run.
+
+**45.64 addendum 3 (~19:45 IST): 1x H200 box backed up before it may be closed.** `profiling_reports/box_1x_h200_backup_2026_10_21/`
+= `~/gautam_k` minus venvs / checkpoint / git clones / build trees (all rebuildable); 1.4 GB, 485 files, checksum-verified
+(0 differences); plus the tested libraries of the pretraining A/B (`lottn/old_libs`, `lottn/new_libs`). Index: `README_BACKUP.md`.
+
+### 45.65 2026-10-22 morning: the colleague's attention mail, the SFT data for the 1.7B model, the RoPE positions zip
+
+**The colleague's attention mail (Uma Mahesh).** His forward changes are the same mechanisms as our QPU forward (K1 / K5 /
+SM3 / QPU: the P.V wait ordered after the softmax with `order_after(rs0)`, the `sub.f32 zero` trick, K1_SPLIT 16), which we
+pushed on 10-21 (TI b1443a5, 15:58). Recorded in memory (`project_dense_fwd_gap_1017`).
+
+**SFT data for the DPO team's checkpoint** (they asked for an SFT checkpoint trained on robust data, not the 5,000-chat set).
+Compared from the official papers only:
+- Tülu 3: 939,344 prompts; used for Llama 3.1 8B / 70B / 405B; LR 5e-6 / 2e-6; 2 epochs; batch 128; max length 4,096.
+- OLMo 2 1B: SFT on the **0225 variant of the Tülu 3 mix (`allenai/tulu-3-sft-olmo-2-mixture-0225`, 866,138 chats)**; average
+  score 36.9 (base) -> 40.6 (SFT) -> 42.7 (after the later stages). OLMo 2's tokenizer is cl100k-based (§2.2).
+- OLMo 3: Dolci Think 2,268,178 / Instruct 2,152,112 chats, 45.4B / 3.4B tokens, 32K context, 7B / 32B only -> does not fit our
+  T 4096 or our model size.
+- **Chosen: the Tülu 3 OLMo-2 mix** (the mix used for a 1B model), revision `d91a0785ade02942520280fb484866fce41e448f`.
+  **Aya dropped** (`ai2-adapt-dev/tulu_v3.9_aya_100k`, 99,989 chats): our base is trained on English only and the GPT-2
+  tokenizer needs 2-4x more tokens for other languages. **2,000 chats held out** as the validation set. The tokenizer stays
+  GPT-2 tiktoken (the model's embedding uses GPT-2 ids; it can encode any language, it is just inefficient for non-English).
+
+**RoPE positions zip for a colleague:** `~/Downloads/rope_positions_2026_10_22/` (+ `.zip`, 172 KB, 82 files): `README.md` (443
+lines: why positions restart, the benefits, every change line by line, the tests), `sft_branch/` (our files), `for_bluccl/`
+(merged into BLUCCL keeping Kruthik's bf16 code: 0 conflicts, compiles 9/9), `patches/` (306 changed lines), `tests/`,
+`sft_branch_trainer_and_loader/`, `evidence/`.
+
+### 45.66 2026-10-22: Kruthik's bf16 fused RMSNorm + RoPE in the SFT branch, with per-chat positions (stages A, B, C)
+
+**Why.** The SFT trainer used the fp32 fused kernel: bf16 q/k -> transpose -> copy -> widen to fp32 -> kernel -> narrow to bf16,
+with extra copies and fp32 tensors kept for the backward. The production trainer (BLUCCL `885ff4d`,
+`train/production_zero/bluscript_zero_ckpt.cpp:627-643`) uses Kruthik's bf16 kernel by default (`BLU_QKROPE_FP32=0`): it reads
+token-major bf16, writes head-major bf16, fp32 math inside, deterministic dgamma. It had no per-chat positions. User's plan:
+port it as it is, test, add positions, test, switch the trainer, test, then resume the SFT run.
+
+**Stage A (as it is).** Into the laptop master `~/Downloads/BluTrain_sft/Tensor-Implementations`: `src/Kernels/cuda/norm/
+FusedRMSRoPE_bf16.cu` from BLUCCL 02d0d18 (md5 6f360b51, saved as `profiling_reports/rope_bf16_port_2026_10_22/kruthik_original/`)
++ only Kruthik's additions in 7 wiring files (+22/+25/+12/+30/+24/+39/+107 lines, -0); the files before the port are in
+`backup_sft_before/`. Test `test_rope_bf16_vs_fp32.cu` (a9d63b29; the fp32 path exactly as bluscript_sft.cpp ran it vs
+`fused_rms_rope_*_bf16_tm`), H200: **all 8 outputs bit-identical** (q_out, k_out, q_rstd, k_rstd, dq, dk, dgamma_q, dgamma_k) at
+B 4 and 8; time fp32 path 0.7449 ms vs bf16 0.2462 ms (0.330) at B 4, 1.5133 vs 0.5425 (0.358) at B 8.
+
+**Stage B (positions).** The same scheme as the fp32 kernels: a compile-time `HAS_POS` template flag in the forward and backward
+kernels, `positions` appended LAST through every layer (`FusedRMSRoPEKernels.h`, `Normalizations.h/.cpp` with the existing
+`fused_rms_rope_positions_ptr` check, `NormalizationOps.h/.cpp`, `FusedRMSRoPEBf16Backward` with a `positions_` member);
+the launcher picks `HAS_POS=true` only when the pointer is not null. Kernel file now md5 5338bd7b; diff vs Kruthik's in
+`stage_b_kernel_vs_kruthik.diff`. **Pretraining unchanged: 9 / 9 kernels SASS-identical** to Kruthik's original (`sass_compare.py`,
+`orig.sass` / `new.sass`); the `HAS_POS=true` kernels are different code (+8 to +32 instructions), so the comparison is not empty.
+Test `test_rope_bf16_positions.cu` (dad694c1), H200 GPU 0, B 4 and 8: check 1 identity positions == none, check 2 bf16 packed ==
+fp32 path packed (and packed differs from none in 30.0M / 37.7M values, so positions are used), check 3 one chat inside a packed
+row == the same chat alone: **all bit-identical**. Time fwd+bwd one layer: B 4 bf16 no positions 0.2427 ms, positions 0.3295
+(+35.8%), fp32 path with positions 0.7578 -> the new SFT path is 0.435x the old; B 8 0.5409 / 0.6907 (+27.7%) / 1.5294 (0.452).
+
+**Stage C (the trainer).** `bluscript_sft.cpp` (now md5 f2024ab2): `fused_rms_rope_bf16(q, k, Nq, Nkv, q_gamma, k_gamma,
+cos_sin_cache, 0, qk_eps, false, g_packed.positions)` by default, `BLU_QKROPE_FP32=1` = the old fp32 path (as production).
+Check script `stagec_check.sh` (0168c3d8): two short runs (4 min each) on the real Tülu data from the real base checkpoint.
+- First attempt: both runs aborted in the checkpoint load: `[Architecture Mismatch] Shape mismatch for tensor 'param_000260'`.
+  `ckpt_shapes.py` (eba478fe) read `metadata.bin`: **fullchess has 282 weights = 28 layers x 10 + embedding + final norm**; our
+  trainer builds 26 layers (param 260 = our embedding = their layer 27's first weight). Every other shape equal (d 2304, 18/6
+  heads, ffn 6144, vocab 50304, tied). Added `BLU_N_LAYERS` and `BLU_ROPE_THETA` overrides (defaults unchanged 26 / 500000)
+  right after `ModelConfig cfg;` -- a checkpoint stores weights, not the config, and **a wrong theta does not error**.
+- theta: our SFT trainer had 500000 (from commit 7e2264f, the navin-sep1 cherry-pick), the production trainers 10000. Measured
+  (28 layers, same data, same weights, step 0): theta 10000 val 1.230082 / train 1.180083 / grad norm 0.40; theta 500000 val
+  1.259555 / train 1.211322 / norm 1.01. Then **Navin's pretraining log (`bluscript_zero_ckpt_022.log`, repo root) gave the real
+  config: 28 layers, theta 50000** (NeoX), T 4096, resid/logits/embed bf16, 1,701,485,824 params, Muon + AdamW peak 1.2e-3 ->
+  1.2e-4 WSD (warmup 700, stable 17,380, decay 4,520), 22,600 steps x 1,048,576 tokens = 23.7B tokens, final val 1.3088.
+  `rms_eps` 1e-5 and `qk_eps` 1e-6 are not in the log; every trainer copy uses these.
+- bf16 vs fp32 at theta 10000: **step 0 identical** (train 1.180083, val 1.230082, norm 0.4017); steps 1-5 equal to 4-5 digits;
+  step time 1.664 s vs 1.715 s (**3.0% faster** than the fp32 path). The trainer is not bit-reproducible run to run in the
+  backward: two identical bf16 runs gave norm 0.4019 vs 0.4017 at step 0 and 1.267043 vs 1.267130 at step 1 (open item).
+  Logs: `box_logs/stagec/` (`bf16_theta10000.log` there is the bf16-vs-fp32 run; it overwrote the theta-test log of that name).
+- Why the restart of positions per chat is kept, its cost, and what every library does: `kernel_diff_sft_pretraining.md`.
+
+### 45.67 2026-10-22: the Tülu 3 SFT run (box 86.38.182.101, 4x H200, GPU 0)
+
+**Box setup** (the user typed every command): `~/gautam_k/{BluTrain_sft (laptop master), local (yaml-cpp), prepenv (datasets
+5.1.0, tiktoken 0.14.0, numpy 2.5.4, huggingface_hub 2.2.0), ckpt/fullchess, sft_data, runs, rope_opt}`; Python 3.12.3, CUDA
+13.0.88, driver 580.178.04, Open MPI 4.1.6, gcc 13.3.0 (all in `~/Downloads/box_backup_2026_10_22/env_versions/`).
+
+**Data** (`sft/prepare_sft_data.py`, md5 d4d8f8b1: added `--num 0` = all, `--skip-kept N`, `--drop-source` repeatable; tested
+on fake data: val and train disjoint, union = all English chats, no Aya). Val `--num 2000`: 2,000 chats -> 320 packed rows
+(898,276 trained tokens). Train `--num 0 --skip-kept 2000`: 741,413 chats -> **115,904 packed rows** (6.4 chats per row, 474.7M
+positions, **325.7M trained tokens per epoch**); dropped too long 22,020, Aya 99,989, empty answer 716. Base checkpoint
+`navingv/fullchess` (8-rank save; `metadata.bin` 180,039 B + `data_rank_0.bin` 5,191,315,968 B hold the weights).
+
+**Settings** (`run_tulu3_sft.sh`, 0db5bdad): packed rows only (decided 10-22: no padding anywhere from now on), 20 rows per step
+(B 4 x GRAD_ACCUM 5 x W 1, ~128 chats), 2 epochs = **11,590 steps**, **Muon (matrices) + AdamW (embedding, norms) at peak lr
+5e-5** for both, warmup 3% (348 steps), cosine to 5e-6, `BLU_ALL_BF16=1`, `BLU_N_LAYERS=28`, `BLU_ROPE_THETA=50000`, bf16 RoPE,
+validation every 200 steps, checkpoint every 1000 steps, newest 2 kept. Why Muon 5e-5: the base was pretrained with Muon;
+Moonlight (arXiv 2502.16982, §3.5, Table 6) found Muon-pretrained + Muon-SFT the best of 4 combinations on the Tülu 3 mix at
+lr 5e-5; our 10-07 sweep (§37.5) had Muon 5e-5 still falling at the end and 1.2e-4 overfitting in epoch 2.
+
+**Run** (started 15:51:33 IST): step-0 val **1.175723** (below 1.2301 at theta 10000 -> theta 50000 confirmed on the real data),
+**1.88 s per step, 43.5k tokens/s, 52% MFU**, 70% of positions are trained tokens, `nsrej 0/0` and `nsratio` 0.98-1.02 (Muon's
+Newton-Schulz health), grad norm 0.13-0.35. Val: 1.175723 (0) -> 1.048921 (200) -> 0.992842 (400) -> 0.969231 (600) -> ...
+-> 0.856308 (8000) -> 0.856344 (8200) -> 0.855941 (8400) -> **0.854744 (9000)**. Checkpoints are 17 GB each (bf16 weights 3.4 GB
++ Muon fp32 master and momentum 12.7 GB + AdamW state 1.4 GB). Every save goes into its own folder `blumodel_step_<N>`; after a
+save the trainer deletes all but the newest 2 (`prune_old_checkpoints`, `BLU_CKPT_KEEP=2`), so the end-of-epoch-1 checkpoint was
+copied aside: **`keep_blumodel_step_6000`** (step 6000 = 205 steps after epoch 1 ends at step ~5,795; an exact step-5,795 save is
+not possible in a running process). Watchdog `monitor_tulu3_sft.sh` (bc0f720d): read-only, one line every 5 minutes into
+`monitor.txt` with a live ETA, ALERT lines for crash text, nan/inf, trainer gone, no step for 15 min, val up > 0.02, disk < 20 GB.
+
+**Stop and resume.** 20:43:35 IST stopped at step 8723 to move to 2 GPUs (the code allows it: DCP re-splits Muon's state for a
+different GPU count, `ShardedMuon.h:315-321`; with B 2 x W 2 every step reads the same rows, `SftDataLoader.h:177`; untested
+for Muon) -- the other GPUs were taken, so it was **resumed on GPU 0 at 20:48:49** with the exact settings
+(`run_tulu3_sft_resume1.sh`, 081b6d2c; log `run_resume1.log`, status `status_resume1.txt`). Resume check: `[resume] loaded DCP
+checkpoint at step 8000 (loss 0.694324)`; **step 8000 identical to the first run** (train 0.653908, grad norm 0.1476, val
+0.856308); steps 8001-8004 within 1.5e-4 (the known backward non-determinism). **Stopped at 21:30:37 IST at step 9194**, after
+the step-9000 checkpoint was complete (`metadata.bin` present, 17 GB). Tomorrow: resume from 9000 (2,590 steps, ~1.5 h).
+Loss curves = `run.log` steps 0-7999 + `run_resume1.log` from 8000. Note: the resumed process rewrote `sft_muon.csv`, which now
+holds steps 8000-9194 only; steps 0-8723 are in `run.log`'s step lines.
+
+**Saved.** Laptop `~/Downloads/box_backup_2026_10_22/` (43 MB): every log, CSV and status file, the watchdog log, GPU CSVs, the
+run's exact trainer binary (`bluscript_sft_bin.used`), `stagec/`, `rope_opt/` (benchmark logs + ncu report + sources), all
+scripts and build logs, `env_versions/`, and `BluTrain_sft_box_only/sft_adamw.csv`. Checked: the box's `BluTrain_sft` source is
+identical to the laptop master (rsync checksum dry run; the 2 test files there are md5-equal to the laptop copies). The three
+checkpoints (6000, 8000, 9000) stay on the box disk (`/dev/vda1`, 290 GB), which the user will attach to a new instance tomorrow;
+if that disk is not kept, they must be uploaded first (the laptop link was 5.4 MB/s; a partial 4.9 GB copy of step 9000 on the
+laptop is incomplete). Not copied (reproducible): step 8000, `sft_data` (same script + revision + seed), `fullchess` (HF),
+the environments, the build trees, `tmp` (Open MPI session files).
+
+### 45.68 2026-10-22: optimizing Kruthik's bf16 fused RMSNorm + RoPE -- measured, profiled, compared with every library
+
+All files in `profiling_reports/rope_bf16_port_2026_10_22/`, box copy `~/gautam_k/rope_opt` (built standalone: the benchmarks
+compile the kernel file directly, no libtensor, so they never touch a library a run is using). **Timing caveat:** the first
+runs were on GPU 2, which ran everything ~10-14% slower than GPU 0 (originals too); the GPU-0 re-runs at the end are the clean
+numbers, and from now on timing runs go on GPU 0 only. All numbers B 4, T 4096, 18/6 heads, hd 128.
+
+**1. Kernel-only benchmark** (`bench_rope_bf16.cu`, a1ccc5b7; each kernel separately, 2 s warm-up, no-positions and positions
+alternated, median of 9 rounds of 200 launches): GPU 2 forward 78.4 us (81.0 with positions), backward 120.9 (**210.9**), dgamma
+reduce 58.4; forward and backward at 53-56% of the 4.8 TB/s peak. The positions cost is all in the backward (+74.5%).
+
+**2. ncu, all 12 kernels** (`rope_bf16_ncu_1022.ncu-rep`, `--set full --import-source yes`, built `-lineinfo`), per-instruction
+stall samples (SASS order):
+- forward: the 4 tokens of a warp run one after another -- token k+1's loads are issued only after token k's store (each
+  `PRMT` that waits on a load: 9.0 / 10.9 / 12.9 / 17.9% of stalls); 51% of stalls wait on loads.
+- backward: one warp per block walks 128 tokens; each token = 13 small loads (2-byte `LDG.E.U16`) then one wait (`IMAD.U32`
+  bf16->fp32 50.6%); the grid fills 0.7 waves; 65% of stalls wait on loads.
+- positions: `IMAD.WIDE pos*128` waits 23.1% (the position) and the cos/sin consumers 40.3% (the row it then loads) -> two
+  chained waits per token; 81% of stalls wait on loads, DRAM use drops 52% -> 30%.
+- reduce: 1 block of 128 threads, 0.0 waves, DRAM 0.3%.
+
+**3. How the others do it** (source read in `~/Downloads/sft_research/`, commits in `kernel_diff_sft_pretraining.md` §7 + vllm
+f424213, TensorRT-LLM 4d2c821, sglang afd0d7b, unsloth 8a7d528, apex 575968b, quack 77a750c): vLLM / TensorRT-LLM / SGLang have a
+fused QK-norm + RoPE, **forward only**, in place on a fused QKV tensor with `position_ids`; vLLM's advanced version handles
+several heads per warp with cos/sin in shared memory via `cp.async` (`fused_qknorm_rope_kernel.cu:320-437`). Unsloth's fused
+Triton kernel has a backward but **no gamma gradient** (falls back to separate kernels when the norm weights are trainable,
+`qk_norm_rope.py:416-438`). Liger, FlashAttention (Triton), TransformerEngine, Quack: separate RMSNorm and RoPE, dgamma from
+partial rows reduced by a full-GPU sum or a finalize kernel. **Nobody else fuses QK-norm + RoPE with the dgamma backward.**
+
+**4. Round 1** (`opt/FusedRMSRoPE_bf16_opt.cu`, 3eb65982; `opt/bench_rope_opt.cu`, 182a0a3b, checks all 10 outputs bit for bit
+against the original before timing): F1 forward = all 4 tokens' loads first; B1 backward = the next token's loads one step
+ahead; B2 positions = lane l loads the positions of 32 tokens at once, each token takes its own from a shuffle; R1 reduce = q
+and k in one launch, one warp per 32 columns, the same addition order, 32 rows of loads in flight. **Bit-identical at B 1/2/4/8,
+with and without positions.** One rule found: the forward rotation must be written exactly as the original compiles it,
+`__fmaf_rn(a, own, lo ? -__fmul_rn(b, partner) : __fmul_rn(b, partner))`; left to the compiler, the second half was paired the
+other way and 85 of 9.4M outputs came out 1 bf16 step off.
+
+**5. Round 2** (`opt/FusedRMSRoPE_bf16_v2.cu`, 23f15e7d; `opt/bench_rope_v2.cu`, 342cd231; every variant checked bit for bit):
+fwd2 = one warp per token reading cos/sin once for 2-24 heads; bwd2 = one block per group of 8-24 heads with cos/sin in shared
+memory in stages of 8-16 tokens; reduce3 = 32-128 rows in flight. Idea: ncu showed the L2 at ~70% busy (cos/sin rows re-read for
+every head, ~200 MB per call). **All variants bit-identical, but fwd2 0.56-0.74x and bwd2 0.62-0.79x of the original's speed
+without positions -> the L2 theory is refuted** (cutting cos/sin traffic 24x made it slower; L2 activity was a symptom). Both
+forward attempts made each warp do more work one after another and lost to the original's many small warps. The real limit of
+the forward and the no-positions backward is still unproven.
+
+**6. GPU-0 clean results** (`box_logs/bench_opt_h200_1022_gpu0.log`, `bench_v2_h200_1022_gpu0.log`), us at B 4:
+
+| kernel | original (Kruthik) | round 1 | round 2 best | kept |
+| --- | --- | --- | --- | --- |
+| forward | 68.9 (70.5 positions) | 94.3 | 95.8 (HPW 6) | original |
+| backward, no positions | 110.1 | 111.8 | 142.2 | original |
+| backward, positions | 194.9 | **118.3** (B2) | 141.5 | round 1 |
+| dgamma reduce | 48.2 | 36.0 | **30.1** (UNROLL 128) | round 2 |
+
+**Best bit-identical combination: pretraining 227.2 -> 209.1 us (1.09x), SFT 313.5 -> 218.9 us (1.43x)** at B 4; the same
+ranking at B 1, 2 and 8. Not ported yet.
+
+**7. Rival benchmark, ready, not run** (`rivals/rival_bench.py` 53b063d1, `rivals/rope_capi.cu` d2f42d4d = C entry points so
+Python calls our kernel through ctypes, `rivals/vendor/` = FlashAttention's Triton RMSNorm + RoPE files from commit 94e22c9):
+ours, HF eager, torch.compile, Liger, FlashAttention, Quack RMSNorm + FlashAttention RoPE; pretraining and packed-SFT cases; B
+1/2/4/8; 18/6 and 32/8 heads; forward and backward timed separately (CUDA events + summed kernel time from torch.profiler);
+outputs, input gradients and gamma gradients checked against fp64 first. Box venv `~/gautam_k/rivalenv` (torch
+2.14.1+cu132, triton 3.8.0, liger 0.8.5, quack 0.6.5, cutlass-dsl 4.8.1). The first run failed in every Triton rival:
+`Python.h: No such file or directory` -> needs `apt-get install python3.12-dev` (and `pip install numpy`); run with `python -u`.
+
+### 45.69 2026-10-22 end of day: what is where, and what is next
+
+- **SFT run:** stopped at step 9194; resume tomorrow from `blumodel_step_9000` with `run_tulu3_sft_resume1.sh`'s settings (a new
+  log name, since that script refuses an existing `run_resume1.log`); then hand the final checkpoint to the DPO team, and compare
+  `keep_blumodel_step_6000` (epoch 1) with the final one (val + dev suite, see `overfitting_memorization_real_learning_check_val_dev_suite_and_unseen_suite.md`).
+- **RoPE:** run the rival benchmark on GPU 0 (after `python3.12-dev`), profile the fastest rival against ours side by side, then
+  port the proven combination (original forward + round-1 backward with positions + round-2 reduce) into the SFT library.
+- **Docs written today:** `kernel_diff_sft_pretraining.md` (what changes between pretraining and SFT, kernel and non-kernel, and
+  what 10 libraries change), `overfitting_memorization_real_learning_check_val_dev_suite_and_unseen_suite.md` (train vs val, dev suite vs unseen suite).
+- **Noted for later:** the loss kernel has a B300-only forward (`loss/arch/CrossEntropyKernels_sm103.cu`, routed at
+  `LossKernels.cu:1093-1100`) that does not support `ignore_index` yet; the SFT tree's Muon sum-of-squares still has the old
+  float `atomicAdd` (MuonKernels.cu md5 f6d821c2 = before the 10-05 V1n fix); the backward is not bit-reproducible run to run.
+
+### 45.70 2026-10-23 morning: the boxes, the old disk, the checkpoints to Hugging Face
+
+- The new **4x H200 box** `root@95.133.252.52` (`short-data-lies-fin-03`) came up with a **fresh disk**: no `~/gautam_k`. The
+  old box's IP `86.38.182.101` now answers with a different host key (another machine).
+- The **old disk** was attached to a **1x RTX PRO 6000 Blackwell box** `root@95.133.252.123` (`clean-name-flourishes-fin-03`):
+  `/root/gautam_k` was intact (checkpoints 9000 and `keep_blumodel_step_6000`, 8000, all logs; the log ends at step 9194).
+- **Hugging Face bucket** `hf://buckets/gautam1926/checkpoints_sft` (public, made by me): checkpoints 9000, 6000 and later
+  11590 uploaded with `hf sync` (prepenv hf 2.2.0). The `hf` login on that shared root account was a teammate's
+  (`MADHU_h200`); our uploads used my own token passed to the command only. Token file: laptop `~/.config/blubridge/hf_token`
+  (chmod 600, account gautam1926; value never written into a doc).
+- Checkpoint md5 (laptop `~/Downloads/box_backup_2026_10_22/checkpoint_md5_1023.txt`): 9000 `404c2809…` / `c14e3418…`,
+  6000 `548c8a2b…` / `80aba476…`, 11590 `171a164e…` / `0f9cdf52…` (`data_rank_0.bin` / `metadata.bin`).
+- Everything except the checkpoints was copied **1x → 4x** (rsync, 14.32 GB, 37,297 files + 9 links); the content hash of all
+  files was identical on both boxes (`fe9545e8`). Step 9000 was downloaded from the bucket to the 4x box and its md5 matched.
+- Plain download links work for a public bucket:
+  `https://huggingface.co/buckets/gautam1926/checkpoints_sft/resolve/<checkpoint>/<file>` (tested: metadata.bin md5 matched).
+
+### 45.71 2026-10-23: the Tülu 3 SFT run finished on the 4x box (GPU 3)
+
+- Script `run_tulu3_sft_resume_4x.sh` (`profiling_reports/rope_bf16_port_2026_10_22/`): the same settings as 10-22 and the same
+  trainer binary (md5 `2e98b56b`); two changes that do not touch the math: **CUDA 13.0 libraries first** in `LD_LIBRARY_PATH`
+  (the box's `/usr/local/cuda` points to 13.4, installed by a teammate that morning; proven with ldd: all 5 CUDA libraries then
+  load from 13.0) and **`BLU_CKPT_KEEP=1`** (the shared disk was filling). New log names: `run_resume_4x.log`,
+  `status_resume_4x.txt`; watchdog `monitor_4x.txt` (now also alerts on a failed checkpoint save and on < 25 GB disk).
+- Started **13:15:02 IST** (with my OK on GPU 3). **Step 9000 matched 10-22 exactly** (train 0.567569, grad norm 0.1390, val
+  0.854744); steps 9001+ differed by 4e-5 to 9e-5, less than 10-22's own same-box resume (1.3e-4 at steps 8001–8005), i.e. the
+  known run-to-run non-determinism of the backward, not the box.
+- Checkpoints 10000 and 11000 saved and pruned as planned. **Finished 14:42:58 IST, exit 0, 0 watchdog ALERTs.** Last step
+  11589: val **0.850100**. Final checkpoint `blumodel_step_11590` (md5 above), uploaded to the bucket.
+- Speed (log summary): steady 44,021 tokens/s, MFU 52.47%, 2,585 steps in 80.2 min; memory peak 74,064 MiB.
+
+### 45.72 2026-10-23: reading the finished run (loss curves, overfitting, memorization)
+
+- Files: `post_training_research/tulu3_sft_1022/` (`analyze_run.py`, `tulu3_sft_1022_full_run.log` = the three logs joined
+  as they are, `trajectory.csv`, `loss_train_val.png`, `loss_val.png`, `memorization_check.png`, `memorization_windows.csv`).
+  The three log parts join exactly (val and train identical at steps 8000 and 9000).
+- Val 1.1757 (base) → 0.8608 (end of epoch 1) → **0.8501** (end, the lowest). **No overfitting.** Epoch 2 real learning
+  0.0107 nats; **memorization measured directly at 0.06–0.07 nats** (epoch-2 step 5795+n shares 16 of 20 rows with epoch-1
+  step n, no shuffle; same rows dropped 0.120 vs val 0.056 on average); at the end memorization 0.057 vs real learning 0.012.
+- Every doubt and answer of that discussion (memorization vs overfitting, nats, "4 of 5", y − x, the gap, the step-to-step
+  jumps with the 0.804 correlation proof) is in `overfitting_memorization_real_learning_check_val_dev_suite_and_unseen_suite.md`
+  sections 11–21 (I renamed that file on 10-23), each with a Context paragraph.
+
+### 45.73 2026-10-23: evaluation of checkpoints 6000 and 11590 (dev suite, unseen suite)
+
+- **Export to Hugging Face format** (`post_training_research/tulu3_sft_1022/eval/export_to_hf.py`): our model is exactly
+  Qwen3ForCausalLM (Llama-style + per-head QK RMSNorm before RoPE, NeoX RoPE theta 50000, tied embedding, vocab 50304); only
+  the QK-norm eps differs (ours 1e-6, Qwen3 config 1e-5: effect 0.00001 on the val loss). Our Linear stores W as [in, out]
+  (transposed on export); `parameters()` lists a module's own parameters first (per layer: q_gamma, k_gamma, norm, wQ, wK,
+  wV, wO, MLP norm, gate_up, down) — a wrong order assumption was caught by a local metadata test before any GPU time.
+- **Proof** (`verify_export.py`: the 2,000 val chats one by one through the HF model): 11590 → 0.850077 vs trainer 0.850100;
+  6000 → **0.859864 vs 0.859895** (same weights). Padded ids ≥ 50257 never above 0.12% probability.
+- The 4x disk was 98% full (teammates), so exports and caches went to RAM (`/dev/shm`, 335 GB). Harness: lm-evaluation-harness
+  0.4.13 in `rivalenv` (transformers 5.20.2). A `max_new_tokens: 2048` in my exported `generation_config.json` overrode the
+  benchmarks' own limits (found in the smoke test, fixed).
+- **Dev suite** (chat template, same settings for both; paired per-question test, `paired_compare.py`):
+
+| Task | 6000 | 11590 | Change | Paired z |
+| --- | --- | --- | --- | --- |
+| IFEval prompt-strict | 0.357 | 0.355 | −0.002 | −0.1 |
+| GSM8K (8-shot CoT) | 0.169 | 0.184 | +0.015 | +1.7 |
+| TruthfulQA MC2 | 0.401 | 0.392 | **−0.009** | **−4.1** |
+| HellaSwag acc_norm | 0.500 | 0.511 | **+0.011** | **+6.0** |
+| ARC easy / challenge | 0.581 / 0.304 | 0.578 / 0.314 | −0.003 / +0.010 | −0.8 / +1.6 |
+| WinoGrande | 0.518 | 0.523 | +0.006 | +0.5 |
+| End-token rate (200 val prompts) | 0.88 | 0.90 | | |
+
+  DROP in chat format is invalid (its generation stops at the first "."; full-sentence answers are cut: F1 0.046), and
+  multiple-choice tasks in chat format are depressed (WinoGrande ≈ chance); the plain-format pass and the base-model
+  evaluation were stopped by me as not needed. About 10% of greedy answers loop until the length limit (median answer length
+  257 = real 256).
+- **Chosen: 11590** (lower val, HellaSwag +1.1, the rest equal; TruthfulQA −0.9 fits the measured memorization).
+- **Unseen suite on 11590:** AGIEval-English 0.183 (chance level); MMLU-Pro on a random subset of 150 questions per subject
+  (2,100, seed 1023; the full 12,032 projected ~5 h) **0.0971 ± 0.0065** (chance 0.10; answers not written as "The answer is
+  (X)" also count as wrong, not checked). Both at chance for a 1.7B model.
+- All 79 result files: `post_training_research/tulu3_sft_1022/eval/box_results_1023/`; the box copies were deleted.
+
+### 45.74 2026-10-23: handover to the DPO team
+
+- `post_training_research/tulu3_sft_1022/handover_dpo_tulu3_sft_1022.zip` (1.1 MB): README (download, checksums, how to load,
+  model, tokenizer and chat format, data, settings, results), the joined log, `trajectory.csv`, loss charts,
+  `run_tulu3_sft.sh`, `prepare_sft_data.py`, `bluscript_sft.cpp`.
+- Must-know for loading: `BLU_INIT_FROM=<dir> BLU_N_LAYERS=28 BLU_ROPE_THETA=50000` (a wrong theta gives no error, only a
+  worse model).
+- Download command length: Navin's model is a Hugging Face **model repo** (`hf download navingv/curriculum_8btokens`); ours is in a
+  **bucket** (`hf sync hf://buckets/…/<checkpoint> <dir>` or the curl links). A model repo `gautam1926/tulu3-sft-1.7b` would make
+  it `hf download gautam1926/tulu3-sft-1.7b` (offered, not done).
+
+### 45.75 2026-10-23: the colleague's forward-attention EOD ("improving the fwd kernel", Uma Mahesh)
+
+- His 8 changes were **stacked** (each % is the gain over the previous row; recomputed from his cycle table, matches within
+  0.1–0.3 points except "baton" at 8×12(4): −0.21% computed vs −0.5% written). Single runs, hand-edited PTX/SASS for fixed
+  shapes, cycles not time, no correctness or packed test reported.
+- "Vg1" = our QPU forward (pushed 10-21 on `dist_side_gautam_lottn`). All 8 are already in it or were tested by us: uniform Q
+  descriptor (G2 10-13; L1b rejected 10-19), raw max + FA3 bias (no −inf guard, `ex2(fma(S, scale2, −m·scale2))`, SM3),
+  sections + longest-first (G5) + no consumer divisions (QPU), persistent + dynamic scheduler + Q-free barrier + K/V before Q
+  (PF) + O in the last K slot (K4), per-warpgroup 64-row Q/O, continuous baton, diagonal peeled out of the loop (K1, SM3m).
+  Not tried: `elect.sync` in the producer; one epilogue barrier with a register id. Vg1 is already 7–13.6% faster than his
+  starting kernel; his prototype is 1.0–1.9% ahead of Vg1, except 2×18(9) (−7.0%: worth a look on our side).
+
+### 45.76 2026-10-23: P032 node (old 8x node, being replaced) cleaned
+
+- Our `/localstorage/gautam_k` (12 GB) checked file by file against the laptop (name + size): 13,742 of 14,429 files already
+  on the laptop; the rest was public (git history, FlashAttention source, the HF checkpoint `navingv/curriculum_8btokens`),
+  rebuildable (build files, test binaries, envs) or older code copies. Kept on the laptop
+  `~/Downloads/p032_backup_2026_10_23/` (50.6 MB): `compute_dpo_reference_logprobs.cpp` (untracked, author unknown), the kernel
+  snapshots `v2_work/snapshots/*`, logs and results. Then `rm -rf /localstorage/gautam_k` (run by me); colleagues' files
+  (`kk/…goutham…`) and shared `/dev/shm` segments not touched.
+
+### 45.77 2026-10-23: hyperparameters (B, rows per step, GRAD_ACCUM, ranks, GPU memory)
+
+- New doc `HYPERPARAMETERS_CONFIGS_SELECTION_FOR_MODEL_TRAINING_AND_FACTORS_AFFECTING_THESE.md`: parameters vs
+  hyperparameters vs optimizer state; why B = 4 × 5 = 20 rows ≈ 128 chats (Tülu 3's batch); rows per step = B × ranks ×
+  GRAD_ACCUM (the trainer refuses anything else, `bluscript_sft.cpp:1007-1009`); memory = fixed ≈ 19.5 GiB + B × 13.2 GiB
+  per 4,096-token row, so **B = 8 fits one H200 by calculation (≈125 of 140 GiB), not tested**; the order to choose them.
+
+### 45.78 2026-10-23: Kruthik's bf16 fused RMSNorm + RoPE — port, proof, rivals, ncu
+
+- **Port into the SFT library** (`~/Downloads/BluTrain_sft/Tensor-Implementations/src/Kernels/cuda/norm/FusedRMSRoPE_bf16.cu`,
+  md5 `6ec34cc9`): backward **with positions at hd 128** = the pipelined kernel `fused_qknorm_rope_bwd_pf_bf16_tm` (positions
+  32 at a time via a shuffle + next token's loads issued early); dgamma reduce = one launch for q and k, 128 rows in flight
+  (`reduce_dgamma_qk_bf16_tm<128>`); forward and the no-positions backward = Kruthik's code unchanged.
+- The 10-22 bit-identity benches were built **without `--use_fast_math`** (the library uses it), so the port was re-proven with
+  the library's flags: **SASS gate 17/17** (all pretraining kernels unchanged; the new kernels equal the measured ones;
+  `port_1023/port_sass_compare.py`) and the **GPU port test** (`port_1023/test_rope_port.cu`, all 8 outputs bit for bit).
+  First run: hd 128 all identical, but **hd 64 with positions differed** (a few hundred dq/dk values, ~29 of 64 dgamma columns:
+  ptxas pairs the multiply-adds of the pipelined loop differently at hd 64). Fix: hd 64 with positions keeps the original
+  kernel. Second run: **36 of 36 cases bit-identical.**
+- Speed (GPU 3, production shape hd 128, 18/6 heads, T 4096; forward + backward + reduce):
+
+| B | Pretraining | SFT (packed positions) |
+| --- | --- | --- |
+| 1 | 122.1 → 114.9 µs (1.06x) | 208.4 → 120.1 µs (1.73x) |
+| 2 | 159.1 → 146.7 µs (1.08x) | 247.6 → 153.4 µs (1.61x) |
+| 4 | 237.2 → 213.6 µs (1.11x) | 322.7 → 223.7 µs (1.44x) |
+| 8 | 533.8 → 468.9 µs (1.14x) | 684.2 → 488.4 µs (1.40x) |
+
+- **Rival benchmark** (`rivals/rival_bench.py`, ours = the ported kernel built with the library flags; HF eager, torch.compile,
+  Liger, FlashAttention Triton, Quack + FA RoPE; 18×6 and 32×8 heads, B 1/2/4/8, pretraining and packed SFT):
+  - **forward: ours is the fastest in 15 of 16 cases** (1.02x–1.40x faster than the best rival, always torch.compile);
+    the 16th (32×8, SFT, B4) is a tie by wall time (compile 112.5 vs ours 112.7 µs): there the kernel-time sum caught only
+    1 of compile's 2 forward kernels (55.8 µs, below its own B2 time), so its kernel time is not valid;
+  - **accuracy: ours is the most exact** (error 1.00 = bf16 rounding of the exact result; dgamma 1e-6); compile 1.5–2.7,
+    eager and Liger ≈ 3.3–3.8, FlashAttention / Quack ≈ 2.0–2.2;
+  - **backward: two rivals are faster than ours, torch.compile and Quack + FlashAttention RoPE, each in 14 of 16 cases**
+    (FlashAttention alone in 2, at B1). Backward kernel time in µs from `rival_results_port_4x.json` (ours / compile / Quack):
+
+| Heads | Case | B1 | B2 | B4 | B8 |
+| --- | --- | --- | --- | --- | --- |
+| 18×6 | pretraining | 92.3 / 51.7 / 54.9 | 107.8 / 88.3 / 96.5 | **141.8** / slower / slower | 332.0 / 298.3 / 278.0 |
+| 18×6 | SFT | 97.8 / 52.6 / 53.9 | 113.6 / 88.3 / 87.3 | 152.1 / 149.6 / slower | 348.5 / 298.0 / 277.6 |
+| 32×8 | pretraining | 103.5 / 72.7 / 76.3 | 131.1 / slower / 130.6 | 313.8 / 243.0 / 236.6 | 555.9 / 462.1 / 446.1 |
+| 32×8 | SFT | 109.2 / 72.6 / 76.4 | 140.2 / 128.0 / 133.0 | 327.1 / 242.5 / 235.7 | 574.6 / 464.7 / 451.0 |
+
+    Ours is the fastest backward only at 18×6 B4 pretraining. At our SFT training size (18×6, B4, packed) compile is 1.6%
+    faster (149.6 vs 152.1 µs). Quack's backward is less exact than ours (error ≈ 2.0–2.2 vs 1.00).
+  - A harness bug was found and fixed: Liger's RoPE backward rotates its incoming gradient in place, and the shared gradient
+    tensor corrupted the accuracy check of the rivals after it (FlashAttention/Quack showed dx error 1307; each piece alone
+    was exact, `debug_fa_bwd.py`); every rival now gets its own copy.
+- **ncu, one backward call, ours vs torch.compile** (`rivals/ncu_bwd.py`, `run_ncu_bwd.sh`, reports `ncu_bwd_*.ncu-repz`):
+  ours runs **one warp per block, each warp walking 128 tokens one after another**: occupancy **9% (B1) / 36% (B4)**, DRAM
+  throughput **18% / 57%**. torch.compile splits the backward into a RoPE-backward kernel with 36,864–65,536 blocks of 128
+  threads (occupancy 87–90%) and a per-row norm-backward kernel, reaching **72–79% of DRAM bandwidth**. Cause proven: too little
+  parallel work in our backward. (Quack was not profiled with ncu; its kernels are the next to read.)
+- **Open decision (next session):** more parallel work = fewer tokens per warp; dq/dk would stay bit-identical, but dgamma's
+  float sum would be added in a different grouping (last-bit changes, still deterministic). Detailed analysis first, then the
+  choice (allow the dgamma rounding change, or keep strict bit-identity).
+
+### 45.79 2026-10-23 end of day: what is where, and what is next
+
+- **Checkpoints:** bucket `gautam1926/checkpoints_sft` (6000, 9000, 11590, public); 4x box `~/gautam_k/runs/tulu3_sft_1022/checkpoints/blumodel_step_11590`.
+- **Laptop backups:** `~/Downloads/box_backup_2026_10_23/`: `rope_opt/` (all port, rival and ncu results; 80 files, md5
+  identical to the box), `gautam_k_logs/` (the 4x run script, the watchdog script, the 4 Hugging Face transfer logs),
+  `sft_data_small/` (the val split and the small train index files) and `sft_data_tulu3_noaya_md5.txt` (md5 of all 12 data
+  files). The 3 big train files (`inputs.bin`, `labels.bin`, `meta.json`, 1.98 GB) were **not** copied: the laptop link ran at
+  about 100 KB/s (over 5 hours); they can be rebuilt with `prepare_sft_data.py` and checked against the saved md5. The run logs
+  were already in `~/Downloads/box_backup_2026_10_22/tulu3_run_final/` (same sizes as the box). Also
+  `post_training_research/tulu3_sft_1022/` (analysis, eval code, eval results, handover zip) and
+  `~/Downloads/p032_backup_2026_10_23/`.
+- **Next:** the backward of the RoPE kernel (detailed analysis of torch.compile's design vs ours, then the bit-identity decision);
+  rebuild the library on a box with the port and check the trainer (step-0 loss identical, step time); commit/push of the SFT
+  tree (my call); results to the DPO colleague; the 2×18(9) forward-attention gap from Uma's table.
+
+### 45.80 2026-10-24: why our RoPE backward loses to torch.compile and Quack (analysis on the laptop, no GPU run)
+
+**Goal (agreed 10-23):** a detailed analysis before any edit of the backward. Inputs, all on the laptop:
+- the 6 ncu reports of 10-23 (one backward call, ours vs torch.compile, 18×6 B1, 18×6 B4, 32×8 B4, **pretraining case**, no
+  positions). They are zstd-compressed (`.ncu-repz`); decompressed copies import fine with ncu 2025.3.1;
+- the SASS with per-instruction stall samples, taken from those reports;
+- the SASS of the 10-22 bench binary (`bench_rope_opt`, the depth-1 prefetch "B1") and of the port library
+  (`libropeours_port.so`, the pipelined positions kernel), via `cuobjdump -sass`;
+- Quack's RMSNorm backward source (`quack/rmsnorm.py`, `quack/rmsnorm_config.py`, GitHub main, read only) and
+  FlashAttention's vendored Triton RMSNorm backward (`flash_attn/ops/triton/layer_norm.py`).
+Scripts and outputs: `profiling_reports/rope_bf16_port_2026_10_22/rivals/analysis_1024/`.
+(The 10-23 `summarize_ncu.py` printed times and MB too small: the CSV is already in µs and MB. `summ2.py` reads the units row.)
+
+#### 45.80.1 Per kernel, under ncu (ncu fixes the clock and flushes caches, so the times are higher than in a normal run; compare ratios)
+
+| Case | Ours: main kernel | Ours: dgamma reduce | Ours total | compile: RoPE-bwd + norm-bwd kernels | compile: dgamma sum + cast | compile total |
+| --- | --- | --- | --- | --- | --- | --- |
+| 18×6 B1 | 82.0 µs (72.5 MB, DRAM 18%) | 17.7 µs | 99.7 | 46.7 µs (k: 3 kernels, q: 2) | 15.0 µs | 61.7 |
+| 18×6 B4 | **108.1 µs (298 MB, DRAM 57%)** | **64.3 µs** | 172.4 | **135.2 µs (466 MB, DRAM 57–79%)** | **26.8 µs** | 162.0 |
+| 32×8 B4 | **206.4 µs (504 MB, DRAM 51%)** | **112.6 µs** | 319.0 | **226.8 µs (806 MB)** | **29.4 µs** | 256.1 |
+
+- **At B4 our main kernel is already faster than compile's kernels** (108 vs 135 µs, 206 vs 227 µs) and moves less data (298
+  vs 466 MB): ours reads dz and x and writes dx once; compile writes the un-rotated gradient to memory and reads it back.
+- **At B4 we lose only because of the dgamma reduce:** 64.3 vs 26.8 µs and 112.6 vs 29.4 µs. Ours runs 8 blocks of 32 threads
+  on the whole GPU (occupancy 1.6%, 25 GB/s); compile's sum (`at::reduce_kernel`) is a tree over 24–64 blocks.
+- **At B1 our main kernel also loses** (82.0 vs 46.7 µs): there are only 768 warps for 132 SMs.
+
+#### 45.80.2 Our main kernel: one token in flight per warp
+
+- Launch: 1 warp per block, one warp per (batch, head, chunk), each warp walks 128 tokens (t0, t0+32, …). H200 holds at most
+  32 blocks per SM, so 1-warp blocks cap at 32 warps per SM = **50% theoretical occupancy**; the grid is 768 × B warps =
+  **0.18 waves at B1, 0.73 at B4** (achieved occupancy 9% and 36%).
+- SASS of the loop (97 instructions per token): the token's 13 loads at the top (8 × 2-byte bf16, 5 × 4-byte fp32), then the
+  first bf16→fp32 convert (`IMAD.U32 R30, R29, 0x10000`) waits for them. **56% of all stall samples sit on that one
+  instruction**, 15% on the next convert. So each warp waits a full memory round trip per token, 128 times in a row.
+- Proof from the times: 4 times the data costs only 1.3 times the time (**82 µs at B1, 108 µs at B4**): the time is set by
+  128 round trips per warp, not by bandwidth.
+- Instruction mix (q + k, B4): 13.4 M global memory instructions (6.3 M 2-byte loads, 4.0 M 4-byte loads, 3.1 M 2-byte stores).
+  compile issues about 2.2 M for the same work (16-byte loads and stores). Not the limit now (≈13 µs of LSU time at B4), but
+  it is why compile needs far fewer warps for the same bandwidth.
+
+#### 45.80.3 Why the 10-22 prefetch ("B1", 84.3 → 84.3 µs at B1) and the port's pipelined kernel did not overlap anything
+
+- Both issue the next token's loads before computing the current token, as designed. But in both SASS (10-22 bench binary,
+  `sass_opt_B1_bwd_nopos_1022.txt`; port library, `sass_port_pf_bwd_1023.txt` lines with `LDG.E.U16` followed directly by
+  `SHF.L.U32` / `IMAD.U32 …, 0x10000`), **the bf16→fp32 converts of the prefetched values come right after their loads**,
+  inside the block guarded by "is there a next token" (`@P0 BRA`). A convert needs the loaded value, so the warp waits for
+  the next token's data before it computes the current one: still one token in flight.
+- Cause in the source: the prefetch struct holds **floats** (`BwdTokBf16::dza[]` etc. are `float`), so the convert is part of
+  the load step, and the load step is inside the `if (next token exists)` branch.
+- The pipelined positions kernel still gained 1.65–1.90x on 10-22 because it removed the second wait (position → cos/sin
+  row), not because of the prefetch.
+
+#### 45.80.4 How the rivals do it
+
+- **torch.compile (Inductor), per tensor (q, then k):** (1) a pointwise RoPE-backward kernel, 128-thread blocks, 8 elements per
+  thread, 16-byte loads (`LDG.E.128`), 5.8–23 waves, occupancy 80–90%; (2) a per-row RMSNorm-backward kernel, 1 warp per
+  block, `cp.async` 16-byte loads into shared memory (`LDGSTS.E.BYPASS.128`), 72 registers, low occupancy (17–40%) but
+  DRAM 63–79%, it writes dx and one dgamma partial row per block; (3) `at::reduce_kernel`: tree sum of the partial rows;
+  (4) a 1-block cast/copy. Its weak point: the un-rotated gradient goes to memory and back (extra 2 passes).
+- **Quack (CuTe DSL) RMSNorm backward + FlashAttention's Triton RoPE backward:** persistent grid = SMs × 16 = 2,112 blocks
+  of 128 threads at N = 128 (`_get_sm_count_hopper`), 16 threads per row (8 elements, 16-byte loads), 2-stage double buffer
+  (cp.async / TMA), dw accumulated in registers across all rows a block walks, then reduced in shared memory, one dw row per
+  block, final `dw_partial.sum(0)` over 2,112 rows. RoPE backward is a separate pass.
+- **FlashAttention's Triton RMSNorm backward:** grid = 8 × SMs (1,056 programs), each walks M / 1,056 rows, dw in registers,
+  `_dw.sum(0)` over 1,056 rows.
+- **Common pattern:** many bytes in flight per warp (wide loads, double buffering) and a tree-shaped final dw sum. Ours has
+  neither: 2-byte loads, one token in flight, and a sequential final sum on 8 warps.
+
+#### 45.80.5 Options
+
+| # | Change | dq / dk | dgamma | Expected effect (estimate, to be measured) |
+| --- | --- | --- | --- | --- |
+| 1 | **Real prefetch** in both backward kernels: keep the next token(s)' data as raw bf16 bits and convert them only when that token is computed; load the next token unconditionally (clamped index) so no branch holds the converts; depth 2–3 tokens | identical | **identical** (same per-token math, lane mapping and token order) | main kernel B1 84 → ~30–45 µs; B4 110 → ~80 µs (the DRAM floor: 298 MB at 75–80% of 4.8 TB/s) |
+| 2 | **Pipelined reduce:** issue the next batch of rows' loads before adding the current batch; same sequential order per column | – | **identical** | B4 18×6: ~30 → ~5 µs (floor = 2,304 dependent adds ≈ 4.7 µs at 1.98 GHz, assuming 4 cycles per dependent add); B8 ≈ 10 µs |
+| 3 | **Tree-shaped final dgamma sum** (like compile / Quack / FlashAttention) | – | last-bit changes, still the same on every run | reduce ~2 µs at any batch: only ~3 µs more than option 2 at B4, ~8 µs at B8 |
+| 4 | Shorter token walks (more warps per head) | identical | last-bit changes | probably not needed after option 1; it also multiplies the partial rows, which makes a sequential reduce slower |
+| 5 | 16-byte loads staged through shared memory (compile / Quack style), same compute mapping | identical (if the mapping is kept) | identical | only if option 1 does not reach the DRAM floor |
+
+**Estimate at our SFT training size (18×6, B4, packed):** today ours 152.1 µs vs compile 149.6 µs (rival bench, kernel time);
+with options 1 + 2 about 85–90 µs, i.e. about 1.7x faster than compile, **with every output still bit-identical**. These
+are estimates from the ncu numbers, not measurements.
+
+#### 45.80.6 Reading and next step
+
+- The question of 10-23 ("allow a dgamma rounding change to get more parallel work?") is **not needed for the big gains**:
+  options 1 and 2 keep every output bit-identical. The rounding change only buys option 3's last few µs.
+- Next (needs a GPU): write options 1 + 2 into the laptop library, build, run the port test (36 cases, bit-identical vs
+  Kruthik's original), time B1–B8 pretraining + SFT, rerun the rival bench, and confirm the overlap in ncu (the first-convert
+  stall must drop).
+
+### 45.81 2026-10-24: options 1 + 2 written (laptop library), checked by compiling only (no GPU yet)
+
+**File:** laptop `~/Downloads/BluTrain_sft/Tensor-Implementations/src/Kernels/cuda/norm/FusedRMSRoPE_bf16.cu`, md5 **07953145**
+(10-23 port: 6ec34cc9). Kruthik's original backward kernel is unchanged and still runs at hd 64.
+
+**Option 1, new backward `fused_qknorm_rope_bwd_pp_bf16_tm<IS_NEOX, HD, HAS_POS, DEPTH>`**, used at hd 128 with and without
+positions (replaces the 10-23 pipelined kernel `fused_qknorm_rope_bwd_pf_bf16_tm`, deleted):
+- each warp keeps DEPTH = 3 tokens in flight (`BF16_BWD_DEPTH`) in a ring of register slots; a slot holds the loads as
+  loaded (bf16 bits for dz and x, fp32 cos/sin and rstd); a token is converted only when it is computed; then its slot is
+  refilled with the token DEPTH places later;
+- positions: each slot also loads the position of the token it will hold next, so a refill's cos/sin address never waits.
+  Two first attempts were fixed after reading the SASS: (a) a per-32-token batch of positions rotated by a shuffle made
+  ptxas copy the fresh batch at the branch join (`MOV R56, R59` 25 instructions after the load: one stall per 32 tokens);
+  (b) `m < n_tok ? load : 0` made ptxas load into a temporary and copy it into the slot (`MOV R15, R60` 10 instructions
+  after the load, every round). Now the position load is unconditional with a clamped index and lands in the slot;
+- the per-token math uses explicit-rounding intrinsics in the exact form the original compiles to at hd 128 (read from its
+  SASS): `dy_a = fma(dza, cs, dzb*sn)`, `dy_b = fma(dzb, cs, -(dza*sn))`, row sum `0 + fma(g_a, xh_a, g_b*xh_b)` per pair
+  then the xor tree, `dx = rstd * fma(-xh, S, g)`, `dgamma = fma(dy, xh, dgamma)`; same lane mapping and token order.
+
+**Option 2, dgamma reduce `reduce_dgamma_qk_bf16_tm<HD, U, STAGES>`:** the same sequential sum per column in row order;
+rows go through STAGES = 3 register buffers of U = 64 rows (`BF16_RED_STAGES`, `BF16_RED_U`): while one buffer is added,
+the next two are loading. Fixed after reading the SASS: (a) with read-only (`.nc`) loads ptxas dropped a buffer's first
+3 rows and loaded them again right before their adds -> `__ldcg` (L2) loads; (b) the per-row clamp `min(r0+u, n_rows-1)`
+and 64-bit index math cost ~10 integer instructions per add -> HD is a template parameter (each load = column pointer +
+constant offset) and the partial buffers carry `BF16_RED_PAD_ROWS` = 2·STAGES·U zeroed rows (`ensure_part`, zeroed with
+`cudaMemsetAsync` on the kernels' stream), so no load needs a bound check; full buffers add without a per-row test.
+
+**Checks on the laptop (nvcc 13.0, library flags, sm_90a, compile only):**
+
+| Check | Original (Kruthik) | 10-23 pipelined kernel | New (all 4 variants: NeoX / interleaved × positions / none) |
+| --- | --- | --- | --- |
+| Loads per loop, distance load -> first use | 13 per token, 22–27 instructions | 14, **13–18** for the bf16 loads | 39–42 per 3 tokens, **196–305** instructions (~2 tokens of compute) |
+| Per-token FP instructions (FFMA / FFMA with negated operand / FMUL / FMUL by 1/128 / FADD / FADD with zero / bf16 pack / shuffle) | 8 / 6 / 18 / 1 / 6 / 1 / 4 / 5, all .FTZ | – | **identical counts and forms**, all .FTZ |
+| Registers, spills | 40, 0 | – | 72, 0 |
+| Reduce: load -> first use | (load, wait, add per batch) | – | ≥ 723 instructions (≈ 2 buffers = 128 adds ahead), 244 registers, 0 spills |
+
+Identical instruction forms are strong evidence of bit-identity, not proof: the proof is the GPU port test.
+
+**GPU test package:** `profiling_reports/rope_bf16_port_2026_10_22/port_1024/` (`run_port_test.sh <Tensor-Implementations dir>
+[-D flags]` copies the current library file, builds with the library flags, compares all 8 outputs against Kruthik's stage-B
+file, then times both). 44 cases: the 36 of 10-23 plus T 40 (warps with fewer tokens than DEPTH) and 5/1, 7/1 heads (reduce
+row counts that are not a multiple of 192, so the last partial buffer runs). Builds on the laptop.
+
+**Next, on a GPU (~15–20 min):** (1) port test: 44/44 bit-identical expected, timing vs stage B; (2) variants by flag:
+`-DBF16_BWD_DEPTH=2/4`, `-DBF16_RED_U=32 -DBF16_RED_STAGES=4`; (3) rival bench with the new library (`rivals/rope_capi.cu`);
+(4) ncu of one backward (the first-convert stall must be gone, DRAM % up); (5) library rebuild + trainer step-0 check.
+
+### 45.82 2026-10-24 ~16:00 IST: the 10-24 RoPE backward PASSES on H200 (P032, GPU 4), DEPTH 3 kept
+
+Box: the old 8x node P032 (`innmi1srh2-p032`, 8x H200, nvcc 13.4), GPU 4 (all 8 GPUs idle, 0 MiB), for ~20 minutes.
+Package: laptop `~/Downloads/rope_1024.tgz` (library file md5 07953145 + its headers + Kruthik's stage-B file + the
+44-case test), unpacked to `/localstorage/gautam_k/rope_1024`. Logs: `profiling_reports/rope_bf16_port_2026_10_22/port_1024/
+port_test_p032_gpu4.log` (DEPTH 3, the default), `..._depth2.log`, `..._depth4.log`.
+
+**Correctness: 44 of 44 cases bit-identical in all 8 outputs, at DEPTH 2, 3 and 4** (so the pinned per-token math holds
+whatever the unroll depth).
+
+**Speed, backward + dgamma reduce, µs per call, vs Kruthik's original (same run, same GPU):**
+
+| Case | Original | DEPTH 2 | **DEPTH 3 (kept)** | DEPTH 4 |
+| --- | --- | --- | --- | --- |
+| B1 none | 99.8 | 88.8 | **56.0 (1.78x)** | 88.8 |
+| B1 positions | 182.6 | 89.4 | **90.2 (2.02x)** | 90.3 |
+| B2 none | 120.9 | 100.5 | **68.2 (1.77x)** | 100.5 |
+| B2 positions | 204.1 | 101.6 | **101.9 (2.00x)** | 101.8 |
+| B4 none | 168.2 | 128.1 | **119.6 (1.41x)** | 204.5 |
+| B4 positions | 249.0 | 130.4 | **131.2 (1.90x)** | 207.0 |
+| B8 none | 395.6 | 275.1 | **250.7 (1.58x)** | 338.3 |
+| B8 positions | 535.7 | 282.4 | **275.1 (1.95x)** | 337.6 |
+
+Forward unchanged (1.00x). Totals (fwd + bwd + reduce) at DEPTH 3: SFT B1/B2/B4/B8 1.84x/1.74x/1.59x/1.63x, pretraining
+1.58x/1.51x/1.26x/1.37x. Against the 10-23 port (other box, the original measured the same there: 237.2 vs 235.8 µs at B4):
+B4 total SFT 223.7 -> 199.9 µs, pretraining 213.6 -> 187.2 µs.
+
+**Why DEPTH 4 is slower at B4/B8 (registers, compiled locally):** DEPTH 2: 63–64 registers -> 32 one-warp blocks per SM,
+B4 grid = 0.73 waves; DEPTH 3: 72 -> 28 blocks, 0.83 waves; **DEPTH 4: 89 (none) / 116 (positions) registers -> 23 / 17
+blocks per SM -> 1.01 / 1.37 waves**: the grid no longer fits in one wave, so a second, almost empty wave runs.
+
+**Open (next session):** (1) at B1/B2, DEPTH 3 without positions reaches 56.0 µs but DEPTH 3 with positions (90.2) and
+DEPTH 2/4 (~89) do not: find out why in SASS / ncu; (2) the rival bench with this library (torch.compile backward at
+18×6 B4 SFT was 149.6 µs on 10-23 with another harness; ours now 131.2 here; at B1 compile 52–53 µs vs ours 56.0 / 90.2);
+(3) library rebuild + trainer step-0 check. GPU 4 on P032 released after the runs.
+
+### 45.83 2026-10-24 afternoon: why B 1 with positions stays at ~90 µs (ncu on the new 1x H200 box, laptop SASS decode)
+
+Box: new 1x H200 `root@86.38.238.224` (`kind-home-falls-fin-02`, driver 580.178.04, CUDA 13.0). Set up with
+`profiling_reports/rope_bf16_port_2026_10_22/setup_1024/` (`setup_1_check.sh`, `setup_2_env.sh` = rivalenv with the 10-23
+versions, `setup_3_build.sh`); ncu with `run_ncu_new.sh` (`test_rope_port --ncu`: one backward per case).
+Report: `port_1024/ncu_bwd_new_1024.ncu-rep`; SASS exports `port_1024/sass_new_B1_{none,pos}.csv`; control-bit decoder
+`rivals/analysis_1024/sass_ctrl_bits.py`.
+
+**ncu, one backward + reduce (clock fixed by ncu, caches flushed):**
+
+| | B1 none | B1 positions | B4 none | B4 positions |
+| --- | --- | --- | --- | --- |
+| Backward kernel | 56.2 µs, DRAM 25%, 68.6 MB | **91.7 µs, DRAM 15%, 67.9 MB** | 103.2 µs, DRAM 59.5% | 122.1 µs, DRAM 50% |
+| dgamma reduce | 10.7 µs | 10.7 µs | 32.7 µs | 33.1 µs |
+
+Same bytes at B1, 35 µs more time: the positions kernel waits, it does not work more.
+
+**Stall samples (B1):** without positions 39% of all samples on ONE first-convert (line 258) and the other two slots'
+first converts almost free; with positions the first convert of **every** slot stalls (21.8% + 21.5% + 19.9%).
+
+**Cause, from the control bits of the SASS (decoded from the instruction words, `sass_ctrl_bits.py`):**
+- ptxas tags **every** global load of every slot with the same scoreboard counter, **SB5** (`wb=5` on all 39 loads
+  without positions, all 42 with positions).
+- A wait on SB5 drains **all** outstanding SB5 loads, including a refill issued a few instructions earlier.
+- With positions: the first convert of each slot waits on SB5 (line 421 `wait=[1,5]`, line 518 `wait=[1,3,5]`), right
+  after the previous slot's refill → **three full drains per round of 3 tokens** ≈ one memory round trip per token.
+- Without positions (DEPTH 3 only): **one** SB5 wait per round (line 258); the other two first converts wait on other
+  counters (`wait=[0]`, `wait=[1,2]`) → three tokens share one round trip → 56 µs.
+- So the 56 µs was a lucky schedule, not something the source guarantees; DEPTH 2 and 4 (88.8 µs) and every positions
+  variant (~90 µs) got the per-slot drains.
+
+**Fix options (decision next session):**
+1. **cp.async ring in shared memory** (`LDGSTS` + `cp.async.commit_group` / `cp.async.wait_group<DEPTH-1>`): each wait
+   then covers only the oldest token's group, by construction (compile's norm kernel uses `LDGSTS` + `LDGDEPBAR`);
+   the per-token math, lane mapping and dgamma order stay the same (bit-identical by design); ~1 KB per token per warp
+   (3 KB per warp at DEPTH 3).
+2. **One convert point per round in the source** (convert all DEPTH slots at the start of the round, then compute and
+   refill): reproduces the lucky "one drain per round" shape on purpose, but still relies on ptxas's scheduling.
+Expected (estimate): B1 positions ~90 -> ~56 µs or better; B4 positions 131 -> ~120 µs.
+
+### 45.84 2026-10-24 ~17:00 IST: rival benchmark with the 10-24 library (new 1x H200 box)
+
+`run_rivals_new.sh` (same `rival_bench.py` and harness as 10-23; kernel = summed GPU time per call from torch.profiler).
+Tables: `port_1024/rival_new_1024_tables_from_paste.txt` (and `rival_results_new_1024.json` on the box). Liger was
+skipped this time (`No module named 'packaging'` in the new env; `pip install packaging` then `--only liger` adds it).
+
+**Backward (kernel time, µs): ours vs the best rival of each case**
+
+| Heads | Case | B1 | B2 | B4 | B8 |
+| --- | --- | --- | --- | --- | --- |
+| 18×6 | pretraining | 54.3 vs compile 51.8 (0.95x) | **66.5** vs 87.7 (1.32x) | **119.3** vs 148.4 (1.24x) | **247.8** vs quack 276.8 (1.12x) |
+| 18×6 | SFT | 90.2 vs compile 51.3 (0.57x) | 101.3 vs quack 87.4 (0.86x) | **128.5** vs quack 150.4 (1.17x) | **271.2** vs quack 276.2 (1.02x) |
+| 32×8 | pretraining | **65.1** vs compile 72.4 (1.11x) | **99.6** vs 128.0 (1.29x) | **215.3** vs quack 236.1 (1.10x) | **414.4** vs quack 447.0 (1.08x) |
+| 32×8 | SFT | 99.9 vs compile 72.3 (0.72x) | **119.6** vs 127.4 (1.07x) | 256.6 vs quack 236.1 (0.92x) | **434.0** vs quack 451.4 (1.04x) |
+
+- **Ours fastest backward in 11 of 16 cases (10-23: 2 of 16); fastest forward + backward total in 13 of 16** (18×6
+  pretraining B1 a tie: 73.0 vs 73.2 µs).
+- **Our SFT training size (18×6, B4, packed): backward 128.5 µs vs Quack 150.4 / torch.compile 150.9 (1.17x faster);
+  total 197.3 vs compile 245.6 µs (1.24x).**
+- Accuracy unchanged: ours err 1.00 / 1.00, dgamma 7e-7–1.2e-6; compile 1.5–1.7 / 2.55–2.66; Quack/FlashAttention ~2.0 / 2.1.
+- The 5 losses are 4 SFT (positions) cases at B1/B2 and 32×8 B4, i.e. the per-slot scoreboard drains of §45.83, and
+  18×6 pretraining B1 (−5%). Next: the cp.async ring (§45.83 option 1), then this bench again.
+
+### 45.85 2026-10-24 evening: the four causes of the remaining losses, and what changed since 10-23
+
+**The dgamma reduce has the same scoreboard problem (control bits of `reduce_dgamma_qk_bf16_tm<128,64,3>`):** all 320
+loads are on SB5, and the adds wait on SB5 once per 192 rows (`FADD ... wait=[5]`, lines 879 / 951 of the local SASS),
+which also drains the two buffers just prefetched → almost no overlap of loads and adds. ncu: 10.7 µs at B1, 32.7 µs at
+B4 (≈24% of our backward at 18×6 B4 under ncu; in a normal run the partial rows are in L2, so less, not measured).
+
+**Waves (72 registers -> 28 one-warp blocks per SM):** 18×6 B1/B2/B4 = 0.21/0.42/0.83 waves; 18×6 B8 = 1.66 (last wave
+66% full); 32×8 B1/B2 = 0.35/0.69; **32×8 B4 = 1.39 (39% full)**; 32×8 B8 = 2.77 (77% full).
+
+**The five losing cases and their causes** (1 = positions kernel waits at every token, §45.83; 2 = reduce waits as above;
+3 = too few warps at small batch, 768 at B1; 4 = part-empty last wave):
+
+| Case (backward) | Ours vs best rival (µs) | Causes |
+| --- | --- | --- |
+| 18×6 SFT B1 | 90.2 vs 51.3 compile | 1, 3 |
+| 18×6 SFT B2 | 101.3 vs 87.4 Quack | 1, 3 |
+| 32×8 SFT B1 | 99.9 vs 72.3 compile | 1, 3 |
+| 32×8 SFT B4 | 256.6 vs 236.1 Quack | 1, 2, 4 |
+| 18×6 pretraining B1 | 54.3 vs 51.8 compile | 2, 3 |
+
+Also: 2-byte loads = ~6x the memory instructions of torch.compile (13.4 M vs 2.2 M at B4); DRAM 50–60% vs compile's
+72–79%: no loss today, but it caps the gain at B8.
+
+**What changed since 10-23 and what it gave** (same rival harness; the rivals ran at the same speed on both boxes, e.g.
+compile 18×6 SFT B4 149.6 -> 150.9 µs): backward 18×6 pretraining B1 92.3 -> 54.3, B4 141.8 -> 119.3; 18×6 SFT B4 152.1 ->
+128.5, B8 348.5 -> 271.2; 32×8 pretraining B4 313.8 -> 215.3; 32×8 SFT B4 327.1 -> 256.6; 18×6 SFT B1 only 97.8 -> 90.2.
+From the two ncu runs (18×6): the new reduce 64.3 -> 32.7 µs at B4 (the biggest gain at B4/B8); the new kernel without
+positions 82.0 -> 56.2 µs at B1, 108.1 -> 103.2 at B4; the new kernel with positions gained almost nothing (cause 1).
+
+**Next:** cp.async ring in shared memory with `cp.async.wait_group` for the backward AND the reduce (fixes causes 1 and 2,
+and gives 16-byte loads), keeping the per-token math and the dgamma order (bit-identical); then the 44-case test and the
+rival bench on the 1x H200 box. Causes 3 and 4 are separate decisions (3 changes the dgamma grouping).
+
+### 45.86 2026-10-24 evening: the cp.async backward and reduce (written, compile-checked; GPU test next)
+
+Library file (laptop SFT tree) md5 **5ef36fa4**; the noon version that passed 44/44 is kept as
+`port_1024/FusedRMSRoPE_bf16_1024_tested_07953145.cu` and is still selectable: `-DBF16_BWD_ASYNC=0 -DBF16_RED_ASYNC=0`.
+- `fused_qknorm_rope_bwd_ca_bf16_tm<IS_NEOX, HD, HAS_POS, DEPTH>` (default at hd 128): DEPTH token slots in SHARED
+  memory (dz row, x row, cos|sin row, rstd, next position; 1,040 B per slot), filled with cp.async (16-byte pieces:
+  dz by lanes 0-15, x by lanes 16-31, cos|sin by all 32 lanes; rstd and the position 4 bytes each); before token j:
+  `cp.async.wait_group<DEPTH-1>` + `__syncwarp()`; one commit per refill (empty past the last token). The per-token math
+  is the pinned code of the register kernel reading from shared memory.
+- `reduce_dgamma_qk_async_bf16_tm<HD, U, STAGES>` (default): STAGES buffers of U rows × 32 columns in shared memory,
+  cp.async 16-byte pieces (4 rows per instruction), `wait_group<STAGES-1>`, each lane adds its column in row order.
+
+**Compile checks (nvcc 13.0, library flags, sm_90a):** backward 48–64 registers (was 72) -> 32 one-warp blocks per SM;
+3,120 B shared per block; reduce 83 registers, 24,576 B shared; no spills. SASS of the loop, all 4 variants: **no plain
+global loads** (per 3 tokens: 9 `LDGSTS.E.BYPASS.128` + 3–6 `LDGSTS.E`, 24 `LDS.U16` + 15–18 `LDS`), waits = `DEPBAR.LE
+SB0, 0x2` (= at most 2 groups in flight), and the per-token FP instruction forms **identical** to the original's. Reduce:
+16 `LDGSTS.128` per 64 rows, one `DEPBAR.LE SB0, 0x2` per buffer. Global memory instructions per token: 4–5 (was 13).
+
+**GPU run prepared:** `~/Downloads/rope_ca_1024.tgz` (library file + `run_ca_tests.sh`): port test for ca_d3 (default),
+pp_d3 (noon version, baseline in the same session), ca_d4, ca_d6; then the rival bench with the default build (+ Liger).
+
+### 45.87 2026-10-24 18:44–18:51 IST: the cp.async version PASSES and is the fastest in all 16 cases
+
+Box: new 1x H200 (86.38.238.224), GPU 0, `run_ca_tests.sh`. Results: `port_1024/run_ca_tests_part1_from_paste.txt`
+(port tests), `port_1024/rival_ca_1024_tables_from_paste.txt` (rival bench); on the box `port_1024/port_test_{ca_d3,pp_d3,
+ca_d4,ca_d6}.log`, `run_rivals_ca.log`, `rivals/rival_results_ca_1024.json`.
+
+**Correctness: 44 of 44 cases bit-identical in all 8 outputs for all 4 builds** (cp.async at DEPTH 3, 4, 6; the noon
+register version).
+
+**Backward + reduce (µs per call) vs Kruthik's original, same session:**
+
+| Batch | Pretraining: original / noon (pp) / **cp.async (D3)** | SFT packed: original / noon (pp) / **cp.async (D3)** |
+| --- | --- | --- |
+| B1 | 102.3 / 57.0 / **46.2 (2.21x)** | 188.5 / 92.4 / **47.5 (3.97x)** |
+| B2 | 123.2 / 68.8 / **60.3 (2.04x)** | 211.0 / 104.1 / **61.7 (3.42x)** |
+| B4 | 169.0 / 120.4 / **104.4 (1.62x)** | 253.3 / 132.0 / **109.2 (2.32x)** |
+| B8 | 401.7 / 252.2 / **198.2 (2.03x)** | 550.7 / 275.1 / **202.6 (2.72x)** |
+
+Totals (fwd + bwd + reduce) at D3: SFT 3.09x / 2.52x / 1.81x / 2.03x, pretraining 1.85x / 1.65x / 1.37x / 1.61x (B1/B2/B4/B8).
+With positions now as fast as without (47.5 vs 46.2 µs at B1): the scoreboard waits of §45.83 are gone.
+DEPTH: 4 is faster at B1 (42.3 / 43.7 µs) but slower at B4/B8 (113.4 / 116.9 at B4); 6 is slower everywhere -> **DEPTH 3
+stays the default** (B4 is our training size).
+
+**Rival bench (kernel time, µs), ours vs the best of torch.compile, Quack, Liger, FlashAttention, eager:**
+
+| Heads | Case | B1 bwd | B2 bwd | B4 bwd | B8 bwd |
+| --- | --- | --- | --- | --- | --- |
+| 18×6 | pretraining | 43.4 vs 51.9 (1.20x) | 57.4 vs 87.1 (1.52x) | 102.2 vs 149.7 (1.46x) | 197.9 vs 278.7 (1.41x) |
+| 18×6 | SFT | 45.1 vs 51.6 (1.14x) | 58.5 vs 87.1 (1.49x) | **107.2 vs 148.9 (1.39x)** | 198.3 vs 277.4 (1.40x) |
+| 32×8 | pretraining | 52.7 vs 72.3 (1.37x) | 84.9 vs 127.7 (1.50x) | 183.9 vs 235.8 (1.28x) | 318.0 vs 445.3 (1.40x) |
+| 32×8 | SFT | 54.9 vs 72.5 (1.32x) | 88.1 vs 127.0 (1.44x) | 175.8 vs 236.2 (1.34x) | 328.1 vs 451.2 (1.38x) |
+
+**Ours fastest in 16/16 forward (1.06–1.49x), 16/16 backward (1.14–1.52x), 16/16 total (1.15–1.46x)**; most exact
+(err 1.00 / 1.00, dgamma ≤ 1.2e-6; compile 1.5–1.7 / 2.55–2.66; Quack, FlashAttention ~2.0 / 2.1; Liger, eager 3.3–3.8).
+History of the backward wins: 10-23 port 2/16 -> 10-24 noon 11/16 -> 10-24 evening 16/16.
+Our SFT training size (18×6, B4): forward 68.8 vs 94.3, backward 107.2 vs 148.9, total 176.0 vs 243.2 µs (1.38x vs
+torch.compile, the best rival).
+
+**Next:** trainer integration (rebuild the SFT library with this file, step-0 loss identical, step time); commit/push
+(my call).
+
+### 45.88 2026-10-24 18:59–19:07 IST: repeat run (run 2) confirms §45.87
+
+Same box, GPU 0 idle before the run (0 MiB, 0 %), same script and library (5ef36fa4); run 1's box logs kept in
+`~/gautam_k/rope_1024/run1/`. Summary: `port_1024/run_ca_tests_run2_from_paste.txt`.
+- **Correctness again 44 of 44 bit-identical for all 4 builds.**
+- Port test, cp.async D3, backward + reduce, run 1 -> run 2: within **−0.2% .. +1.1%** for all 8 cases (e.g. SFT B4
+  109.2 -> 109.9 µs, B1 47.5 -> 48.0 µs).
+- Rival bench, our backward kernel time run 1 -> run 2: **−0.3% .. +2.4%** (largest: 18×6 pretraining B8 197.9 -> 202.6 µs).
+- **Again fastest in 16/16 forward, 16/16 backward, 16/16 total**; smallest margins: forward 1.06x (32×8 SFT B8, 223.2 vs
+  compile 235.6), backward 1.13x (18×6 SFT B1, 45.3 vs compile 51.4). The noise between runs (≤ 2.4%) is far below the
+  smallest margin (6%).
+
+### 45.89 2026-10-24 evening: RTX 3060 port test, and the plan for the trainer A/B
+
+**RTX 3060 (laptop, sm_86), port test with the cp.async library 5ef36fa4** (`port_1024/port_test_rtx3060_sm86.log`):
+**44 of 44 bit-identical** (correctness holds on a second architecture). Speed vs Kruthik's original is mixed there:
+with positions 1.02–1.09x faster, without positions **0.82–0.96x (slower)**. The RTX 3060 has ~13x less memory bandwidth than
+the H200, a 3 MB L2 and 28 SMs; the cp.async depth and the reduce buffers were tuned on H200. So the speed-up is H200
+specific (to be re-tuned per architecture later); the correctness is not.
+
+**Trainer A/B plan** (scripts `profiling_reports/rope_bf16_port_2026_10_22/trainer_ab_1024/`, package
+`~/Downloads/trainer_ab_1024.tgz`, box: new 1x H200 86.38.238.224, `~/gautam_k/trainer_ab`):
+- **What differs:** only `FusedRMSRoPE_bf16.cu`: old = Kruthik's stage-B file 5338bd7b (the library of the Tülu run), new =
+  5ef36fa4. The rest of the laptop tree is the run's own (all other changed files are dated 10-22 before the run's library
+  build at 13:54 and trainer build at 15:03; `bluscript_sft.cpp` f2024ab2 = the run's source).
+- **How:** two library builds snapshotted to `libs_old/` and `libs_new/`, ONE trainer binary built without a runpath to the
+  library, so `LD_LIBRARY_PATH` alone picks the arm; checked three ways: `nm` before (cp.async kernels present only in new),
+  `/proc/<pid>/maps` during every run, kernel names in nsys after.
+- **Settings:** the real run's (fullchess init, 28 layers, theta 50000, B 4 × 5 = 20 rows, Muon 5e-5, all bf16, packed rows
+  with positions), on the 320-row Tülu val set used as training data (16 steps per epoch); no checkpoints; val only at step 0
+  and the last step; free clocks.
+- **Step 1, `ab_1_setup.sh`** (CPU + 5.19 GB download, ~20 min): download fullchess, build old/new libraries + the trainer.
+- **Step 2, `ab_2_check.sh`** (~8 min): runs old, new, old (32 steps each): |new − old| per step must not exceed the null
+  |old2 − old| (the trainer is not bit-reproducible run to run, 10-22).
+- **Step 3, `ab_3_nsys.sh`** (~8 min): one nsys run per arm; GPU time per step of the RoPE backward + reduce (140 calls per
+  step, training only) and of all kernels.
+- **Step 4, `ab_4_crossover.sh`** (~3 min per run; R = 6 rounds × 4 runs ≈ 70 min): end-to-end step time, rounds alternating
+  old,new,new,old / new,old,old,new; mean dt of steps 10..62 per run; per-round new − old, mean and SE.
+- **Expected:** RoPE backward + reduce per step old ≈ 140 × 253 µs ≈ 35 ms, new ≈ 140 × 109 µs ≈ 15 ms -> about **20 ms less
+  per step**, ≈ 1.1% of the 1.86 s step (44,000 -> ~44,500 tokens/s). The summary parser, tried on two windows of the real
+  run's log (a natural null), gave −0.84 ms (−0.04%) with ~4 ms noise per round, so 20 ms is well above the noise.
+
+### 45.90 2026-10-24 19:30–20:05 IST: trainer A/B of the new RoPE kernel, SFT and pretraining (1x H200, GPU 0)
+
+Setup (`trainer_ab_1024/`, box `~/gautam_k/trainer_ab`): libraries built twice from the run's tree, differing only in
+`FusedRMSRoPE_bf16.cu`: **old** = Kruthik's stage-B 5338bd7b (libtensor 618eb7b7; the Tülu run's library), **new** = 5ef36fa4
+(libtensor a449097a); one trainer `ccb73996` (source f2024ab2, runpath only the system dir), the arm chosen by
+`LD_LIBRARY_PATH`. Verified: `cuobjdump -symbols` (new: 4 cp.async backward kernels, old: 0; a first check with `nm -D` saw
+none in either, because the GPU kernels are not exported host symbols), `/proc/<pid>/maps` in every run, kernel names in nsys.
+Results copied to `trainer_ab_1024/results/` (SFT sqlite files, pretraining logs, kernel summaries, clock/power logs).
+
+**SFT** (fullchess init, 28 layers, B 4 × 5, packed positions, 320-row Tülu val set as data):
+- Correctness (32 steps, old / new / old): step-0 train 1.293106 and val 1.175723 in all three (= the real Tülu run's
+  step-0 val); per-step max |new − old| train 0.000203 vs null |old2 − old| 0.000221; norm 0.0008 vs 0.0012. PASS.
+- nsys (32 steps per arm): RoPE backward 29.01 -> 14.12 ms/step, reduce 9.02 -> 2.28, forward 20.98 = 21.01 ->
+  **backward + reduce 38.03 -> 16.40 ms/step (−21.6 ms, 2.32x, the same ratio as the standalone test)**. Per call: old
+  207.2 + 2 × 32.2 µs, new 100.9 + 16.3 µs.
+- Timeline (steps 5..29): one CUDA stream, GPU idle 3.4% and unchanged -> GPU-bound. Wall −12.9 ms/step (−0.68%): the
+  RoPE kernels saved 21.6 ms but the other kernels took +9.6 ms (+0.54%); the two largest forward GEMMs unchanged, the
+  backward-pass GEMMs and the attention backward +1–2%. One pair only (the 70-minute crossover was skipped).
+
+**Pretraining** (the trainer's own pretraining config: 26 layers, theta 500000, B 8 × 32 micro-batches = 1,048,576 tokens
+per step, Muon, all bf16, random init, the 5 edufineweb shards as the 4 domains; RoPE on the no-positions path; one nsys run
+per arm, BLU_MAX_STEPS=6, the same shortened schedule in both; `ab_5_pretrain.sh`, run by me with the user's OK):
+- Both exit 0, the right library mapped, 6 steps, peak 106,299 MiB. Step-0 train 11.290755 and val 11.294598 identical;
+  later steps drift as run-to-run noise (lr 1.2e-3 from step 1 on a random init; grad norms 19 -> 200).
+- nsys: per step 832 backward calls (26 × 32). RoPE backward 195.29 -> 149.98 ms/step, reduce 159.99 (2 launches per call)
+  -> 25.99, forward 197.56 = 197.60 -> **backward + reduce 355.3 -> 176.0 ms/step (−179 ms, 2.02x; standalone B 8: 2.03x)**.
+- Trainer dt, steps 2..5: old 21,182 ms, new 21,078 ms -> **−104 ms/step (−0.49%)**; timeline window: wall −102.8 ms,
+  GPU idle 0.58% -> GPU-bound; the other kernels +94 ms (+0.40%): again the backward GEMMs +0.85..+2.87% and the attention
+  backward +0.91%, while the forward attention, RMSNorm and other GEMMs stayed within ±0.2%.
+- Clock/power (1 s samples while busy): power 691.4 vs 691.6 W (at the 700 W cap in both), SM clock mean 1557.2 vs 1553.6 MHz,
+  median 1560 vs 1545 MHz.
+
+**Reading:** the kernel saving shows up inside the real trainer exactly as in the standalone tests (2.32x SFT, 2.02x
+pretraining). On a power-capped H200 (≈ 692 W in every run), only part of it reaches the step time: the old kernel's slow,
+low-power stretches inside the backward pass let the other backward kernels clock higher; with them gone, those kernels run
+~1–3% slower. Net: **SFT −12.9 ms/step (−0.68%), pretraining −104 ms/step (−0.49%)**, from single pairs (both runs
+GPU-bound, idle unchanged). The pattern (backward kernels slower, forward kernels unchanged, clock median −15 MHz) is the
+same in SFT and pretraining, which argues for a real power effect rather than noise; a same-process interleaved test would
+settle the exact size (skipped for time).
+
+### 45.91 2026-10-24: the RoPE kernel's benefit in simple terms (saved as asked; goes into today's EOD)
+
+**1. Standalone kernel (H200, kernel alone)**
+
+Against Kruthik's original kernel, backward + dgamma reduce per call:
+
+| Batch | Pretraining (no positions) | SFT (packed positions) |
+| --- | --- | --- |
+| B1 | 102.3 → 46.2 µs (**2.21x**) | 188.5 → 47.5 µs (**3.97x**) |
+| B4 | 169.0 → 104.4 µs (**1.62x**) | 253.3 → 109.2 µs (**2.32x**) |
+| B8 | 401.7 → 198.2 µs (**2.03x**) | 550.7 → 202.6 µs (**2.72x**) |
+
+Against the rivals (torch.compile, Quack, Liger, FlashAttention, plain PyTorch): **fastest in 16 of 16 cases for forward,
+backward and total** (margins 1.06–1.52x), and the **most exact** in all. At our SFT size (18×6 heads, B4): **176.0 vs
+243.2 µs for torch.compile (1.38x faster)**.
+
+**2. Inside the real trainer (nsys, RoPE kernels only)**
+
+| | SFT step (B4 × 5, 28 layers) | Pretraining step (B8 × 32, 26 layers) |
+| --- | --- | --- |
+| RoPE backward + reduce, old → new | 38.0 → **16.4 ms (2.32x)** | 355.3 → **176.0 ms (2.02x)** |
+| Saved per step | **21.6 ms** | **179 ms** |
+| RoPE share of the step, old → new | 2.0% → 0.9% | 1.7% → 0.8% |
+
+The speed-up inside the trainer is the **same as standalone** (2.32x SFT; 2.02x vs 2.03x pretraining), so the standalone
+results are real in training.
+
+**3. Whole training step (what we actually get)**
+
+| | SFT | Pretraining |
+| --- | --- | --- |
+| Step time, old → new | 1881.0 → 1868.2 ms | 21,182 → 21,078 ms |
+| **Gain** | **−12.9 ms (0.68% faster)** | **−104 ms (0.49% faster)** |
+| Over a whole run | our 11,590-step Tülu run: about **2.5 min** saved of ~6 h | a 22,600-step run like fullchess: about **0.5% less time** |
+
+**Why the step gains less than the kernel saves:** the H200 sits at its **700 W power cap** in every run. The old slow
+RoPE kernel was a low-power "rest" inside the backward pass; without it, the backward matrix kernels around it run 1–3%
+slower (clock median 1560 → 1545 MHz). So about **60% (SFT) / 58% (pretraining)** of the kernel saving reaches the step time.
+
+**Precision: no change, bit-exact.** The new kernels give **bit-identical** results to Kruthik's original in all 8 outputs
+(forward q/k outputs, q/k rstd, dq, dk, dq_gamma, dk_gamma): 44 of 44 test cases, for every build tried (cp.async at
+depths 3, 4, 6 and the register version), in two separate runs, on H200 and on RTX 3060. Same per-token math (pinned to the
+original's compiled form), same lane mapping, same dgamma summation order. In the trainer: the step-0 loss is identical
+(SFT train 1.293106 / val 1.175723; pretraining train 11.290755 / val 11.294598), and the later steps differ only within
+the trainer's own run-to-run noise (old vs old differs as much as new vs old), which comes from other non-deterministic
+kernels in the trainer, known since 10-22, not from RoPE.
+
+**In one line:** the new RoPE kernel is 2–4x faster than Kruthik's and the fastest of all rivals, bit-exact; in real
+training it halves the RoPE time and makes each step about 0.5–0.7% faster (RoPE is only ~2% of a step).
+
+### 45.92 2026-10-24 evening: attention for lower GPUs (Ada sm_89, RTX 3060 sm_86) — causal mask + SFT packed rows added to the generic kernels
+
+**Context (the doubt).** RoPE and the loss kernel already run the SFT features on every GPU. Attention did not: the
+user asked which attention kernels Ada and the RTX 3060 run, whether they have the SFT features, and whether they are
+optimized. Colleagues said there is one older "generic" kernel, without TMA and not optimized, that works on lower GPUs.
+
+**What the code showed (BluTrain_sft TI = BluTrain_lottn for the whole attention folder, `diff -rq` empty).**
+- The only files with "generic" in the name are `GQA_fwd_generic.cu` (kernel `gqa_v2`) and `GQA_bwd_generic.cu` (kernels
+  `gqa_backward_dQ`, `gqa_backward_dKdV`). Written by sanjay 2026-06-24 (`339c4b4`, for sm103), moved into the generic
+  files by madhu 2026-07-22 (`465fd8b`, "can run the GQA model in any GPU"). WMMA 16x16x16, one warp per block, 16 query
+  rows per block, plain loads (no TMA, no cp.async), compiled for the machine arch (Makefile `-arch=sm_$(SM_ARCH)`).
+- They had NO causal mask (kernel bodies have no causal check; `GQA_bwd_generic.cu` header said so; all 13 copies on the
+  laptop, 4 versions, the same).
+- Dispatch off Hopper before the change: a chat plan -> throw; causal head size 128 (our model) -> throw; causal head
+  size 64 -> `gqa_v2` without a mask = full attention, a silent wrong result.
+- The Ada-tuned kernels (`fused_attn_forward_kernel_tc_sm89`, `mem_efficient_bwd_unified_kernel_exp12`) are fp32 only and
+  have one head count (no GQA); the trainer's GQA call accepts only the FlashAttention backend, so they are not reachable.
+
+**What changed (laptop BluTrain_sft TI, not committed; work folder `profiling_reports/generic_attn_sft_2026_10_24/` with
+`orig/`, `new/`, `diffs/`, `logs/`, `h200_sass_proof/`).**
+1. `GqaChatPlan` (AttentionKernels.h): one more list, `gen_segs` = {b, t0, L, 0} per segment (FlashAttention-2 varlen's
+   cu_seqlens list) + `n_gen_segs` + `gen_max_len`, appended LAST in the same single upload (the four Hopper lists keep
+   their place and bytes). The list does not depend on the tile size, so the optimization step can change tiles freely.
+2. The three kernels get a `CAUSAL` template flag. A block = (segment, head, tile counted from the segment START). The key
+   loop stops at the tile's last row; a key after the row gets score -inf / p = 0; rows and keys past the segment end are
+   read as zero and never written; dK/dV loop only over query tiles that can see the block's keys. Because tiles are
+   counted from the segment start, a chat in a packed row runs the same tiles in the same order as the chat alone.
+   Plain causal rows = the same code with one segment per row (t0 = 0, L = T). Launches use `getCurrentStream()`.
+3. Dispatchers (both qkv entries, both packed-buffer entries): `generic_ok = is_causal && !(v62/Hopper kernel takes it)
+   && not B300`. Hopper v62 / Vj2 checks are unchanged and run FIRST. The plan is accepted on the generic path. B300 is
+   untouched. Causal head size 64 off B300 now runs the causal kernel (was full attention).
+4. `AttentionOps.cpp`: one comment.
+
+**H200 safety (proof).** The six Hopper attention files (v62, Vj2, Vj1d, Vj1, v44, RoPE_sm90) are byte-identical to lottn
+(same md5) and do not include `AttentionKernels.h`; compiling them for sm_90a gives identical SASS. Only 4 files differ
+from lottn in the attention folder + header + ops: the two generic files, the header, AttentionOps.cpp (comment).
+
+**Tests on the local RTX 3060 (test_varlen_attention.cu, quick mode, head size 128): 292 passed, 0 failed, 1 KNOWN.**
+- fp64 truth + bf16 floor references, FlashAttention's pass rule, for O, LSE, dQ, dK, dV: dense causal rows (T 256 / 4096,
+  18/6 and 8/1 heads), real SFT rows, large inputs, every chat alone, packed rows (D2-D11 + 16 real packed stage-0 rows).
+- Packed == alone BIT-EXACT in every layout (0 mismatched elements, dQ diff 0); isolation (change one chat -> others
+  bit-identical); repeat 50x at 8x4096 and 20x at 60x1024: all five outputs bit-identical (no atomics).
+- KNOWN: dQ of chat `row 1 @664 L=303` at 1.049x the limit = the same chat and the same ratio recorded 10-10 for Vj1d
+  (dS from the bf16 P, which the generic dQ kernel also uses); proven then not to be packing.
+- Speed (unoptimized): B=8 T=4096 18/6: fwd 726 ms, bwd 1,669 ms = 0.9 TFLOP/s. Packing skips work: a backward with 14%
+  of the dense work takes 12.5% of the dense time.
+- Harness changes: `VARLEN_HD` (64/128), `g_generic`, refusals that no longer apply removed (head size 64 and T % 256 are
+  accepted now), the reference computes one kv-head group at a time (S/dP for all 18 heads at L = 4096 needed 7.2 GB, too
+  much for 12 GB; the values are unchanged, G1 re-checks them), mode label fixed, and `chat_alone` / G4 used a hard-coded
+  head size 128 (found when the head-size-64 run read past 64-wide buffers: a harness bug, now `g_hd`).
+- Not run (decided 10-24): the full non-quick run (~40 min of repeats at this speed). Head size 64 quick run: see §45.94.
+
+### 45.93 2026-10-24 night: matmul audit of the production pretraining trainer — where the fp32 accumulator could feed the next op directly (FIRST TASK on Monday 2026-10-26)
+
+**Context (the doubt).** During the BluBLAS work an idea was parked as a future task: when a bf16 matmul is followed by an
+op that works in fp32, take the output straight from the GEMM's fp32 accumulator, instead of rounding it to bf16 (losing
+precision) and converting it back to fp32 in a separate kernel. Colleagues said this is already implemented, including in
+attention. The user asked to go through the whole training script inch by inch, find every matmul and what is around it,
+and check whether colleagues did it or not. The text below is the answer given on 10-24, kept in full as the user asked.
+The user decided: this is the FIRST task on Monday morning 2026-10-26 (immediate future task). Nothing below is measured
+yet; the GB numbers are estimates from tensor sizes.
+
+**Matmul audit: which code, which settings**
+- Trainer: lottn `train/production_zero/bluscript_zero_ckpt.cpp`, built with `MODE=production_zero`.
+- Production config: `bluscript_zero_ckpt_config.yaml` sets:
+  - `BLU_ALL_BF16=1` and `BLU_BF16_LOGITS=1`: the residual stream, logits and embedding are all bf16, so every
+    `to_dtype` next to a GEMM is a no-op;
+  - `grad_view: true` with `fp32_reduce: false`: micro-step gradients add up in the bf16 communication buffer;
+  - Muon, ZeRO v2, and the BluBLAS backend.
+- Library rule:
+  - `matmul` gives its output the input's dtype (`GenMatmul.cpp`: `Tensor output(output_shape, A.dtype(), ...)`).
+  - BluBLAS's bf16 functions (`Bgemm`, `BgemmStridedBatched`, `BgemmAddmm`, `BgemmSwiglu`) all write a
+    `__nv_bfloat16* C`; none writes fp32.
+- Shapes per micro-step: M = 8 x 4096 = 32,768 tokens, d = 2304, ffn = 6144, vocab = 50,304, 26 layers.
+
+**Every matmul and what is next to it**
+
+| Matmul | Output | Next op | fp32 accumulator used directly? |
+|---|---|---|---|
+| wQ, wK (2304->2304 / 768) | bf16 | `fused_rms_rope_bf16` (computes in fp32) | No: rounded to bf16, re-read |
+| wV (2304->768) | bf16 | transpose copy -> attention | No, but attention needs bf16 anyway |
+| Attention QK^T (v62) | fp32 registers | softmax on the registers | Yes (GQA_fwd_sm90.cu:924-976) |
+| Attention PV | fp32 registers | rounded to bf16 once at the store | Yes (:993-996 P stays in registers, :1243 store) |
+| wO (2304->2304) | bf16 | residual `add` (bf16) | No: rounded, then the add rounds again |
+| gate_up (2304->12288) | bf16 | `swiglu` kernel | No (a fused version exists, unused; see below) |
+| down (6144->2304) | bf16 | residual `add` | No |
+| lm_head (tied wte, 2304->50304) | bf16 logits, 3.3 GB | cross-entropy (fp32 inside) | No |
+| dX of wQ, wK, wV | 3 x bf16 [32768x2304] | engine `sum +=` (Engine.cpp:343): 2 bf16 add kernels | No: 3 roundings plus 2 add kernels |
+| dW of all 6 weights | bf16 | `accumulate_grad` -> `*grad_ += update` into the bf16 buffer | No: 2 roundings plus an add kernel every micro-step |
+| Vj2 S, dP | fp32 registers | dS in registers | Yes |
+| Vj2 dQ | fp32 buffer | converted to bf16 once | Yes |
+| Vj2 dK/dV | bf16 partial per query head (line 709) | `gqa_dkdv_greduce_vj2` adds the 3 partials in fp32 | Partly: one extra bf16 rounding (FA3 keeps fp32) |
+| Muon B = b*A + c*A*A, X = a*X + B*X | - | the addition happens inside the GEMM | Yes: `cuda_addmm` -> BluBLAS SM90 addmm epilogue with a full-matrix bias (Optim.cpp ~1567; Bgemm_addmm_sm90.cu) |
+
+**What colleagues did, and what they did not**
+- Done:
+  - attention forward and backward, except the Vj2 dK/dV partials;
+  - the Muon Newton-Schulz linear combinations.
+- Exists but not connected: BluBLAS has a Hopper GEMM + SwiGLU epilogue (`Bgemm_sm90_swiglu_fused_template.cuh`), but
+  nothing in any TI tree calls it. Its old caller `cuda_matmul_swiglu` is gone; it is linked to an 08-14 NaN incident.
+- Not the same thing: the "F2" fused gradient accumulation (AutogradMeta.cpp:177-193) is a separate widen+add kernel, not
+  a GEMM epilogue. With `grad_view=true` in production, the dtypes match (bf16 + bf16), so a plain bf16 add runs instead
+  and F2 is never used.
+
+**Where the idea still applies (estimated traffic saved per micro-step)**
+- C1 - dW accumulates inside the GEMM (beta = 1, writing straight into the gradient buffer). This removes 156 add kernels
+  and one bf16 rounding per micro-step, about 5.9 GB less traffic. BluBLAS's Hopper dW kernels need a beta = 1 path; not
+  yet checked whether they have one.
+- C2 - one fused QKV weight [2304x3840]. The backward dX becomes one GEMM, and the sum of the three gradients happens
+  inside the fp32 accumulator. That removes 2 bf16 adds and 2 roundings per layer, about 23.6 GB; the forward also reads h
+  once instead of three times. Caveat: Muon orthogonalizes wQ, wK and wV as separate matrices, so the optimizer must keep
+  splitting them.
+- C3 - residual add inside the wO/down epilogue. About 15.7 GB less, and one rounding fewer per add. It also allows an
+  fp32 residual stream at bf16 cost, which is the precision ALL_BF16 gave up. The tool mostly exists already:
+  `autograd::addmm(x, merged, Wo)` with the MxN "bias" supported by the SM90 addmm. It needs a 2-D flatten and a check of
+  `AddmmBackward` for 3-D inputs.
+- C4 - lm_head fused with cross-entropy (Liger style). The 3.3 GB logits and their gradient never get written to memory.
+  The biggest saving in peak memory and the biggest piece of work.
+- C5 - connect the existing SwiGLU epilogue. The backward needs gate and up, so they must be stored or recomputed.
+- C6 - Vj2 dK/dV partials in fp32. Removes the rounding behind the recorded KNOWN dV deviations (1.01-1.17x the limit).
+  Costs about +15.7 GB of traffic, so it trades speed for precision.
+- C7 - Muon's last Newton-Schulz GEMM writes fp32, skipping the `as_type(Float32)` cast. Small.
+
+**Next (Monday 10-26, first):** one nsys run on the H200 to time the real kernels behind C1-C3 (the gradient-accumulation
+adds, the two dh adds, the residual adds) before writing any code; needs a GPU (ask first).
+
+### 45.94 2026-10-24 21:50–22:03 IST: generic attention at head size 64 (RTX 3060, quick) + the SFT package
+
+- First head-size-64 run stopped in G6 with "illegal memory access": the harness's `chat_alone` and G4 had head size 128
+  written as a number (copies read 128 values per token from 64-wide buffers). Harness bug, fixed (`g_hd`, 17 + 2
+  places); the failed log is kept as `run3_quick_hd64_rtx3060_HARNESS_BUG_hd128_hardcoded.log`.
+- Rerun (`run4_quick_hd64_rtx3060.log`): **291 passed, 1 failed**, 741 s. Packed == alone bit-exact everywhere; repeats
+  (50x 8x4096, 20x 60x1024, 50x D10) bit-identical. The one failure: G11 D5 dQ of chat `row 0 @2688 L=64` at 1.175x the
+  2x-floor limit; the same layout's packed-vs-alone check is bit-exact (not packing). Cause: the generic dQ kernel
+  computes dS from the bf16-rounded P (as Vj1d did; the head-size-128 KNOWN entry 1.049x is the same mechanism). Fix
+  (not run, user short on time): compute dS from the fp32 P as Vj2 / FA3 do; in the dQ kernel P is used only for dS.
+- cp.async check (user question): the generic kernels use NO cp.async (sm_86 SASS: 0 LDGSTS, 174 / 252 LDG, 0 LDSM,
+  one warp per block). cp.async exists from sm_80 (Ampere, Ada, Hopper); the generic kernel already needs sm_80+ (bf16
+  WMMA). Our RoPE kernel uses it (204 LDGSTS) and passed on the RTX 3060. Optimization plan for Ampere/Ada: FA2 style
+  (cp.async double-buffered K/V, ldmatrix + mma.sync, 4 warps).
+- SFT package: `SFT_package_2026_10_24/` (+ .zip) in the experiment folder, start file `00_README_START_HERE.md`.
+- Box 86.38.238.224 (1x H200) copied to `~/Downloads/box_backup_2026_10_24_1xh200/` except rivalenv (venv), pt_data
+  (on the laptop) and ckpt/fullchess (public HF navingv/fullchess).
+
+### 45.95 2026-10-26: GEMM ping-pong — mine, Kota's and the compiler team's (Nova), checked against CUTLASS with proofs
+
+(The same full text is in the BLAS doc as §H235 of `blublas/docs/analyzations_h200.md`. "This file" below means that
+BLAS doc; its §H line numbers refer to it.)
+
+**Why this section exists (the trigger).**
+- Harshini (compiler team, "Nova") said Nova now has a ping-pong GEMM schedule, and that she took the
+  reference from "our BluBLAS in remote BluTrain".
+- I asked the Claude session on her machine about it. Its first reply said Nova's schedule is CUTLASS's
+  `KernelTmaWarpSpecializedPingpong`.
+- I checked that reply against CUTLASS, the team BLAS repo and my own old research.
+- I then sent her Claude a question document. Its full answer and her compiled kernel files came back
+  the same day. I checked all of it.
+
+This section records everything: the definition, who has what, every proof, the mistakes found on
+both sides, and what is still open.
+
+**My questions on 2026-10-26, in plain words:**
+1. When I worked on the SM90 matmul module, did I ever find ping-pong documented, and did I prove that
+   my kernel is not ping-pong?
+2. When I compared cuBLAS SASS, did I fail to find ping-pong, and is that why I never built it?
+3. Did Kota do something else and call it ping-pong?
+4. Is the BluBLAS on remote GitHub mine, my hybrid, or Kota's? Was any of my matmul work pushed there?
+5. Is the compiler team's version real ping-pong, as CUTLASS documents it? Is Kota's? Did Kota do
+   something wrong?
+
+The short answers are in part 10.
+
+#### 1. Three different things are called "ping-pong"
+
+| # | Name | What it is | Where |
+|---|---|---|---|
+| 1 | **GEMM ping-pong schedule** (the one in question) | 1 producer warpgroup + 2 consumer (math) warpgroups. **Each consumer owns a different output tile.** One consumer's epilogue runs while the other consumer does its MMAs. | CUTLASS `sm90_gemm_tma_warpspecialized_pingpong.hpp` |
+| 2 | **Attention ping-pong** (FlashAttention-3 §3.1) | Two warpgroups in an attention kernel take turns with `bar.sync`, so one does softmax while the other does its GEMMs | FA3, arXiv 2407.08608. My H200 attention forward also passes turns between warpgroups |
+| 3 | **Buffer ping-pong** (double buffering) | Two buffers used one after the other: epilogue store slots, or two TMEM accumulators | My `EPI_WL_STAGES=2` slots (cuBLAS `UR32 ±0x1000`), commit 569cdaa "fix slot ping-pong", Kota's B300 `EPI_PIPE_DEPTH=2` |
+
+Only #1 is a GEMM schedule. #3 is not a schedule at all.
+
+#### 2. The official definition (CUTLASS), verbatim
+
+My local CUTLASS checkout: commit `546c3ef` (2026-05-20).
+
+**CUTLASS docs, `media/docs/cpp/efficient_gemm.md` lines 240-245 (ping-pong):**
+
+> The distinctive feature of the Warp-Specialized Persistent Ping-Pong kernel is the following :
+> * The two *consumer* warp groups are assigned a different output tile using the Tile Scheduler.
+>   This allows for *epilogue* of one *consumer* warp group to be overlapped with the math
+>   operations of the other *consumer* warp group - thus maximizing tensor core utilization.
+> * The *producer* warp group synchronizes using the Ordered Sequence Barrier to fill buffers of
+>   the two *consumer* warp groups one after the other in order.
+
+**The same file, about cooperative:**
+
+> * Presence of two *consumer* warp groups cooperating on the same output tile by splitting the
+>   tile in half across the M dimension. This allows for larger tile sizes to be enabled - since
+>   the register pressure per *consumer* warp group is reduced - and hence improving performance.
+
+So the defining property is **who owns the tile**:
+- ping-pong: each consumer has its own tile;
+- cooperative: both consumers share one tile.
+
+**CUTLASS source, `include/cutlass/gemm/kernel/sm90_gemm_tma_warpspecialized_pingpong.hpp`:**
+- Lines 132-140: `NumLoadWarpGroups = 1`, `NumMmaWarpGroups = 2`,
+  `static_assert(MaxThreadsPerBlock == 384, "Pingpong kernel must have 384 threads in total.")`.
+- Lines 142-148: `RegsPerThread` = accumulator registers. `HeavyRegisterPressure = RegsPerThread >= 208`.
+  Registers are 40 (producer) / 232 (consumers), or 24 / 240 under heavy pressure.
+- Lines 155-158: `MathWarpGroupOrderBarrier = OrderedSequenceBarrier<2 stages, 2 warpgroups>`. One stage
+  orders the MMAs, the other orders the epilogues.
+- Lines 558-566: consumer 1 advances one tile at startup, and advances its pipeline state past consumer 0's
+  K-tiles.
+- Line 952: after each tile, both consumers step `advance_to_next_work(NumMmaWarpGroups)`, i.e. by 2.
+- Lines 849-880: `// Order two Math WG's MMA one after the other, helps hide Epilogue`. The order is
+  wait → `mma()` (issues all MMAs) → arrive → `mma_tail()` (waits for the MMAs).
+- Lines 898-936: `// Order two Math WG's Epilogue one after the other`, then wait → epilogue → arrive.
+
+**The turn barrier is an mbarrier.**
+- `include/cutlass/pipeline/sm90_pipeline.hpp` lines 1255-1257 say
+  `using Barrier = cutlass::arch::ClusterBarrier;`.
+- In SASS that shows up as `SYNCS.*` instructions, not `BAR.SYNC` / `BAR.ARV` (those are named barriers).
+
+**CUTLASS cooperative uses the same register split.**
+- `sm90_gemm_tma_warpspecialized_cooperative.hpp` has the same 40/232 at lines 150-151, the dealloc at
+  line 561 and the alloc at line 771.
+- It also has 384 threads: 1 producer + 2 consumers × 128 (line 372 asserts 256 MMA threads).
+- `grep -c MathWarpGroupOrderBarrier` on that file returns 0.
+- So 384 threads and setmaxnreg 40/232 do **not** prove ping-pong. Only two things do: each consumer
+  owns its own alternating tiles, and there is a turn barrier between the consumers.
+
+**PyTorch blog** "Deep Dive on CUTLASS Ping-Pong GEMM Kernel" (Less Wright and Adnan Hoque, 2024-11-01,
+https://pytorch.org/blog/cutlass-ping-pong-gemm-kernel/), fetched 2026-10-26, verbatim:
+
+> "...keeping only 40 registers, while consumers will get 232"
+
+> "Unique to Ping-Pong, each consumer works on separate C output tiles. (For reference, the
+> cooperative kernel is largely equivalent to Ping-Pong, but both consumer groups work on the
+> same C output tile)."
+
+#### 3. My own SM90 work: cooperative only. I never built or timed ping-pong.
+
+**What the code and history show:**
+- The template header `Bgemm_sm90_warpspecialized_template.cuh` lines 31-32 says: "Both consumer warpgroups
+  cooperate on ONE output tile (CUTLASS's "cooperative" scheme, not "pingpong")".
+- No commit in my blublas repo implements the ping-pong schedule. The only commit with "ping-pong" in
+  its message is 569cdaa ("fix slot ping-pong"), which is the epilogue double buffer (meaning #3 above).
+- The hybrid (Kota's ea666ab + my template and registry) is in my personal blublas repo only.
+  Commit history:
+  - 8683725, 2026-09-02: snapshot of the pristine production BLAS.
+  - 713f0f7, 2026-09-02: removed the 11 SM90 files that are never compiled (5,586 lines), including
+    Kota's `Bgemm_sm90_pingpong_template.cuh`.
+  - 6f39df4, 2026-09-02: removed coopB / coopB_v2.
+  - 2d271cb, 2026-09-10: the hybrid dispatcher became the only path.
+  - fee8c7c, 2026-09-11: the last hybrid kernel change.
+- The hybrid was never pushed to the team BluBridge-BLAS repo or to BluTrain. So the hybrid has no
+  ping-pong either.
+
+**What my notes say about ping-pong (all in this file):**
+
+| Note | What it says | Line |
+|---|---|---|
+| §H17 | "both coopB(odd-tiles) and pingpong are undone" (perf-matching, not correctness) | 5054-5059 |
+| §H23d | cuBLAS's untagged nvjet family IS ping-pong, by register arithmetic | 6352-6407 |
+| §H24 | quotes the CUTLASS doc for both schedules; CUTLASS issue #2181 ("why both?") has no answer | 6409 |
+| §H27e | ping-pong tiles = only 25/163 of cuBLAS's picks (the small tiles) | 6783-6787 |
+| Plan | "4. Ping-pong for 64x64 -- the only genuinely new structure needed" (4th priority) | 9186-9227 |
+| R3 | "ping-pong DEAD — needs 288 accumulator registers vs 232 available". **This is arithmetic, not a measurement:** 288 = 192×192/128, one warpgroup holding a whole 192×192 tile | 16762 |
+| §H56 | on the large 1.7B shapes I was already at cycle parity with cuBLAS, with the tensor pipe 92-99% busy, and "neither regsplit nor pingpong adds math throughput" | 26344-26348 |
+| §H158 | "We have no Pingpong ... Pingpong is the named, documented feature to build if BM=64 is ever wanted" | 31609-31610 |
+| §H159 | "1. Pingpong schedule — the documented CUTLASS mechanism for BM<128" | 31732 |
+
+**Why I did not build it.** It was **not** because I could not find ping-pong in the cuBLAS SASS.
+- §H23d concluded that cuBLAS does use ping-pong, for the small tiles.
+- The recorded reasons are:
+  1. On my main (large) shapes, my cooperative kernel already kept the tensor pipe 92-99% busy (§H56).
+  2. Ping-pong only matters for small tiles: 25/163 shapes, BM=64.
+  3. It was 4th in priority, behind a 10-14% gap that was worth more.
+- So: never implemented, never timed. There is no ping-pong speed result of my own, positive or
+  negative.
+
+**What the cuBLAS SASS study did and did not show (§H23d, §H24, §H25):**
+- **Shown:** every nvjet sm90 kernel runs 384 threads. Untagged kernels have blocks per warpgroup =
+  the whole grid (each consumer owns a whole tile); `coopA`/`coopB` have grid/2. And "max register =
+  blocks/WG × wgmmaN/2 + 26" holds exactly on 12 of 12 kernels. So untagged = ping-pong, proven by
+  register arithmetic.
+- **Shown:** the dispatch rule in that sweep. Ping-pong for every tile ≤ 22,528 elements (largest 128×176
+  in BM×BN), cooperative for every tile ≥ 24,576.
+- **Not shown:** an instruction that marks ping-pong.
+  - §H24: all kernels have identical barrier structure (46 BAR.SYNC, no BAR.ARV).
+  - §H25: across all 18 kernels only 3 opcodes differ (`WARPGROUP.WAIT` and `STSM.MT88/M88` follow
+    the layout; `USETMAXREG` follows register pressure ≥ 154), and none of them follows the schedule.
+- **Blind spot, found on 2026-10-26.** My SASS check could not have seen a CUTLASS-style turn barrier.
+  - §H24 counted only named barriers (`BAR.*`).
+  - §H25 compared which opcodes are present, not how many times.
+  - A CUTLASS turn barrier is an mbarrier (`SYNCS.*`), and `SYNCS.*` is present in every kernel anyway
+    for the TMA pipeline.
+  - So "not found" there does not mean "not there".
+  - It cannot be re-checked on the laptop: 0 of the 1,597 sm_90 cubins in the local libcublasLt 13.1
+    contain an `nvjet` name. It needs a SASS dump on an H200 and a `SYNCS.*` count per kernel.
+
+#### 4. The remote BluBLAS is Kota's (checked 2026-10-26 with `git ls-remote` and a bare clone)
+
+- **How it is wired:** BluTrain (`BlubridgeAI/BluTrain`) → submodule Tensor-Implementations →
+  submodule BluBridge-BLAS. The `.gitmodules` URL is `https://github.com/kathir-23s/BluBridge-BLAS`,
+  branch master; `BlubridgeAI/BluBridge-BLAS` returns the same refs.
+- **Remote master = `ea666ab`:** "Merge pull request #3 from BlubridgeAI/production_blas", Kathir,
+  2026-08-31 14:35:51 +0530. This is the exact commit in Harshini's screenshot (4 files, +247 / −22).
+- **Authorship:** the merged work is `969fda4` "optimized addmm kernel" by dhanakumarK777 (Kota
+  Dhanakumar), 2026-08-27.
+- **Branches:** the repo has **15** branches (plus 3 pull-request refs and HEAD). None is my hybrid.
+  The branch heads:
+  - master ea666ab (2026-08-31, Kathir)
+  - production_blas 969fda4 (2026-08-27, dhanakumarK777)
+  - prod_V 7d1f1b9 (2026-08-29, root)
+  - preproduction-135M 35e51a0 (2026-08-24, Kathir)
+  - present-25/8 35e51a0
+  - checkkkkkk 2b96901 (2026-09-08, Vishnu-BB)
+  - madhu_tried_compiler_fusions_gpt2 2b96901
+  - master_du 0ca2e29 (2026-08-22, vishn-BB)
+  - dhana 80547e5 (2026-08-01, dhanakumarK777)
+  - production_dhana 650bc5c (2026-08-01, root)
+  - production_kathir 3a2e494 (2026-07-31, kathir-23s)
+  - muon_blas 86ebe2e (2026-08-04, vishnu-BB)
+  - master_v2 fed19b6 (2026-06-10, kathir-23s)
+  - master-instance-move-test 16a4539 (2026-06-13, sairupesh36)
+  - master-instance 1be8c44 (2026-04-28, sairupesh36)
+
+#### 5. Kota's ping-pong file: real ping-pong, never finished
+
+**The file.** `src/level3/batched_gemm/BF16/SM90/Bgemm_sm90_pingpong_template.cuh`, 680 lines.
+- Added in 577d5e0 (2026-08-17); last changed in 526d8b4 (2026-08-24). Both by dhanakumarK777.
+- It is present on 8 of the 15 branches: master, production_blas, prod_V, preproduction-135M,
+  present-25/8, checkkkkkk, madhu_tried_compiler_fusions_gpt2, master_du.
+
+**It is never compiled.** On every one of those 8 branches:
+- no file includes it;
+- no file uses `Sm90PingpongConfig`, `bgemm_sm90_pingpong_kernel`, `launch_bgemm_sm90_pingpong` or its
+  include guard;
+- no build file (Makefile / CMake / .mk / .txt) mentions it.
+
+**It is a true CUTLASS-style ping-pong.** Line numbers are at ea666ab:
+
+| Part | Kota's file | CUTLASS pingpong.hpp |
+|---|---|---|
+| Each consumer owns alternating tiles | 410-412: `for (task_id = blockIdx.x + g*gridDim.x; task_id < total_tiles; task_id += 2*gridDim.x)` | 558-562 and 952 |
+| MMA turn | 460: `mbarrier_wait(mainloop_turn + g)` before the K loop; 514: `mbarrier_arrive(mainloop_turn + (1-g))` after it | 850 wait, 877 arrive |
+| Epilogue turn | 521: wait `epilogue_turn + g`; 600: arrive `epilogue_turn + (1-g)` | 899 wait, 936 arrive |
+| Register split | 321 `setmaxnreg_dec<PRODUCER_REGS>`, 364 `setmaxnreg_inc<CONSUMER_REGS>`, defaults 24/240 (line 137) | 147-148 (24/240 = CUTLASS's heavy-pressure value) |
+| Turn barrier type | mbarriers (lines 279-280, 291-294) | mbarrier (`ClusterBarrier`) |
+
+**What went wrong:**
+1. **It hung on its first hardware run.**
+   - The first version left out the MMA turn and relied on the load ring's backpressure to stagger the
+     two warpgroups.
+   - Header lines 60-66: that works at K=2048 (32 k-steps) but "FAILS at K<=384 (k_iters<=6): both
+     warpgroups enter MMA together … lock-order inversion -- the hang."
+   - He added `mainloop_turn`, copied from CUTLASS (lines 72-73).
+   - Header lines 112-118: "the fixed version has NEVER BEEN RE-RUN … tested, failed, fixed, unretested".
+2. **It waits for every MMA at every K step.** That is `wgmma_wait_group<0>()` inside the K loop
+   (line 502). CUTLASS keeps MMAs in flight and drains only in `mma_tail`. The compiler team's records
+   name exactly this pattern as the reason their first ping-pong (v1) was 17-20% slower: "in its turn
+   ONE warpgroup … drains it every stage (… wait 0 …)".
+3. **Both consumers share one epilogue store buffer**, so it needs the epilogue turn. His own comment
+   (lines 586-600) says per-warpgroup store buffers (STORE_BUF 32,768 → 65,536 B, load ring 6 → 5
+   stages) would remove the epilogue turn entirely, but that was "Deliberately NOT done in this pass".
+   The compiler team later did exactly this (part 6).
+4. **It was never compiled, never timed, and never part of his measured 98.4% of cuBLAS.**
+
+**Verdict:** the idea is right and the structure is real CUTLASS ping-pong. The implementation was never
+finished.
+
+**Kota's B300 "ping-pong" is a different thing.** In `BF16/SM103/Bgemm_sm103_cluster_dual_template.cuh`
+(526d8b4) lines 24 and 129-132, "ping-pong" means `EPI_PIPE_DEPTH=2`: two TMEM accumulator buffers, so
+the next tile's MMA starts while the previous tile's epilogue drains TMEM. The goal is the same overlap,
+but there are no two math warpgroups taking turns. It is meaning #3, and Blackwell only.
+
+#### 6. The compiler team's (Nova) ping-pong: real ping-pong, as the CUTLASS doc defines it
+
+Sources: her Claude's answer document (VERIFIED-NOW items were read or run in its session, on Nova
+`ac2ab83`, with a freshly rebuilt `nova-opt`), plus the kernel files she sent, which I checked myself
+(part 7).
+
+**Commits:**
+- `961e4ff`, 2026-10-23, harshini-v-m: "seed-tray,ping-pong,grid size check". This is her ping-pong.
+- `c54a485`, 2026-10-24, **Aparna-BB**: "persistence, stream-k and ping-pong". It rewrote the lowering
+  (14 files; `NovaGPUMapForallToGPU.cpp` 273 lines changed). Her Claude's first reply had wrongly called
+  this Harshini's.
+- `ac2ab83`, 2026-10-26, harshini-v-m: "rope+norm backward fusion" (current HEAD, branch `current`).
+
+**Where the design came from.**
+- Their records cite CUTLASS concepts (two consumer warpgroups, ordered math turn, 232 registers,
+  `K_PIPE_MMAS = 1`). They name no BluBLAS file.
+- The turn primitive is the named-barrier turn already in Nova's flash attention
+  (`pingPongFlashConsumers`, Mahesh's commit fbda5fe), generalized into `emitConsumerTurns`.
+- Their Claude had reviewed Kota's ping-pong file on 2026-10-10 and knew it is never included and that
+  it hung.
+- Whether Harshini personally read BluBLAS files can only be answered by her.
+
+**How it works** (`lib/Transforms/Lowering/NovaGPUMapForallToGPU.cpp` lines 418-459 @ ac2ab83, and the
+PTX below):
+- Each consumer warpgroup owns the CTA's tiles whose ordinal is `w mod 2`. That is the same as CUTLASS:
+  consumer 1 starts one tile ahead and both step by 2.
+- Before each owned K loop, a warpgroup does `barrier.sync (1+w), 256`. It gives the turn with
+  `barrier.arrive (2−w), 256` once per owned tile, and only if the CTA has a next tile.
+- Warpgroup 1 gives the very first turn before its tile loop.
+- Barrier IDs: 1 and 2 (`kPingPongBarrierBase = 1`), count 256 = both consumer warpgroups.
+- The loads are one shared ring filled by one producer in tile order. Both consumers keep the producer's
+  ring counter and skip the other warpgroup's K-steps.
+
+**Its three differences from CUTLASS's code:**
+1. **The turn is handed over early:** `slots` K-steps (= ring depth) before the end of the K loop. Example:
+   K=2304 with 5 stages is 36 steps, so the hand-off is after waiting step 31. CUTLASS hands over after
+   all MMAs are issued.
+2. **There is no epilogue turn.** Each consumer warp has its own 2 × 1 KB epilogue slots, protected by
+   `cp.async.bulk.wait_group.read`.
+3. **The turn uses a named barrier** (FA3 style), not an mbarrier.
+
+None of these breaks the CUTLASS doc definition. Both doc points hold: each consumer gets its own tile
+with epilogue/MMA overlap, and the producer fills the two consumers' buffers in order.
+
+**MMA pipelining:** `wgmma.wait_group 1` in the K loop (one group in flight, CUTLASS `K_PIPE_MMAS = 1`),
+and `wait_group 0` after the loop.
+
+**How Nova chooses ping-pong.** There are no shape thresholds: `tryBuildHopperTile` costs every candidate
+and keeps the cheapest.
+- Ping-pong is offered only when `takesTurns` holds: a zero-filled or tray-seeded accumulator, a single
+  elementwise reader, and A K-major. It also needs more tiles than resident CTAs.
+- Cost: `turns > 1 ? max(kLoop, epilogue) : kLoop + epilogue`.
+- On the current build, for the 1.58B one-layer graph, 9 of 15 GEMMs pick ping-pong 128×192 (S4/S5).
+  The 5 dW GEMMs and LM-head dX stay cooperative. All 15 are persistent, grid 132.
+
+**Their own numbers** (FROM-EARLIER records, not re-measured on 2026-10-26; I re-did every sum):
+
+- **v1, 2026-10-21** (ncu cycles, 9 GEMMs, one launch each, clocks not locked):
+  - +5.4% to +22.5% slower than Nova cooperative 128×256;
+  - sum +20.1% for 1 layer, +17.3% weighted to 26 layers;
+  - **different tile** (128×192 vs 128×256);
+  - cause recorded at the time: the per-stage drain (wait 0), not the strict ordering.
+- **v2:** −3.39% = summed ncu GEMM cycles weighted to 26 layers. Her Claude's first reply had wrongly
+  called this the step time.
+- **v3 step time:** 1.58B, 26 layers, d 2304, B 8, T 4096, AdamW; steps 2-7 of 8; 2 runs per side; clocks
+  1480-1496 MHz, power capped at 691-692 W.
+  - Ping-pong runs: 20,975.5 and 21,115.5 ms. Without ping-pong: 21,300.1 and 21,296.8 ms.
+  - Means: 21,045.5 vs 21,298.45, so **−1.19%**.
+  - The two ping-pong runs themselves differ by 0.67%.
+  - The baseline was Nova cooperative: not cuBLAS, not BluBLAS.
+- **Later, 2026-10-23** (final `kidd`, nsys, steps 2-5, one run each): d512 37 layers −2.00%; 1.58B 26
+  layers **−0.37%**. That −0.37% is inside the 0.67% run-to-run spread above.
+- **Per-GEMM ncu cycles**, v3 ping-pong 128×192 vs cooperative 128×256 (a **different tile**):
+
+| GEMM | cooperative | ping-pong | change |
+|---|---|---|---|
+| Q fwd | 725,510 | 690,750 | −4.79% |
+| K fwd | 251,905 | 239,384 | −4.97% |
+| V fwd | 250,147 | 237,657 | −4.99% |
+| gate/up fwd | 3,771,970 | 3,569,389 | −5.37% |
+| down dX | 1,888,967 | 1,816,101 | −3.86% |
+| O dX | 722,446 | 693,561 | −4.00% |
+| K/V dX | 278,464 | 240,454 | −13.65% |
+| gate/up dX | 3,672,794 | 3,658,370 | −0.39% |
+| LM-head dX | 14,835,152 | 14,975,153 | +0.94% |
+
+- **Tensor pipe busy (ncu):** gate/up fwd 91.0 → 96.1%, Q fwd 88.7 → 93.2%, K/V dX 77.0 → 89.2%.
+- **Nova vs cuBLAS:** only measured before ping-pong (their note of 2026-10-10): 21 GEMMs at **1.27×**
+  cuBLAS cycles.
+- **Correctness (2026-10-23, on 961e4ff, before Aparna's rewrite):**
+  - Double-precision reference, checking 2 rows per 128-row tile.
+  - Max 0.50 ULP, no element over 1 ULP, no NaN, no unwritten rows.
+  - Cases: K ≤ 384 (65536×256×512) ✓; odd tiles per CTA (32768×2304×2304, 96 of 132 CTAs run 23
+    tiles) ✓.
+  - Fewer tiles than 2 × CTAs (8192×K×768): only ran to completion, not checked for numbers.
+  - M or N not a multiple of the tile never uses ping-pong (`tryBuildHopperTile` divisibility rule).
+- **Never done:** compute-sanitizer racecheck / synccheck; a hang (timeout) test.
+
+#### 7. My own check of her kernel files (2026-10-26, laptop, CPU only)
+
+**Files:** `Neural_Networks_exp_1926/reports_harshini_ping_pong/`
+- `pingpong_16384x2304x2304.mlir/.ptx/.cubin/.sass`: A 16384×2304 × B 2304×2304, bf16.
+- `coop_16512x2304x576.mlir/.ptx/.cubin/.sass`: chosen so the cost model picks cooperative 128×192.
+  Nova has no switch to force a schedule, so the two kernels have different M and N.
+
+**Steps:**
+1. `ptxas -arch=sm_90a -v` (CUDA 13.0) on both PTX files: ping-pong 168 registers, 0 spill, 16 barriers;
+   cooperative 122 registers, 0 spill, 1 barrier.
+2. `cuobjdump -sass` on her cubins, and on my own recompile of her PTX: **the SASS is identical for both
+   kernels.** Her files are consistent with each other.
+3. Opcode counts from her cubins, ping-pong vs cooperative:
+   - `HGMMA.64x192x16` 16 vs 4
+   - `BAR.ARV` 2 vs 0
+   - `BAR.SYNC.DEFER_BLOCKING` 2 vs 1
+   - `USETMAXREG.TRY_ALLOC.CTAPOOL` 1 vs 0
+   - `USETMAXREG.DEALLOC.CTAPOOL` 1 vs 0
+   - `SYNCS.EXCH.64` 10 vs 10
+   - `SYNCS.PHASECHK.TRANS64` 4 vs 3
+   - `SYNCS.PHASECHK.TRANS64.TRYWAIT` 8 vs 6
+   - `SYNCS.ARRIVE.TRANS64` 2 vs 2
+   - `SYNCS.ARRIVE.TRANS64.A1T0` 2 vs 1
+   - `WARPGROUP.ARRIVE` 4 vs 1
+   - `WARPGROUP.DEPBAR.LE` 5 vs 2
+   - `UTMALDG.2D` 8 vs 8
+   - `UTMASTG.2D` 12 vs 6
+   - highest register R215 vs R119
+
+   All of these equal what her Claude reported.
+4. **Register check:**
+   - A ping-pong consumer holds the whole 128×192 tile: 128·192/128 = 192 accumulator registers; R215
+     means 216 registers are used under the 232 cap. My estimate (192 + 26 = 218) was 2 off.
+   - Nova cooperative 128×192 uses 122 registers. That is exactly cuBLAS's 122 for the same tile in
+     §H24 (96 + 26), an independent match.
+
+**The ping-pong PTX line by line** (`pingpong.ptx`; 16384×2304 with a 128×192 tile = 128 × 12 = 1,536 tiles,
+on 132 CTAs):
+- 19: `.maxntid 384, 1, 1`.
+- 81: `setp.lt.u32 %p2, %r1, 256`: threads 0-255 are consumers, 256-383 the producer.
+- 85: `setmaxnreg.inc.sync.aligned.u32 232` (consumers). Line 1036: `setmaxnreg.dec ... 40` (producer).
+- 86: `shr.u32 %r2, %r1, 7`: `w` = consumer warpgroup 0 or 1.
+- 88-89: if `w != 0`: `barrier.arrive 1, 256`, the first turn for warpgroup 0.
+- 92-93: `%r3 = w + 1` (own barrier), `%r4 = 2 − w` (the other's barrier).
+- 129-131: per tile, the ring counter += 36 (K steps); next tile = t + 132; stop after t ≥ 1404.
+- 137-141: `(t − ctaid) × 63551 >> 23` = ÷132, `& 1`, compared with `w`: skip tiles you do not own.
+- 150: `barrier.sync %r3, 256`: wait for my turn before the K loop.
+- 280-310 and 414-441: two accumulator sets (`%r160…` and `%r256…`) = two m64 blocks = the whole
+  128-row tile.
+- 446, 544: `wgmma.wait_group 1` in the K loop. 584, 592: `wait_group 0` after it.
+- 452: `%p7 = t > 1403`, i.e. "no next tile in this CTA".
+- 573-576: `if (!%p7 && counter == 1920) barrier.arrive %r4, 256`. 1920/64 = 30, so the turn is
+  handed over right after waiting K-step 31 of 36 (steps 0-35): 5 steps early, = the 5 ring stages.
+- After the K loop, the epilogue TMA stores run with no turn barrier.
+
+**New finding (not in her Claude's answer).** The two Nova kernels wait for their MMAs differently.
+- **Cooperative:** commits and then immediately waits for all MMAs at every K step:
+  `wgmma.commit_group` / `wgmma.wait_group.sync.aligned 0` at `coop.ptx:454-455`, inside the K loop
+  that runs from line 398 and branches back at line 464.
+- **Ping-pong:** keeps one group in flight (`wait_group 1`), like CUTLASS's mainloop.
+  - CUTLASS `sm90_mma_tma_gmma_ss_warpspecialized.hpp`, line 264: `K_PIPE_MMAS = 1`.
+  - Line 547: `warpgroup_wait<K_PIPE_MMAS>()` in the loop. Line 571: `warpgroup_wait<0>()` after it.
+- So Nova's ping-pong vs cooperative numbers mix three changes:
+  1. the schedule;
+  2. how the MMAs are drained (wait 0 right after commit vs wait 1);
+  3. in the D1/D3 tables, the tile (128×192 vs 128×256).
+- How much of the ~4-5% per GEMM comes from the ping-pong schedule itself is unknown.
+
+**Context from my own kernel, so this is not over-read.**
+- My cooperative kernel also drains with `wgmma_wait_group<0>()` every K step.
+- My template records two things:
+  - a `wait_group<1>` software pipeline "regressed on H200 -- full-drain is the baseline" (comment at
+    template line 7073, §H16.7);
+  - cuBLAS also uses "wait until zero". cuBLAS drains its last 8 wgmma at the **start of the next
+    iteration**, not right after commit, and that position, not the wait depth, made its drain 12.4×
+    cheaper on the same tile (template lines 7121-7131).
+- So "wait 0 every K step" is not wrong in a cooperative kernel.
+- Draining every step hurts ping-pong much more. During a ping-pong turn only ONE warpgroup issues MMAs,
+  so while it drains the tensor core sits idle. That is exactly the cause Nova recorded for v1, and it is
+  the pattern in Kota's file (line 502).
+
+#### 8. Her Claude's first reply: what was right and what was wrong
+
+| Statement in the first reply | Verdict |
+|---|---|
+| CUTLASS ping-pong: 1+2 warpgroups, 384 threads, 40/232 (24/240), the two "Order two Math WG's …" comments, consumer 1 one tile ahead, step 2 | ✓ verbatim in CUTLASS |
+| efficient_gemm.md quote; PyTorch blog 40/232 and "separate C output tiles"; FA3 §3.1 | ✓ |
+| CUTLASS mainloop ordering is mbarrier-based | ✓ |
+| "A cooperative kernel has neither the register split nor the consumer-to-consumer barriers" | ✗ for CUTLASS: cooperative also uses 40/232. True only for Nova's own cooperative kernels |
+| "named BAR.SYNC / BAR.ARV with 256 threads … (or a CUTLASS ping-pong kernel)" | ✗ for CUTLASS: its turn is an mbarrier (`SYNCS.*`). BAR.ARV identifies only Nova's own design |
+| "USETMAXREG.TRYALLOC" | ✗ spelling: `USETMAXREG.TRY_ALLOC.CTAPOOL` |
+| "your later c54a485" | ✗ that commit is Aparna's |
+| "v1 17-20% slower with CUTLASS-style strict ordering" | numbers ✓, cause ✗: the record blames the per-stage drain |
+| "v2: −3.4% on the 26-layer step" | ✗ that was GEMM ncu cycles; the step result is −1.19% |
+| Nova's structure = CUTLASS ping-pong with early hand-off and unordered epilogue | ✓ proven by code and PTX (parts 6 and 7) |
+
+Her Claude admitted all six mistakes. It checked §1-7 of my question document and found no error in
+it. It added two exact points:
+- CUTLASS cooperative does have an `OrderedSequenceBarrier`, but it is `LoadWarpOrderBarrier<1,2>`
+  inside the producer, not between consumers.
+- On the current build, ping-pong also covers the residual-seeded forward GEMMs (O and down forward),
+  from Aparna's c54a485.
+
+#### 9. Corrections to my own statements on 2026-10-26
+
+- I first told the user the remote BLAS repo has 17 branches. It has **15**: I had counted 3
+  pull-request refs and HEAD as branches.
+- I first labelled the "pingpong are undone" quote as §H16. It is in **§H17** (line 5054).
+- (An older one, already fixed at the time: §H24 said "no SETMAXNREG anywhere in the nvjet kernels"
+  because it searched for the PTX name. §H25 corrected this: `USETMAXREG` is present in 10 of 18
+  kernels.)
+
+#### 10. Answers to the five questions
+
+1. **Did I find it documented, and prove my kernel is not ping-pong?** Yes.
+   - The CUTLASS definition was found and quoted in §H24.
+   - My kernel is cooperative by its own header and by design: two warpgroups split one tile's M.
+2. **Did the cuBLAS SASS stop me?** No.
+   - The SASS showed no ping-pong instruction, but my check was blind to mbarrier-based turns.
+   - The register arithmetic did prove that cuBLAS uses ping-pong for small tiles.
+   - I never built or timed ping-pong because my large shapes were already near tensor-pipe parity and
+     ping-pong only helps small tiles. It was 4th priority.
+3. **Did Kota do something else and call it ping-pong?** His SM90 file is genuine CUTLASS-style
+   ping-pong, but unfinished:
+   - it hung once and the fix was never re-run;
+   - it drains every K step;
+   - it is never compiled.
+   His B300 "ping-pong" is TMEM double buffering, a different thing with the same name.
+4. **Remote BluBLAS = Kota's `ea666ab`.** My hybrid exists only in my personal blublas repo. None of my
+   SM90 matmul work is in the team BLAS repo or BluTrain.
+5. **The compiler team's version is real ping-pong by the CUTLASS doc's definition.** This is proven by
+   their source and by the compiled kernel. It is not a line-by-line copy of CUTLASS's code (early
+   hand-off, no epilogue turn, named barriers), and it is not taken from Kota's file. Kota's file is
+   closer to CUTLASS's code but has the drain problem and was never made to work.
+
+#### 11. Still open (to ask the compiler team, not my task)
+
+- A same-shape, same-tile A/B to isolate the schedule: cooperative 128×192 **with `wait_group 1`** vs
+  ping-pong 128×192, timed with nsys, several runs.
+- Numerics on the current HEAD: Aparna's c54a485 rewrote the lowering after the 2026-10-23 check.
+  Include the "fewer tiles than 2 × CTAs" case in the numbers check.
+- compute-sanitizer racecheck and synccheck on one ping-pong kernel; a timeout run as a hang test.
+- 5 or more interleaved step runs per side: −1.19% (2 runs) and −0.37% (1 run) are inside the noise.
+- Barrier ID 1 is both `kPingPongBarrierBase` and `kSplitKExchangeBarrierId`. It is safe today only
+  because no ping-pong kernel contains a split-K exchange. Ask for a code guard, since c54a485 also
+  added stream-K.
+
+#### 12. Files
+
+| File | What |
+|---|---|
+| `Neural_Networks_exp_1926/work_docs(mark-down - (.md) files ) /pingpong_crosscheck_for_nova_2026_10_26.md` | my question document to her Claude (870 lines; its first reply is in Appendix A) |
+| `Neural_Networks_exp_1926/pingpong_crosscheck_answer_2026-10-26.md` | her Claude's full answer (534 lines) |
+| `Neural_Networks_exp_1926/reports_harshini_ping_pong/` | the 8 kernel files (mlir, ptx, cubin, sass × ping-pong / cooperative) |

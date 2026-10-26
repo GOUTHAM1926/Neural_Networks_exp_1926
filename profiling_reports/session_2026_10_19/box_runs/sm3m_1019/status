@@ -1,0 +1,18 @@
+16:04:37 IST built: SM3m: source 86a2d73d | library b9815e38 F3c: source c6a67163 | library 096123e0 
+16:04:37 IST start | GPU 0 NVIDIA H200, 0 MiB | vj2_LHOd 00be51bd  vj2_SM3 a54c3ff8  vj2_SM3m b9815e38  
+16:04:37 IST quick suite vj2_SM3 skipped (AB_QUICK_LIBS)
+16:05:25 IST quick suite vj2_SM3m exit=0 | checks passed 296, failed 0, skipped groups 0   (46 s total)
+16:05:57 IST race round 01 done (vj2_SM3 vj2_SM3m vj2_LHOd)
+16:06:29 IST race round 02 done (vj2_SM3 vj2_LHOd vj2_SM3m)
+16:07:01 IST race round 03 done (vj2_LHOd vj2_SM3 vj2_SM3m)
+16:07:34 IST race round 04 done (vj2_LHOd vj2_SM3m vj2_SM3)
+16:08:06 IST race round 05 done (vj2_SM3m vj2_LHOd vj2_SM3)
+16:08:39 IST race round 06 done (vj2_SM3m vj2_SM3 vj2_LHOd)
+16:09:11 IST race round 07 done (vj2_SM3 vj2_SM3m vj2_LHOd)
+16:09:43 IST race round 08 done (vj2_SM3 vj2_LHOd vj2_SM3m)
+16:09:57 IST ncu vj2_SM3 dense | kernels profiled 1
+16:10:10 IST ncu vj2_SM3 packed | kernels profiled 1
+16:10:24 IST ncu vj2_SM3m dense | kernels profiled 1
+16:10:37 IST ncu vj2_SM3m packed | kernels profiled 1
+16:10:37 IST MULTI DONE
+16:10:37 IST PACKED sm3m_results.tgz

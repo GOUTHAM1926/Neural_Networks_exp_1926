@@ -1,0 +1,2 @@
+2026-10-22 20:48:49 IST resume start on GPU 0 | lr 5e-5 | trainer 2e98b56b | 60 GB free | checkpoints: blumodel_step_7000 blumodel_step_8000 
+2026-10-22 21:30:37 IST end | exit 1 | last: step   9194 | train 0.725632 | val 0.854744 

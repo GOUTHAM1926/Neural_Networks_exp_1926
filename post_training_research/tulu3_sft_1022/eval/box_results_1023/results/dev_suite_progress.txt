@@ -1,0 +1,19 @@
+2026-10-23 17:29:35 IST start lm-eval dev suite, step 11590
+2026-10-23 17:51:47 IST end   lm-eval dev suite, step 11590
+2026-10-23 17:51:47 IST start end-token rate, step 11590
+2026-10-23 18:01:49 IST end   end-token rate, step 11590
+2026-10-23 18:01:49 IST start lm-eval dev suite, step 6000
+2026-10-23 18:03:35 IST start export of the base model (fullchess, CPU)
+2026-10-23 18:03:54 IST end   export of the base model: wrote /dev/shm/gautam_eval/base_fullchess: model.safetensors (3.40 GB), config.j
+2026-10-23 18:25:03 IST end   lm-eval dev suite, step 6000
+2026-10-23 18:25:03 IST start end-token rate, step 6000
+2026-10-23 18:35:15 IST end   end-token rate, step 6000
+2026-10-23 18:35:15 IST ALL DEV SUITE DONE
+2026-10-23 18:35:36 IST start plain pass (no chat template), step 11590
+2026-10-23 18:38:26 IST base-model evaluation CANCELLED by the user (not needed)
+2026-10-23 18:39:12 IST plain pass STOPPED by the user (not needed)
+2026-10-23 18:39:13 IST start UNSEEN suite, step 11590: agieval_en (no chat template)
+2026-10-23 18:41:51 IST end   agieval_en; start mmlu_pro (chat template)
+2026-10-23 18:48:40 IST full mmlu_pro STOPPED (too slow: ~5 h projected); switching to a random subset
+2026-10-23 18:48:43 IST start mmlu_pro RANDOM SUBSET (14 subjects, 2100 questions)
+2026-10-23 19:59:58 IST ALL UNSEEN SUITE DONE (agieval_en full + mmlu_pro random subset)

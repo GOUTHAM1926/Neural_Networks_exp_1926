@@ -1,0 +1,20 @@
+
+=== dense, steady state only (calls starting >= 2 s after the first forward), kernel times in us ===
+          fwd main r1/r2   bwd main r1/r2   bwd call r1/r2  calls fwd/bwd
+ours       1052.6/1057.8    2792.0/2811.3    3167.4/3187.7  [541, 542]/[542, 543]
+fa3          973.2/974.6    2903.7/2906.8    3290.1/3293.3  [553, 554]/[553, 554]
+fa4        1069.0/1072.8    2844.8/2848.2    3228.4/3231.3  [985, 986]/[985, 986]
+cudnn      1133.7/1144.7    3210.8/3241.9    3584.7/3615.8  [771, 660]/[772, 660]
+   ours / fa3    forward 1.084 | backward main 0.964 | backward call 0.965 | forward + backward call 0.992
+   ours / fa4    forward 0.985 | backward main 0.984 | backward call 0.984 | forward + backward call 0.984
+   ours / cudnn  forward 0.926 | backward main 0.868 | backward call 0.883 | forward + backward call 0.893
+
+=== packed, steady state only (calls starting >= 2 s after the first forward), kernel times in us ===
+          fwd main r1/r2   bwd main r1/r2   bwd call r1/r2  calls fwd/bwd
+ours         443.9/441.9    1135.5/1130.7    1527.0/1521.9  [1010, 1008]/[1010, 1008]
+fa3          473.1/473.3    1202.6/1206.2    1599.8/1603.2  [1067, 1066]/[1067, 1067]
+fa4          526.1/526.1    1174.6/1174.4    1573.9/1573.8  [2019, 2019]/[2019, 2019]
+cudnn        493.5/494.5    1282.3/1287.8    1692.0/1694.7  [1422, 1146]/[1422, 1146]
+   ours / fa3    forward 0.936 | backward main 0.941 | backward call 0.952 | forward + backward call 0.948
+   ours / fa4    forward 0.842 | backward main 0.965 | backward call 0.969 | forward + backward call 0.937
+   ours / cudnn  forward 0.897 | backward main 0.882 | backward call 0.900 | forward + backward call 0.899

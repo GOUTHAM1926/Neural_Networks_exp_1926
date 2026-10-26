@@ -1,0 +1,7 @@
+torch 2.14.1+cu130 cudnn 92400 | gpu NVIDIA H200
+RIVAL mode=dense impl=cudnn iters=1000 wall_s=4.76 per_iter_ms=4.7609
+Collecting data...
+Generating '/tmp/nsys-root/nsys-report-9c29.qdstrm'
+[1/1] [0%                          ] dense_cudnn_r2.nsys-rep[1/1] [0%                          ] dense_cudnn_r2.nsys-rep[1/1] [1%                          ] dense_cudnn_r2.nsys-rep[1/1] [2%                          ] dense_cudnn_r2.nsys-rep[1/1] [5%                          ] dense_cudnn_r2.nsys-rep[1/1] [6%                          ] dense_cudnn_r2.nsys-rep[1/1] [7%                          ] dense_cudnn_r2.nsys-rep[1/1] [14%                         ] dense_cudnn_r2.nsys-rep[1/1] [==19%                       ] dense_cudnn_r2.nsys-rep[1/1] [==20%                       ] dense_cudnn_r2.nsys-rep[1/1] [====================84%     ] dense_cudnn_r2.nsys-rep[1/1] [=====================87%    ] dense_cudnn_r2.nsys-rep[1/1] [=======================96%  ] dense_cudnn_r2.nsys-rep[1/1] [========================98% ] dense_cudnn_r2.nsys-rep[1/1] [========================100%] dense_cudnn_r2.nsys-rep[1/1] [========================100%] dense_cudnn_r2.nsys-rep
+Generated:
+	/root/gautam_K/sft_v2/runs/sb_1019/dense_cudnn_r2.nsys-rep

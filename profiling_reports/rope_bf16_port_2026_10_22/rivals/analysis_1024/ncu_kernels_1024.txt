@@ -1,0 +1,41 @@
+== ncu_bwd_compile_B1_18x6
+  triton_per_fused__to_copy_add_div_expand_mul_neg_pow     9.3 us DRAM  33.9%   15.2 MB occ  34.5% grid  3,072x  64 regs 64
+  triton_red_fused__to_copy_add_mul_neg_slice_slice_ba     9.1 us DRAM  29.3%   12.7 MB occ  66.5% grid  1,536x 128 regs 32
+  triton_red_fused__to_copy_add_mul_neg_slice_slice_ba     2.5 us DRAM   0.9%    0.1 MB occ   6.2% grid     64x 128 regs 16
+  triton_poi_fused_add_mul_neg_slice_slice_backward_un    12.0 us DRAM  43.9%   25.2 MB occ  79.3% grid  9,216x 128 regs 32
+  triton_per_fused__to_copy_add_div_expand_mul_neg_pow    16.3 us DRAM  57.2%   44.8 MB occ  12.6% grid  1,152x  32 regs 72
+  void at::reduce_kernel<128, 4, at::ReduceOp<float, a    10.0 us DRAM   1.4%    0.7 MB occ   6.2% grid     18x 128 regs 54
+  void at::vectorized_elementwise_kernel<8, at::bfloat     2.5 us DRAM   0.0%    0.0 MB occ   6.2% grid      1x 128 regs 32
+  total 61.7 us
+== ncu_bwd_compile_B4_18x6
+  triton_poi_fused_add_mul_neg_slice_slice_backward_un    16.2 us DRAM  57.2%   44.4 MB occ  80.5% grid 12,288x 128 regs 32
+  triton_per_fused__to_copy_add_div_expand_mul_neg_pow    21.1 us DRAM  63.3%   64.0 MB occ  17.0% grid  1,536x  32 regs 72
+  void at::reduce_kernel<128, 4, at::ReduceOp<float, a    10.9 us DRAM   1.7%    0.9 MB occ   6.2% grid     24x 128 regs 54
+  void at::vectorized_elementwise_kernel<8, at::bfloat     2.1 us DRAM   0.1%    0.0 MB occ   6.0% grid      1x 128 regs 32
+  triton_poi_fused_add_mul_neg_slice_slice_backward_un    41.4 us DRAM  71.5%  142.5 MB occ  87.4% grid 36,864x 128 regs 32
+  triton_per_fused__to_copy_add_div_expand_mul_neg_pow    56.5 us DRAM  79.2%  215.4 MB occ  25.9% grid  2,304x  32 regs 72
+  void at::reduce_kernel<128, 4, at::ReduceOp<float, a    11.7 us DRAM   2.2%    1.3 MB occ   6.2% grid     36x 128 regs 54
+  void at::vectorized_elementwise_kernel<8, at::bfloat     2.1 us DRAM   0.1%    0.0 MB occ   6.1% grid      1x 128 regs 32
+  total 162.0 us
+== ncu_bwd_compile_B4_32x8
+  triton_poi_fused_add_mul_neg_slice_slice_backward_un    20.9 us DRAM  62.5%   62.6 MB occ  82.9% grid 16,384x 128 regs 32
+  triton_per_fused__to_copy_add_div_expand_mul_neg_pow    25.2 us DRAM  72.8%   88.3 MB occ  22.6% grid  2,048x  32 regs 71
+  void at::reduce_kernel<128, 4, at::ReduceOp<float, a    11.6 us DRAM   2.0%    1.1 MB occ   6.2% grid     32x 128 regs 54
+  void at::vectorized_elementwise_kernel<8, at::bfloat     2.5 us DRAM   0.0%    0.0 MB occ   6.1% grid      1x 128 regs 32
+  triton_poi_fused_add_mul_neg_slice_slice_backward_un    73.4 us DRAM  74.2%  261.9 MB occ  90.3% grid 65,536x 128 regs 32
+  triton_per_fused__to_copy_add_div_expand_mul_neg_pow   107.3 us DRAM  76.2%  392.9 MB occ  39.5% grid  4,096x  32 regs 71
+  void at::reduce_kernel<128, 4, at::ReduceOp<float, a    13.2 us DRAM   3.4%    2.2 MB occ   6.2% grid     64x 128 regs 54
+  void at::vectorized_elementwise_kernel<8, at::bfloat     2.1 us DRAM   0.1%    0.0 MB occ   6.1% grid      1x 128 regs 32
+  total 256.1 us
+== ncu_bwd_ours_B1_18x6
+  void fused_qknorm_rope_bwd_bf16_tm<1, 128, 0>(const     82.0 us DRAM  18.4%   72.5 MB occ   9.0% grid    768x  32 regs 40
+  void reduce_dgamma_qk_bf16_tm<128>(const float *, fl    17.7 us DRAM   0.5%    0.4 MB occ   1.6% grid      8x  32 regs 32
+  total 99.7 us
+== ncu_bwd_ours_B4_18x6
+  void fused_qknorm_rope_bwd_bf16_tm<1, 128, 0>(const    108.1 us DRAM  57.4%  298.1 MB occ  35.6% grid  3,072x  32 regs 40
+  void reduce_dgamma_qk_bf16_tm<128>(const float *, fl    64.3 us DRAM   0.5%    1.6 MB occ   1.6% grid      8x  32 regs 32
+  total 172.4 us
+== ncu_bwd_ours_B4_32x8
+  void fused_qknorm_rope_bwd_bf16_tm<1, 128, 0>(const    206.4 us DRAM  50.7%  503.8 MB occ  33.9% grid  5,120x  32 regs 40
+  void reduce_dgamma_qk_bf16_tm<128>(const float *, fl   112.6 us DRAM   0.5%    2.6 MB occ   1.6% grid      8x  32 regs 32
+  total 319.0 us

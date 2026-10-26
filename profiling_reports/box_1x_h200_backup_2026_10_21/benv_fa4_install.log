@@ -1,0 +1,80 @@
+Processing /root/gautam_k/flash-attention/flash_attn/cute
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting nvidia-cutlass-dsl>=4.6.2 (from flash-attn-4==4.0.0b34)
+  Downloading nvidia_cutlass_dsl-4.8.1-py3-none-any.whl.metadata (3.1 kB)
+Requirement already satisfied: torch in /root/gautam_k/benv/lib/python3.12/site-packages (from flash-attn-4==4.0.0b34) (2.14.1+cu130)
+Requirement already satisfied: einops in /root/gautam_k/benv/lib/python3.12/site-packages (from flash-attn-4==4.0.0b34) (0.8.2)
+Requirement already satisfied: typing_extensions in /root/gautam_k/benv/lib/python3.12/site-packages (from flash-attn-4==4.0.0b34) (4.16.0)
+Collecting apache-tvm-ffi<0.2,>=0.1.11 (from flash-attn-4==4.0.0b34)
+  Downloading apache_tvm_ffi-0.1.15.post0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (6.2 kB)
+Collecting torch-c-dlpack-ext (from flash-attn-4==4.0.0b34)
+  Downloading torch_c_dlpack_ext-0.1.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (14 kB)
+Collecting quack-kernels>=0.5.3 (from flash-attn-4==4.0.0b34)
+  Downloading quack_kernels-0.6.5-py3-none-any.whl.metadata (834 bytes)
+Collecting nvidia-cutlass-dsl-libs-base==4.8.1 (from nvidia-cutlass-dsl>=4.6.2->flash-attn-4==4.0.0b34)
+  Downloading nvidia_cutlass_dsl_libs_base-4.8.1-cp312-cp312-manylinux_2_28_x86_64.whl.metadata (2.9 kB)
+Collecting nvidia-cutlass-dsl-libs-cu12==4.8.1 (from nvidia-cutlass-dsl>=4.6.2->flash-attn-4==4.0.0b34)
+  Downloading nvidia_cutlass_dsl_libs_cu12-4.8.1-cp312-cp312-manylinux_2_28_x86_64.whl.metadata (2.9 kB)
+Requirement already satisfied: cuda-bindings>=12.8 in /root/gautam_k/benv/lib/python3.12/site-packages (from nvidia-cutlass-dsl-libs-base==4.8.1->nvidia-cutlass-dsl>=4.6.2->flash-attn-4==4.0.0b34) (13.3.1)
+Collecting protobuf>=4.21.12 (from nvidia-cutlass-dsl-libs-base==4.8.1->nvidia-cutlass-dsl>=4.6.2->flash-attn-4==4.0.0b34)
+  Downloading protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl.metadata (595 bytes)
+Collecting nvidia-cutlass-dsl-libs-core==4.8.1 (from nvidia-cutlass-dsl-libs-base==4.8.1->nvidia-cutlass-dsl>=4.6.2->flash-attn-4==4.0.0b34)
+  Downloading nvidia_cutlass_dsl_libs_core-4.8.1-py3-none-any.whl.metadata (2.9 kB)
+Requirement already satisfied: cuda-pathfinder>=1.4.2 in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-bindings>=12.8->nvidia-cutlass-dsl-libs-base==4.8.1->nvidia-cutlass-dsl>=4.6.2->flash-attn-4==4.0.0b34) (1.6.0)
+Collecting nvidia-cutlass-dsl-libs-cu13==4.8.1 (from nvidia-cutlass-dsl[cu13]>=4.6.2; extra == "cu13"->flash-attn-4==4.0.0b34)
+  Downloading nvidia_cutlass_dsl_libs_cu13-4.8.1-cp312-cp312-manylinux_2_28_x86_64.whl.metadata (2.9 kB)
+Requirement already satisfied: filelock in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (3.32.3)
+Requirement already satisfied: setuptools>=77.0.3 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (84.2.1)
+Requirement already satisfied: sympy>=1.13.3 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (1.14.0)
+Requirement already satisfied: networkx>=2.5.1 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (3.6.1)
+Requirement already satisfied: jinja2 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (3.1.6)
+Requirement already satisfied: fsspec>=0.8.5 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (2026.7.0)
+Requirement already satisfied: cuda-toolkit==13.0.3 in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (13.0.3.0)
+Requirement already satisfied: nvidia-cudnn-cu13==9.24.0.43 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (9.24.0.43)
+Requirement already satisfied: nvidia-cusparselt-cu13==0.8.1 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (0.8.1)
+Requirement already satisfied: nvidia-nccl-cu13==2.30.7 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (2.30.7)
+Requirement already satisfied: nvidia-nvshmem-cu13==3.4.5 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (3.4.5)
+Requirement already satisfied: triton~=3.8.0 in /root/gautam_k/benv/lib/python3.12/site-packages (from torch->flash-attn-4==4.0.0b34) (3.8.0)
+Requirement already satisfied: nvidia-cublas==13.1.1.3.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (13.1.1.3)
+Requirement already satisfied: nvidia-cuda-nvrtc==13.0.88.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (13.0.88)
+Requirement already satisfied: nvidia-cuda-runtime==13.0.96.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (13.0.96)
+Requirement already satisfied: nvidia-cufft==12.0.0.61.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (12.0.0.61)
+Requirement already satisfied: nvidia-nvjitlink<14,>=13.0.88 in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (13.3.33)
+Requirement already satisfied: nvidia-cufile==1.15.1.6.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (1.15.1.6)
+Requirement already satisfied: nvidia-cuda-cupti==13.0.85.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (13.0.85)
+Requirement already satisfied: nvidia-curand==10.4.0.35.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (10.4.0.35)
+Requirement already satisfied: nvidia-cusolver==12.0.4.66.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (12.0.4.66)
+Requirement already satisfied: nvidia-cusparse==12.6.3.3.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (12.6.3.3)
+Requirement already satisfied: nvidia-nvtx==13.0.85.* in /root/gautam_k/benv/lib/python3.12/site-packages (from cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3; platform_system == "Linux"->torch->flash-attn-4==4.0.0b34) (13.0.85)
+Requirement already satisfied: mpmath<1.4,>=1.1.0 in /root/gautam_k/benv/lib/python3.12/site-packages (from sympy>=1.13.3->torch->flash-attn-4==4.0.0b34) (1.3.0)
+Requirement already satisfied: MarkupSafe>=2.0 in /root/gautam_k/benv/lib/python3.12/site-packages (from jinja2->torch->flash-attn-4==4.0.0b34) (3.0.3)
+Downloading apache_tvm_ffi-0.1.15.post0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (3.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.3/3.3 MB 9.7 MB/s  0:00:00
+Downloading nvidia_cutlass_dsl-4.8.1-py3-none-any.whl (10 kB)
+Downloading nvidia_cutlass_dsl_libs_base-4.8.1-cp312-cp312-manylinux_2_28_x86_64.whl (3.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.1/3.1 MB 88.6 MB/s  0:00:00
+Downloading nvidia_cutlass_dsl_libs_core-4.8.1-py3-none-any.whl (1.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.6 MB 100.5 MB/s  0:00:00
+Downloading nvidia_cutlass_dsl_libs_cu12-4.8.1-cp312-cp312-manylinux_2_28_x86_64.whl (91.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 91.7/91.7 MB 32.7 MB/s  0:00:02
+Downloading nvidia_cutlass_dsl_libs_cu13-4.8.1-cp312-cp312-manylinux_2_28_x86_64.whl (92.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 92.0/92.0 MB 27.8 MB/s  0:00:03
+Downloading protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl (343 kB)
+Downloading quack_kernels-0.6.5-py3-none-any.whl (729 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 729.6/729.6 kB 123.8 MB/s  0:00:00
+Downloading torch_c_dlpack_ext-0.1.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (897 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 897.8/897.8 kB 112.3 MB/s  0:00:00
+Building wheels for collected packages: flash-attn-4
+  Building wheel for flash-attn-4 (pyproject.toml): started
+  Building wheel for flash-attn-4 (pyproject.toml): finished with status 'done'
+  Created wheel for flash-attn-4: filename=flash_attn_4-4.0.0b34-py3-none-any.whl size=509529 sha256=558ee82525749ee9affa5ce1795d0341448d2a2bcfdb9ec56d7f0adbebfad065
+  Stored in directory: /root/gautam_k/tmp/pip-ephem-wheel-cache-ziswsn0n/wheels/d2/df/d4/8a3a212c1b3bb24d0d17499a68c55789ab92e23519333e3792
+Successfully built flash-attn-4
+Installing collected packages: protobuf, apache-tvm-ffi, nvidia-cutlass-dsl-libs-core, nvidia-cutlass-dsl-libs-base, nvidia-cutlass-dsl-libs-cu13, nvidia-cutlass-dsl-libs-cu12, torch-c-dlpack-ext, nvidia-cutlass-dsl, quack-kernels, flash-attn-4
+
+Successfully installed apache-tvm-ffi-0.1.15.post0 flash-attn-4-4.0.0b34 nvidia-cutlass-dsl-4.8.1 nvidia-cutlass-dsl-libs-base-4.8.1 nvidia-cutlass-dsl-libs-core-4.8.1 nvidia-cutlass-dsl-libs-cu12-4.8.1 nvidia-cutlass-dsl-libs-cu13-4.8.1 protobuf-7.36.2 quack-kernels-0.6.5 torch-c-dlpack-ext-0.1.5

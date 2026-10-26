@@ -1,0 +1,22 @@
+
+=== dense (kernel times in us, free clocks; r1 / r2 = the two ABBA rounds) ===
+            fwd main r1/r2     bwd main r1/r2     bwd call r1/r2       busy%         MHz           W calls
+ours           978.3/971.4      2797.5/2787.3      3174.8/3164.7   99.0/99.1    840/1605     691/692 [1010, 1010]
+fa3            968.6/968.4      2857.9/2856.7      3243.9/3243.6   99.7/99.6    1650/810     691/691 [1020, 1020]
+fa4          1071.3/1070.7      2846.7/2848.3      3229.1/3230.2   99.9/99.9   1650/1695     692/693 [1020, 1020]
+cudnn        1175.2/1175.1      3185.0/3185.5      3558.5/3560.0   99.7/99.7    870/1755     691/689 [1020, 1020]
+ours / rival (mean of the rounds; below 1.00 = ours faster):
+   vs fa3    forward 1.007 | backward main 0.977 | backward call 0.977 | forward + backward call 0.984
+   vs fa4    forward 0.910 | backward main 0.981 | backward call 0.981 | forward + backward call 0.964
+   vs cudnn  forward 0.830 | backward main 0.877 | backward call 0.891 | forward + backward call 0.875
+
+=== packed (kernel times in us, free clocks; r1 / r2 = the two ABBA rounds) ===
+            fwd main r1/r2     bwd main r1/r2     bwd call r1/r2       busy%         MHz           W calls
+ours           404.0/403.5      1125.3/1122.8      1516.1/1514.4   98.2/98.1    1425/810     690/694 [2010, 2010]
+fa3            467.1/467.1      1186.6/1186.4      1583.3/1583.1   99.5/99.5     840/780     695/693 [2020, 2020]
+fa4            525.3/525.5      1171.6/1171.9      1571.1/1571.7   99.6/99.6    1815/345     693/694 [2020, 2020]
+cudnn          494.1/488.8      1285.8/1272.9      1693.6/1679.3   98.8/98.9     345/870     692/695 [2020, 2020]
+ours / rival (mean of the rounds; below 1.00 = ours faster):
+   vs fa3    forward 0.864 | backward main 0.947 | backward call 0.957 | forward + backward call 0.936
+   vs fa4    forward 0.769 | backward main 0.959 | backward call 0.964 | forward + backward call 0.915
+   vs cudnn  forward 0.822 | backward main 0.879 | backward call 0.898 | forward + backward call 0.881

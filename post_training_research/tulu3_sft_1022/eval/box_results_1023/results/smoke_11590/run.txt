@@ -1,0 +1,45 @@
+2026-10-23 17:22:56 IST | model /dev/shm/gautam_eval/step_11590 | tasks ifeval,arc_easy | extra: --limit 20 | GPU 3
+2026-10-23:11:52:56 WARNING  [config.evaluate_config:337] --limit SHOULD ONLY BE USED FOR TESTING. REAL METRICS SHOULD NOT BE COMPUTED USING LIMIT.
+2026-10-23:11:53:02 INFO     [_cli.run:392] Selected Tasks: ['ifeval', 'arc_easy']
+2026-10-23:11:53:04 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-10-23:11:53:04 INFO     [evaluator:239] Initializing hf model, with arguments: {'pretrained': '/dev/shm/gautam_eval/step_11590', 'dtype': 'bfloat16'}
+2026-10-23:11:53:09 INFO     [models.huggingface:289] Using device 'cuda:0'
+2026-10-23:11:53:09 INFO     [models.huggingface:582] Model parallel was set to False, max memory was not set, and device map was set to {'': 'cuda:0'}
+Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights:  19%|█▉        | 60/310 [00:00<00:00, 584.58it/s]Loading weights:  45%|████▌     | 141/310 [00:00<00:00, 710.44it/s]Loading weights:  70%|███████   | 218/310 [00:00<00:00, 736.01it/s]Loading weights:  97%|█████████▋| 301/310 [00:00<00:00, 764.22it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 749.00it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Generating train split:   0%|          | 0/541 [00:00<?, ? examples/s]Generating train split: 100%|██████████| 541/541 [00:00<00:00, 77491.92 examples/s]
+Generating train split:   0%|          | 0/2251 [00:00<?, ? examples/s]Generating train split: 100%|██████████| 2251/2251 [00:00<00:00, 348544.68 examples/s]
+Generating test split:   0%|          | 0/2376 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 2376/2376 [00:00<00:00, 505691.70 examples/s]
+Generating validation split:   0%|          | 0/570 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 570/570 [00:00<00:00, 296068.52 examples/s]
+2026-10-23:11:53:18 INFO     [evaluator_utils:472] Selected tasks:
+2026-10-23:11:53:18 INFO     [evaluator_utils:506] Task: arc_easy (arc/arc_easy.yaml)
+2026-10-23:11:53:18 INFO     [evaluator_utils:506] Task: ifeval (ifeval/ifeval.yaml)
+2026-10-23:11:53:18 INFO     [evaluator:314] ifeval: Using gen_kwargs: {'until': [], 'do_sample': False, 'temperature': 0.0, 'max_gen_toks': 1280}
+2026-10-23:11:53:18 INFO     [api.task:312] Building contexts for ifeval on rank 0...
+  0%|          | 0/20 [00:00<?, ?it/s]100%|██████████| 20/20 [00:00<00:00, 8349.37it/s]
+2026-10-23:11:53:18 INFO     [api.task:312] Building contexts for arc_easy on rank 0...
+  0%|          | 0/20 [00:00<?, ?it/s]100%|██████████| 20/20 [00:00<00:00, 790.30it/s]
+2026-10-23:11:53:18 INFO     [evaluator:589] Running generate_until requests
+Running generate_until requests:   0%|          | 0/20 [00:00<?, ?it/s][transformers] Both `max_new_tokens` (=2048) and `max_length`(=1376) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+Running generate_until requests:   5%|▌         | 1/20 [02:32<48:24, 152.88s/it]Running generate_until requests: 100%|██████████| 20/20 [02:32<00:00,  7.64s/it]
+2026-10-23:11:55:51 INFO     [evaluator:589] Running loglikelihood requests
+Passed argument batch_size = auto. Detecting largest batch size
+Determined Largest batch size: 64
+Tokenizing inputs:   0%|          | 0/80 [00:00<?, ?it/s]Tokenizing inputs: 100%|██████████| 80/80 [00:00<00:00, 7966.58it/s]
+Running loglikelihood requests:   0%|          | 0/80 [00:00<?, ?it/s]Running loglikelihood requests:   1%|▏         | 1/80 [00:01<02:06,  1.60s/it]Running loglikelihood requests:  81%|████████▏ | 65/80 [00:01<00:00, 43.79it/s]Running loglikelihood requests: 100%|██████████| 80/80 [00:01<00:00, 40.86it/s]
+fatal: not a git repository (or any of the parent directories): .git
+2026-10-23:11:55:56 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-10-23:11:55:56 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to /root/gautam_k/eval/results/smoke_11590/__dev__shm__gautam_eval__step_11590/*.jsonl
+Passed argument batch_size = auto:1. Detecting largest batch size
+Determined largest batch size: 64
+hf ({'pretrained': '/dev/shm/gautam_eval/step_11590', 'dtype': 'bfloat16'}), gen_kwargs: ({}), limit: 20.0, num_fewshot: None, batch_size: auto (64)
+| Tasks  |Version|Filter|n-shot|        Metric         |   |Value |   |Stderr|
+|--------|------:|------|-----:|-----------------------|---|-----:|---|------|
+|arc_easy|      1|none  |     0|acc                    |↑  |0.5500|±  |0.1141|
+|        |       |none  |     0|acc_norm               |↑  |0.4500|±  |0.1141|
+|ifeval  |      4|none  |     0|inst_level_loose_acc   |↑  |0.4667|±  |   N/A|
+|        |       |none  |     0|inst_level_strict_acc  |↑  |0.4333|±  |   N/A|
+|        |       |none  |     0|prompt_level_loose_acc |↑  |0.4000|±  |0.1124|
+|        |       |none  |     0|prompt_level_strict_acc|↑  |0.3500|±  |0.1094|
+
+2026-10-23 17:25:58 IST | done

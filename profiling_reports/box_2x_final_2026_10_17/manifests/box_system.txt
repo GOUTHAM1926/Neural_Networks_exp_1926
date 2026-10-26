@@ -1,0 +1,12 @@
+host tall-door-completes-fin-02 | Sat Oct 17 15:40:14 UTC 2026 UTC
+Linux tall-door-completes-fin-02 6.8.0-147-generic #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+index, name, driver_version, memory.total [MiB], power.limit [W], clocks.max.sm [MHz]
+0, NVIDIA H200, 580.178.04, 143771 MiB, 700.00 W, 1980 MHz
+1, NVIDIA H200, 580.178.04, 143771 MiB, 700.00 W, 1980 MHz
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+Version 2025.3.1.0 (build 36398880) (public-release)
+88
+               total        used        free      shared  buff/cache   available
+Mem:             334          10         295           0          31         324
+/dev/vda1       193G  100G   74G  58% /

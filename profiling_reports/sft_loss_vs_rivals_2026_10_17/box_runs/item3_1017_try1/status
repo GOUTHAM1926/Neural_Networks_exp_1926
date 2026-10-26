@@ -1,0 +1,14 @@
+20:06:29 IST phase standalone | tree LossKernels.cu cf947bf4 LossBackward.cpp c59dffd7 LossOps.cpp 81e27dfd
+20:06:45 IST library: /root/gautam_k/libs/loss_v3/libtensor.so 465cfa56 (old cd0bb2a9)
+20:06:57 IST test old_out exit=0 | loss=11.336594 wgrad_cs=883fe7a5e3b70000 xgrad_cs=b017f1eacd9f0000 active_peak_MiB=10536.0 allocated_peak_MiB=10536.0 reps_identical=1
+20:07:01 IST test new_out exit=0 | loss=11.336594 wgrad_cs=883fe7a5e3b70000 xgrad_cs=b017f1eacd9f0000 active_peak_MiB=7754.0 allocated_peak_MiB=7754.0 reps_identical=1
+20:07:06 IST test new_in exit=0 | loss=11.336594 wgrad_cs=883fe7a5e3b70000 xgrad_cs=b017f1eacd9f0000 active_peak_MiB=4610.0 allocated_peak_MiB=4610.0 reps_identical=1
+20:07:06 IST phase trainer | bluscript_sft.cpp 6f94d3ab
+20:08:00 IST trainer built: bluscript_sft_bin_item3 1c2fbb7a
+20:08:44 IST old trainer built: bluscript_sft_bin_old 383f4f23
+20:08:48 IST trainer old_r1 exit=134 | lib cd0bb2a9 |  | 0 step lines
+20:08:51 IST trainer off_r1 exit=134 | lib 465cfa56 |  | 0 step lines
+20:08:55 IST trainer on_r1 exit=134 | lib 465cfa56 |  | 0 step lines
+20:08:59 IST trainer old_r2 exit=134 | lib cd0bb2a9 |  | 0 step lines
+20:09:04 IST trainer off_r2 exit=134 | lib 465cfa56 |  | 0 step lines
+20:09:07 IST trainer on_r2 exit=134 | lib 465cfa56 |  | 0 step lines

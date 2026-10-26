@@ -1,0 +1,8 @@
+case         |   F old   F new new/old |   B old   B new new/old | F+B old F+B new new/old | gradient (4 checksums)
+real_first   |  0.2331  0.2101   0.901 |  1.4484  0.9639   0.666 |  1.6825  1.1732   0.697 | BIT-IDENTICAL
+real_min     |  0.1320  0.1196   0.906 |  1.0998  0.8819   0.802 |  1.2317  1.0010   0.813 | BIT-IDENTICAL
+real_median  |  0.2758  0.2495   0.905 |  1.6046  1.0067   0.627 |  1.8816  1.2540   0.666 | BIT-IDENTICAL
+real_max     |  0.4380  0.4229   0.966 |  2.1658  1.1466   0.529 |  2.5934  1.5282   0.589 | BIT-IDENTICAL
+nomask       |  1.0375  0.9474   0.913 |  4.3496  1.6445   0.378 |  5.3761  2.6098   0.485 | BIT-IDENTICAL
+all_masked   |  0.0344  0.0343   0.997 |  0.8213  0.7446   0.907 |  0.8655  0.7887   0.911 | BIT-IDENTICAL
+ms, median of 500 calls, mean of the two runs per library; new/old < 1 = NEW faster

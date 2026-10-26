@@ -1,0 +1,854 @@
+/root/gautam_K/benv/lib/python3.12/site-packages/wheel/bdist_wheel.py:4: FutureWarning: The 'wheel' package is no longer the canonical location of the 'bdist_wheel' command, and will be removed in a future release. Please update to setuptools v70.1 or later which contains an integrated version of this command.
+  warn(
+/root/gautam_K/benv/lib/python3.12/site-packages/setuptools/dist.py:765: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+!!
+
+        ********************************************************************************
+        Please consider removing the following classifiers in favor of a SPDX license expression:
+
+        License :: OSI Approved :: Apache Software License
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+  self._finalize_license_expression()
+
+
+torch.__version__  = 2.14.1+cu130
+
+
+running build_ext
+W1019 09:52:56.819000 1065813 torch/utils/cpp_extension.py:652] The detected CUDA version (13.4) has a minor version mismatch with the version that was used to compile PyTorch (13.0). Most likely this shouldn't be a problem.
+W1019 09:52:56.820000 1065813 torch/utils/cpp_extension.py:662] There are no x86_64-linux-gnu-g++ version bounds defined for CUDA version 13.4
+building 'flash_attn_3._C' extension
+[1/4] c++ -MMD -MF /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/flash_api_stable.o.d -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -fPIC -I/root/gautam_K/fa3_tl2/flash-attention/hopper -I/root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include -I/root/gautam_K/benv/lib/python3.12/site-packages/torch/include -I/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -I/usr/local/cuda/include -I/root/gautam_K/benv/include -I/usr/include/python3.12 -c -c /root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp -o /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/flash_api_stable.o -O3 -std=c++17 -DPy_LIMITED_API=0x03090000 -DTORCH_TARGET_VERSION=0x0209000000000000 -DFLASHATTENTION_DISABLE_PAGEDKV -DFLASHATTENTION_DISABLE_SPLIT -DFLASHATTENTION_DISABLE_APPENDKV -DFLASHATTENTION_DISABLE_LOCAL -DFLASHATTENTION_DISABLE_SOFTCAP -DFLASHATTENTION_DISABLE_PACKGQA -DFLASHATTENTION_DISABLE_FP16 -DFLASHATTENTION_DISABLE_FP8 -DFLASHATTENTION_DISABLE_VARLEN -DFLASHATTENTION_DISABLE_CLUSTER -DFLASHATTENTION_DISABLE_HDIM64 -DFLASHATTENTION_DISABLE_HDIM96 -DFLASHATTENTION_DISABLE_HDIM192 -DFLASHATTENTION_DISABLE_HDIM256 -DFLASHATTENTION_DISABLE_SM8x -DFLASHATTENTION_DISABLE_HDIMDIFF64 -DFLASHATTENTION_DISABLE_HDIMDIFF192 -DTORCH_API_INCLUDE_EXTENSION_H -DPy_LIMITED_API=0x030A0000 -DTORCH_EXTENSION_NAME=_C
+<command-line>: warning: "Py_LIMITED_API" redefined
+<command-line>: note: this is the location of the previous definition
+In file included from /root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cutlass/integer_subbyte.h:46,
+                 from /root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cutlass/numeric_types.h:40,
+                 from /root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:7:
+/root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cutlass/platform/platform.h:658:21: warning: ‘long4’ is deprecated: use long4_16a or long4_32a [-Wdeprecated-declarations]
+  658 | struct alignment_of<long4> {
+      |                     ^~~~~
+In file included from /usr/local/cuda/include/driver_types.h:61,
+                 from /usr/local/cuda/include/builtin_types.h:59,
+                 from /usr/local/cuda/include/cuda_runtime_api.h:150,
+                 from /root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cute/util/debug.hpp:38,
+                 from /root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cute/config.hpp:159,
+                 from /root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cute/util/type_traits.hpp:47,
+                 from /root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cutlass/numeric_types.h:37:
+/usr/local/cuda/include/vector_types.h:535:98: note: declared here
+  535 | typedef __device_builtin__ struct long4 __VECTOR_TYPE_DEPRECATED__("use long4_16a or long4_32a") long4;
+      |                                                                                                  ^~~~~
+/root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cutlass/platform/platform.h:662:21: warning: ‘ulong4’ is deprecated: use ulong4_16a or ulong4_32a [-Wdeprecated-declarations]
+  662 | struct alignment_of<ulong4> {
+      |                     ^~~~~~
+/usr/local/cuda/include/vector_types.h:536:101: note: declared here
+  536 | typedef __device_builtin__ struct ulong4 __VECTOR_TYPE_DEPRECATED__("use ulong4_16a or ulong4_32a") ulong4;
+      |                                                                                                     ^~~~~~
+/root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cutlass/platform/platform.h:666:21: warning: ‘longlong4’ is deprecated: use longlong4_16a or longlong4_32a [-Wdeprecated-declarations]
+  666 | struct alignment_of<longlong4> {
+      |                     ^~~~~~~~~
+/usr/local/cuda/include/vector_types.h:553:110: note: declared here
+  553 | typedef __device_builtin__ struct longlong4 __VECTOR_TYPE_DEPRECATED__("use longlong4_16a or longlong4_32a") longlong4;
+      |                                                                                                              ^~~~~~~~~
+/root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cutlass/platform/platform.h:670:21: warning: ‘ulonglong4’ is deprecated: use ulonglong4_16a or ulonglong4_32a [-Wdeprecated-declarations]
+  670 | struct alignment_of<ulonglong4> {
+      |                     ^~~~~~~~~~
+/usr/local/cuda/include/vector_types.h:554:113: note: declared here
+  554 | typedef __device_builtin__ struct ulonglong4 __VECTOR_TYPE_DEPRECATED__("use ulonglong4_16a or ulonglong4_32a") ulonglong4;
+      |                                                                                                                 ^~~~~~~~~~
+/root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include/cutlass/platform/platform.h:674:21: warning: ‘double4’ is deprecated: use double4_16a or double4_32a [-Wdeprecated-declarations]
+  674 | struct alignment_of<double4> {
+      |                     ^~~~~~~
+/usr/local/cuda/include/vector_types.h:564:104: note: declared here
+  564 | typedef __device_builtin__ struct double4 __VECTOR_TYPE_DEPRECATED__("use double4_16a or double4_32a") double4;
+      |                                                                                                        ^~~~~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp: In function ‘void boxed_mha_fwd(StableIValue*, uint64_t, uint64_t)’:
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1760:24: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1760 |     auto q = to<Tensor>(stack[0]);
+      |              ~~~~~~~~~~^~~~~~~~~~
+In file included from /root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/tensor_inl.h:9,
+                 from /root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/tensor.h:3,
+                 from /root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:15:
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1761:24: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1761 |     auto k = to<Tensor>(stack[1]);
+      |              ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1762:24: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1762 |     auto v = to<Tensor>(stack[2]);
+      |              ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1763:43: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1763 |     auto k_new = to<std::optional<Tensor>>(stack[3]);
+      |                  ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1764:43: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1764 |     auto v_new = to<std::optional<Tensor>>(stack[4]);
+      |                  ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1765:41: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1765 |     auto q_v = to<std::optional<Tensor>>(stack[5]);
+      |                ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1766:41: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1766 |     auto out = to<std::optional<Tensor>>(stack[6]);
+      |                ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1767:50: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1767 |     auto cu_seqlens_q = to<std::optional<Tensor>>(stack[7]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1768:50: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1768 |     auto cu_seqlens_k = to<std::optional<Tensor>>(stack[8]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1769:54: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1769 |     auto cu_seqlens_k_new = to<std::optional<Tensor>>(stack[9]);
+      |                             ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1770:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1770 |     auto seqused_q = to<std::optional<Tensor>>(stack[10]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1771:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1771 |     auto seqused_k = to<std::optional<Tensor>>(stack[11]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1772:51: warning: ‘T to(StableIValue) [with T = std::optional<long int>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1772 |     auto max_seqlen_q = to<std::optional<int64_t>>(stack[12]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1773:51: warning: ‘T to(StableIValue) [with T = std::optional<long int>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1773 |     auto max_seqlen_k = to<std::optional<int64_t>>(stack[13]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1774:48: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1774 |     auto page_table = to<std::optional<Tensor>>(stack[14]);
+      |                       ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1775:50: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1775 |     auto kv_batch_idx = to<std::optional<Tensor>>(stack[15]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1776:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1776 |     auto leftpad_k = to<std::optional<Tensor>>(stack[16]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1777:48: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1777 |     auto rotary_cos = to<std::optional<Tensor>>(stack[17]);
+      |                       ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1778:48: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1778 |     auto rotary_sin = to<std::optional<Tensor>>(stack[18]);
+      |                       ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1779:52: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1779 |     auto seqlens_rotary = to<std::optional<Tensor>>(stack[19]);
+      |                           ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1780:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1780 |     auto q_descale = to<std::optional<Tensor>>(stack[20]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1781:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1781 |     auto k_descale = to<std::optional<Tensor>>(stack[21]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1782:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1782 |     auto v_descale = to<std::optional<Tensor>>(stack[22]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1783:51: warning: ‘T to(StableIValue) [with T = std::optional<double>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1783 |     auto softmax_scale = to<std::optional<double>>(stack[23]);
+      |                          ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1784:30: warning: ‘T to(StableIValue) [with T = bool; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1784 |     auto is_causal = to<bool>(stack[24]);
+      |                      ~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1785:40: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1785 |     auto window_size_left = to<int64_t>(stack[25]);
+      |                             ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1786:41: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1786 |     auto window_size_right = to<int64_t>(stack[26]);
+      |                              ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1787:39: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1787 |     auto attention_chunk = to<int64_t>(stack[27]);
+      |                            ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1788:30: warning: ‘T to(StableIValue) [with T = double; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1788 |     auto softcap = to<double>(stack[28]);
+      |                    ~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1789:42: warning: ‘T to(StableIValue) [with T = bool; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1789 |     auto is_rotary_interleaved = to<bool>(stack[29]);
+      |                                  ~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1790:56: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1790 |     auto scheduler_metadata = to<std::optional<Tensor>>(stack[30]);
+      |                               ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1791:34: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1791 |     auto num_splits = to<int64_t>(stack[31]);
+      |                       ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1792:44: warning: ‘T to(StableIValue) [with T = std::optional<bool>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1792 |     auto pack_gqa = to<std::optional<bool>>(stack[32]);
+      |                     ~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1793:33: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1793 |     auto sm_margin = to<int64_t>(stack[33]);
+      |                      ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1798:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1798 |     stack[0] = from(out_);
+      |                ~~~~^~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1799:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1799 |     stack[1] = from(softmax_lse);
+      |                ~~~~^~~~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1800:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1800 |     stack[2] = from(out_accum);
+      |                ~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1801:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1801 |     stack[3] = from(softmax_lse_accum);
+      |                ~~~~^~~~~~~~~~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp: In function ‘void boxed_mha_bwd(StableIValue*, uint64_t, uint64_t)’:
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1809:27: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1809 |     auto dout = to<Tensor>(stack[0]);
+      |                 ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1810:24: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1810 |     auto q = to<Tensor>(stack[1]);
+      |              ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1811:24: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1811 |     auto k = to<Tensor>(stack[2]);
+      |              ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1812:24: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1812 |     auto v = to<Tensor>(stack[3]);
+      |              ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1813:26: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1813 |     auto out = to<Tensor>(stack[4]);
+      |                ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1814:34: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1814 |     auto softmax_lse = to<Tensor>(stack[5]);
+      |                        ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1815:40: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1815 |     auto dq = to<std::optional<Tensor>>(stack[6]);
+      |               ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1816:40: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1816 |     auto dk = to<std::optional<Tensor>>(stack[7]);
+      |               ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1817:40: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1817 |     auto dv = to<std::optional<Tensor>>(stack[8]);
+      |               ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1818:50: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1818 |     auto cu_seqlens_q = to<std::optional<Tensor>>(stack[9]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1819:50: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1819 |     auto cu_seqlens_k = to<std::optional<Tensor>>(stack[10]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1820:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1820 |     auto seqused_q = to<std::optional<Tensor>>(stack[11]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1821:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1821 |     auto seqused_k = to<std::optional<Tensor>>(stack[12]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1822:51: warning: ‘T to(StableIValue) [with T = std::optional<long int>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1822 |     auto max_seqlen_q = to<std::optional<int64_t>>(stack[13]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1823:51: warning: ‘T to(StableIValue) [with T = std::optional<long int>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1823 |     auto max_seqlen_k = to<std::optional<int64_t>>(stack[14]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1824:51: warning: ‘T to(StableIValue) [with T = std::optional<double>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1824 |     auto softmax_scale = to<std::optional<double>>(stack[15]);
+      |                          ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1825:30: warning: ‘T to(StableIValue) [with T = bool; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1825 |     auto is_causal = to<bool>(stack[16]);
+      |                      ~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1826:40: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1826 |     auto window_size_left = to<int64_t>(stack[17]);
+      |                             ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1827:41: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1827 |     auto window_size_right = to<int64_t>(stack[18]);
+      |                              ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1828:30: warning: ‘T to(StableIValue) [with T = double; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1828 |     auto softcap = to<double>(stack[19]);
+      |                    ~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1829:34: warning: ‘T to(StableIValue) [with T = bool; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1829 |     auto deterministic = to<bool>(stack[20]);
+      |                          ~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1830:33: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1830 |     auto sm_margin = to<int64_t>(stack[21]);
+      |                      ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1834:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1834 |     stack[0] = from(softmax_d);
+      |                ~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1835:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1835 |     stack[1] = from(softmax_lse_log2);
+      |                ~~~~^~~~~~~~~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1836:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1836 |     stack[2] = from(dq_accum);
+      |                ~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1837:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1837 |     stack[3] = from(dk_accum);
+      |                ~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1838:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1838 |     stack[4] = from(dv_accum);
+      |                ~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp: In function ‘void boxed_mha_combine(StableIValue*, uint64_t, uint64_t)’:
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1846:34: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1846 |     auto out_partial = to<Tensor>(stack[0]);
+      |                        ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1847:34: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1847 |     auto lse_partial = to<Tensor>(stack[1]);
+      |                        ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1848:41: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1848 |     auto out = to<std::optional<Tensor>>(stack[2]);
+      |                ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1849:70: warning: ‘T to(StableIValue) [with T = std::optional<c10::ScalarType>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1849 |     auto out_dtype = to<std::optional<torch::headeronly::ScalarType>>(stack[3]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1853:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1853 |     stack[0] = from(out_);
+      |                ~~~~^~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1854:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1854 |     stack[1] = from(softmax_lse);
+      |                ~~~~^~~~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp: In function ‘void boxed_mha_fwd_get_scheduler_metadata(StableIValue*, uint64_t, uint64_t)’:
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1862:34: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1862 |     auto batch_size = to<int64_t>(stack[0]);
+      |                       ~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1863:36: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1863 |     auto max_seqlen_q = to<int64_t>(stack[1]);
+      |                         ~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1864:36: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1864 |     auto max_seqlen_k = to<int64_t>(stack[2]);
+      |                         ~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1865:33: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1865 |     auto num_heads = to<int64_t>(stack[3]);
+      |                      ~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1866:35: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1866 |     auto num_heads_k = to<int64_t>(stack[4]);
+      |                        ~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1867:31: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1867 |     auto headdim = to<int64_t>(stack[5]);
+      |                    ~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1868:33: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1868 |     auto headdim_v = to<int64_t>(stack[6]);
+      |                      ~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1869:55: warning: ‘T to(StableIValue) [with T = c10::ScalarType; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1869 |     auto qkv_dtype = to<torch::headeronly::ScalarType>(stack[7]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1870:32: warning: ‘T to(StableIValue) [with T = torch::stable::Tensor; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1870 |     auto seqused_k = to<Tensor>(stack[8]);
+      |                      ~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1871:50: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1871 |     auto cu_seqlens_q = to<std::optional<Tensor>>(stack[9]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1872:50: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1872 |     auto cu_seqlens_k = to<std::optional<Tensor>>(stack[10]);
+      |                         ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1873:54: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1873 |     auto cu_seqlens_k_new = to<std::optional<Tensor>>(stack[11]);
+      |                             ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1874:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1874 |     auto seqused_q = to<std::optional<Tensor>>(stack[12]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1875:47: warning: ‘T to(StableIValue) [with T = std::optional<torch::stable::Tensor>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1875 |     auto leftpad_k = to<std::optional<Tensor>>(stack[13]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1876:48: warning: ‘T to(StableIValue) [with T = std::optional<long int>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1876 |     auto page_size = to<std::optional<int64_t>>(stack[14]);
+      |                      ~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1877:40: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1877 |     auto max_seqlen_k_new = to<int64_t>(stack[15]);
+      |                             ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1878:30: warning: ‘T to(StableIValue) [with T = bool; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1878 |     auto is_causal = to<bool>(stack[16]);
+      |                      ~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1879:40: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1879 |     auto window_size_left = to<int64_t>(stack[17]);
+      |                             ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1880:41: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1880 |     auto window_size_right = to<int64_t>(stack[18]);
+      |                              ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1881:39: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1881 |     auto attention_chunk = to<int64_t>(stack[19]);
+      |                            ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1882:32: warning: ‘T to(StableIValue) [with T = bool; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1882 |     auto has_softcap = to<bool>(stack[20]);
+      |                        ~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1883:34: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1883 |     auto num_splits = to<int64_t>(stack[21]);
+      |                       ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1884:44: warning: ‘T to(StableIValue) [with T = std::optional<bool>; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1884 |     auto pack_gqa = to<std::optional<bool>>(stack[22]);
+      |                     ~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1885:33: warning: ‘T to(StableIValue) [with T = long int; StableIValue = long unsigned int]’ is deprecated: Use torch::stable::detail::to instead. [-Wdeprecated-declarations]
+ 1885 |     auto sm_margin = to<int64_t>(stack[23]);
+      |                      ~~~~~~~~~~~^~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1046:10: note: declared here
+ 1046 | inline T to(StableIValue val) {
+      |          ^~
+/root/gautam_K/fa3_tl2/flash-attention/hopper/flash_api_stable.cpp:1889:20: warning: ‘StableIValue from(const torch::stable::Tensor&)’ is deprecated: Use torch::stable::detail::from instead. [-Wdeprecated-declarations]
+ 1889 |     stack[0] = from(scheduler_metadata);
+      |                ~~~~^~~~~~~~~~~~~~~~~~~~
+/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/stable/stableivalue_conversions.h:1038:1: note: declared here
+ 1038 | from(const torch::stable::Tensor& val) {
+      | ^~~~
+[2/4] /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile --dependency-output /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/flash_prepare_scheduler.o.d -I/root/gautam_K/fa3_tl2/flash-attention/hopper -I/root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include -I/root/gautam_K/benv/lib/python3.12/site-packages/torch/include -I/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -I/usr/local/cuda/include -I/root/gautam_K/benv/include -I/usr/include/python3.12 -c -c /root/gautam_K/fa3_tl2/flash-attention/hopper/flash_prepare_scheduler.cu -o /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/flash_prepare_scheduler.o -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options ''"'"'-fPIC'"'"'' --threads 2 -O3 -std=c++17 --ftemplate-backtrace-limit=0 --use_fast_math --resource-usage -lineinfo -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DCUTLASS_ENABLE_GDC_FOR_SM90 -DCUTLASS_DEBUG_TRACE_LEVEL=0 -DNDEBUG -gencode arch=compute_90a,code=sm_90a -DFLASHATTENTION_DISABLE_PAGEDKV -DFLASHATTENTION_DISABLE_SPLIT -DFLASHATTENTION_DISABLE_APPENDKV -DFLASHATTENTION_DISABLE_LOCAL -DFLASHATTENTION_DISABLE_SOFTCAP -DFLASHATTENTION_DISABLE_PACKGQA -DFLASHATTENTION_DISABLE_FP16 -DFLASHATTENTION_DISABLE_FP8 -DFLASHATTENTION_DISABLE_VARLEN -DFLASHATTENTION_DISABLE_CLUSTER -DFLASHATTENTION_DISABLE_HDIM64 -DFLASHATTENTION_DISABLE_HDIM96 -DFLASHATTENTION_DISABLE_HDIM192 -DFLASHATTENTION_DISABLE_HDIM256 -DFLASHATTENTION_DISABLE_SM8x -DFLASHATTENTION_DISABLE_HDIMDIFF64 -DFLASHATTENTION_DISABLE_HDIMDIFF192 -DTORCH_API_INCLUDE_EXTENSION_H -DPy_LIMITED_API=0x030A0000 -DTORCH_EXTENSION_NAME=_C -gencode arch=compute_80,code=sm_80
+ptxas info    : 65 bytes gmem, 520 bytes cmem[4]
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi32ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi32ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 4 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 9.567 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi16ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi16ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 4 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 7.983 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi8ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi8ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 4 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 7.418 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi4ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi4ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 4 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 7.476 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi2ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi2ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 4 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 10.117 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi1ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi1ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 4 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 9.039 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi32ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi32ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 1 barriers, 16416 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 11.612 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi16ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi16ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 1 barriers, 8224 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 11.281 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi8ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi8ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 1 barriers, 4128 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 11.275 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi4ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi4ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 1 barriers, 2080 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 11.225 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi2ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi2ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 1 barriers, 1056 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 11.779 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi1ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_80'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi1ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 30 registers, used 1 barriers, 544 bytes smem, 512 bytes cmem[0]
+ptxas info    : Compile time = 18.163 ms
+ptxas info    : 65 bytes gmem
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi32ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi32ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 4 bytes smem
+ptxas info    : Compile time = 11.356 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi16ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi16ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 4 bytes smem
+ptxas info    : Compile time = 8.524 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi8ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi8ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 4 bytes smem
+ptxas info    : Compile time = 9.105 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi4ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi4ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 4 bytes smem
+ptxas info    : Compile time = 8.494 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi2ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi2ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 4 bytes smem
+ptxas info    : Compile time = 8.507 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi1ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi1ELb0EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 4 bytes smem
+ptxas info    : Compile time = 8.482 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi32ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi32ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 25 registers, used 1 barriers, 16416 bytes smem
+ptxas info    : Compile time = 13.027 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi16ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi16ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 25 registers, used 1 barriers, 8224 bytes smem
+ptxas info    : Compile time = 12.565 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi8ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi8ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 25 registers, used 1 barriers, 4128 bytes smem
+ptxas info    : Compile time = 12.599 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi4ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi4ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 25 registers, used 1 barriers, 2080 bytes smem
+ptxas info    : Compile time = 12.584 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi2ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi2ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 25 registers, used 1 barriers, 1056 bytes smem
+ptxas info    : Compile time = 12.650 ms
+ptxas info    : Compiling entry function '_ZN5flash32prepare_varlen_num_blocks_kernelILi1ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi' for 'sm_90a'
+ptxas info    : Function properties for _ZN5flash32prepare_varlen_num_blocks_kernelILi1ELb1EEEviiiPKiS2_S2_S2_S2_S2_iiiiiN7cutlass10FastDivmodES4_PiS5_S5_S5_S5_bbbi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 30 registers, used 1 barriers, 544 bytes smem
+ptxas info    : Compile time = 19.933 ms
+[3/4] /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile --dependency-output /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_sm90.o.d -I/root/gautam_K/fa3_tl2/flash-attention/hopper -I/root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include -I/root/gautam_K/benv/lib/python3.12/site-packages/torch/include -I/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -I/usr/local/cuda/include -I/root/gautam_K/benv/include -I/usr/include/python3.12 -c -c /root/gautam_K/fa3_tl2/flash-attention/hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu -o /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_sm90.o -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options ''"'"'-fPIC'"'"'' --threads 2 -O3 -std=c++17 --ftemplate-backtrace-limit=0 --use_fast_math --resource-usage -lineinfo -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DCUTLASS_ENABLE_GDC_FOR_SM90 -DCUTLASS_DEBUG_TRACE_LEVEL=0 -DNDEBUG -gencode arch=compute_90a,code=sm_90a -DFLASHATTENTION_DISABLE_PAGEDKV -DFLASHATTENTION_DISABLE_SPLIT -DFLASHATTENTION_DISABLE_APPENDKV -DFLASHATTENTION_DISABLE_LOCAL -DFLASHATTENTION_DISABLE_SOFTCAP -DFLASHATTENTION_DISABLE_PACKGQA -DFLASHATTENTION_DISABLE_FP16 -DFLASHATTENTION_DISABLE_FP8 -DFLASHATTENTION_DISABLE_VARLEN -DFLASHATTENTION_DISABLE_CLUSTER -DFLASHATTENTION_DISABLE_HDIM64 -DFLASHATTENTION_DISABLE_HDIM96 -DFLASHATTENTION_DISABLE_HDIM192 -DFLASHATTENTION_DISABLE_HDIM256 -DFLASHATTENTION_DISABLE_SM8x -DFLASHATTENTION_DISABLE_HDIMDIFF64 -DFLASHATTENTION_DISABLE_HDIMDIFF192 -DTORCH_API_INCLUDE_EXTENSION_H -DPy_LIMITED_API=0x030A0000 -DTORCH_EXTENSION_NAME=_C
+ptxas info    : 540684 bytes gmem
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnFwdSm90INS1_25CollectiveMainloopFwdSm90ILi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi128EEENS7_ILi176EEESA_EEELi128ENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb0ELb0EEENS1_21CollectiveEpilogueFwdINS6_IJSA_SA_SB_EEES9_SD_SF_Li256ELb0ELb0ELb0ELb0EEENS1_29StaticPersistentTileSchedulerILb0EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnFwdSm90INS1_25CollectiveMainloopFwdSm90ILi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi128EEENS7_ILi176EEESA_EEELi128ENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb0ELb0EEENS1_21CollectiveEpilogueFwdINS6_IJSA_SA_SB_EEES9_SD_SF_Li256ELb0ELb0ELb0ELb0EEENS1_29StaticPersistentTileSchedulerILb0EEEEEEEEEvNT_6ParamsE
+    8 bytes stack frame, 12 bytes spill stores, 12 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers, 8 bytes cumulative stack size
+ptxas info    : Compile time = 326.084 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnFwdSm90INS1_25CollectiveMainloopFwdSm90ILi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi128EEESA_SA_EEELi128ENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb0ELb0EEENS1_21CollectiveEpilogueFwdISB_S9_SC_SE_Li256ELb0ELb0ELb0ELb0EEENS1_30DynamicPersistentTileSchedulerILi256ELi32ELb0ELb0ELb1EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnFwdSm90INS1_25CollectiveMainloopFwdSm90ILi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi128EEESA_SA_EEELi128ENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb0ELb0EEENS1_21CollectiveEpilogueFwdISB_S9_SC_SE_Li256ELb0ELb0ELb0ELb0EEENS1_30DynamicPersistentTileSchedulerILi256ELi32ELb0ELb0ELb1EEEEEEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers
+ptxas info    : Compile time = 347.649 ms
+[4/4] /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile --dependency-output /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_bwd_hdim128_bf16_sm90.o.d -I/root/gautam_K/fa3_tl2/flash-attention/hopper -I/root/gautam_K/fa3_tl2/flash-attention/csrc/cutlass/include -I/root/gautam_K/benv/lib/python3.12/site-packages/torch/include -I/root/gautam_K/benv/lib/python3.12/site-packages/torch/include/torch/csrc/api/include -I/usr/local/cuda/include -I/root/gautam_K/benv/include -I/usr/include/python3.12 -c -c /root/gautam_K/fa3_tl2/flash-attention/hopper/instantiations/flash_bwd_hdim128_bf16_sm90.cu -o /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_bwd_hdim128_bf16_sm90.o -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options ''"'"'-fPIC'"'"'' --threads 2 -O3 -std=c++17 --ftemplate-backtrace-limit=0 --use_fast_math --resource-usage -lineinfo -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DCUTLASS_ENABLE_GDC_FOR_SM90 -DCUTLASS_DEBUG_TRACE_LEVEL=0 -DNDEBUG -gencode arch=compute_90a,code=sm_90a -DFLASHATTENTION_DISABLE_PAGEDKV -DFLASHATTENTION_DISABLE_SPLIT -DFLASHATTENTION_DISABLE_APPENDKV -DFLASHATTENTION_DISABLE_LOCAL -DFLASHATTENTION_DISABLE_SOFTCAP -DFLASHATTENTION_DISABLE_PACKGQA -DFLASHATTENTION_DISABLE_FP16 -DFLASHATTENTION_DISABLE_FP8 -DFLASHATTENTION_DISABLE_VARLEN -DFLASHATTENTION_DISABLE_CLUSTER -DFLASHATTENTION_DISABLE_HDIM64 -DFLASHATTENTION_DISABLE_HDIM96 -DFLASHATTENTION_DISABLE_HDIM192 -DFLASHATTENTION_DISABLE_HDIM256 -DFLASHATTENTION_DISABLE_SM8x -DFLASHATTENTION_DISABLE_HDIMDIFF64 -DFLASHATTENTION_DISABLE_HDIMDIFF192 -DTORCH_API_INCLUDE_EXTENSION_H -DPy_LIMITED_API=0x030A0000 -DTORCH_EXTENSION_NAME=_C
+ptxas info    : 12 bytes gmem
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi80EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb0ELb1ELb0ELb1ELi2ELi1ELi2ELi1ELb0EEENS1_21CollectiveEpilogueBwdISC_SD_SF_Li256ELb0ELb0ELi1EEENS1_19SingleTileSchedulerILb0ELb0ELb0ELi128EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi80EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb0ELb1ELb0ELb1ELi2ELi1ELi2ELi1ELb0EEENS1_21CollectiveEpilogueBwdISC_SD_SF_Li256ELb0ELb0ELi1EEENS1_19SingleTileSchedulerILb0ELb0ELb0ELi128EEEEEEEEEvNT_6ParamsE
+    8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers, 8 bytes cumulative stack size
+ptxas info    : Compile time = 194.912 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi80EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb1ELi2ELi1ELi2ELi1ELb0EEENS1_21CollectiveEpilogueBwdISC_SD_SF_Li256ELb0ELb0ELi1EEENS1_19SingleTileSchedulerILb0ELb0ELb0ELi128EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi80EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb1ELi2ELi1ELi2ELi1ELb0EEENS1_21CollectiveEpilogueBwdISC_SD_SF_Li256ELb0ELb0ELi1EEENS1_19SingleTileSchedulerILb0ELb0ELb0ELi128EEEEEEEEEvNT_6ParamsE
+    8 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers, 8 bytes cumulative stack size
+ptxas info    : Compile time = 198.900 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi80EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb0ELb1ELb0ELb1ELi2ELi1ELi2ELi1ELb0EEENS1_24CollectiveEpilogueBwdGQAISC_fSF_Li256ELb0ELb0EEENS1_19SingleTileSchedulerILb0ELb0ELb0ELi128EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi80EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb0ELb1ELb0ELb1ELi2ELi1ELi2ELi1ELb0EEENS1_24CollectiveEpilogueBwdGQAISC_fSF_Li256ELb0ELb0EEENS1_19SingleTileSchedulerILb0ELb0ELb0ELi128EEEEEEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers
+ptxas info    : Compile time = 188.835 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash32FlashAttnBwdPostprocessConvertdQIN4cute5tupleIJNS3_1CILi80EEENS5_ILi128EEEEEENS_10bfloat16_tEfNS_4arch4Sm90ELi256ENS3_8TiledMMAINS3_8MMA_AtomIJNS3_4SM904GMMA27MMA_64x80x16_F32BF16BF16_SSILNSF_5MajorE1ELSH_0ELNSF_7ScaleInE1ELSI_1EEEEEENS3_6LayoutINS4_IJNS5_ILi2EEENS5_ILi1EEESN_EEENS4_IJSN_NS5_ILi0EEESP_EEEEENS4_IJNS3_10UnderscoreESS_SS_EEEEELb1EEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash32FlashAttnBwdPostprocessConvertdQIN4cute5tupleIJNS3_1CILi80EEENS5_ILi128EEEEEENS_10bfloat16_tEfNS_4arch4Sm90ELi256ENS3_8TiledMMAINS3_8MMA_AtomIJNS3_4SM904GMMA27MMA_64x80x16_F32BF16BF16_SSILNSF_5MajorE1ELSH_0ELNSF_7ScaleInE1ELSI_1EEEEEENS3_6LayoutINS4_IJNS5_ILi2EEENS5_ILi1EEESN_EEENS4_IJSN_NS5_ILi0EEESP_EEEEENS4_IJNS3_10UnderscoreESS_SS_EEEEELb1EEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, used 1 barriers
+ptxas info    : Compile time = 11.581 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi80EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb1ELi2ELi1ELi2ELi1ELb0EEENS1_24CollectiveEpilogueBwdGQAISC_fSF_Li256ELb0ELb1EEENS1_19SingleTileSchedulerILb0ELb0ELb0ELi128EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi80EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb0ELb0ELb0ELb0ELb1ELb1ELb0ELb1ELi2ELi1ELi2ELi1ELb0EEENS1_24CollectiveEpilogueBwdGQAISC_fSF_Li256ELb0ELb1EEENS1_19SingleTileSchedulerILb0ELb0ELb0ELi128EEEEEEEEEvNT_6ParamsE
+    8 bytes stack frame, 8 bytes spill stores, 8 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers, 8 bytes cumulative stack size
+ptxas info    : Compile time = 198.913 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash22FlashAttnBwdPreprocessIN4cute5tupleIJNS3_1CILi80EEENS5_ILi128EEEEEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0EEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash22FlashAttnBwdPreprocessIN4cute5tupleIJNS3_1CILi80EEENS5_ILi128EEEEEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0EEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 70 registers, used 0 barriers
+ptxas info    : Compile time = 16.484 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi64EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb0ELb1ELb0ELb0ELi2ELi1ELi2ELi1ELb0EEENS1_21CollectiveEpilogueBwdISC_SD_SF_Li256ELb0ELb0ELi1EEENS1_25SingleTileBwdLPTSchedulerILb0ELi128ELb0EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi64EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb0ELb1ELb0ELb0ELi2ELi1ELi2ELi1ELb0EEENS1_21CollectiveEpilogueBwdISC_SD_SF_Li256ELb0ELb0ELi1EEENS1_25SingleTileBwdLPTSchedulerILb0ELi128ELb0EEEEEEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers
+ptxas info    : Compile time = 180.571 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi64EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb1ELb1ELb0ELb0ELi2ELi1ELi2ELi1ELb0EEENS1_21CollectiveEpilogueBwdISC_SD_SF_Li256ELb0ELb0ELi1EEENS1_25SingleTileBwdLPTSchedulerILb0ELi128ELb1EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi64EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb1ELb1ELb0ELb0ELi2ELi1ELi2ELi1ELb0EEENS1_21CollectiveEpilogueBwdISC_SD_SF_Li256ELb0ELb0ELi1EEENS1_25SingleTileBwdLPTSchedulerILb0ELi128ELb1EEEEEEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers
+ptxas info    : Compile time = 188.706 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi64EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb0ELb1ELb0ELb0ELi2ELi1ELi2ELi1ELb0EEENS1_24CollectiveEpilogueBwdGQAISC_fSF_Li256ELb0ELb0EEENS1_25SingleTileBwdLPTSchedulerILb0ELi128ELb0EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi64EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb0ELb1ELb0ELb0ELi2ELi1ELi2ELi1ELb0EEENS1_24CollectiveEpilogueBwdGQAISC_fSF_Li256ELb0ELb0EEENS1_25SingleTileBwdLPTSchedulerILb0ELi128ELb0EEEEEEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers
+ptxas info    : Compile time = 170.749 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash32FlashAttnBwdPostprocessConvertdQIN4cute5tupleIJNS3_1CILi128EEES6_EEENS_10bfloat16_tEfNS_4arch4Sm90ELi256ENS3_8TiledMMAINS3_8MMA_AtomIJNS3_4SM904GMMA28MMA_64x128x16_F32BF16BF16_RSILNSE_5MajorE0ELSG_1ELNSE_7ScaleInE1ELSH_1EEEEEENS3_6LayoutINS4_IJNS5_ILi2EEENS5_ILi1EEESM_EEENS4_IJSM_NS5_ILi0EEESO_EEEEENS4_IJNS3_10UnderscoreESR_SR_EEEEELb0EEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash32FlashAttnBwdPostprocessConvertdQIN4cute5tupleIJNS3_1CILi128EEES6_EEENS_10bfloat16_tEfNS_4arch4Sm90ELi256ENS3_8TiledMMAINS3_8MMA_AtomIJNS3_4SM904GMMA28MMA_64x128x16_F32BF16BF16_RSILNSE_5MajorE0ELSG_1ELNSE_7ScaleInE1ELSH_1EEEEEENS3_6LayoutINS4_IJNS5_ILi2EEENS5_ILi1EEESM_EEENS4_IJSM_NS5_ILi0EEESO_EEEEENS4_IJNS3_10UnderscoreESR_SR_EEEEELb0EEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 88 registers, used 1 barriers
+ptxas info    : Compile time = 15.164 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash32FlashAttnBwdPostprocessConvertdQIN4cute5tupleIJNS3_1CILi64EEENS5_ILi128EEEEEENS_10bfloat16_tEfNS_4arch4Sm90ELi256ENS3_8TiledMMAINS3_8MMA_AtomIJNS3_4SM904GMMA27MMA_64x64x16_F32BF16BF16_SSILNSF_5MajorE0ELSH_1ELNSF_7ScaleInE1ELSI_1EEEEEENS3_6LayoutINS4_IJNS5_ILi1EEENS5_ILi2EEESM_EEENS4_IJNS5_ILi0EEESM_SP_EEEEENS4_IJNS3_10UnderscoreESS_SS_EEEEELb0EEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash32FlashAttnBwdPostprocessConvertdQIN4cute5tupleIJNS3_1CILi64EEENS5_ILi128EEEEEENS_10bfloat16_tEfNS_4arch4Sm90ELi256ENS3_8TiledMMAINS3_8MMA_AtomIJNS3_4SM904GMMA27MMA_64x64x16_F32BF16BF16_SSILNSF_5MajorE0ELSH_1ELNSF_7ScaleInE1ELSI_1EEEEEENS3_6LayoutINS4_IJNS5_ILi1EEENS5_ILi2EEESM_EEENS4_IJNS5_ILi0EEESM_SP_EEEEENS4_IJNS3_10UnderscoreESS_SS_EEEEELb0EEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 56 registers, used 1 barriers
+ptxas info    : Compile time = 10.316 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi64EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb1ELb1ELb0ELb0ELi2ELi1ELi2ELi1ELb0EEENS1_24CollectiveEpilogueBwdGQAISC_fSF_Li256ELb0ELb1EEENS1_25SingleTileBwdLPTSchedulerILb0ELi128ELb1EEEEEEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash11enable_sm90INS1_16FlashAttnBwdSm90INS1_25CollectiveMainloopBwdSm90ILi2ELi2ELi2EN4cute5tupleIJNS5_1CILi1EEES8_S8_EEENS6_IJNS7_ILi64EEENS7_ILi128EEESB_EEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0ELb0ELb0ELb1ELb1ELb0ELb0ELi2ELi1ELi2ELi1ELb0EEENS1_24CollectiveEpilogueBwdGQAISC_fSF_Li256ELb0ELb1EEENS1_25SingleTileBwdLPTSchedulerILb0ELi128ELb1EEEEEEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 168 registers, used 16 barriers
+ptxas info    : Compile time = 173.206 ms
+ptxas info    : Compiling entry function '_ZN7cutlass13device_kernelIN5flash22FlashAttnBwdPreprocessIN4cute5tupleIJNS3_1CILi64EEENS5_ILi128EEEEEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0EEEEEvNT_6ParamsE' for 'sm_90a'
+ptxas info    : Function properties for _ZN7cutlass13device_kernelIN5flash22FlashAttnBwdPreprocessIN4cute5tupleIJNS3_1CILi64EEENS5_ILi128EEEEEENS_10bfloat16_tEfNS_4arch4Sm90ELb1ELb0EEEEEvNT_6ParamsE
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 64 registers, used 0 barriers
+ptxas info    : Compile time = 14.025 ms
+x86_64-linux-gnu-g++ -fno-strict-overflow -Wsign-compare -DNDEBUG -g -O2 -Wall -shared -Wl,-O1 -Wl,-Bsymbolic-functions /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/flash_api_stable.o /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/flash_prepare_scheduler.o /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_bwd_hdim128_bf16_sm90.o /root/gautam_K/fa3_tl2/flash-attention/hopper/build/temp.linux-x86_64-cpython-312/instantiations/flash_fwd_hdim128_bf16_sm90.o -L/root/gautam_K/benv/lib/python3.12/site-packages/torch/lib -L/usr/local/cuda/lib64 -L/usr/lib/x86_64-linux-gnu -lc10 -ltorch -ltorch_cpu -lcudart -lc10_cuda -ltorch_cuda -o build/lib.linux-x86_64-cpython-312/flash_attn_3/_C.abi3.so
+copying build/lib.linux-x86_64-cpython-312/flash_attn_3/_C.abi3.so -> flash_attn_3

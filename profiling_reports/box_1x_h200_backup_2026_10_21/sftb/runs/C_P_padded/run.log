@@ -1,0 +1,238 @@
+[precision] bf16 logits ON — frees ~3 GiB ([B,T,vocab] fp32 activation + gradient). Gradients are unaffected (fp32 softmax stats, exact 1.0 backward seed), but the REPORTED loss is bf16 and quantizes to ~0.06 steps: compare tokens/s and grad-norm across an A/B, not the loss digits.
+[SftLoader] /root/gautam_k/sft_data/stage0_ultrachat_5k_T4096/train: 5000 rows x T=4096, 4771516 trained tokens | B=8 W=1 -> 625 micro-batches per rank per epoch, 0 rows unused per epoch
+[SftLoader] /root/gautam_k/sft_data/stage0_ultrachat_5k_T4096/val: 500 rows x T=4096, 444233 trained tokens | B=8 W=1 -> 62 micro-batches per rank per epoch, 4 rows unused per epoch
+[sft] 64 rows per step = B 8 x GRAD_ACCUM 8 x W 1 | 2 epochs = 156 steps | lr 2e-05 -> 2e-06, warmup 5 steps then cosine | val every 10 steps (62 batches per rank)
+[sft] loss: label 65535 ignored, divided by the step's global trained-token count, backward seed 1 (= W) | tok/s below counts all positions, padding included
+================ Configuration ================
+  d_model         : 2304
+  n_layers        : 26
+  q_heads/kv_heads: 18 / 6  (G=3)
+  head_dim        : 128
+  ffn_hidden      : 6144  (SwiGLU)
+  context_length  : 4096
+  rope_theta      : 500000  (interleaved=NeoX)
+  vocab_size      : 50304
+  weight_tying    : ON
+  precision       : resid bfloat16 | logits bfloat16 | embed bfloat16
+                    (matmuls bf16, QK-norm+RoPE fp32, optimizer masters fp32 — all fixed)
+  B x T           : 8 x 4096
+  world_size      : 1
+  global_batch    : 262144  (grad_accum=8)
+  max_lr / min_lr : 2e-05 / 2e-06
+  warmup / steps  : 5 / 156
+  WSD stable_steps: 0  (decay tail=151)
+===============================================
+Initializing model on CUDA device 0...
+Number of parameters: 1588229888
+[pg] bootstrap=mpi-broadcast (mpirun) host=sweet-cable-sings-fin-02 rank=0/1 node=0 local_rank=0 (DERIVED) ranks_per_node=1 cuda_dev=0 bus=0000:05:00.0
+[DCP] is_valid(/root/gautam_k/ckpt/blumodel_step_8000) -> TRUE
+[init] weights only from /root/gautam_k/ckpt/blumodel_step_8000 (its step 8000, loss 2.009818). Optimizer state, step and data position start fresh.
+==================== MFU accounting ====================
+  device            : NVIDIA H200 x 1
+  peak BF16 (dense) : 989.400 TFLOP/s per GPU
+  cluster peak      : 0.989 PFLOP/s
+  fwd FLOPs/token   : 3.667 GFLOP  (causal)
+  fwd+bwd /token    : 11.001 GFLOP  (causal, x3) <-- headline
+  fwd+bwd /token    : 12.473 GFLOP  (PaLM convention)
+  6*N cross-check   : 9.529 GFLOP  (weight matmuls only; excludes the T-dependent attention core)
+  model FLOPs/step  : 2.884 PFLOP  over 262144 tokens
+  100% MFU would be : 2914.691 ms/step
+  note              : no activation checkpointing in this loop, so HFU == MFU
+========================================================
+[ZeRO-1] overlap: reduce=off (monolithic, after backward) | refresh=off (synchronous publish in step)
+[ZeRO-1] variant: v1 reduce/broadcast | symmetric memory: off  (BLU_ZERO_V2=0 BLU_SYMMETRIC=0)
+[ZeRO-1] params=1588223232 padded=1588224000 W=1 shard=1588224000 | optimizer state/GPU: 18175.781 MB (vs 18175.772 MB unsharded)
+[ZeRO-1] params=6656 padded=15360 W=1 shard=15360 | optimizer state/GPU: 0.176 MB (vs 0.076 MB unsharded)
+[optimizer] AdamW  (BLU_OPTIMIZER=adamw)
+  G0 adamw:bfloat16/1588M : zero1-v1 reduce/broadcast | lr 0.000 -> 0.000
+  G1 adamw:float32/0M : zero1-v1 reduce/broadcast | lr 0.000 -> 0.000
+[ZeRO-1] grad_clip=1.000 APPLIES TO 1588229888 / 1588229888 params (100.00%)
+decayed params: 1588101120, non-decayed: 128768 | ZeRO-1 optimizer groups: 2 | world_size: 1
+
+Starting training...
+
+  [val] step 0 | val_loss 1.446384 | 441382 trained tokens
+step      0 | train 1.449952 | val 1.446384 | tok/s 52045.94 | norm 0.7446 | dt 5036.78 ms | mfu 57.87% | TF/gpu 572.5 | lr 4.0000e-06 | G0(adamw:bfloat16/1588M) 0.7441 | G1(adamw:float32/0M) 0.0275 | trained 60263
+step      1 | train 1.522413 | val 1.446384 | tok/s 52488.12 | norm 0.7317 | dt 4994.35 ms | mfu 58.36% | TF/gpu 577.4 | lr 8.0000e-06 | G0(adamw:bfloat16/1588M) 0.7312 | G1(adamw:float32/0M) 0.0261 | trained 62575
+step      2 | train 1.518632 | val 1.446384 | tok/s 52520.83 | norm 0.5908 | dt 4991.24 ms | mfu 58.40% | TF/gpu 577.8 | lr 1.2000e-05 | G0(adamw:bfloat16/1588M) 0.5905 | G1(adamw:float32/0M) 0.0195 | trained 58970
+step      3 | train 1.326173 | val 1.446384 | tok/s 52598.59 | norm 0.9192 | dt 4983.86 ms | mfu 58.48% | TF/gpu 578.6 | lr 1.6000e-05 | G0(adamw:bfloat16/1588M) 0.9182 | G1(adamw:float32/0M) 0.0414 | trained 61728
+step      4 | train 1.438730 | val 1.446384 | tok/s 52531.89 | norm 0.4302 | dt 4990.19 ms | mfu 58.41% | TF/gpu 577.9 | lr 2.0000e-05 | G0(adamw:bfloat16/1588M) 0.4300 | G1(adamw:float32/0M) 0.0142 | trained 58828
+step      5 | train 1.394976 | val 1.446384 | tok/s 52248.16 | norm 0.3889 | dt 5017.29 ms | mfu 58.09% | TF/gpu 574.8 | lr 2.0000e-05 | G0(adamw:bfloat16/1588M) 0.3886 | G1(adamw:float32/0M) 0.0136 | trained 71421
+step      6 | train 1.352631 | val 1.446384 | tok/s 52502.58 | norm 0.3161 | dt 4992.97 ms | mfu 58.38% | TF/gpu 577.6 | lr 1.9998e-05 | G0(adamw:bfloat16/1588M) 0.3160 | G1(adamw:float32/0M) 0.0094 | trained 63272
+step      7 | train 1.396863 | val 1.446384 | tok/s 52249.38 | norm 0.3138 | dt 5017.17 ms | mfu 58.09% | TF/gpu 574.8 | lr 1.9992e-05 | G0(adamw:bfloat16/1588M) 0.3137 | G1(adamw:float32/0M) 0.0098 | trained 64294
+step      8 | train 1.336269 | val 1.446384 | tok/s 52374.69 | norm 0.3111 | dt 5005.17 ms | mfu 58.23% | TF/gpu 576.2 | lr 1.9982e-05 | G0(adamw:bfloat16/1588M) 0.3109 | G1(adamw:float32/0M) 0.0091 | trained 59354
+step      9 | train 1.267283 | val 1.446384 | tok/s 52294.21 | norm 0.2924 | dt 5012.87 ms | mfu 58.14% | TF/gpu 575.3 | lr 1.9968e-05 | G0(adamw:bfloat16/1588M) 0.2923 | G1(adamw:float32/0M) 0.0073 | trained 54771
+  [val] step 10 | val_loss 1.352809 | 441382 trained tokens
+step     10 | train 1.389563 | val 1.352809 | tok/s 52343.02 | norm 0.3421 | dt 5008.19 ms | mfu 58.20% | TF/gpu 575.8 | lr 1.9951e-05 | G0(adamw:bfloat16/1588M) 0.3420 | G1(adamw:float32/0M) 0.0093 | trained 55704
+step     11 | train 1.407662 | val 1.352809 | tok/s 52236.38 | norm 0.2877 | dt 5018.42 ms | mfu 58.08% | TF/gpu 574.6 | lr 1.9929e-05 | G0(adamw:bfloat16/1588M) 0.2876 | G1(adamw:float32/0M) 0.0080 | trained 63638
+step     12 | train 1.438862 | val 1.352809 | tok/s 52346.54 | norm 0.2823 | dt 5007.86 ms | mfu 58.20% | TF/gpu 575.9 | lr 1.9903e-05 | G0(adamw:bfloat16/1588M) 0.2822 | G1(adamw:float32/0M) 0.0086 | trained 56958
+step     13 | train 1.325824 | val 1.352809 | tok/s 52168.73 | norm 0.2413 | dt 5024.93 ms | mfu 58.00% | TF/gpu 573.9 | lr 1.9874e-05 | G0(adamw:bfloat16/1588M) 0.2411 | G1(adamw:float32/0M) 0.0070 | trained 65543
+step     14 | train 1.333519 | val 1.352809 | tok/s 52153.32 | norm 0.2175 | dt 5026.41 ms | mfu 57.99% | TF/gpu 573.7 | lr 1.9841e-05 | G0(adamw:bfloat16/1588M) 0.2174 | G1(adamw:float32/0M) 0.0053 | trained 64889
+step     15 | train 1.189006 | val 1.352809 | tok/s 52209.61 | norm 0.2052 | dt 5020.99 ms | mfu 58.05% | TF/gpu 574.3 | lr 1.9803e-05 | G0(adamw:bfloat16/1588M) 0.2052 | G1(adamw:float32/0M) 0.0045 | trained 61621
+step     16 | train 1.195747 | val 1.352809 | tok/s 52330.20 | norm 0.2019 | dt 5009.42 ms | mfu 58.18% | TF/gpu 575.7 | lr 1.9762e-05 | G0(adamw:bfloat16/1588M) 0.2019 | G1(adamw:float32/0M) 0.0039 | trained 57257
+step     17 | train 1.282963 | val 1.352809 | tok/s 52263.43 | norm 0.2050 | dt 5015.82 ms | mfu 58.11% | TF/gpu 574.9 | lr 1.9717e-05 | G0(adamw:bfloat16/1588M) 0.2049 | G1(adamw:float32/0M) 0.0050 | trained 59672
+step     18 | train 1.330998 | val 1.352809 | tok/s 51926.18 | norm 0.1943 | dt 5048.40 ms | mfu 57.73% | TF/gpu 571.2 | lr 1.9668e-05 | G0(adamw:bfloat16/1588M) 0.1942 | G1(adamw:float32/0M) 0.0042 | trained 71324
+step     19 | train 1.287318 | val 1.352809 | tok/s 52277.52 | norm 0.2091 | dt 5014.47 ms | mfu 58.13% | TF/gpu 575.1 | lr 1.9616e-05 | G0(adamw:bfloat16/1588M) 0.2090 | G1(adamw:float32/0M) 0.0043 | trained 58294
+  [val] step 20 | val_loss 1.331854 | 441382 trained tokens
+step     20 | train 1.331003 | val 1.331854 | tok/s 52255.31 | norm 0.2103 | dt 5016.60 ms | mfu 58.10% | TF/gpu 574.9 | lr 1.9560e-05 | G0(adamw:bfloat16/1588M) 0.2103 | G1(adamw:float32/0M) 0.0048 | trained 54385
+step     21 | train 1.290382 | val 1.331854 | tok/s 52290.11 | norm 0.2064 | dt 5013.26 ms | mfu 58.14% | TF/gpu 575.2 | lr 1.9499e-05 | G0(adamw:bfloat16/1588M) 0.2064 | G1(adamw:float32/0M) 0.0043 | trained 57582
+step     22 | train 1.323583 | val 1.331854 | tok/s 52293.78 | norm 0.2011 | dt 5012.91 ms | mfu 58.14% | TF/gpu 575.3 | lr 1.9436e-05 | G0(adamw:bfloat16/1588M) 0.2011 | G1(adamw:float32/0M) 0.0043 | trained 59724
+step     23 | train 1.286737 | val 1.331854 | tok/s 52088.77 | norm 0.1925 | dt 5032.64 ms | mfu 57.92% | TF/gpu 573.0 | lr 1.9368e-05 | G0(adamw:bfloat16/1588M) 0.1924 | G1(adamw:float32/0M) 0.0041 | trained 66216
+step     24 | train 1.395683 | val 1.331854 | tok/s 52181.79 | norm 0.1984 | dt 5023.67 ms | mfu 58.02% | TF/gpu 574.0 | lr 1.9297e-05 | G0(adamw:bfloat16/1588M) 0.1983 | G1(adamw:float32/0M) 0.0048 | trained 63005
+step     25 | train 1.235516 | val 1.331854 | tok/s 52434.79 | norm 0.2085 | dt 4999.43 ms | mfu 58.30% | TF/gpu 576.8 | lr 1.9222e-05 | G0(adamw:bfloat16/1588M) 0.2084 | G1(adamw:float32/0M) 0.0045 | trained 49618
+step     26 | train 1.326633 | val 1.331854 | tok/s 52119.42 | norm 0.1908 | dt 5029.68 ms | mfu 57.95% | TF/gpu 573.4 | lr 1.9143e-05 | G0(adamw:bfloat16/1588M) 0.1907 | G1(adamw:float32/0M) 0.0044 | trained 62941
+step     27 | train 1.316884 | val 1.331854 | tok/s 51957.94 | norm 0.1797 | dt 5045.31 ms | mfu 57.77% | TF/gpu 571.6 | lr 1.9061e-05 | G0(adamw:bfloat16/1588M) 0.1796 | G1(adamw:float32/0M) 0.0033 | trained 72130
+step     28 | train 1.271791 | val 1.331854 | tok/s 52281.07 | norm 0.1907 | dt 5014.13 ms | mfu 58.13% | TF/gpu 575.1 | lr 1.8976e-05 | G0(adamw:bfloat16/1588M) 0.1906 | G1(adamw:float32/0M) 0.0036 | trained 57812
+step     29 | train 1.310449 | val 1.331854 | tok/s 52196.96 | norm 0.1876 | dt 5022.21 ms | mfu 58.04% | TF/gpu 574.2 | lr 1.8887e-05 | G0(adamw:bfloat16/1588M) 0.1876 | G1(adamw:float32/0M) 0.0034 | trained 62965
+  [val] step 30 | val_loss 1.314120 | 441382 trained tokens
+step     30 | train 1.228583 | val 1.314120 | tok/s 51979.16 | norm 0.1774 | dt 5043.25 ms | mfu 57.79% | TF/gpu 571.8 | lr 1.8794e-05 | G0(adamw:bfloat16/1588M) 0.1774 | G1(adamw:float32/0M) 0.0034 | trained 62873
+step     31 | train 1.312681 | val 1.314120 | tok/s 52205.48 | norm 0.1802 | dt 5021.39 ms | mfu 58.05% | TF/gpu 574.3 | lr 1.8698e-05 | G0(adamw:bfloat16/1588M) 0.1801 | G1(adamw:float32/0M) 0.0033 | trained 65523
+step     32 | train 1.396036 | val 1.314120 | tok/s 52323.62 | norm 0.1856 | dt 5010.05 ms | mfu 58.18% | TF/gpu 575.6 | lr 1.8599e-05 | G0(adamw:bfloat16/1588M) 0.1855 | G1(adamw:float32/0M) 0.0035 | trained 62433
+step     33 | train 1.310055 | val 1.314120 | tok/s 52131.41 | norm 0.1753 | dt 5028.52 ms | mfu 57.96% | TF/gpu 573.5 | lr 1.8496e-05 | G0(adamw:bfloat16/1588M) 0.1753 | G1(adamw:float32/0M) 0.0034 | trained 68900
+step     34 | train 1.404515 | val 1.314120 | tok/s 52475.39 | norm 0.1995 | dt 4995.56 ms | mfu 58.35% | TF/gpu 577.3 | lr 1.8390e-05 | G0(adamw:bfloat16/1588M) 0.1995 | G1(adamw:float32/0M) 0.0036 | trained 52643
+step     35 | train 1.358652 | val 1.314120 | tok/s 52361.21 | norm 0.1862 | dt 5006.45 ms | mfu 58.22% | TF/gpu 576.0 | lr 1.8281e-05 | G0(adamw:bfloat16/1588M) 0.1862 | G1(adamw:float32/0M) 0.0034 | trained 57689
+step     36 | train 1.343977 | val 1.314120 | tok/s 52099.39 | norm 0.1799 | dt 5031.61 ms | mfu 57.93% | TF/gpu 573.1 | lr 1.8169e-05 | G0(adamw:bfloat16/1588M) 0.1798 | G1(adamw:float32/0M) 0.0032 | trained 66024
+step     37 | train 1.382737 | val 1.314120 | tok/s 52335.48 | norm 0.1889 | dt 5008.92 ms | mfu 58.19% | TF/gpu 575.7 | lr 1.8053e-05 | G0(adamw:bfloat16/1588M) 0.1888 | G1(adamw:float32/0M) 0.0037 | trained 59014
+step     38 | train 1.372832 | val 1.314120 | tok/s 52684.45 | norm 0.1984 | dt 4975.74 ms | mfu 58.58% | TF/gpu 579.6 | lr 1.7935e-05 | G0(adamw:bfloat16/1588M) 0.1984 | G1(adamw:float32/0M) 0.0037 | trained 51838
+step     39 | train 1.221092 | val 1.314120 | tok/s 52291.76 | norm 0.1747 | dt 5013.10 ms | mfu 58.14% | TF/gpu 575.3 | lr 1.7813e-05 | G0(adamw:bfloat16/1588M) 0.1746 | G1(adamw:float32/0M) 0.0034 | trained 61709
+  [val] step 40 | val_loss 1.304152 | 441382 trained tokens
+step     40 | train 1.307985 | val 1.304152 | tok/s 52237.84 | norm 0.1814 | dt 5018.28 ms | mfu 58.08% | TF/gpu 574.7 | lr 1.7688e-05 | G0(adamw:bfloat16/1588M) 0.1814 | G1(adamw:float32/0M) 0.0033 | trained 64450
+step     41 | train 1.154449 | val 1.304152 | tok/s 51941.67 | norm 0.1641 | dt 5046.89 ms | mfu 57.75% | TF/gpu 571.4 | lr 1.7561e-05 | G0(adamw:bfloat16/1588M) 0.1641 | G1(adamw:float32/0M) 0.0032 | trained 72180
+step     42 | train 1.385901 | val 1.304152 | tok/s 52318.28 | norm 0.1897 | dt 5010.56 ms | mfu 58.17% | TF/gpu 575.5 | lr 1.7430e-05 | G0(adamw:bfloat16/1588M) 0.1897 | G1(adamw:float32/0M) 0.0033 | trained 57885
+step     43 | train 1.269201 | val 1.304152 | tok/s 52282.06 | norm 0.1846 | dt 5014.03 ms | mfu 58.13% | TF/gpu 575.1 | lr 1.7297e-05 | G0(adamw:bfloat16/1588M) 0.1846 | G1(adamw:float32/0M) 0.0032 | trained 61419
+step     44 | train 1.352052 | val 1.304152 | tok/s 52279.56 | norm 0.1904 | dt 5014.27 ms | mfu 58.13% | TF/gpu 575.1 | lr 1.7161e-05 | G0(adamw:bfloat16/1588M) 0.1904 | G1(adamw:float32/0M) 0.0036 | trained 60070
+step     45 | train 1.259584 | val 1.304152 | tok/s 52228.17 | norm 0.1795 | dt 5019.21 ms | mfu 58.07% | TF/gpu 574.6 | lr 1.7022e-05 | G0(adamw:bfloat16/1588M) 0.1794 | G1(adamw:float32/0M) 0.0033 | trained 64197
+step     46 | train 1.301196 | val 1.304152 | tok/s 52397.30 | norm 0.1892 | dt 5003.01 ms | mfu 58.26% | TF/gpu 576.4 | lr 1.6881e-05 | G0(adamw:bfloat16/1588M) 0.1892 | G1(adamw:float32/0M) 0.0036 | trained 59340
+step     47 | train 1.198272 | val 1.304152 | tok/s 52117.70 | norm 0.1730 | dt 5029.85 ms | mfu 57.95% | TF/gpu 573.3 | lr 1.6737e-05 | G0(adamw:bfloat16/1588M) 0.1729 | G1(adamw:float32/0M) 0.0033 | trained 62803
+step     48 | train 1.339010 | val 1.304152 | tok/s 52285.52 | norm 0.1831 | dt 5013.70 ms | mfu 58.13% | TF/gpu 575.2 | lr 1.6590e-05 | G0(adamw:bfloat16/1588M) 0.1831 | G1(adamw:float32/0M) 0.0035 | trained 63388
+step     49 | train 1.265973 | val 1.304152 | tok/s 52445.04 | norm 0.1898 | dt 4998.45 ms | mfu 58.31% | TF/gpu 576.9 | lr 1.6441e-05 | G0(adamw:bfloat16/1588M) 0.1898 | G1(adamw:float32/0M) 0.0033 | trained 55353
+  [val] step 50 | val_loss 1.298169 | 441382 trained tokens
+step     50 | train 1.266734 | val 1.298169 | tok/s 52207.19 | norm 0.1759 | dt 5021.22 ms | mfu 58.05% | TF/gpu 574.3 | lr 1.6290e-05 | G0(adamw:bfloat16/1588M) 0.1759 | G1(adamw:float32/0M) 0.0033 | trained 60053
+step     51 | train 1.319835 | val 1.298169 | tok/s 52129.02 | norm 0.1774 | dt 5028.75 ms | mfu 57.96% | TF/gpu 573.5 | lr 1.6136e-05 | G0(adamw:bfloat16/1588M) 0.1773 | G1(adamw:float32/0M) 0.0035 | trained 63006
+step     52 | train 1.208558 | val 1.298169 | tok/s 52207.72 | norm 0.1763 | dt 5021.17 ms | mfu 58.05% | TF/gpu 574.3 | lr 1.5981e-05 | G0(adamw:bfloat16/1588M) 0.1763 | G1(adamw:float32/0M) 0.0031 | trained 66890
+step     53 | train 1.309098 | val 1.298169 | tok/s 52201.86 | norm 0.1862 | dt 5021.74 ms | mfu 58.04% | TF/gpu 574.3 | lr 1.5822e-05 | G0(adamw:bfloat16/1588M) 0.1862 | G1(adamw:float32/0M) 0.0039 | trained 62222
+step     54 | train 1.260411 | val 1.298169 | tok/s 52520.88 | norm 0.1929 | dt 4991.23 ms | mfu 58.40% | TF/gpu 577.8 | lr 1.5662e-05 | G0(adamw:bfloat16/1588M) 0.1929 | G1(adamw:float32/0M) 0.0036 | trained 53585
+step     55 | train 1.305966 | val 1.298169 | tok/s 52422.09 | norm 0.1959 | dt 5000.64 ms | mfu 58.29% | TF/gpu 576.7 | lr 1.5500e-05 | G0(adamw:bfloat16/1588M) 0.1959 | G1(adamw:float32/0M) 0.0036 | trained 54138
+step     56 | train 1.346176 | val 1.298169 | tok/s 52401.03 | norm 0.1883 | dt 5002.65 ms | mfu 58.26% | TF/gpu 576.5 | lr 1.5336e-05 | G0(adamw:bfloat16/1588M) 0.1883 | G1(adamw:float32/0M) 0.0035 | trained 59423
+step     57 | train 1.257045 | val 1.298169 | tok/s 52231.26 | norm 0.1730 | dt 5018.91 ms | mfu 58.07% | TF/gpu 574.6 | lr 1.5170e-05 | G0(adamw:bfloat16/1588M) 0.1730 | G1(adamw:float32/0M) 0.0031 | trained 64634
+step     58 | train 1.359209 | val 1.298169 | tok/s 52476.67 | norm 0.1962 | dt 4995.44 ms | mfu 58.35% | TF/gpu 577.3 | lr 1.5002e-05 | G0(adamw:bfloat16/1588M) 0.1962 | G1(adamw:float32/0M) 0.0034 | trained 52237
+step     59 | train 1.366945 | val 1.298169 | tok/s 52118.36 | norm 0.1754 | dt 5029.78 ms | mfu 57.95% | TF/gpu 573.3 | lr 1.4832e-05 | G0(adamw:bfloat16/1588M) 0.1753 | G1(adamw:float32/0M) 0.0033 | trained 66619
+  [val] step 60 | val_loss 1.294168 | 441382 trained tokens
+step     60 | train 1.307596 | val 1.294168 | tok/s 52187.30 | norm 0.1789 | dt 5023.14 ms | mfu 58.03% | TF/gpu 574.1 | lr 1.4661e-05 | G0(adamw:bfloat16/1588M) 0.1788 | G1(adamw:float32/0M) 0.0034 | trained 61825
+step     61 | train 1.222372 | val 1.294168 | tok/s 52287.01 | norm 0.1734 | dt 5013.56 ms | mfu 58.14% | TF/gpu 575.2 | lr 1.4488e-05 | G0(adamw:bfloat16/1588M) 0.1734 | G1(adamw:float32/0M) 0.0032 | trained 61270
+step     62 | train 1.297332 | val 1.294168 | tok/s 52270.58 | norm 0.1854 | dt 5015.13 ms | mfu 58.12% | TF/gpu 575.0 | lr 1.4313e-05 | G0(adamw:bfloat16/1588M) 0.1853 | G1(adamw:float32/0M) 0.0036 | trained 64177
+step     63 | train 1.302379 | val 1.294168 | tok/s 52081.54 | norm 0.1674 | dt 5033.34 ms | mfu 57.91% | TF/gpu 572.9 | lr 1.4137e-05 | G0(adamw:bfloat16/1588M) 0.1673 | G1(adamw:float32/0M) 0.0030 | trained 70030
+step     64 | train 1.278806 | val 1.294168 | tok/s 52387.65 | norm 0.1772 | dt 5003.93 ms | mfu 58.25% | TF/gpu 576.3 | lr 1.3960e-05 | G0(adamw:bfloat16/1588M) 0.1771 | G1(adamw:float32/0M) 0.0035 | trained 61627
+step     65 | train 1.389553 | val 1.294168 | tok/s 52305.94 | norm 0.1816 | dt 5011.74 ms | mfu 58.16% | TF/gpu 575.4 | lr 1.3781e-05 | G0(adamw:bfloat16/1588M) 0.1816 | G1(adamw:float32/0M) 0.0035 | trained 63041
+step     66 | train 1.157514 | val 1.294168 | tok/s 52126.93 | norm 0.1838 | dt 5028.96 ms | mfu 57.96% | TF/gpu 573.4 | lr 1.3601e-05 | G0(adamw:bfloat16/1588M) 0.1837 | G1(adamw:float32/0M) 0.0040 | trained 60186
+step     67 | train 1.251658 | val 1.294168 | tok/s 52290.80 | norm 0.1759 | dt 5013.19 ms | mfu 58.14% | TF/gpu 575.2 | lr 1.3420e-05 | G0(adamw:bfloat16/1588M) 0.1758 | G1(adamw:float32/0M) 0.0031 | trained 59544
+step     68 | train 1.286181 | val 1.294168 | tok/s 52374.58 | norm 0.1818 | dt 5005.18 ms | mfu 58.23% | TF/gpu 576.2 | lr 1.3238e-05 | G0(adamw:bfloat16/1588M) 0.1818 | G1(adamw:float32/0M) 0.0034 | trained 58422
+step     69 | train 1.332230 | val 1.294168 | tok/s 52258.79 | norm 0.1815 | dt 5016.27 ms | mfu 58.10% | TF/gpu 574.9 | lr 1.3055e-05 | G0(adamw:bfloat16/1588M) 0.1814 | G1(adamw:float32/0M) 0.0034 | trained 61687
+  [val] step 70 | val_loss 1.291002 | 441382 trained tokens
+step     70 | train 1.330031 | val 1.291002 | tok/s 52426.51 | norm 0.1947 | dt 5000.22 ms | mfu 58.29% | TF/gpu 576.7 | lr 1.2871e-05 | G0(adamw:bfloat16/1588M) 0.1946 | G1(adamw:float32/0M) 0.0037 | trained 51832
+step     71 | train 1.360449 | val 1.291002 | tok/s 52314.64 | norm 0.1775 | dt 5010.91 ms | mfu 58.17% | TF/gpu 575.5 | lr 1.2686e-05 | G0(adamw:bfloat16/1588M) 0.1774 | G1(adamw:float32/0M) 0.0032 | trained 64269
+step     72 | train 1.310892 | val 1.291002 | tok/s 52092.53 | norm 0.1777 | dt 5032.28 ms | mfu 57.92% | TF/gpu 573.1 | lr 1.2501e-05 | G0(adamw:bfloat16/1588M) 0.1777 | G1(adamw:float32/0M) 0.0034 | trained 64163
+step     73 | train 1.200350 | val 1.291002 | tok/s 52428.06 | norm 0.1942 | dt 5000.07 ms | mfu 58.29% | TF/gpu 576.8 | lr 1.2315e-05 | G0(adamw:bfloat16/1588M) 0.1942 | G1(adamw:float32/0M) 0.0042 | trained 56460
+step     74 | train 1.376913 | val 1.291002 | tok/s 52446.23 | norm 0.1841 | dt 4998.34 ms | mfu 58.31% | TF/gpu 577.0 | lr 1.2128e-05 | G0(adamw:bfloat16/1588M) 0.1841 | G1(adamw:float32/0M) 0.0034 | trained 58840
+step     75 | train 1.291386 | val 1.291002 | tok/s 52230.22 | norm 0.1741 | dt 5019.01 ms | mfu 58.07% | TF/gpu 574.6 | lr 1.1941e-05 | G0(adamw:bfloat16/1588M) 0.1741 | G1(adamw:float32/0M) 0.0033 | trained 63991
+step     76 | train 1.250126 | val 1.291002 | tok/s 52301.55 | norm 0.1829 | dt 5012.16 ms | mfu 58.15% | TF/gpu 575.4 | lr 1.1753e-05 | G0(adamw:bfloat16/1588M) 0.1829 | G1(adamw:float32/0M) 0.0033 | trained 60939
+step     77 | train 1.248422 | val 1.291002 | tok/s 52538.38 | norm 0.1927 | dt 4989.57 ms | mfu 58.42% | TF/gpu 578.0 | lr 1.1565e-05 | G0(adamw:bfloat16/1588M) 0.1926 | G1(adamw:float32/0M) 0.0037 | trained 55625
+step     78 | train 1.264691 | val 1.291002 | tok/s 52291.90 | norm 0.1829 | dt 5013.09 ms | mfu 58.14% | TF/gpu 575.3 | lr 1.1377e-05 | G0(adamw:bfloat16/1588M) 0.1828 | G1(adamw:float32/0M) 0.0040 | trained 58076
+step     79 | train 1.297126 | val 1.291002 | tok/s 52337.56 | norm 0.1868 | dt 5008.72 ms | mfu 58.19% | TF/gpu 575.8 | lr 1.1188e-05 | G0(adamw:bfloat16/1588M) 0.1868 | G1(adamw:float32/0M) 0.0045 | trained 61303
+  [val] step 80 | val_loss 1.288964 | 441382 trained tokens
+step     80 | train 1.314537 | val 1.288964 | tok/s 52273.65 | norm 0.1836 | dt 5014.84 ms | mfu 58.12% | TF/gpu 575.1 | lr 1.1000e-05 | G0(adamw:bfloat16/1588M) 0.1836 | G1(adamw:float32/0M) 0.0042 | trained 60062
+step     81 | train 1.150360 | val 1.288964 | tok/s 52395.95 | norm 0.1877 | dt 5003.13 ms | mfu 58.26% | TF/gpu 576.4 | lr 1.0812e-05 | G0(adamw:bfloat16/1588M) 0.1877 | G1(adamw:float32/0M) 0.0035 | trained 56564
+step     82 | train 1.264075 | val 1.288964 | tok/s 52293.98 | norm 0.1783 | dt 5012.89 ms | mfu 58.14% | TF/gpu 575.3 | lr 1.0623e-05 | G0(adamw:bfloat16/1588M) 0.1783 | G1(adamw:float32/0M) 0.0033 | trained 62064
+step     83 | train 1.242056 | val 1.288964 | tok/s 51966.28 | norm 0.1743 | dt 5044.50 ms | mfu 57.78% | TF/gpu 571.7 | lr 1.0435e-05 | G0(adamw:bfloat16/1588M) 0.1743 | G1(adamw:float32/0M) 0.0034 | trained 71899
+step     84 | train 1.228419 | val 1.288964 | tok/s 52366.74 | norm 0.1834 | dt 5005.93 ms | mfu 58.22% | TF/gpu 576.1 | lr 1.0247e-05 | G0(adamw:bfloat16/1588M) 0.1833 | G1(adamw:float32/0M) 0.0039 | trained 63910
+step     85 | train 1.285710 | val 1.288964 | tok/s 52085.63 | norm 0.1813 | dt 5032.94 ms | mfu 57.91% | TF/gpu 573.0 | lr 1.0059e-05 | G0(adamw:bfloat16/1588M) 0.1813 | G1(adamw:float32/0M) 0.0035 | trained 65450
+step     86 | train 1.197479 | val 1.288964 | tok/s 52398.73 | norm 0.1931 | dt 5002.87 ms | mfu 58.26% | TF/gpu 576.4 | lr 9.8720e-06 | G0(adamw:bfloat16/1588M) 0.1930 | G1(adamw:float32/0M) 0.0039 | trained 55993
+step     87 | train 1.253019 | val 1.288964 | tok/s 52352.13 | norm 0.1975 | dt 5007.32 ms | mfu 58.21% | TF/gpu 575.9 | lr 9.6853e-06 | G0(adamw:bfloat16/1588M) 0.1975 | G1(adamw:float32/0M) 0.0037 | trained 56865
+step     88 | train 1.184715 | val 1.288964 | tok/s 52433.72 | norm 0.1969 | dt 4999.53 ms | mfu 58.30% | TF/gpu 576.8 | lr 9.4991e-06 | G0(adamw:bfloat16/1588M) 0.1968 | G1(adamw:float32/0M) 0.0035 | trained 53089
+step     89 | train 1.326445 | val 1.288964 | tok/s 52141.83 | norm 0.1891 | dt 5027.52 ms | mfu 57.97% | TF/gpu 573.6 | lr 9.3136e-06 | G0(adamw:bfloat16/1588M) 0.1891 | G1(adamw:float32/0M) 0.0035 | trained 64479
+  [val] step 90 | val_loss 1.288357 | 441382 trained tokens
+step     90 | train 1.278548 | val 1.288357 | tok/s 52462.27 | norm 0.1888 | dt 4996.81 ms | mfu 58.33% | TF/gpu 577.1 | lr 9.1288e-06 | G0(adamw:bfloat16/1588M) 0.1888 | G1(adamw:float32/0M) 0.0037 | trained 57532
+step     91 | train 1.258814 | val 1.288357 | tok/s 52143.78 | norm 0.1808 | dt 5027.33 ms | mfu 57.98% | TF/gpu 573.6 | lr 8.9448e-06 | G0(adamw:bfloat16/1588M) 0.1808 | G1(adamw:float32/0M) 0.0034 | trained 65296
+step     92 | train 1.277098 | val 1.288357 | tok/s 52170.35 | norm 0.1835 | dt 5024.77 ms | mfu 58.01% | TF/gpu 573.9 | lr 8.7618e-06 | G0(adamw:bfloat16/1588M) 0.1835 | G1(adamw:float32/0M) 0.0033 | trained 61992
+step     93 | train 1.052987 | val 1.288357 | tok/s 52143.33 | norm 0.1639 | dt 5027.37 ms | mfu 57.98% | TF/gpu 573.6 | lr 8.5797e-06 | G0(adamw:bfloat16/1588M) 0.1639 | G1(adamw:float32/0M) 0.0031 | trained 67008
+step     94 | train 1.145375 | val 1.288357 | tok/s 52375.50 | norm 0.1895 | dt 5005.09 ms | mfu 58.23% | TF/gpu 576.2 | lr 8.3987e-06 | G0(adamw:bfloat16/1588M) 0.1895 | G1(adamw:float32/0M) 0.0037 | trained 53717
+step     95 | train 1.151750 | val 1.288357 | tok/s 52224.97 | norm 0.1773 | dt 5019.51 ms | mfu 58.07% | TF/gpu 574.5 | lr 8.2188e-06 | G0(adamw:bfloat16/1588M) 0.1773 | G1(adamw:float32/0M) 0.0034 | trained 62462
+step     96 | train 1.296427 | val 1.288357 | tok/s 52069.31 | norm 0.1766 | dt 5034.52 ms | mfu 57.89% | TF/gpu 572.8 | lr 8.0402e-06 | G0(adamw:bfloat16/1588M) 0.1766 | G1(adamw:float32/0M) 0.0032 | trained 67965
+step     97 | train 1.166670 | val 1.288357 | tok/s 52265.09 | norm 0.1715 | dt 5015.66 ms | mfu 58.11% | TF/gpu 575.0 | lr 7.8629e-06 | G0(adamw:bfloat16/1588M) 0.1714 | G1(adamw:float32/0M) 0.0037 | trained 63205
+step     98 | train 1.217262 | val 1.288357 | tok/s 52421.18 | norm 0.1888 | dt 5000.73 ms | mfu 58.29% | TF/gpu 576.7 | lr 7.6869e-06 | G0(adamw:bfloat16/1588M) 0.1888 | G1(adamw:float32/0M) 0.0041 | trained 54202
+step     99 | train 1.227016 | val 1.288357 | tok/s 52500.58 | norm 0.1853 | dt 4993.16 ms | mfu 58.37% | TF/gpu 577.5 | lr 7.5124e-06 | G0(adamw:bfloat16/1588M) 0.1853 | G1(adamw:float32/0M) 0.0039 | trained 55244
+  [val] step 100 | val_loss 1.286909 | 441382 trained tokens
+step    100 | train 1.210897 | val 1.286909 | tok/s 52421.15 | norm 0.1842 | dt 5000.73 ms | mfu 58.29% | TF/gpu 576.7 | lr 7.3394e-06 | G0(adamw:bfloat16/1588M) 0.1842 | G1(adamw:float32/0M) 0.0038 | trained 60034
+step    101 | train 1.210468 | val 1.286909 | tok/s 52143.05 | norm 0.1712 | dt 5027.40 ms | mfu 57.98% | TF/gpu 573.6 | lr 7.1680e-06 | G0(adamw:bfloat16/1588M) 0.1712 | G1(adamw:float32/0M) 0.0031 | trained 65591
+step    102 | train 1.312405 | val 1.286909 | tok/s 52258.77 | norm 0.1773 | dt 5016.27 ms | mfu 58.10% | TF/gpu 574.9 | lr 6.9983e-06 | G0(adamw:bfloat16/1588M) 0.1773 | G1(adamw:float32/0M) 0.0032 | trained 64430
+step    103 | train 1.159197 | val 1.286909 | tok/s 52471.03 | norm 0.1965 | dt 4995.98 ms | mfu 58.34% | TF/gpu 577.2 | lr 6.8303e-06 | G0(adamw:bfloat16/1588M) 0.1964 | G1(adamw:float32/0M) 0.0037 | trained 50752
+step    104 | train 1.221559 | val 1.286909 | tok/s 52356.02 | norm 0.1787 | dt 5006.95 ms | mfu 58.21% | TF/gpu 576.0 | lr 6.6642e-06 | G0(adamw:bfloat16/1588M) 0.1786 | G1(adamw:float32/0M) 0.0034 | trained 61266
+step    105 | train 1.255289 | val 1.286909 | tok/s 51887.69 | norm 0.1652 | dt 5052.14 ms | mfu 57.69% | TF/gpu 570.8 | lr 6.5000e-06 | G0(adamw:bfloat16/1588M) 0.1652 | G1(adamw:float32/0M) 0.0031 | trained 74892
+step    106 | train 1.227225 | val 1.286909 | tok/s 52466.48 | norm 0.1892 | dt 4996.41 ms | mfu 58.34% | TF/gpu 577.2 | lr 6.3378e-06 | G0(adamw:bfloat16/1588M) 0.1892 | G1(adamw:float32/0M) 0.0035 | trained 54003
+step    107 | train 1.217216 | val 1.286909 | tok/s 52199.70 | norm 0.1751 | dt 5021.94 ms | mfu 58.04% | TF/gpu 574.2 | lr 6.1776e-06 | G0(adamw:bfloat16/1588M) 0.1751 | G1(adamw:float32/0M) 0.0030 | trained 65252
+step    108 | train 1.174868 | val 1.286909 | tok/s 52103.26 | norm 0.1760 | dt 5031.24 ms | mfu 57.93% | TF/gpu 573.2 | lr 6.0195e-06 | G0(adamw:bfloat16/1588M) 0.1759 | G1(adamw:float32/0M) 0.0035 | trained 63539
+step    109 | train 1.245597 | val 1.286909 | tok/s 52419.20 | norm 0.1907 | dt 5000.92 ms | mfu 58.28% | TF/gpu 576.7 | lr 5.8636e-06 | G0(adamw:bfloat16/1588M) 0.1907 | G1(adamw:float32/0M) 0.0035 | trained 60863
+  [val] step 110 | val_loss 1.286983 | 441382 trained tokens
+step    110 | train 1.293921 | val 1.286983 | tok/s 52161.46 | norm 0.1777 | dt 5025.63 ms | mfu 58.00% | TF/gpu 573.8 | lr 5.7099e-06 | G0(adamw:bfloat16/1588M) 0.1777 | G1(adamw:float32/0M) 0.0034 | trained 65268
+step    111 | train 1.236280 | val 1.286983 | tok/s 52094.99 | norm 0.1763 | dt 5032.04 ms | mfu 57.92% | TF/gpu 573.1 | lr 5.5586e-06 | G0(adamw:bfloat16/1588M) 0.1762 | G1(adamw:float32/0M) 0.0032 | trained 66640
+step    112 | train 1.333001 | val 1.286983 | tok/s 52230.07 | norm 0.1903 | dt 5019.02 ms | mfu 58.07% | TF/gpu 574.6 | lr 5.4097e-06 | G0(adamw:bfloat16/1588M) 0.1903 | G1(adamw:float32/0M) 0.0036 | trained 58475
+step    113 | train 1.287146 | val 1.286983 | tok/s 52523.13 | norm 0.1868 | dt 4991.02 ms | mfu 58.40% | TF/gpu 577.8 | lr 5.2632e-06 | G0(adamw:bfloat16/1588M) 0.1867 | G1(adamw:float32/0M) 0.0036 | trained 58809
+step    114 | train 1.283254 | val 1.286983 | tok/s 52342.21 | norm 0.1904 | dt 5008.27 ms | mfu 58.20% | TF/gpu 575.8 | lr 5.1192e-06 | G0(adamw:bfloat16/1588M) 0.1904 | G1(adamw:float32/0M) 0.0037 | trained 59221
+step    115 | train 1.315462 | val 1.286983 | tok/s 52136.37 | norm 0.1831 | dt 5028.04 ms | mfu 57.97% | TF/gpu 573.5 | lr 4.9778e-06 | G0(adamw:bfloat16/1588M) 0.1831 | G1(adamw:float32/0M) 0.0041 | trained 62578
+step    116 | train 1.287380 | val 1.286983 | tok/s 52607.76 | norm 0.1911 | dt 4982.99 ms | mfu 58.49% | TF/gpu 578.7 | lr 4.8391e-06 | G0(adamw:bfloat16/1588M) 0.1911 | G1(adamw:float32/0M) 0.0037 | trained 54060
+step    117 | train 1.163733 | val 1.286983 | tok/s 52486.95 | norm 0.1774 | dt 4994.46 ms | mfu 58.36% | TF/gpu 577.4 | lr 4.7030e-06 | G0(adamw:bfloat16/1588M) 0.1774 | G1(adamw:float32/0M) 0.0033 | trained 59908
+step    118 | train 1.229313 | val 1.286983 | tok/s 52207.73 | norm 0.1769 | dt 5021.17 ms | mfu 58.05% | TF/gpu 574.3 | lr 4.5697e-06 | G0(adamw:bfloat16/1588M) 0.1769 | G1(adamw:float32/0M) 0.0033 | trained 62664
+step    119 | train 1.126582 | val 1.286983 | tok/s 52050.70 | norm 0.1625 | dt 5036.32 ms | mfu 57.87% | TF/gpu 572.6 | lr 4.4393e-06 | G0(adamw:bfloat16/1588M) 0.1624 | G1(adamw:float32/0M) 0.0033 | trained 73439
+  [val] step 120 | val_loss 1.285696 | 441382 trained tokens
+step    120 | train 1.267995 | val 1.285696 | tok/s 52354.22 | norm 0.1866 | dt 5007.12 ms | mfu 58.21% | TF/gpu 575.9 | lr 4.3117e-06 | G0(adamw:bfloat16/1588M) 0.1866 | G1(adamw:float32/0M) 0.0038 | trained 56933
+step    121 | train 1.262265 | val 1.285696 | tok/s 52362.28 | norm 0.1893 | dt 5006.35 ms | mfu 58.22% | TF/gpu 576.0 | lr 4.1870e-06 | G0(adamw:bfloat16/1588M) 0.1893 | G1(adamw:float32/0M) 0.0034 | trained 59607
+step    122 | train 1.279174 | val 1.285696 | tok/s 52199.51 | norm 0.1829 | dt 5021.96 ms | mfu 58.04% | TF/gpu 574.2 | lr 4.0654e-06 | G0(adamw:bfloat16/1588M) 0.1828 | G1(adamw:float32/0M) 0.0035 | trained 62726
+step    123 | train 1.173654 | val 1.285696 | tok/s 52230.29 | norm 0.1803 | dt 5019.00 ms | mfu 58.07% | TF/gpu 574.6 | lr 3.9468e-06 | G0(adamw:bfloat16/1588M) 0.1803 | G1(adamw:float32/0M) 0.0033 | trained 60683
+step    124 | train 1.295999 | val 1.285696 | tok/s 52367.74 | norm 0.1884 | dt 5005.83 ms | mfu 58.23% | TF/gpu 576.1 | lr 3.8312e-06 | G0(adamw:bfloat16/1588M) 0.1884 | G1(adamw:float32/0M) 0.0032 | trained 59092
+step    125 | train 1.117078 | val 1.285696 | tok/s 52153.56 | norm 0.1695 | dt 5026.39 ms | mfu 57.99% | TF/gpu 573.7 | lr 3.7188e-06 | G0(adamw:bfloat16/1588M) 0.1695 | G1(adamw:float32/0M) 0.0031 | trained 62393
+step    126 | train 1.259735 | val 1.285696 | tok/s 52085.79 | norm 0.1741 | dt 5032.93 ms | mfu 57.91% | TF/gpu 573.0 | lr 3.6097e-06 | G0(adamw:bfloat16/1588M) 0.1740 | G1(adamw:float32/0M) 0.0033 | trained 69216
+step    127 | train 1.209344 | val 1.285696 | tok/s 52515.89 | norm 0.1994 | dt 4991.71 ms | mfu 58.39% | TF/gpu 577.7 | lr 3.5037e-06 | G0(adamw:bfloat16/1588M) 0.1994 | G1(adamw:float32/0M) 0.0039 | trained 52837
+step    128 | train 1.207441 | val 1.285696 | tok/s 52328.68 | norm 0.1816 | dt 5009.57 ms | mfu 58.18% | TF/gpu 575.7 | lr 3.4010e-06 | G0(adamw:bfloat16/1588M) 0.1816 | G1(adamw:float32/0M) 0.0033 | trained 58228
+step    129 | train 1.250794 | val 1.285696 | tok/s 52247.15 | norm 0.1846 | dt 5017.38 ms | mfu 58.09% | TF/gpu 574.8 | lr 3.3017e-06 | G0(adamw:bfloat16/1588M) 0.1846 | G1(adamw:float32/0M) 0.0035 | trained 59335
+  [val] step 130 | val_loss 1.285435 | 441382 trained tokens
+step    130 | train 1.195727 | val 1.285435 | tok/s 51879.99 | norm 0.1637 | dt 5052.89 ms | mfu 57.68% | TF/gpu 570.7 | lr 3.2058e-06 | G0(adamw:bfloat16/1588M) 0.1637 | G1(adamw:float32/0M) 0.0029 | trained 72870
+step    131 | train 1.236175 | val 1.285435 | tok/s 52312.99 | norm 0.1870 | dt 5011.07 ms | mfu 58.17% | TF/gpu 575.5 | lr 3.1132e-06 | G0(adamw:bfloat16/1588M) 0.1870 | G1(adamw:float32/0M) 0.0036 | trained 59337
+step    132 | train 1.219600 | val 1.285435 | tok/s 52416.91 | norm 0.1897 | dt 5001.13 ms | mfu 58.28% | TF/gpu 576.6 | lr 3.0242e-06 | G0(adamw:bfloat16/1588M) 0.1896 | G1(adamw:float32/0M) 0.0034 | trained 56492
+step    133 | train 1.216850 | val 1.285435 | tok/s 52400.83 | norm 0.1881 | dt 5002.67 ms | mfu 58.26% | TF/gpu 576.5 | lr 2.9386e-06 | G0(adamw:bfloat16/1588M) 0.1881 | G1(adamw:float32/0M) 0.0033 | trained 54061
+step    134 | train 1.308020 | val 1.285435 | tok/s 52339.05 | norm 0.1930 | dt 5008.57 ms | mfu 58.19% | TF/gpu 575.8 | lr 2.8566e-06 | G0(adamw:bfloat16/1588M) 0.1930 | G1(adamw:float32/0M) 0.0036 | trained 59427
+step    135 | train 1.207325 | val 1.285435 | tok/s 52289.08 | norm 0.1812 | dt 5013.36 ms | mfu 58.14% | TF/gpu 575.2 | lr 2.7781e-06 | G0(adamw:bfloat16/1588M) 0.1812 | G1(adamw:float32/0M) 0.0033 | trained 61410
+step    136 | train 1.299336 | val 1.285435 | tok/s 52519.80 | norm 0.1928 | dt 4991.34 ms | mfu 58.40% | TF/gpu 577.8 | lr 2.7032e-06 | G0(adamw:bfloat16/1588M) 0.1927 | G1(adamw:float32/0M) 0.0034 | trained 54310
+step    137 | train 1.313522 | val 1.285435 | tok/s 52092.84 | norm 0.1796 | dt 5032.25 ms | mfu 57.92% | TF/gpu 573.1 | lr 2.6320e-06 | G0(adamw:bfloat16/1588M) 0.1796 | G1(adamw:float32/0M) 0.0031 | trained 66287
+step    138 | train 1.273739 | val 1.285435 | tok/s 52091.27 | norm 0.1783 | dt 5032.40 ms | mfu 57.92% | TF/gpu 573.0 | lr 2.5645e-06 | G0(adamw:bfloat16/1588M) 0.1783 | G1(adamw:float32/0M) 0.0033 | trained 64477
+step    139 | train 1.161006 | val 1.285435 | tok/s 52204.96 | norm 0.1744 | dt 5021.44 ms | mfu 58.04% | TF/gpu 574.3 | lr 2.5006e-06 | G0(adamw:bfloat16/1588M) 0.1744 | G1(adamw:float32/0M) 0.0032 | trained 60140
+  [val] step 140 | val_loss 1.284600 | 441382 trained tokens
+step    140 | train 1.251603 | val 1.284600 | tok/s 52136.48 | norm 0.1775 | dt 5028.03 ms | mfu 57.97% | TF/gpu 573.5 | lr 2.4405e-06 | G0(adamw:bfloat16/1588M) 0.1774 | G1(adamw:float32/0M) 0.0031 | trained 62992
+step    141 | train 1.284324 | val 1.284600 | tok/s 52128.48 | norm 0.1669 | dt 5028.81 ms | mfu 57.96% | TF/gpu 573.5 | lr 2.3841e-06 | G0(adamw:bfloat16/1588M) 0.1668 | G1(adamw:float32/0M) 0.0030 | trained 70063
+step    142 | train 1.221873 | val 1.284600 | tok/s 52300.04 | norm 0.1837 | dt 5012.31 ms | mfu 58.15% | TF/gpu 575.3 | lr 2.3315e-06 | G0(adamw:bfloat16/1588M) 0.1837 | G1(adamw:float32/0M) 0.0034 | trained 58772
+step    143 | train 1.311329 | val 1.284600 | tok/s 52194.47 | norm 0.1740 | dt 5022.45 ms | mfu 58.03% | TF/gpu 574.2 | lr 2.2828e-06 | G0(adamw:bfloat16/1588M) 0.1740 | G1(adamw:float32/0M) 0.0031 | trained 65544
+step    144 | train 1.170079 | val 1.284600 | tok/s 52135.27 | norm 0.1801 | dt 5028.15 ms | mfu 57.97% | TF/gpu 573.5 | lr 2.2378e-06 | G0(adamw:bfloat16/1588M) 0.1800 | G1(adamw:float32/0M) 0.0037 | trained 61220
+step    145 | train 1.177731 | val 1.284600 | tok/s 52356.35 | norm 0.1748 | dt 5006.92 ms | mfu 58.21% | TF/gpu 576.0 | lr 2.1967e-06 | G0(adamw:bfloat16/1588M) 0.1747 | G1(adamw:float32/0M) 0.0032 | trained 60069
+step    146 | train 1.248181 | val 1.284600 | tok/s 52351.21 | norm 0.1848 | dt 5007.41 ms | mfu 58.21% | TF/gpu 575.9 | lr 2.1594e-06 | G0(adamw:bfloat16/1588M) 0.1848 | G1(adamw:float32/0M) 0.0032 | trained 57419
+step    147 | train 1.254087 | val 1.284600 | tok/s 52268.39 | norm 0.1821 | dt 5015.34 ms | mfu 58.12% | TF/gpu 575.0 | lr 2.1260e-06 | G0(adamw:bfloat16/1588M) 0.1821 | G1(adamw:float32/0M) 0.0032 | trained 59565
+step    148 | train 1.305250 | val 1.284600 | tok/s 52406.40 | norm 0.1900 | dt 5002.14 ms | mfu 58.27% | TF/gpu 576.5 | lr 2.0965e-06 | G0(adamw:bfloat16/1588M) 0.1900 | G1(adamw:float32/0M) 0.0034 | trained 56860
+step    149 | train 1.329932 | val 1.284600 | tok/s 52345.32 | norm 0.1820 | dt 5007.97 ms | mfu 58.20% | TF/gpu 575.8 | lr 2.0710e-06 | G0(adamw:bfloat16/1588M) 0.1819 | G1(adamw:float32/0M) 0.0032 | trained 60890
+  [val] step 150 | val_loss 1.284082 | 441382 trained tokens
+step    150 | train 1.242914 | val 1.284082 | tok/s 52077.89 | norm 0.1731 | dt 5033.69 ms | mfu 57.90% | TF/gpu 572.9 | lr 2.0493e-06 | G0(adamw:bfloat16/1588M) 0.1731 | G1(adamw:float32/0M) 0.0032 | trained 65868
+step    151 | train 1.198110 | val 1.284082 | tok/s 52362.37 | norm 0.1841 | dt 5006.34 ms | mfu 58.22% | TF/gpu 576.0 | lr 2.0316e-06 | G0(adamw:bfloat16/1588M) 0.1840 | G1(adamw:float32/0M) 0.0036 | trained 57794
+step    152 | train 1.292557 | val 1.284082 | tok/s 52515.62 | norm 0.1912 | dt 4991.73 ms | mfu 58.39% | TF/gpu 577.7 | lr 2.0178e-06 | G0(adamw:bfloat16/1588M) 0.1912 | G1(adamw:float32/0M) 0.0035 | trained 54802
+step    153 | train 1.275916 | val 1.284082 | tok/s 52241.20 | norm 0.1748 | dt 5017.96 ms | mfu 58.09% | TF/gpu 574.7 | lr 2.0079e-06 | G0(adamw:bfloat16/1588M) 0.1748 | G1(adamw:float32/0M) 0.0033 | trained 64727
+step    154 | train 1.199003 | val 1.284082 | tok/s 52350.42 | norm 0.1813 | dt 5007.49 ms | mfu 58.21% | TF/gpu 575.9 | lr 2.0020e-06 | G0(adamw:bfloat16/1588M) 0.1813 | G1(adamw:float32/0M) 0.0033 | trained 60010
+  [val] step 155 | val_loss 1.283890 | 441382 trained tokens
+step    155 | train 1.262134 | val 1.283890 | tok/s 52369.86 | norm 0.1947 | dt 5005.63 ms | mfu 58.23% | TF/gpu 576.1 | lr 2.0000e-06 | G0(adamw:bfloat16/1588M) 0.1947 | G1(adamw:float32/0M) 0.0042 | trained 57491
+
+==================== MFU summary ====================
+  steady-state MFU  : 58.12%   (151 steps, first 5 excluded)
+  best-step MFU     : 58.58%
+  model TFLOP/s/gpu : 575.05  of 989.40 peak
+  cluster PFLOP/s   : 0.58
+  steady tok/s      : 52273
+  total model FLOPs : 0.435 EFLOP over 12.621 min
+=====================================================
+
+=== Training complete ===
+[MEM] active_peak 119376 MiB | allocated_peak 119376 MiB | reserved_peak 121866 MiB | cached_free 76607 MiB

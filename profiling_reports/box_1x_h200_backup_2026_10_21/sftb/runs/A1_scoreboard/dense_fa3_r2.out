@@ -1,0 +1,7 @@
+torch 2.14.1+cu130 cudnn 92400 | gpu NVIDIA H200 
+RIVAL mode=dense impl=fa3 iters=1000 fwd_only=0 wall_s=4.27 per_iter_ms=4.2720
+Collecting data...
+Generating '/root/gautam_k/tmp/nsys-report-2a88.qdstrm'
+[1/1] [0%                          ] dense_fa3_r2.nsys-rep[1/1] [0%                          ] dense_fa3_r2.nsys-rep[1/1] [5%                          ] dense_fa3_r2.nsys-rep[1/1] [6%                          ] dense_fa3_r2.nsys-rep[1/1] [7%                          ] dense_fa3_r2.nsys-rep[1/1] [==20%                       ] dense_fa3_r2.nsys-rep[1/1] [==19%                       ] dense_fa3_r2.nsys-rep[1/1] [======34%                   ] dense_fa3_r2.nsys-rep[1/1] [==========49%               ] dense_fa3_r2.nsys-rep[1/1] [===========52%              ] dense_fa3_r2.nsys-rep[1/1] [========================100%] dense_fa3_r2.nsys-rep[1/1] [========================100%] dense_fa3_r2.nsys-rep
+Generated:
+	/root/gautam_k/sft_v2/runs/sb_sft_1021/dense_fa3_r2.nsys-rep

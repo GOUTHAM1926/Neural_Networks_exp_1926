@@ -1,0 +1,110 @@
+device NVIDIA H200 | T 4096, 18 / 6 heads, hd 128, NeoX | 200 launches per round, median of 9 rounds
+B=1  (time: original | variant | speed-up; CHECK = all outputs of that kernel bit-identical)
+  -- no positions (pretraining) --
+  forward   fwd2 HPW 2                 23.0 |     39.3 us |  0.58x  CHECK bit-identical
+  forward   fwd2 HPW 4                 23.0 |     34.5 us |  0.67x  CHECK bit-identical
+  forward   fwd2 HPW 6                 23.1 |     34.0 us |  0.68x  CHECK bit-identical
+  forward   fwd2 HPW 12                23.1 |     33.7 us |  0.69x  CHECK bit-identical
+  forward   fwd2 HPW 24                23.0 |     33.3 us |  0.69x  CHECK bit-identical
+  backward  bwd2 HPB 8 STAGE 8         93.9 |    136.0 us |  0.69x  CHECK bit-identical
+  backward  bwd2 HPB 12 STAGE 8        93.9 |    139.7 us |  0.67x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 8        93.9 |    164.6 us |  0.57x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 16       93.9 |    160.8 us |  0.58x  CHECK bit-identical
+  reduce    reduce3 UNROLL 32          17.8 |     12.3 us |  1.45x  CHECK bit-identical
+  reduce    reduce3 UNROLL 64          17.8 |     12.3 us |  1.45x  CHECK bit-identical
+  reduce    reduce3 UNROLL 128         17.8 |     10.7 us |  1.66x  CHECK bit-identical
+  -- packed positions (SFT) --
+  forward   fwd2 HPW 2                 23.6 |     39.3 us |  0.60x  CHECK bit-identical
+  forward   fwd2 HPW 4                 23.6 |     34.5 us |  0.68x  CHECK bit-identical
+  forward   fwd2 HPW 6                 23.6 |     33.6 us |  0.70x  CHECK bit-identical
+  forward   fwd2 HPW 12                23.6 |     33.5 us |  0.71x  CHECK bit-identical
+  forward   fwd2 HPW 24                23.6 |     33.3 us |  0.71x  CHECK bit-identical
+  backward  bwd2 HPB 8 STAGE 8        186.7 |    135.0 us |  1.38x  CHECK bit-identical
+  backward  bwd2 HPB 12 STAGE 8       186.7 |    141.1 us |  1.32x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 8       186.7 |    161.7 us |  1.15x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 16      186.7 |    157.3 us |  1.19x  CHECK bit-identical
+  reduce    reduce3 UNROLL 32          17.8 |     12.3 us |  1.45x  CHECK bit-identical
+  reduce    reduce3 UNROLL 64          17.8 |     12.3 us |  1.45x  CHECK bit-identical
+  reduce    reduce3 UNROLL 128         17.8 |     10.7 us |  1.66x  CHECK bit-identical
+B=2  (time: original | variant | speed-up; CHECK = all outputs of that kernel bit-identical)
+  -- no positions (pretraining) --
+  forward   fwd2 HPW 2                 41.5 |     74.6 us |  0.56x  CHECK bit-identical
+  forward   fwd2 HPW 4                 41.5 |     63.7 us |  0.65x  CHECK bit-identical
+  forward   fwd2 HPW 6                 41.7 |     61.2 us |  0.68x  CHECK bit-identical
+  forward   fwd2 HPW 12                41.7 |     62.6 us |  0.67x  CHECK bit-identical
+  forward   fwd2 HPW 24                41.7 |     61.9 us |  0.67x  CHECK bit-identical
+  backward  bwd2 HPB 8 STAGE 8        101.9 |    151.0 us |  0.67x  CHECK bit-identical
+  backward  bwd2 HPB 12 STAGE 8       101.8 |    143.7 us |  0.71x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 8       101.8 |    168.5 us |  0.60x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 16      101.8 |    163.4 us |  0.62x  CHECK bit-identical
+  reduce    reduce3 UNROLL 32          31.4 |     22.6 us |  1.39x  CHECK bit-identical
+  reduce    reduce3 UNROLL 64          31.3 |     22.6 us |  1.39x  CHECK bit-identical
+  reduce    reduce3 UNROLL 128         31.3 |     19.1 us |  1.64x  CHECK bit-identical
+  -- packed positions (SFT) --
+  forward   fwd2 HPW 2                 43.0 |     75.1 us |  0.57x  CHECK bit-identical
+  forward   fwd2 HPW 4                 42.9 |     63.9 us |  0.67x  CHECK bit-identical
+  forward   fwd2 HPW 6                 42.9 |     61.2 us |  0.70x  CHECK bit-identical
+  forward   fwd2 HPW 12                43.0 |     62.9 us |  0.68x  CHECK bit-identical
+  forward   fwd2 HPW 24                42.9 |     61.6 us |  0.70x  CHECK bit-identical
+  backward  bwd2 HPB 8 STAGE 8        195.6 |    151.2 us |  1.29x  CHECK bit-identical
+  backward  bwd2 HPB 12 STAGE 8       195.6 |    145.3 us |  1.35x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 8       195.6 |    164.9 us |  1.19x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 16      195.6 |    160.3 us |  1.22x  CHECK bit-identical
+  reduce    reduce3 UNROLL 32          31.3 |     22.6 us |  1.39x  CHECK bit-identical
+  reduce    reduce3 UNROLL 64          31.3 |     22.6 us |  1.39x  CHECK bit-identical
+  reduce    reduce3 UNROLL 128         31.3 |     19.1 us |  1.64x  CHECK bit-identical
+B=4  (time: original | variant | speed-up; CHECK = all outputs of that kernel bit-identical)
+  -- no positions (pretraining) --
+  forward   fwd2 HPW 2                 78.3 |    145.0 us |  0.54x  CHECK bit-identical
+  forward   fwd2 HPW 4                 78.2 |    122.5 us |  0.64x  CHECK bit-identical
+  forward   fwd2 HPW 6                 78.1 |    115.9 us |  0.67x  CHECK bit-identical
+  forward   fwd2 HPW 12                78.1 |    118.1 us |  0.66x  CHECK bit-identical
+  forward   fwd2 HPW 24                78.2 |    117.0 us |  0.67x  CHECK bit-identical
+  backward  bwd2 HPB 8 STAGE 8        120.9 |    174.8 us |  0.69x  CHECK bit-identical
+  backward  bwd2 HPB 12 STAGE 8       120.8 |    171.3 us |  0.70x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 8       120.9 |    173.8 us |  0.70x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 16      120.9 |    168.4 us |  0.72x  CHECK bit-identical
+  reduce    reduce3 UNROLL 32          58.4 |     43.6 us |  1.34x  CHECK bit-identical
+  reduce    reduce3 UNROLL 64          58.2 |     43.3 us |  1.34x  CHECK bit-identical
+  reduce    reduce3 UNROLL 128         58.2 |     36.3 us |  1.60x  CHECK bit-identical
+  -- packed positions (SFT) --
+  forward   fwd2 HPW 2                 80.9 |    146.2 us |  0.55x  CHECK bit-identical
+  forward   fwd2 HPW 4                 80.9 |    123.0 us |  0.66x  CHECK bit-identical
+  forward   fwd2 HPW 6                 80.9 |    115.9 us |  0.70x  CHECK bit-identical
+  forward   fwd2 HPW 12                81.0 |    118.6 us |  0.68x  CHECK bit-identical
+  forward   fwd2 HPW 24                80.9 |    117.0 us |  0.69x  CHECK bit-identical
+  backward  bwd2 HPB 8 STAGE 8        210.9 |    175.4 us |  1.20x  CHECK bit-identical
+  backward  bwd2 HPB 12 STAGE 8       210.7 |    174.7 us |  1.21x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 8       210.7 |    173.7 us |  1.21x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 16      210.9 |    166.3 us |  1.27x  CHECK bit-identical
+  reduce    reduce3 UNROLL 32          59.1 |     43.5 us |  1.36x  CHECK bit-identical
+  reduce    reduce3 UNROLL 64          58.2 |     43.3 us |  1.34x  CHECK bit-identical
+  reduce    reduce3 UNROLL 128         58.2 |     36.3 us |  1.60x  CHECK bit-identical
+B=8  (time: original | variant | speed-up; CHECK = all outputs of that kernel bit-identical)
+  -- no positions (pretraining) --
+  forward   fwd2 HPW 2                151.4 |    285.1 us |  0.53x  CHECK bit-identical
+  forward   fwd2 HPW 4                151.4 |    239.6 us |  0.63x  CHECK bit-identical
+  forward   fwd2 HPW 6                151.7 |    225.5 us |  0.67x  CHECK bit-identical
+  forward   fwd2 HPW 12               151.5 |    227.5 us |  0.67x  CHECK bit-identical
+  forward   fwd2 HPW 24               151.5 |    223.4 us |  0.68x  CHECK bit-identical
+  backward  bwd2 HPB 8 STAGE 8        237.1 |    333.1 us |  0.71x  CHECK bit-identical
+  backward  bwd2 HPB 12 STAGE 8       237.1 |    329.7 us |  0.72x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 8       237.0 |    343.2 us |  0.69x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 16      237.1 |    332.2 us |  0.71x  CHECK bit-identical
+  reduce    reduce3 UNROLL 32         112.1 |     84.5 us |  1.33x  CHECK bit-identical
+  reduce    reduce3 UNROLL 64         112.1 |     84.4 us |  1.33x  CHECK bit-identical
+  reduce    reduce3 UNROLL 128        112.1 |     70.8 us |  1.58x  CHECK bit-identical
+  -- packed positions (SFT) --
+  forward   fwd2 HPW 2                156.9 |    287.9 us |  0.54x  CHECK bit-identical
+  forward   fwd2 HPW 4                156.9 |    240.6 us |  0.65x  CHECK bit-identical
+  forward   fwd2 HPW 6                156.9 |    225.3 us |  0.70x  CHECK bit-identical
+  forward   fwd2 HPW 12               156.9 |    227.8 us |  0.69x  CHECK bit-identical
+  forward   fwd2 HPW 24               156.9 |    224.1 us |  0.70x  CHECK bit-identical
+  backward  bwd2 HPB 8 STAGE 8        400.1 |    333.4 us |  1.20x  CHECK bit-identical
+  backward  bwd2 HPB 12 STAGE 8       399.8 |    331.8 us |  1.20x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 8       400.0 |    339.8 us |  1.18x  CHECK bit-identical
+  backward  bwd2 HPB 24 STAGE 16      400.1 |    327.8 us |  1.22x  CHECK bit-identical
+  reduce    reduce3 UNROLL 32         112.1 |     84.6 us |  1.33x  CHECK bit-identical
+  reduce    reduce3 UNROLL 64         112.1 |     84.4 us |  1.33x  CHECK bit-identical
+  reduce    reduce3 UNROLL 128        112.1 |     70.8 us |  1.58x  CHECK bit-identical
+RESULT: every variant bit-identical to the original; timings above

@@ -1,0 +1,11 @@
+17:24:58 IST start | flash-attention 94e22c9 | Build cuda_13.2.r13.2/compiler.37953736_0
+17:26:33 IST torch ready: 2.14.1+cu130 | cuda 13.0 | cudnn 92400
+Submodule 'csrc/cutlass' (https://github.com/NVIDIA/cutlass.git) registered for path 'csrc/cutlass'
+Cloning into '/root/gautam_k/flash-attention/csrc/cutlass'...
+Submodule path 'csrc/cutlass': checked out '7127592069c2fe01b041e174ba4345ef9b279671'
+17:26:45 IST cutlass: 7127592069c2fe01b041e174ba4345ef9b279671
+17:29:52 IST FA3 built
+17:30:07 IST FA4 installed
+CHECK torch 2.14.1+cu130 | cuda 13.0 | cudnn 92400 | flash_attn_3 3.0.0 | flash-attn-4 4.0.0b34 | nvidia-cutlass-dsl 4.8.1 | quack-kernels 0.6.5
+17:30:12 IST CHECK torch 2.14.1+cu130 | cuda 13.0 | cudnn 92400 | flash_attn_3 3.0.0 | flash-attn-4 4.0.0b34 | nvidia-cutlass-dsl 4.8.1 | quack-kernels 0.6.5
+17:30:12 IST BENV READY | 6.0G

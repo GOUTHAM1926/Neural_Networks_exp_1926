@@ -1,0 +1,8 @@
+19:19:31 IST tree LossKernels.cu 27d06bef | GQA_fwd_sm90.cu c6a67163
+19:19:41 IST library built: /root/gautam_k/libs/loss_v2/libtensor.so cd0bb2a9 (old 8dc36782)
+19:19:45 IST start | GPU 0 NVIDIA H200, 0 MiB, 0 %
+19:21:42 IST old_r1 exit=0 | 6 of 6 cases PASS | lib 8dc36782
+19:23:13 IST new_r1 exit=0 | 6 of 6 cases PASS | lib cd0bb2a9
+19:25:09 IST old_r2 exit=0 | 6 of 6 cases PASS | lib 8dc36782
+19:26:40 IST new_r2 exit=0 | 6 of 6 cases PASS | lib cd0bb2a9
+19:26:41 IST summary written (5 of 6 cases bit-identical)

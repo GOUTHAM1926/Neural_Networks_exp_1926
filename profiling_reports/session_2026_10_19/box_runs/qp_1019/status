@@ -1,0 +1,30 @@
+19:53:47 IST build start (CPU only) | QP QPU QPD QPUD, then F3c
+19:54:17 IST built: QP: source f345c965 | library 46fb93a1 QPU: source 7e4197ea | library 4956db18 QPD: source 34640bc5 | library b4e82daf QPUD: source 1899e6a7 | library 9e49098b F3c: source c6a67163 | library 667a17a5 
+19:54:23 IST SASS gate: QP loops equal to PF's in 2 of 2 kernels; Q prefetch x4 in 8 of 8 candidate kernels | vj2_PF kernel 3720 loop 481 0 differ; vj2_QP kernel 3744 loop 481 0 differ; vj2_QPU kernel 3904 loop 485 614 differ; vj2_QPD kernel 3488 loop 481 604 differ; vj2_QPUD kernel 3616 loop 486 707 differ; vj2_PF kernel 3480 loop 465 0 differ; vj2_QP kernel 3496 loop 465 0 differ; vj2_QPU kernel 3496 loop 465 2 differ; vj2_QPD kernel 3240 loop 464 325 differ; vj2_QPUD kernel 3240 loop 464 327 differ; 
+19:54:24 IST GATE PASSED | libraries: vj2_PF e9248d27 vj2_QP 46fb93a1 vj2_QPU 4956db18 vj2_QPD b4e82daf vj2_QPUD 9e49098b 
+19:56:30 IST GPU part start | GPU 4
+19:56:32 IST start | GPU 4 NVIDIA H200, 0 MiB | vj2_PF e9248d27  vj2_QP 46fb93a1  vj2_QPU 4956db18  vj2_QPD b4e82daf  vj2_QPUD 9e49098b  
+20:00:22 IST quick suite vj2_QP exit=0 | checks passed 296, failed 0, skipped groups 0   (224 s total)
+20:05:12 IST quick suite vj2_QPU exit=0 | checks passed 296, failed 0, skipped groups 0   (284 s total)
+20:10:14 IST quick suite vj2_QPD exit=0 | checks passed 296, failed 0, skipped groups 0   (294 s total)
+20:15:00 IST quick suite vj2_QPUD exit=0 | checks passed 296, failed 0, skipped groups 0   (278 s total)
+20:17:12 IST race round 01 done (vj2_QP vj2_QPU vj2_QPD vj2_QPUD vj2_PF)
+20:19:17 IST race round 02 done (vj2_QP vj2_PF vj2_QPUD vj2_QPD vj2_QPU)
+20:21:32 IST race round 03 done (vj2_QPD vj2_QPUD vj2_PF vj2_QP vj2_QPU)
+20:23:39 IST race round 04 done (vj2_QPD vj2_QPU vj2_QP vj2_PF vj2_QPUD)
+20:25:46 IST race round 05 done (vj2_PF vj2_QP vj2_QPU vj2_QPD vj2_QPUD)
+20:27:49 IST race round 06 done (vj2_PF vj2_QPUD vj2_QPD vj2_QPU vj2_QP)
+20:29:57 IST race round 07 done (vj2_QPU vj2_QPD vj2_QPUD vj2_PF vj2_QP)
+20:32:02 IST race round 08 done (vj2_QPU vj2_QP vj2_PF vj2_QPUD vj2_QPD)
+20:32:59 IST ncu vj2_QP dense | kernels profiled 1
+20:33:56 IST ncu vj2_QP packed | kernels profiled 1
+20:34:55 IST ncu vj2_QPU dense | kernels profiled 1
+20:35:53 IST ncu vj2_QPU packed | kernels profiled 1
+20:36:53 IST ncu vj2_QPD dense | kernels profiled 1
+20:37:51 IST ncu vj2_QPD packed | kernels profiled 1
+20:38:50 IST ncu vj2_QPUD dense | kernels profiled 1
+20:39:49 IST ncu vj2_QPUD packed | kernels profiled 1
+20:39:49 IST MULTI DONE
+20:40:47 IST ncu vj2_PF dense | kernels profiled 1
+20:41:46 IST ncu vj2_PF packed | kernels profiled 1
+20:41:47 IST PACKED qp_results.tgz

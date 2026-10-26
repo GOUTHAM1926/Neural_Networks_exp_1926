@@ -1,0 +1,16 @@
+12:06:39 IST start | GPU 0 NVIDIA H200, 0 MiB | vj2_K5q a804ea04  vj2_R8 be25425b  vj2_R16 d99ddebe  vj2_R32 9f5e6f46  
+12:07:23 IST race round 01 done (vj2_R8 vj2_R16 vj2_R32 vj2_K5q)
+12:08:07 IST race round 02 done (vj2_R8 vj2_K5q vj2_R32 vj2_R16)
+12:08:51 IST race round 03 done (vj2_R32 vj2_K5q vj2_R8 vj2_R16)
+12:09:36 IST race round 04 done (vj2_R32 vj2_R16 vj2_R8 vj2_K5q)
+12:10:19 IST race round 05 done (vj2_R8 vj2_R16 vj2_R32 vj2_K5q)
+12:11:03 IST race round 06 done (vj2_R8 vj2_K5q vj2_R32 vj2_R16)
+12:11:44 IST race round 07 done (vj2_R32 vj2_K5q vj2_R8 vj2_R16)
+12:12:24 IST race round 08 done (vj2_R32 vj2_R16 vj2_R8 vj2_K5q)
+12:12:36 IST ncu vj2_R8 dense | kernels profiled 1
+12:12:49 IST ncu vj2_R8 packed | kernels profiled 1
+12:13:01 IST ncu vj2_R16 dense | kernels profiled 1
+12:13:13 IST ncu vj2_R16 packed | kernels profiled 1
+12:13:25 IST ncu vj2_R32 dense | kernels profiled 1
+12:13:38 IST ncu vj2_R32 packed | kernels profiled 1
+12:13:38 IST MULTI DONE

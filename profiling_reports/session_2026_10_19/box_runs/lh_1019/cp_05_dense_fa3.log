@@ -1,0 +1,2 @@
+torch 2.14.1+cu130 cudnn 92400 | gpu NVIDIA H200 | forward only
+RIVAL mode=dense impl=fa3 iters=16400 fwd_only=1 wall_s=17.26 per_iter_ms=1.0523

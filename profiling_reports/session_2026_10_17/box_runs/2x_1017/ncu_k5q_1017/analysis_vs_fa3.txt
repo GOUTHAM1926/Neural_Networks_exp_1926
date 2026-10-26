@@ -1,0 +1,193 @@
+
+################ DENSE ################
+
+1. TOTALS
+                                FA3        F3c         K1        K5q      K5q#2   K5q/FA3
+time us                      877.38    1251.94     999.20    1151.49    1160.19     1.312
+SM clock MHz                1621.46    1335.64    1680.81    1336.05    1325.77     0.824
+cycles M (avg SM)              1.42       1.67       1.68       1.54       1.54     1.081
+instructions M               306.54     319.48     311.93     322.40     322.39     1.052
+issue active %                41.06      36.33      35.35      39.91      39.90     0.972
+tensor busy %                 83.29      70.85      70.55      77.09      77.06     0.925
+XU (exp) pipe %               43.04      36.93      36.77      40.18      40.16     0.933
+SM busy %                     82.92      70.55      70.24      76.68      76.69     0.925
+DRAM read MB                   0.00       0.00       0.00       0.00       0.00     1.428
+DRAM write MB                  0.00       0.00       0.00       0.00       0.00     1.001
+L2 read requests M            35.54      37.47      37.37      35.39      35.54     0.996
+registers / thread           168.00     168.00     168.00     168.00     168.00     1.000
+shared mem / block KB        167.94     230.50     230.52     230.54     230.54     1.373
+
+2. STALL REASONS: share of samples % | cycle-equivalents (share x cycles; FA3 total = 100) | K5q - FA3
+reason                         FA3      K1     K5q   K5q#2    FA3 eq     K1 eq    K5q eq  K5q#2 eq  K5q-FA3
+wait                          24.7    27.3    29.9    29.9      24.7      32.2      32.3      32.3     +7.6
+dispatch_stall                12.5    11.3    17.8    17.8      12.5      13.3      19.2      19.2     +6.7
+long_scoreboard                5.2     9.9     9.1     8.8       5.2      11.7       9.8       9.6     +4.6
+not_selected                   6.9     5.9     8.8     8.9       6.9       7.0       9.5       9.7     +2.6
+selected                      18.7    16.1    18.1    18.2      18.7      19.0      19.5      19.7     +0.9
+math_pipe_throttle             0.6     1.1     1.2     1.1       0.6       1.3       1.3       1.2     +0.6
+short_scoreboard               4.4     7.2     4.1     3.9       4.4       8.4       4.5       4.2     +0.1
+lg_throttle                    0.0     1.6     0.0     0.0       0.0       1.8       0.0       0.0     +0.0
+mio_throttle                   1.8     4.7     1.6     1.6       1.8       5.5       1.7       1.7     -0.1
+branch_resolving               1.2     0.2     0.4     0.4       1.2       0.3       0.4       0.4     -0.8
+no_instructions                1.6     0.9     0.7     0.6       1.6       1.1       0.7       0.7     -0.9
+sleeping                       2.6     0.0     0.0     0.0       2.6       0.0       0.0       0.0     -2.6
+barrier                       11.1    10.5     6.6     6.5      11.1      12.4       7.1       7.0     -4.0
+warpgroup_arrive               8.6     3.3     2.0     2.1       8.6       3.9       2.1       2.3     -6.5
+TOTAL                                                          100.0     118.1     108.1     108.1     +8.1
+
+3. REGIONS by executed count (samples x cycles / samples total -> cycle-equivalents, FA3 total = 100)
+
+== FA3: 3208 instructions in SASS, 306.1M executed, 91332 samples; main loop = executed 36864 times (956 instructions)
+   exec count  instr  exec M  samples  share  cyc-eq  top stall reasons | top opcodes
+       571392    455  259.98    68742  75.3%    75.3  wait 28%, selected 21%, dispatch 14% | FMNMX 68, FMUL 68, FFMA 66, MUFU 66
+        36864    956   35.24    10412  11.4%    11.4  barrier 24%, selected 19%, wait 18% | IMAD 96, ISETP 70, FMUL 70, MUFU 68
+       285696     10    2.86     3569   3.9%     3.9  long_sb 52%, wait 24%, dispatch 10% | ULEA 2, IMAD 2, SHF 2, SYNCS 2
+         9216     11    0.10     2425   2.7%     2.7  sleep 88%, not_selected 5%, dispatch 4% | BSYNC 2, WARPSYNC 2, ISETP 2, SEL 2
+         4608    235    1.08     2282   2.5%     2.5  long_sb 48%, branch_resolving 17%, barrier 11% | UMOV 43, UIADD3 29, ULDC 19, R2UR 12
+   SPLIT: main loop   11.4 | everything else   88.6 | total  100.0
+
+== K1: 5304 instructions in SASS, 312.7M executed, 107704 samples; main loop = executed 17280 times (1343 instructions)
+   exec count  instr  exec M  samples  share  cyc-eq  top stall reasons | top opcodes
+       259200    924  239.50    68862  63.9%    75.5  wait 32%, selected 19%, dispatch 15% | FMNMX 136, FMUL 136, FFMA 132, MUFU 132
+        36864    569   20.98    16533  15.4%    18.1  short_sb 21%, long_sb 19%, mio 12% | IMAD 75, FMUL 72, F2FP 64, LEA 53
+        17280   1343   23.21     8659   8.0%     9.5  long_sb 29%, wait 26%, selected 14% | FMNMX 136, FMUL 136, FFMA 132, MUFU 132
+        18432    698   12.87     3161   2.9%     3.5  wait 32%, selected 23%, dispatch 14% | FMNMX 68, FMUL 68, ISETP 67, FFMA 66
+        17148     18    0.31     3077   2.9%     3.4  long_sb 93%, not_selected 2%, dispatch 2% | ULOP3 3, ULEA 3, SHF 3, SYNCS 3
+        35712    276    9.86     3032   2.8%     3.3  wait 38%, short_sb 33%, selected 20% | FMNMX 68, FFMA 66, MUFU 66, FADD 64
+       129600     10    1.30     1464   1.4%     1.6  long_sb 53%, wait 23%, not_selected 10% | SHF 2, SYNCS 2, BRA 2, BAR 2
+   SPLIT: main loop    9.5 | everything else  108.6 | total  118.1
+
+== K5q: 3672 instructions in SASS, 327.7M executed, 98702 samples; main loop = executed 35712 times (772 instructions)
+   exec count  instr  exec M  samples  share  cyc-eq  top stall reasons | top opcodes
+       535680    480  257.13    70592  71.5%    77.3  wait 33%, dispatch 22%, selected 20% | FADD 70, FMNMX 68, FMUL 68, FFMA 66
+        36864    726   26.76    11038  11.2%    12.1  long_sb 26%, wait 22%, short_sb 13% | IMAD 114, FMUL 72, F2FP 64, FADD 56
+        35712    772   27.57     6685   6.8%     7.3  wait 32%, selected 23%, dispatch 16% | FMNMX 136, FADD 86, MUFU 84, FFMA 82
+        17280    246    4.25     3214   3.3%     3.5  long_sb 58%, wait 21%, selected 6% | PLOP3 48, UIADD3 41, UMOV 37, BRA 27
+        17148     28    0.48     3088   3.1%     3.4  long_sb 80%, dispatch 7%, not_selected 7% | ULEA 6, BRA 4, S2UR 3, ULOP3 3
+       267840      5    1.34     1103   1.1%     1.2  long_sb 57%, wait 29%, selected 7% | LEA 1, SHF 1, SYNCS 1, BRA 1
+   SPLIT: main loop    7.3 | everything else  100.8 | total  108.1
+
+4. K5q dense: the 30 hottest instructions (index, executed, samples, share, top stalls, SASS)
+    1080   535680   2635  2.67%  barrier:2566,dispatch:36           @P2   BRA 0x77d07f7a6be0
+    1153   535680   2269  2.30%  dispatch:1002,not_selected:759     HGMMA.64x128x16.F32.BF16 R88, R172, gdesc[UR16].tnspB, R88
+    1156   535680   2249  2.28%  dispatch:1090,not_selected:692     HGMMA.64x128x16.F32.BF16 R88, R168, gdesc[UR16].tnspB, R88
+    3201    17280   2028  2.05%  long_sb:1836,not_selected:103      @!P0  BRA 0x77d07f7b0750
+    1147   535680   1893  1.92%  mio:115,dispatch:57                HGMMA.64x128x16.F32.BF16 R88, R180, gdesc[UR16].tnspB, R88
+     305    36864   1644  1.67%  long_sb:1636,selected:3            @!P0  BRA 0x77d07f7b03f0
+    1150   535680   1244  1.26%  dispatch:425,wait:342              HGMMA.64x128x16.F32.BF16 R88, R176, gdesc[UR16].tnspB, R88
+    1172   535680   1182  1.20%  barrier:1027,wait:94               WARPGROUP.DEPBAR.LE gsb0, 0x1
+    1089   535680   1093  1.11%  barrier:882,not_selected:154       UMOV UR21, 0x40000040
+     371    36864   1064  1.08%  barrier:1062,selected:2            WARPGROUP.DEPBAR.LE gsb0, 0x0
+    1159   535680   1004  1.02%  wait:368,dispatch:343              HGMMA.64x128x16.F32.BF16 R88, R164, gdesc[UR16].tnspB, R88
+    1162   535680    999  1.01%  wait:359,dispatch:333              HGMMA.64x128x16.F32.BF16 R88, R160, gdesc[UR16].tnspB, R88
+    3065    17148    999  1.01%  long_sb:835,dispatch:82            @!P0  BRA 0x77d07f7b06f0
+    3133    17148    993  1.01%  long_sb:851,dispatch:76            @!P0  BRA 0x77d07f7b0720
+    2998    17148    912  0.92%  long_sb:782,not_selected:66        @!P0  BRA 0x77d07f7b06c0
+    1165   535680    733  0.74%  wait:366,dispatch:129              HGMMA.64x128x16.F32.BF16 R88, R152, gdesc[UR16].tnspB, R88
+    1084   267840    670  0.68%  long_sb:630,wait:23                @!P0  BRA 0x77d07f7b0420
+    1122   535680    617  0.63%  wait:200,dispatch:185              HGMMA.64x128x16.F32.BF16 R24, gdesc[UR20], R24
+    1112   535680    584  0.59%  wait:215,not_selected:165          HGMMA.64x128x16.F32.BF16 R24, gdesc[UR20], R24
+    1168   535680    567  0.57%  wait:369,mio:126                   HGMMA.64x128x16.F32.BF16 R88, R156, gdesc[UR16].tnspB, R88, gsb0
+    1239   535680    565  0.57%  short_sb:495,selected:33           FMNMX.FTZ R199, R204, R199, !PT
+    1132   535680    532  0.54%  wait:185,dispatch:137              HGMMA.64x128x16.F32.BF16 R24, gdesc[UR20], R24
+    2715    36864    490  0.50%  long_sb:473,wait:15                FENCE.VIEW.ASYNC.S
+    1117   535680    489  0.50%  wait:188,dispatch:146              HGMMA.64x128x16.F32.BF16 R24, gdesc[UR20], R24
+    2888     4476    469  0.48%  long_sb:469                        @!P0  BRA 0x77d07f7b0660
+    1072   535680    468  0.47%  no_inst:251,math:88                ISETP.NE.AND P2, PT, RZ, UR7, PT
+    1096   535680    462  0.47%  not_selected:168,dispatch:154      ULOP3.LUT UR29, UR18, 0x3ff80, URZ, 0xc0, !UPT
+    1127   535680    447  0.45%  wait:192,not_selected:95           HGMMA.64x128x16.F32.BF16 R24, gdesc[UR20], R24
+    1107   535680    441  0.45%  wait:222,dispatch:104              HGMMA.64x128x16.F32.BF16 R24, gdesc[UR20], R24
+    1104   535680    437  0.44%  dispatch:188,not_selected:151      ULEA.HI UR22, UR29, 0x10002, URZ, 0x1c
+
+################ PACKED ################
+
+1. TOTALS
+                                FA3        F3c        K5q      K5q#2   K5q/FA3
+time us                      429.63     573.79     503.20     506.40     1.171
+SM clock MHz                1733.59    1341.41    1330.86    1324.73     0.768
+cycles M (avg SM)              0.74       0.77       0.67       0.67     0.899
+instructions M               142.16     125.86     130.89     130.85     0.921
+issue active %                36.90      31.79      37.86      37.81     1.026
+tensor busy %                 59.40      58.34      67.05      67.05     1.129
+XU (exp) pipe %               30.88      30.40      34.94      34.94     1.132
+SM busy %                     58.38      56.87      65.37      65.26     1.120
+DRAM read MB                   0.00       0.00       0.00       0.00     1.014
+DRAM write MB                  0.00       0.00       0.00       0.00     0.963
+L2 read requests M            15.10      15.24      14.45      14.53     0.957
+registers / thread           168.00     168.00     168.00     168.00     1.000
+shared mem / block KB        167.94     230.50     230.54     230.54     1.373
+
+2. STALL REASONS: share of samples % | cycle-equivalents (share x cycles; FA3 total = 100) | K5q - FA3
+reason                         FA3     K5q   K5q#2    FA3 eq    K5q eq  K5q#2 eq  K5q-FA3
+wait                          16.8    30.4    29.9      16.8      27.3      26.9    +10.5
+dispatch_stall                 6.1    10.9    10.8       6.1       9.8       9.7     +3.7
+selected                      12.5    17.1    17.5      12.5      15.4      15.8     +2.9
+not_selected                   5.0     7.0     7.1       5.0       6.3       6.4     +1.2
+short_scoreboard               4.4     6.0     6.2       4.4       5.4       5.6     +1.0
+mio_throttle                   2.3     2.1     2.2       2.3       1.9       2.0     -0.4
+no_instructions                1.3     0.9     1.0       1.3       0.8       0.9     -0.5
+math_pipe_throttle             1.5     1.0     0.9       1.5       0.9       0.8     -0.6
+branch_resolving               1.5     0.8     0.8       1.5       0.7       0.7     -0.7
+warpgroup_arrive               3.6     2.7     2.6       3.6       2.4       2.4     -1.2
+sleeping                       1.8     0.0     0.0       1.8       0.0       0.0     -1.8
+long_scoreboard               12.5    10.2     9.9      12.5       9.2       9.0     -3.3
+barrier                       30.5    10.8    11.0      30.5       9.7       9.9    -20.7
+TOTAL                                                  100.0      89.9      90.1    -10.1
+
+3. REGIONS by executed count (samples x cycles / samples total -> cycle-equivalents, FA3 total = 100)
+
+== FA3: 4280 instructions in SASS, 143.3M executed, 47077 samples; main loop = executed 37200 times (1146 instructions)
+   exec count  instr  exec M  samples  share  cyc-eq  top stall reasons | top opcodes
+       187008    456   85.28    16981  36.1%    36.1  wait 27%, selected 21%, barrier 14% | FMNMX 68, FMUL 68, FFMA 66, MUFU 66
+        37200   1146   42.63    12562  26.7%    26.7  long_sb 33%, barrier 19%, selected 13% | ISETP 79, IMAD 77, FMUL 70, MUFU 68
+        13950      9    0.13     9260  19.7%    19.7  barrier 100%, wait 0%, selected 0% | BAR 2, WARPSYNC 1, S2UR 1, UMOV 1
+        18600    285    5.30     2341   5.0%     5.0  long_sb 29%, wait 19%, short_sb 14% | IMAD 62, ISETP 29, SHFL 17, ULDC 16
+         7572      7    0.05      830   1.8%     1.8  sleep 93%, not_selected 2%, dispatch 2% | IMAD 4, BSSY 1, WARPSYNC 1, BSYNC 1
+        93504     10    0.94      737   1.6%     1.6  long_sb 41%, wait 26%, dispatch 13% | ULEA 2, IMAD 2, SHF 2, SYNCS 2
+        10536    212    2.23      619   1.3%     1.3  wait 46%, long_sb 13%, selected 11% | R2UR 56, IMAD 36, PLOP3 24, BRA 15
+         3786     68    0.26      500   1.1%     1.1  branch_resolving 41%, wait 14%, not_selected 13% | IMAD 29, SHFL 8, ENDCOLLECTIVE 8, WARPSYNC 7
+   SPLIT: main loop   26.7 | everything else   73.3 | total  100.0
+
+== K5q: 3504 instructions in SASS, 131.2M executed, 42279 samples; main loop = executed 33912 times (754 instructions)
+   exec count  instr  exec M  samples  share  cyc-eq  top stall reasons | top opcodes
+       154440    462   71.35    20198  47.8%    43.0  wait 35%, selected 19%, dispatch 18% | FADD 70, FMNMX 68, FMUL 68, FFMA 66
+        33912    754   25.57     6581  15.6%    14.0  wait 36%, selected 23%, barrier 11% | FMNMX 136, FADD 86, MUFU 84, FFMA 82
+        37368    446   16.67     5200  12.3%    11.1  barrier 33%, wait 23%, selected 17% | FMUL 68, F2FP 64, FADD 52, FFMA 50
+        37872    159    6.02     2471   5.8%     5.3  long_sb 38%, wait 28%, selected 13% | IMAD 72, BRA 12, UISETP 10, PLOP3 8
+         5436    246    1.34     1195   2.8%     2.5  long_sb 65%, wait 17%, not_selected 5% | PLOP3 51, UIADD3 43, UMOV 37, BRA 27
+         4602     10    0.05      888   2.1%     1.9  long_sb 98%, not_selected 1%, short_sb 0% | BRA 3, SYNCS 2, S2UR 1, UMOV 1
+        18936     44    0.83      510   1.2%     1.1  wait 30%, long_sb 24%, selected 12% | UMOV 9, UIADD3 8, HGMMA 8, ULOP3 4
+        36990     10    0.37      490   1.2%     1.0  short_sb 84%, wait 11%, selected 4% | LEA 3, LDS 1, IADD3 1, ULDC 1
+   SPLIT: main loop   14.0 | everything else   75.9 | total   89.9
+
+4. K5q packed: the 30 hottest instructions (index, executed, samples, share, top stalls, SASS)
+     265    37368   1053  2.49%  barrier:1050,dispatch:1            WARPGROUP.DEPBAR.LE gsb0, 0x0
+     978   154440    877  2.07%  barrier:848,dispatch:15            @P1   BRA 0x75ca557a6590
+    1025   154440    861  2.04%  wait:52,mio:36                     HGMMA.64x128x16.F32.BF16 R88, R180, gdesc[UR12].tnspB, R88
+    3095     5436    808  1.91%  long_sb:778,not_selected:16        @!P0  BRA 0x75ca557b0160
+    1050   154440    729  1.72%  barrier:683,wait:31                WARPGROUP.DEPBAR.LE gsb0, 0x1
+     214    37872    701  1.66%  long_sb:696,wait:3                 @!P0  BRA 0x75ca557afde0
+    2818     4602    695  1.64%  long_sb:694,not_selected:1         @!P0  BRA 0x75ca557b0070
+    1037   154440    581  1.37%  dispatch:237,not_selected:174      HGMMA.64x128x16.F32.BF16 R88, R164, gdesc[UR12].tnspB, R88
+    1034   154440    492  1.16%  dispatch:196,not_selected:157      HGMMA.64x128x16.F32.BF16 R88, R168, gdesc[UR12].tnspB, R88
+    1533    33912    435  1.03%  barrier:429,selected:3             WARPGROUP.DEPBAR.LE gsb0, 0x1
+    2162    37368    431  1.02%  barrier:431                        WARPGROUP.DEPBAR.LE gsb0, 0x0
+     987   154440    391  0.92%  barrier:238,not_selected:132       UMOV UR43, 0x40000040
+    1031   154440    362  0.86%  dispatch:123,not_selected:105      HGMMA.64x128x16.F32.BF16 R88, R172, gdesc[UR12].tnspB, R88
+    1040   154440    334  0.79%  not_selected:102,dispatch:97       HGMMA.64x128x16.F32.BF16 R88, R160, gdesc[UR12].tnspB, R88
+    1509    33912    314  0.74%  wait:15,mio:12                     HGMMA.64x128x16.F32.BF16 R88, R180, gdesc[UR12].tnspB, R88
+    3028     5370    271  0.64%  long_sb:262,dispatch:4             @!P0  BRA 0x75ca557b0130
+    2538    36990    241  0.57%  short_sb:213,wait:26               LDS.128 R24, [R36]
+     200    37872    237  0.56%  long_sb:235,not_selected:1         @!P0  BRA 0x75ca557afdb0
+    1449    33912    235  0.56%  barrier:230,selected:3             @P1   BRA 0x75ca557a8300
+     997   154440    232  0.55%  not_selected:120,dispatch:98       ULEA UR22, UR22, UR6, 0xf
+    1028   154440    224  0.53%  wait:97,mio:47                     HGMMA.64x128x16.F32.BF16 R88, R176, gdesc[UR12].tnspB, R88
+    2547    36990    205  0.48%  short_sb:197,wait:7                STG.E.128 desc[UR58][R28.64], R24
+    1043   154440    204  0.48%  wait:109,mio:36                    HGMMA.64x128x16.F32.BF16 R88, R152, gdesc[UR12].tnspB, R88
+     161    19440    187  0.44%  long_sb:186,selected:1             R2UR UR49, R26
+    1020   154440    183  0.43%  wait:143,not_selected:15           HGMMA.64x128x16.F32.BF16 R24, gdesc[UR24], R24
+    1021   154440    179  0.42%  wait:129,mio:21                    HGMMA.64x128x16.F32.BF16 R24, gdesc[UR28], R24
+    2820     4602    179  0.42%  long_sb:178,not_selected:1         @!P0  BRA 0x75ca557b00a0
+    1022   154440    177  0.42%  wait:127,mio:22                    HGMMA.64x128x16.F32.BF16 R24, gdesc[UR32], R24
+    1046   154440    170  0.40%  wait:99,mio:48                     HGMMA.64x128x16.F32.BF16 R88, R156, gdesc[UR12].tnspB, R88, gsb0
+    2961     5348    170  0.40%  long_sb:156,dispatch:7             @!P0  BRA 0x75ca557b0100

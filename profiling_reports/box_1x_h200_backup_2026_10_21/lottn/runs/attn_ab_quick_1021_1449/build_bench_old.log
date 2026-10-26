@@ -1,0 +1,14 @@
+/usr/bin/ld: warning: libblublas.so, needed by lib/libtensor.so, not found (try using -rpath or -rpath-link)
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasBgemmStridedBatched_dispatcher'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasHgemmStridedBatched'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasCreate'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasBgemmStridedBatched'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasDgemmStridedBatched'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasHgemmStridedBatched_dispatcher'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasSgemmAddmm'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasHgemmAddmm'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasSetStream'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasSgemm'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasSgemmStridedBatched'
+/usr/bin/ld: lib/libtensor.so: undefined reference to `blublasBgemmAddmm'
+collect2: error: ld returned 1 exit status

@@ -1,0 +1,14 @@
+device NVIDIA H200 (132 SMs) | T 4096, 18 / 6 heads, hd 128, NeoX | 200 launches per round, median of 9 rounds
+SANITY B=4 identity positions vs none: bit-identical (q_out, dq, dgamma_q)
+B=4
+  forward kernel               | no positions     78.4 us ( 2589 GB/s,  54% of peak) | positions     81.0 us |    +2.7 us ( +3.4%)
+  backward kernel              | no positions    120.9 us ( 2525 GB/s,  53% of peak) | positions    210.9 us |   +90.0 us (+74.5%)
+  dgamma reduce (q + k)        |     58.4 us for both (no positions involved; ONE block of 128 threads each, 2304 + 768 rows)
+  total fwd + bwd + reduce     | no positions    257.6 us | positions    350.3 us |   +92.7 us (+36.0%)
+SANITY B=8 identity positions vs none: bit-identical (q_out, dq, dgamma_q)
+B=8
+  forward kernel               | no positions    151.5 us ( 2678 GB/s,  56% of peak) | positions    156.8 us |    +5.3 us ( +3.5%)
+  backward kernel              | no positions    237.1 us ( 2574 GB/s,  54% of peak) | positions    400.5 us |  +163.4 us (+68.9%)
+  dgamma reduce (q + k)        |    112.3 us for both (no positions involved; ONE block of 128 threads each, 4608 + 1536 rows)
+  total fwd + bwd + reduce     | no positions    500.9 us | positions    669.6 us |  +168.8 us (+33.7%)
+RESULT: sanity checks pass; timings above

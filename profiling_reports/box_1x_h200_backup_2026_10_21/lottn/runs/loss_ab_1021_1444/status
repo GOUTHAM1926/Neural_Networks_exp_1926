@@ -1,0 +1,12 @@
+14:44:22 IST libs: old d5423cd3 new 77af65f9
+14:44:26 IST test built
+14:44:26 IST start | NVIDIA H200, 0 MiB, 0 %
+14:44:37 IST old_r1 f32 exit=0 | reps_identical=1
+14:44:46 IST old_r1 bf16 exit=0 | reps_identical=1
+14:44:57 IST new_r1 f32 exit=0 | reps_identical=1
+14:45:06 IST new_r1 bf16 exit=0 | reps_identical=1
+14:45:17 IST old_r2 f32 exit=0 | reps_identical=1
+14:45:26 IST old_r2 bf16 exit=0 | reps_identical=1
+14:45:37 IST new_r2 f32 exit=0 | reps_identical=1
+14:45:46 IST new_r2 bf16 exit=0 | reps_identical=1
+14:45:46 IST summary written: /root/gautam_k/lottn/runs/loss_ab_1021_1444/summary.txt

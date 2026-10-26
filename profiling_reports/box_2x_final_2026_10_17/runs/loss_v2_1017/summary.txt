@@ -1,0 +1,9 @@
+case         |       B old r1/r2       B new r1/r2 B new/old |  F+B old  F+B new new/old | gradient
+real_first   |   1.4493/  1.4510   0.9648/  0.9648     0.665 |   1.6854   1.1959   0.710 | BIT-IDENTICAL (all 4 checksums equal)
+real_min     |   1.0988/  1.0989   0.8826/  0.8828     0.803 |   1.2326   1.0133   0.822 | BIT-IDENTICAL (all 4 checksums equal)
+real_median  |   1.6072/  1.6075   1.0077/  1.0075     0.627 |   1.8832   1.2807   0.680 | BIT-IDENTICAL (all 4 checksums equal)
+real_max     |   2.1689/  2.1692   1.1475/  1.1474     0.529 |   2.5958   1.5708   0.605 | BIT-IDENTICAL (all 4 checksums equal)
+nomask       |   4.3611/  4.3627   1.6450/  1.6450     0.377 |   5.3864   2.7191   0.505 | BIT-IDENTICAL (all 4 checksums equal)
+Traceback (most recent call last):
+  File "<stdin>", line 18, in <module>
+KeyError: 'cs'

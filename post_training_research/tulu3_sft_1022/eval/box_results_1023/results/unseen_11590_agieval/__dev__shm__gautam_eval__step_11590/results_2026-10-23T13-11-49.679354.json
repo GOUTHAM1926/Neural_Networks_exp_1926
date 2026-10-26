@@ -1,0 +1,790 @@
+{
+  "results": {
+    "agieval_aqua_rat": {
+      "name": "agieval_aqua_rat",
+      "alias": "agieval_aqua_rat",
+      "sample_len": 254,
+      "acc,none": 0.21653543307086615,
+      "acc_stderr,none": 0.025894880176407616,
+      "acc_norm,none": 0.2283464566929134,
+      "acc_norm_stderr,none": 0.026390526537822187
+    },
+    "agieval_gaokao_english": {
+      "name": "agieval_gaokao_english",
+      "alias": "agieval_gaokao_english",
+      "sample_len": 306,
+      "acc,none": 0.24836601307189543,
+      "acc_stderr,none": 0.02473998135511354,
+      "acc_norm,none": 0.25163398692810457,
+      "acc_norm_stderr,none": 0.024848018263875137
+    },
+    "agieval_logiqa_en": {
+      "name": "agieval_logiqa_en",
+      "alias": "agieval_logiqa_en",
+      "sample_len": 651,
+      "acc,none": 0.22734254992319508,
+      "acc_stderr,none": 0.016439067675117696,
+      "acc_norm,none": 0.2780337941628264,
+      "acc_norm_stderr,none": 0.017573187770282734
+    },
+    "agieval_lsat_ar": {
+      "name": "agieval_lsat_ar",
+      "alias": "agieval_lsat_ar",
+      "sample_len": 230,
+      "acc,none": 0.21739130434782608,
+      "acc_stderr,none": 0.02725685083881997,
+      "acc_norm,none": 0.22608695652173913,
+      "acc_norm_stderr,none": 0.027641785707241302
+    },
+    "agieval_lsat_lr": {
+      "name": "agieval_lsat_lr",
+      "alias": "agieval_lsat_lr",
+      "sample_len": 510,
+      "acc,none": 0.1980392156862745,
+      "acc_stderr,none": 0.017664171541869406,
+      "acc_norm,none": 0.21176470588235294,
+      "acc_norm_stderr,none": 0.018109057054321923
+    },
+    "agieval_lsat_rc": {
+      "name": "agieval_lsat_rc",
+      "alias": "agieval_lsat_rc",
+      "sample_len": 269,
+      "acc,none": 0.19330855018587362,
+      "acc_stderr,none": 0.024121919385008014,
+      "acc_norm,none": 0.1895910780669145,
+      "acc_norm_stderr,none": 0.023943832065302668
+    },
+    "agieval_math": {
+      "name": "agieval_math",
+      "alias": "agieval_math",
+      "sample_len": 1000,
+      "acc,none": 0.059,
+      "acc_stderr,none": 0.007454835650406693
+    },
+    "agieval_sat_en_without_passage": {
+      "name": "agieval_sat_en_without_passage",
+      "alias": "agieval_sat_en_without_passage",
+      "sample_len": 206,
+      "acc,none": 0.32038834951456313,
+      "acc_stderr,none": 0.03259056088171642,
+      "acc_norm,none": 0.2815533980582524,
+      "acc_norm_stderr,none": 0.0314123699496578
+    },
+    "agieval_sat_en": {
+      "name": "agieval_sat_en",
+      "alias": "agieval_sat_en",
+      "sample_len": 206,
+      "acc,none": 0.2766990291262136,
+      "acc_stderr,none": 0.031245423189279933,
+      "acc_norm,none": 0.24271844660194175,
+      "acc_norm_stderr,none": 0.029943540553570604
+    },
+    "agieval_sat_math": {
+      "name": "agieval_sat_math",
+      "alias": "agieval_sat_math",
+      "sample_len": 220,
+      "acc,none": 0.19090909090909092,
+      "acc_stderr,none": 0.026557666206310816,
+      "acc_norm,none": 0.16818181818181818,
+      "acc_norm_stderr,none": 0.025274447382265076
+    },
+    "agieval_en": {
+      "alias": "agieval_en",
+      "name": "agieval_en",
+      "sample_len": 3852,
+      "acc,none": 0.18328141225337488,
+      "acc_stderr,none": 0.0061085385201664864,
+      "sample_count": {
+        "acc,none": 3852
+      }
+    }
+  },
+  "groups": {
+    "agieval_en": {
+      "alias": "agieval_en",
+      "name": "agieval_en",
+      "sample_len": 3852,
+      "acc,none": 0.18328141225337488,
+      "acc_stderr,none": 0.0061085385201664864,
+      "sample_count": {
+        "acc,none": 3852
+      }
+    }
+  },
+  "group_subtasks": {
+    "agieval_en": [
+      "agieval_aqua_rat",
+      "agieval_gaokao_english",
+      "agieval_logiqa_en",
+      "agieval_lsat_ar",
+      "agieval_lsat_lr",
+      "agieval_lsat_rc",
+      "agieval_math",
+      "agieval_sat_en_without_passage",
+      "agieval_sat_en",
+      "agieval_sat_math"
+    ]
+  },
+  "configs": {
+    "agieval_aqua_rat": {
+      "task": "agieval_aqua_rat",
+      "dataset_path": "hails/agieval-aqua-rat",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{gold}}",
+      "unsafe_code": false,
+      "doc_to_choice": "{{choices}}",
+      "process_results": "def process_results_mcqa(doc, results):\n    results = [result[0] for result in results]\n\n    gold = doc[\"gold\"]\n\n    acc = 1.0 if int(np.argmax(results)) in gold else 0.0\n    completion_len = np.array([float(len(i)) for i in doc[\"choices\"]])\n    acc_norm = 1.0 if int(np.argmax(results / completion_len)) in gold else 0.0\n\n    return {\n        \"acc\": acc,\n        \"acc_norm\": acc_norm,\n    }\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": "{{choices}}",
+        "doc_to_target": "{{gold}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "acc_norm",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/aqua-rat.yaml"
+      }
+    },
+    "agieval_gaokao_english": {
+      "task": "agieval_gaokao_english",
+      "dataset_path": "hails/agieval-gaokao-english",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{gold}}",
+      "unsafe_code": false,
+      "doc_to_choice": "{{choices}}",
+      "process_results": "def process_results_mcqa(doc, results):\n    results = [result[0] for result in results]\n\n    gold = doc[\"gold\"]\n\n    acc = 1.0 if int(np.argmax(results)) in gold else 0.0\n    completion_len = np.array([float(len(i)) for i in doc[\"choices\"]])\n    acc_norm = 1.0 if int(np.argmax(results / completion_len)) in gold else 0.0\n\n    return {\n        \"acc\": acc,\n        \"acc_norm\": acc_norm,\n    }\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": "{{choices}}",
+        "doc_to_target": "{{gold}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "acc_norm",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/gaokao-english.yaml"
+      }
+    },
+    "agieval_logiqa_en": {
+      "task": "agieval_logiqa_en",
+      "dataset_path": "hails/agieval-logiqa-en",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{gold}}",
+      "unsafe_code": false,
+      "doc_to_choice": "{{choices}}",
+      "process_results": "def process_results_mcqa(doc, results):\n    results = [result[0] for result in results]\n\n    gold = doc[\"gold\"]\n\n    acc = 1.0 if int(np.argmax(results)) in gold else 0.0\n    completion_len = np.array([float(len(i)) for i in doc[\"choices\"]])\n    acc_norm = 1.0 if int(np.argmax(results / completion_len)) in gold else 0.0\n\n    return {\n        \"acc\": acc,\n        \"acc_norm\": acc_norm,\n    }\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": "{{choices}}",
+        "doc_to_target": "{{gold}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "acc_norm",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/logiqa-en.yaml"
+      }
+    },
+    "agieval_lsat_ar": {
+      "task": "agieval_lsat_ar",
+      "dataset_path": "hails/agieval-lsat-ar",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{gold}}",
+      "unsafe_code": false,
+      "doc_to_choice": "{{choices}}",
+      "process_results": "def process_results_mcqa(doc, results):\n    results = [result[0] for result in results]\n\n    gold = doc[\"gold\"]\n\n    acc = 1.0 if int(np.argmax(results)) in gold else 0.0\n    completion_len = np.array([float(len(i)) for i in doc[\"choices\"]])\n    acc_norm = 1.0 if int(np.argmax(results / completion_len)) in gold else 0.0\n\n    return {\n        \"acc\": acc,\n        \"acc_norm\": acc_norm,\n    }\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": "{{choices}}",
+        "doc_to_target": "{{gold}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "acc_norm",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/lsat-ar.yaml"
+      }
+    },
+    "agieval_lsat_lr": {
+      "task": "agieval_lsat_lr",
+      "dataset_path": "hails/agieval-lsat-lr",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{gold}}",
+      "unsafe_code": false,
+      "doc_to_choice": "{{choices}}",
+      "process_results": "def process_results_mcqa(doc, results):\n    results = [result[0] for result in results]\n\n    gold = doc[\"gold\"]\n\n    acc = 1.0 if int(np.argmax(results)) in gold else 0.0\n    completion_len = np.array([float(len(i)) for i in doc[\"choices\"]])\n    acc_norm = 1.0 if int(np.argmax(results / completion_len)) in gold else 0.0\n\n    return {\n        \"acc\": acc,\n        \"acc_norm\": acc_norm,\n    }\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": "{{choices}}",
+        "doc_to_target": "{{gold}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "acc_norm",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/lsat-lr.yaml"
+      }
+    },
+    "agieval_lsat_rc": {
+      "task": "agieval_lsat_rc",
+      "dataset_path": "hails/agieval-lsat-rc",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{gold}}",
+      "unsafe_code": false,
+      "doc_to_choice": "{{choices}}",
+      "process_results": "def process_results_mcqa(doc, results):\n    results = [result[0] for result in results]\n\n    gold = doc[\"gold\"]\n\n    acc = 1.0 if int(np.argmax(results)) in gold else 0.0\n    completion_len = np.array([float(len(i)) for i in doc[\"choices\"]])\n    acc_norm = 1.0 if int(np.argmax(results / completion_len)) in gold else 0.0\n\n    return {\n        \"acc\": acc,\n        \"acc_norm\": acc_norm,\n    }\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": "{{choices}}",
+        "doc_to_target": "{{gold}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "acc_norm",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/lsat-rc.yaml"
+      }
+    },
+    "agieval_math": {
+      "task": "agieval_math",
+      "dataset_path": "hails/agieval-math",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{answer}}",
+      "unsafe_code": false,
+      "process_results": "def process_results(doc: dict, results: List[str]) -> Dict[str, int]:\n    candidate = results[0]\n\n    gold = doc[\"answer\"]\n\n    if not gold:\n        print(doc, candidate, gold)\n    if is_equiv(candidate, gold):\n        retval = 1\n    else:\n        retval = 0\n\n    results = {\n        \"acc\": retval,\n    }\n    return results\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": null,
+        "doc_to_target": "{{answer}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "max_gen_toks": 32,
+        "do_sample": false,
+        "temperature": 0.0,
+        "until": [
+          "Q:"
+        ]
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/math.yaml"
+      }
+    },
+    "agieval_sat_en": {
+      "task": "agieval_sat_en",
+      "dataset_path": "hails/agieval-sat-en",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{gold}}",
+      "unsafe_code": false,
+      "doc_to_choice": "{{choices}}",
+      "process_results": "def process_results_mcqa(doc, results):\n    results = [result[0] for result in results]\n\n    gold = doc[\"gold\"]\n\n    acc = 1.0 if int(np.argmax(results)) in gold else 0.0\n    completion_len = np.array([float(len(i)) for i in doc[\"choices\"]])\n    acc_norm = 1.0 if int(np.argmax(results / completion_len)) in gold else 0.0\n\n    return {\n        \"acc\": acc,\n        \"acc_norm\": acc_norm,\n    }\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": "{{choices}}",
+        "doc_to_target": "{{gold}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "acc_norm",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/sat-en.yaml"
+      }
+    },
+    "agieval_sat_en_without_passage": {
+      "task": "agieval_sat_en_without_passage",
+      "dataset_path": "hails/agieval-sat-en-without-passage",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{gold}}",
+      "unsafe_code": false,
+      "doc_to_choice": "{{choices}}",
+      "process_results": "def process_results_mcqa(doc, results):\n    results = [result[0] for result in results]\n\n    gold = doc[\"gold\"]\n\n    acc = 1.0 if int(np.argmax(results)) in gold else 0.0\n    completion_len = np.array([float(len(i)) for i in doc[\"choices\"]])\n    acc_norm = 1.0 if int(np.argmax(results / completion_len)) in gold else 0.0\n\n    return {\n        \"acc\": acc,\n        \"acc_norm\": acc_norm,\n    }\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": "{{choices}}",
+        "doc_to_target": "{{gold}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "acc_norm",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/sat-en-without-passage.yaml"
+      }
+    },
+    "agieval_sat_math": {
+      "task": "agieval_sat_math",
+      "dataset_path": "hails/agieval-sat-math",
+      "test_split": "test",
+      "doc_to_text": "{{query}}",
+      "doc_to_target": "{{gold}}",
+      "unsafe_code": false,
+      "doc_to_choice": "{{choices}}",
+      "process_results": "def process_results_mcqa(doc, results):\n    results = [result[0] for result in results]\n\n    gold = doc[\"gold\"]\n\n    acc = 1.0 if int(np.argmax(results)) in gold else 0.0\n    completion_len = np.array([float(len(i)) for i in doc[\"choices\"]])\n    acc_norm = 1.0 if int(np.argmax(results / completion_len)) in gold else 0.0\n\n    return {\n        \"acc\": acc,\n        \"acc_norm\": acc_norm,\n    }\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "{{query}}",
+        "doc_to_choice": "{{choices}}",
+        "doc_to_target": "{{gold}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "acc_norm",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/dev/shm/gautam_eval/step_11590",
+        "dtype": "bfloat16",
+        "config_source": "/root/gautam_k/rivalenv/lib/python3.12/site-packages/lm_eval/tasks/agieval/sat-math.yaml"
+      }
+    }
+  },
+  "versions": {
+    "agieval_aqua_rat": 1.0,
+    "agieval_en": "0.0",
+    "agieval_gaokao_english": 1.0,
+    "agieval_logiqa_en": 1.0,
+    "agieval_lsat_ar": 1.0,
+    "agieval_lsat_lr": 1.0,
+    "agieval_lsat_rc": 1.0,
+    "agieval_math": 1.0,
+    "agieval_sat_en": 1.0,
+    "agieval_sat_en_without_passage": 1.0,
+    "agieval_sat_math": 1.0
+  },
+  "n-shot": {
+    "agieval_aqua_rat": 0,
+    "agieval_en": 0,
+    "agieval_gaokao_english": 0,
+    "agieval_logiqa_en": 0,
+    "agieval_lsat_ar": 0,
+    "agieval_lsat_lr": 0,
+    "agieval_lsat_rc": 0,
+    "agieval_math": 0,
+    "agieval_sat_en": 0,
+    "agieval_sat_en_without_passage": 0,
+    "agieval_sat_math": 0
+  },
+  "higher_is_better": {
+    "agieval_aqua_rat": {
+      "acc": true,
+      "acc_norm": true
+    },
+    "agieval_en": {
+      "acc": true,
+      "acc_norm": true
+    },
+    "agieval_gaokao_english": {
+      "acc": true,
+      "acc_norm": true
+    },
+    "agieval_logiqa_en": {
+      "acc": true,
+      "acc_norm": true
+    },
+    "agieval_lsat_ar": {
+      "acc": true,
+      "acc_norm": true
+    },
+    "agieval_lsat_lr": {
+      "acc": true,
+      "acc_norm": true
+    },
+    "agieval_lsat_rc": {
+      "acc": true,
+      "acc_norm": true
+    },
+    "agieval_math": {
+      "acc": true
+    },
+    "agieval_sat_en": {
+      "acc": true,
+      "acc_norm": true
+    },
+    "agieval_sat_en_without_passage": {
+      "acc": true,
+      "acc_norm": true
+    },
+    "agieval_sat_math": {
+      "acc": true,
+      "acc_norm": true
+    }
+  },
+  "n-samples": {
+    "agieval_aqua_rat": {
+      "original": 254,
+      "effective": 254
+    },
+    "agieval_gaokao_english": {
+      "original": 306,
+      "effective": 306
+    },
+    "agieval_logiqa_en": {
+      "original": 651,
+      "effective": 651
+    },
+    "agieval_lsat_ar": {
+      "original": 230,
+      "effective": 230
+    },
+    "agieval_lsat_lr": {
+      "original": 510,
+      "effective": 510
+    },
+    "agieval_lsat_rc": {
+      "original": 269,
+      "effective": 269
+    },
+    "agieval_math": {
+      "original": 1000,
+      "effective": 1000
+    },
+    "agieval_sat_en_without_passage": {
+      "original": 206,
+      "effective": 206
+    },
+    "agieval_sat_en": {
+      "original": 206,
+      "effective": 206
+    },
+    "agieval_sat_math": {
+      "original": 220,
+      "effective": 220
+    }
+  },
+  "config": {
+    "model": "hf",
+    "model_args": {
+      "pretrained": "/dev/shm/gautam_eval/step_11590",
+      "dtype": "bfloat16"
+    },
+    "model_num_parameters": 1701485824,
+    "model_dtype": "torch.bfloat16",
+    "model_revision": "main",
+    "model_sha": "",
+    "batch_size": "auto",
+    "batch_sizes": [
+      64
+    ],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": null,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {},
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": null,
+  "date": 1792760959.1235082,
+  "pretty_env_info": "PyTorch version: 2.14.1+cu132\nIs debug build: False\nCUDA used to build PyTorch: 13.2\nROCM used to build PyTorch: N/A\n\nOS: Ubuntu 24.04.5 LTS (x86_64)\nGCC version: (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nClang version: 18.1.3 (1ubuntu1)\nCMake version: version 3.28.3\nLibc version: glibc-2.39\n\nPython version: 3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0] (64-bit runtime)\nPython platform: Linux-6.8.0-147-generic-x86_64-with-glibc2.39\nIs CUDA available: True\nCUDA runtime version: Could not collect\nCUDA_MODULE_LOADING set to: \nGPU models and configuration: \nGPU 0: NVIDIA H200\nGPU 1: NVIDIA H200\nGPU 2: NVIDIA H200\nGPU 3: NVIDIA H200\n\nNvidia driver version: 580.178.04\ncuDNN version: Probably one of the following:\n/usr/lib/x86_64-linux-gnu/libcudnn.so.9.27.0\n/usr/lib/x86_64-linux-gnu/libcudnn_adv.so.9.27.0\n/usr/lib/x86_64-linux-gnu/libcudnn_cnn.so.9.27.0\n/usr/lib/x86_64-linux-gnu/libcudnn_engines_precompiled.so.9.27.0\n/usr/lib/x86_64-linux-gnu/libcudnn_engines_runtime_compiled.so.9.27.0\n/usr/lib/x86_64-linux-gnu/libcudnn_engines_tensor_ir.so.9.27.0\n/usr/lib/x86_64-linux-gnu/libcudnn_ext.so.9.27.0\n/usr/lib/x86_64-linux-gnu/libcudnn_graph.so.9.27.0\n/usr/lib/x86_64-linux-gnu/libcudnn_heuristic.so.9.27.0\n/usr/lib/x86_64-linux-gnu/libcudnn_ops.so.9.27.0\nIs XPU available: False\nHIP runtime version: N/A\nMIOpen runtime version: N/A\nIs XNNPACK available: False\nCaching allocator config: N/A\n\nCPU:\nArchitecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           52 bits physical, 57 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  176\nOn-line CPU(s) list:                     0-175\nVendor ID:                               AuthenticAMD\nBIOS Vendor ID:                          QEMU\nModel name:                              AMD EPYC 9654 96-Core Processor\nBIOS Model name:                         pc-q35-noble  CPU @ 2.0GHz\nBIOS CPU family:                         1\nCPU family:                              25\nModel:                                   17\nThread(s) per core:                      1\nCore(s) per socket:                      1\nSocket(s):                               176\nStepping:                                1\nBogoMIPS:                                4799.99\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw perfctr_core ssbd ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx512_bf16 clzero xsaveerptr wbnoinvd arat avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid fsrm flush_l1d arch_capabilities\nHypervisor vendor:                       KVM\nVirtualization type:                     full\nL1d cache:                               11 MiB (176 instances)\nL1i cache:                               11 MiB (176 instances)\nL2 cache:                                88 MiB (176 instances)\nL3 cache:                                2.8 GiB (176 instances)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-175\nVulnerability Gather data sampling:      Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Mitigation; Safe RET\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP disabled; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Vulnerable: Clear CPU buffers attempted, no microcode\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected\n\nVersions of relevant libraries:\n[pip3] numpy==2.5.4\n[pip3] nvidia-cublas==13.4.1.3\n[pip3] nvidia-cuda-cupti==13.2.86\n[pip3] nvidia-cuda-nvrtc==13.2.86\n[pip3] nvidia-cuda-runtime==13.2.86\n[pip3] nvidia-cudnn-cu13==9.24.0.43\n[pip3] nvidia-cufft==12.2.0.57\n[pip3] nvidia-curand==10.4.2.66\n[pip3] nvidia-cusolver==12.2.0.11\n[pip3] nvidia-cusparse==12.7.10.12\n[pip3] nvidia-cusparselt-cu13==0.8.1\n[pip3] nvidia-nccl-cu13==2.30.7\n[pip3] nvidia-nvjitlink==13.3.33\n[pip3] nvidia-nvtx==13.2.86\n[pip3] torch==2.14.1+cu132\n[pip3] torch_c_dlpack_ext==0.1.5\n[pip3] triton==3.8.0\n[conda] Could not collect",
+  "transformers_version": "5.20.2",
+  "lm_eval_version": "0.4.13",
+  "upper_git_hash": null,
+  "tokenizer_pad_token": [
+    "<|endoftext|>",
+    "50256"
+  ],
+  "tokenizer_eos_token": [
+    "<|endoftext|>",
+    "50256"
+  ],
+  "tokenizer_bos_token": [
+    "<|endoftext|>",
+    "50256"
+  ],
+  "eot_token_id": 50256,
+  "max_length": 4096,
+  "task_hashes": {
+    "agieval_aqua_rat": "2186c15644e0585992df4e6090e4cbdc623f814a4725803c9fe053a3c6eee826",
+    "agieval_gaokao_english": "1997a0d2b769dd5690676a55acba44f9655257b3ec335745d4f8b70045941028",
+    "agieval_logiqa_en": "8cbc44ae4163ae2093f88be6eb95327bd0ac1c1aef48c40549bf0769b43aa0de",
+    "agieval_lsat_ar": "d09b7b14ebb5f21bbd602143c8fc62a4edef6a64ab0f6eb87b9aafa7a4426c43",
+    "agieval_lsat_lr": "a5cd32cd2a2759d428ef21fd2e8362276fe0b15dc1fff48fe30f6f39525d1336",
+    "agieval_lsat_rc": "ce4856d4b9eaa4beb1ab1cb0e139f73d4097298e16e06025258b05b3d422b0eb",
+    "agieval_math": "c4edf8986242f57ad6d5c1cb001b194b30d20a60bd6fb0909cb37b5e0d6d5c56",
+    "agieval_sat_en_without_passage": "11bfc5e60248d5acab69f12abac189f630e0b3ad7dc8cdb9db8ccdc040516bb0",
+    "agieval_sat_en": "3bb865c97a1fcec9154b1dbbae2bac428982fb809d8d42bb1ddb83199881c7ac",
+    "agieval_sat_math": "63798581920be3a992f61dab8df71eb75cb455163fca9ea156540d204951c2c2"
+  },
+  "model_source": "hf",
+  "model_name": "/dev/shm/gautam_eval/step_11590",
+  "model_name_sanitized": "__dev__shm__gautam_eval__step_11590",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": null,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "155.7755218679995"
+}

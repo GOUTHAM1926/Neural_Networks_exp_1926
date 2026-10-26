@@ -1,0 +1,30 @@
+
+[OK] libprofiler is up to date
+
+[BUILD] BluBridge-BLAS (sm_90)
+make -C Tensor-Implementations blas SM_ARCH=90
+
+[BUILD] Tensor-Implementations (sm_90, backend=cuBLAS)
+make -C Tensor-Implementations tensor SM_ARCH=90
+make[1]: Entering directory '/root/gautam_k/sft_v2/BluTrain_sft/Tensor-Implementations'
+make[1]: Entering directory '/root/gautam_k/sft_v2/BluTrain_sft/Tensor-Implementations'
+\n\nlibtensor is up-to-date.
+make[1]: Leaving directory '/root/gautam_k/sft_v2/BluTrain_sft/Tensor-Implementations'
+
+[BUILD] dist (sm_90)
+make -C dist all SM_ARCH=90
+make[1]: Entering directory '/root/gautam_k/sft_v2/BluTrain_sft/dist'
+\n\nlibblublas is up-to-date.
+make[1]: Leaving directory '/root/gautam_k/sft_v2/BluTrain_sft/Tensor-Implementations'
+\n[SUCCESS] dist build complete (sm_90):
+   /root/gautam_k/sft_v2/BluTrain_sft/dist/lib/libdist.a
+   /root/gautam_k/sft_v2/BluTrain_sft/dist/lib/libdist.so
+make[1]: Leaving directory '/root/gautam_k/sft_v2/BluTrain_sft/dist'
+
+[SUCCESS] Full build complete.
+  GPU arch:      sm_90
+  BLAS:          cuBLAS
+  Profiler libs: Profiler/lib/libprofiler.{a,so}
+  Tensor libs:   Tensor-Implementations/lib/libtensor.{a,so}
+  BluBLAS lib:   Tensor-Implementations/lib/libblublas.so
+  Dist libs:     dist/lib/libdist.{a,so}

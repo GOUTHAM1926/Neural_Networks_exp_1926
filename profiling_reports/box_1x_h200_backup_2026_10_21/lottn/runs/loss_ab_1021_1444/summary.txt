@@ -1,0 +1,32 @@
+== f32 logits (N = 32768 rows x V = 50304)
+  kernel forward with stats                        old    1.4901 ms  new    1.4259 ms  new/old  0.957   (runs: 1.4901 1.4256 1.4902 1.4262)
+  kernel backward with stats                       old    3.2902 ms  new    3.3214 ms  new/old  1.009   (runs: 3.2904 3.3215 3.2901 3.3213)
+  autograd loss forward                            old    1.5335 ms  new    1.4640 ms  new/old  0.955   (runs: 1.535 1.467 1.532 1.461)
+  autograd backward (loss + cast + lm_head GEMMs)  old   25.0405 ms  new   25.1005 ms  new/old  1.002   (runs: 25.044 25.076 25.037 25.125)
+  active_peak_MiB                                  old   19968.0     new   10898.0     new-old   -9070.0 MiB
+  allocated_peak_MiB                               old   19968.0     new   10898.0     new-old   -9070.0 MiB
+  reserved_peak_MiB                                old   22378.0     new   16456.0     new-old   -5922.0 MiB
+  kernel loss_bits                                 BIT-IDENTICAL in all 4 runs
+  kernel max_cs                                    BIT-IDENTICAL in all 4 runs
+  kernel sum_cs                                    BIT-IDENTICAL in all 4 runs
+  kernel grad_cs                                   BIT-IDENTICAL in all 4 runs
+  autograd loss_bits                               BIT-IDENTICAL in all 4 runs
+  autograd wgrad_cs                                BIT-IDENTICAL in all 4 runs
+  autograd xgrad_cs                                BIT-IDENTICAL in all 4 runs
+  reps identical inside each run                   1 1 1 1
+== bf16 logits (N = 32768 rows x V = 50304)
+  kernel forward with stats                        old    1.0318 ms  new    0.9305 ms  new/old  0.902   (runs: 1.0315 0.9300 1.0320 0.9310)
+  kernel backward with stats                       old    4.3491 ms  new    1.6397 ms  new/old  0.377   (runs: 4.3532 1.6397 4.3449 1.6396)
+  autograd loss forward                            old    1.0690 ms  new    0.9745 ms  new/old  0.912   (runs: 1.067 0.969 1.071 0.980)
+  autograd backward (loss + cast + lm_head GEMMs)  old   26.3450 ms  new   21.1215 ms  new/old  0.802   (runs: 26.093 21.139 26.597 21.104)
+  active_peak_MiB                                  old   10536.0     new    4610.0     new-old   -5926.0 MiB
+  allocated_peak_MiB                               old   10536.0     new    4610.0     new-old   -5926.0 MiB
+  reserved_peak_MiB                                old   12954.0     new    4620.0     new-old   -8334.0 MiB
+  kernel loss_bits                                 BIT-IDENTICAL in all 4 runs
+  kernel max_cs                                    BIT-IDENTICAL in all 4 runs
+  kernel sum_cs                                    BIT-IDENTICAL in all 4 runs
+  kernel grad_cs                                   BIT-IDENTICAL in all 4 runs
+  autograd loss_bits                               BIT-IDENTICAL in all 4 runs
+  autograd wgrad_cs                                BIT-IDENTICAL in all 4 runs
+  autograd xgrad_cs                                BIT-IDENTICAL in all 4 runs
+  reps identical inside each run                   1 1 1 1

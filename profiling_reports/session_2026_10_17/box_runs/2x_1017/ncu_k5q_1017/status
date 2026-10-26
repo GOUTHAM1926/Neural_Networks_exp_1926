@@ -1,0 +1,4 @@
+20:46:00 IST start | GPU 1 NVIDIA H200, 0 MiB | vj2_K4b 298cc933  vj2_K5q 8dc36782  
+20:46:08 IST ncu vj2_K5q dense | kernels profiled 1
+20:46:15 IST ncu vj2_K5q packed | kernels profiled 1
+20:46:15 IST MULTI DONE

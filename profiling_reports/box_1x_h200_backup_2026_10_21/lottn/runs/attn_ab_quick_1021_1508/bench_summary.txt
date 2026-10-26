@@ -1,0 +1,6 @@
+attention at B 8, 18/6 heads, T 4096, hd 128, causal (OLD = BLUCCL v62 fwd + Vj1d bwd, NEW = QPU fwd + Vj2 bwd)
+  forward   old  1.2154 ms  new  1.0223 ms  new/old  0.841  (+18.9% faster)   runs: 1.2190 1.0217 1.2118 1.0229
+  backward  old  4.2956 ms  new  3.0575 ms  new/old  0.712  (+40.5% faster)   runs: 4.2904 3.0546 4.3007 3.0603
+  fwd+bwd   old  5.5110 ms  new  4.0798 ms  new/old  0.740  (+35.1% faster)
+  old: r1 vs r2 outputs equal: {'o_cs': True, 'lse_cs': True, 'dk_cs': True, 'dv_cs': True, 'dq_cs': False} | repeat inside each run (O/LSE/dK/dV, dQ): 1/0, 1/0
+  new: r1 vs r2 outputs equal: {'o_cs': True, 'lse_cs': True, 'dk_cs': True, 'dv_cs': True, 'dq_cs': False} | repeat inside each run (O/LSE/dK/dV, dQ): 1/0, 1/0

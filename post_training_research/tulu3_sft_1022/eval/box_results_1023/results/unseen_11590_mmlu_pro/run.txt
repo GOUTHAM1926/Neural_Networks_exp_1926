@@ -1,0 +1,105 @@
+2026-10-23 18:41:51 IST | model /dev/shm/gautam_eval/step_11590 | tasks mmlu_pro | extra:  | GPU 3
+2026-10-23:13:11:57 INFO     [_cli.run:392] Selected Tasks: ['mmlu_pro']
+2026-10-23:13:11:58 INFO     [evaluator:214] Setting random seed to 0 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-10-23:13:11:58 INFO     [evaluator:239] Initializing hf model, with arguments: {'pretrained': '/dev/shm/gautam_eval/step_11590', 'dtype': 'bfloat16'}
+2026-10-23:13:12:04 INFO     [models.huggingface:289] Using device 'cuda:0'
+2026-10-23:13:12:05 INFO     [models.huggingface:582] Model parallel was set to False, max memory was not set, and device map was set to {'': 'cuda:0'}
+Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights:  23%|██▎       | 70/310 [00:00<00:00, 693.85it/s]Loading weights:  51%|█████     | 157/310 [00:00<00:00, 787.68it/s]Loading weights:  77%|███████▋  | 239/310 [00:00<00:00, 799.39it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 805.29it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Generating test split:   0%|          | 0/12032 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 12032/12032 [00:00<00:00, 469834.52 examples/s]
+Generating validation split:   0%|          | 0/70 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 70/70 [00:00<00:00, 39552.91 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 24849.88 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 423211.59 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30535.75 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 454180.98 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30872.90 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 449768.86 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30507.20 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 447269.51 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30507.20 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 445449.51 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30174.85 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 435670.27 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30513.54 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 442434.65 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30666.52 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 447960.32 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30846.95 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 444355.21 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30535.75 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 442760.71 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30538.93 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 437259.48 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30507.20 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 444308.27 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30688.96 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 438845.06 examples/s]
+Filter:   0%|          | 0/70 [00:00<?, ? examples/s]Filter: 100%|██████████| 70/70 [00:00<00:00, 30535.75 examples/s]
+Filter:   0%|          | 0/12032 [00:00<?, ? examples/s]Filter: 100%|██████████| 12032/12032 [00:00<00:00, 441239.33 examples/s]
+2026-10-23:13:12:22 INFO     [evaluator_utils:472] Selected tasks:
+2026-10-23:13:12:22 INFO     [evaluator_utils:488] Group: mmlu_pro
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_biology (mmlu_pro/mmlu_pro_biology.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_business (mmlu_pro/mmlu_pro_business.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_chemistry (mmlu_pro/mmlu_pro_chemistry.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_computer_science (mmlu_pro/mmlu_pro_computer_science.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_economics (mmlu_pro/mmlu_pro_economics.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_engineering (mmlu_pro/mmlu_pro_engineering.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_health (mmlu_pro/mmlu_pro_health.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_history (mmlu_pro/mmlu_pro_history.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_law (mmlu_pro/mmlu_pro_law.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_math (mmlu_pro/mmlu_pro_math.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_other (mmlu_pro/mmlu_pro_other.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_philosophy (mmlu_pro/mmlu_pro_philosophy.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_physics (mmlu_pro/mmlu_pro_physics.yaml)
+2026-10-23:13:12:22 INFO     [evaluator_utils:496]   Task: mmlu_pro_psychology (mmlu_pro/mmlu_pro_psychology.yaml)
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_biology: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_business: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_chemistry: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_computer_science: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_economics: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_engineering: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_health: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_history: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_law: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_math: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_other: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_philosophy: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_physics: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [evaluator:314] mmlu_pro_psychology: Using gen_kwargs: {'until': ['Question:'], 'max_gen_toks': 2048, 'do_sample': False, 'temperature': 0.0}
+2026-10-23:13:12:22 INFO     [api.task:312] Building contexts for mmlu_pro_biology on rank 0...
+  0%|          | 0/717 [00:00<?, ?it/s] 50%|█████     | 362/717 [00:00<00:00, 3612.51it/s]100%|██████████| 717/717 [00:00<00:00, 3671.91it/s]
+2026-10-23:13:12:22 INFO     [api.task:312] Building contexts for mmlu_pro_business on rank 0...
+  0%|          | 0/789 [00:00<?, ?it/s] 49%|████▉     | 390/789 [00:00<00:00, 3899.26it/s] 99%|█████████▉| 783/789 [00:00<00:00, 3913.68it/s]100%|██████████| 789/789 [00:00<00:00, 3907.84it/s]
+2026-10-23:13:12:22 INFO     [api.task:312] Building contexts for mmlu_pro_chemistry on rank 0...
+  0%|          | 0/1132 [00:00<?, ?it/s] 34%|███▎      | 380/1132 [00:00<00:00, 3790.51it/s] 68%|██████▊   | 766/1132 [00:00<00:00, 3826.86it/s]100%|██████████| 1132/1132 [00:00<00:00, 3817.52it/s]
+2026-10-23:13:12:23 INFO     [api.task:312] Building contexts for mmlu_pro_computer_science on rank 0...
+  0%|          | 0/410 [00:00<?, ?it/s] 92%|█████████▏| 379/410 [00:00<00:00, 3785.87it/s]100%|██████████| 410/410 [00:00<00:00, 3782.77it/s]
+2026-10-23:13:12:23 INFO     [api.task:312] Building contexts for mmlu_pro_economics on rank 0...
+  0%|          | 0/844 [00:00<?, ?it/s] 44%|████▍     | 375/844 [00:00<00:00, 3749.53it/s] 89%|████████▉ | 754/844 [00:00<00:00, 3768.24it/s]100%|██████████| 844/844 [00:00<00:00, 3767.91it/s]
+2026-10-23:13:12:23 INFO     [api.task:312] Building contexts for mmlu_pro_engineering on rank 0...
+  0%|          | 0/969 [00:00<?, ?it/s] 40%|███▉      | 383/969 [00:00<00:00, 3821.90it/s] 79%|███████▉  | 767/969 [00:00<00:00, 3826.69it/s]100%|██████████| 969/969 [00:00<00:00, 3821.95it/s]
+2026-10-23:13:12:23 INFO     [api.task:312] Building contexts for mmlu_pro_health on rank 0...
+  0%|          | 0/818 [00:00<?, ?it/s] 46%|████▌     | 377/818 [00:00<00:00, 3769.45it/s] 92%|█████████▏| 755/818 [00:00<00:00, 3772.74it/s]100%|██████████| 818/818 [00:00<00:00, 3774.07it/s]
+2026-10-23:13:12:24 INFO     [api.task:312] Building contexts for mmlu_pro_history on rank 0...
+  0%|          | 0/381 [00:00<?, ?it/s] 97%|█████████▋| 368/381 [00:00<00:00, 3674.23it/s]100%|██████████| 381/381 [00:00<00:00, 3662.69it/s]
+2026-10-23:13:12:24 INFO     [api.task:312] Building contexts for mmlu_pro_law on rank 0...
+  0%|          | 0/1101 [00:00<?, ?it/s] 35%|███▌      | 386/1101 [00:00<00:00, 3855.61it/s] 70%|███████   | 774/1101 [00:00<00:00, 3865.95it/s]100%|██████████| 1101/1101 [00:00<00:00, 3863.87it/s]
+2026-10-23:13:12:24 INFO     [api.task:312] Building contexts for mmlu_pro_math on rank 0...
+  0%|          | 0/1351 [00:00<?, ?it/s] 28%|██▊       | 378/1351 [00:00<00:00, 3774.37it/s] 56%|█████▋    | 761/1351 [00:00<00:00, 3803.49it/s] 85%|████████▍ | 1142/1351 [00:00<00:00, 3796.65it/s]100%|██████████| 1351/1351 [00:00<00:00, 3798.26it/s]
+2026-10-23:13:12:25 INFO     [api.task:312] Building contexts for mmlu_pro_other on rank 0...
+  0%|          | 0/924 [00:00<?, ?it/s] 42%|████▏     | 387/924 [00:00<00:00, 3869.70it/s] 84%|████████▍ | 774/924 [00:00<00:00, 3866.06it/s]100%|██████████| 924/924 [00:00<00:00, 3870.11it/s]
+2026-10-23:13:12:25 INFO     [api.task:312] Building contexts for mmlu_pro_philosophy on rank 0...
+  0%|          | 0/499 [00:00<?, ?it/s] 67%|██████▋   | 336/499 [00:00<00:00, 3353.31it/s]100%|██████████| 499/499 [00:00<00:00, 3398.54it/s]
+2026-10-23:13:12:25 INFO     [api.task:312] Building contexts for mmlu_pro_physics on rank 0...
+  0%|          | 0/1299 [00:00<?, ?it/s] 29%|██▉       | 381/1299 [00:00<00:00, 3802.71it/s] 59%|█████▊    | 762/1299 [00:00<00:00, 3700.56it/s] 87%|████████▋ | 1133/1299 [00:00<00:00, 3624.75it/s]100%|██████████| 1299/1299 [00:00<00:00, 3681.49it/s]
+2026-10-23:13:12:25 INFO     [api.task:312] Building contexts for mmlu_pro_psychology on rank 0...
+  0%|          | 0/798 [00:00<?, ?it/s] 46%|████▌     | 369/798 [00:00<00:00, 3688.33it/s] 92%|█████████▏| 738/798 [00:00<00:00, 3675.76it/s]100%|██████████| 798/798 [00:00<00:00, 3664.99it/s]
+2026-10-23:13:12:26 INFO     [evaluator:589] Running generate_until requests
+Running generate_until requests:   0%|          | 0/12032 [00:00<?, ?it/s][transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (1488 > 1024). Running this sequence through the model will result in indexing errors
+2026-10-23:13:13:02 WARNING  [models.huggingface:1096] Left truncation applied. Original sequence length was 2748, truncating to last 2048 tokens. Some content will be lost.
+[W1023 13:15:04.830646251 CUDACachingAllocator.cpp:3934] memory allocation failed with OOM on device 0 while trying to allocate 394264576 bytes (free: 57802752, total: 150109880320).
+Running generate_until requests:   0%|          | 1/12032 [02:52<575:50:30, 172.31s/it]2026-10-23:13:15:18 WARNING  [models.huggingface:1096] Left truncation applied. Original sequence length was 2466, truncating to last 2048 tokens. Some content will be lost.
+Running generate_until requests:   1%|          | 65/12032 [03:39<8:38:09,  2.60s/it]  2026-10-23:13:16:06 WARNING  [models.huggingface:1096] Left truncation applied. Original sequence length was 2384, truncating to last 2048 tokens. Some content will be lost.
+Running generate_until requests:   1%|          | 129/12032 [04:27<4:59:21,  1.51s/it]2026-10-23:13:16:53 WARNING  [models.huggingface:1096] Left truncation applied. Original sequence length was 2311, truncating to last 2048 tokens. Some content will be lost.
+Running generate_until requests:   2%|▏         | 193/12032 [05:14<3:48:19,  1.16s/it]2026-10-23:13:17:40 WARNING  [models.huggingface:1096] Left truncation applied. Original sequence length was 2214, truncating to last 2048 tokens. Some content will be lost.
+Running generate_until requests:   2%|▏         | 257/12032 [06:01<3:15:00,  1.01it/s]2026-10-23:13:18:28 WARNING  [models.huggingface:1096] Left truncation applied. Original sequence length was 2142, truncating to last 2048 tokens. Some content will be lost.

@@ -1,0 +1,6 @@
+device NVIDIA H200 | mode f32 | targets /root/gautam_k/pt_data/edu/edufineweb_val_00000.bin @ token 0 | N 32768 V 50304 | warmup 50 iters 200
+KERNEL dtype=f32 F_med_ms=1.4902 F_min_ms=1.4876 B_med_ms=3.2901 B_min_ms=3.2829 iters=200 loss=527464.812500 loss_bits=4900c68d max_cs=081fffab8feb1128 sum_cs=08a8925a5c355e0f grad_cs=982b0361a748779a
+rep 1: loss 11.331064 (41354c0a) | W.grad fp32 daf2d07c13bd0000 | X.grad fp32 2ed87dd9bb9f0000 | loss fwd 1.550 ms | backward 53.551 ms
+rep 2: loss 11.331064 (41354c0a) | W.grad fp32 daf2d07c13bd0000 | X.grad fp32 2ed87dd9bb9f0000 | loss fwd 1.532 ms | backward 25.104 ms
+rep 3: loss 11.331064 (41354c0a) | W.grad fp32 daf2d07c13bd0000 | X.grad fp32 2ed87dd9bb9f0000 | loss fwd 1.531 ms | backward 24.971 ms
+AUTOGRAD dtype=f32 loss=11.331064 loss_bits=41354c0a wgrad_cs=daf2d07c13bd0000 xgrad_cs=2ed87dd9bb9f0000 fwd_ms=1.532 bwd_ms=25.037 active_peak_MiB=19968.0 allocated_peak_MiB=19968.0 reserved_peak_MiB=22378.0 reps_identical=1

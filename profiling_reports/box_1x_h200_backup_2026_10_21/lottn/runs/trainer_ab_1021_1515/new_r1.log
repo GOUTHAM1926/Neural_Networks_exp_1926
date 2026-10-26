@@ -1,0 +1,192 @@
+[launch] launcher=mpi world_size=1 mpi_world_spans_job=yes
+[config] /root/gautam_k/lottn/ab/pz_ab_config.yaml
+[config] parallelism: /root/gautam_k/lottn/ab/bluscript_zero_ckpt_parallelism.yaml
+[config]   hyper-parameters.context = 4096
+[config]   hyper-parameters.vocab = 50304
+[config]   hyper-parameters.n_embd = 2304
+[config]   hyper-parameters.n_layers = 26
+[config]   hyper-parameters.n_heads = 18
+[config]   hyper-parameters.kv_heads = 6
+[config]   hyper-parameters.head_dim = 128
+[config]   hyper-parameters.ffn_hidden = 6144
+[config]   hyper-parameters.rope_theta = 10000
+[config]   hyper-parameters.qk_eps = 1e-6
+[config]   hyper-parameters.rms_eps = 1e-5
+[config]   hyper-parameters.rope_interleaved = false
+[config]   hyper-parameters.weight_tying = true
+[config]   hyper-parameters.global_batch = 1048576
+[config]   hyper-parameters.mini_batch = 8
+[config]   hyper-parameters.seed = 1234
+[config]   training.total_steps = 8000
+[config]   training.warmup_steps = 200
+[config]   training.stable_steps = 6200
+[config]   training.validation_freq = 4
+[config]   training.val_loss_steps = 20
+[config]   training.grad_clip = 1.0
+[config]   optimizer.max_lr = 1.2e-3
+[config]   optimizer.min_lr = 1.2e-4
+[config]   optimizer.beta1 = 0.9
+[config]   optimizer.beta2 = 0.95
+[config]   optimizer.eps = 1e-8
+[config]   optimizer.weight_decay = 0.1
+[config]   optimizer.muon_lr = 1.2e-3
+[config]   optimizer.muon_min_lr = 1.2e-4
+[config]   optimizer.muon_momentum = 0.95
+[config]   optimizer.muon_weight_decay = 0.1
+[config]   optimizer.muon_ns_steps = 5
+[config]   checkpointing.prefix = blumodel
+[config]   BLU_STEP_WATCHDOG=0 (training.step_watchdog=false)
+[config]   BLU_STEP_TIMEOUT_S=600 (training.step_timeout_s=600)
+[config]   BLU_MIX_PRESET=c2 (data.mix_preset=c2)
+[config]   BLU_OPTIMIZER=muon (optimizer.type=muon)
+[config]   BLU_CKPT_FREQ=1600 (checkpointing.freq=1600)
+[config]   BLU_CKPT_KEEP=4 (checkpointing.ckpt_keep=4)
+[config]   BLU_CKPT_LOAD=0 (checkpointing.load=false)
+[config]   BLU_CKPT_DIR=checkpoints_bluscript_muon (checkpointing.dir=checkpoints_bluscript_muon)
+[config]   BLU_LOG_CSV=mix_ratio_1.csv (logs.log_file=mix_ratio_1.csv)
+[config]   BLU_LOG_OVERWRITE=0 (logs.overwrite=false)
+[config]   BLU_LOG_APPEND=0 (logs.append=false)
+[config]   BLU_LOGS_ROOT=training_logs (monitoring.logs_root=training_logs)
+[config]   BLU_MONITOR_PORTS=9600-9799 (monitoring.port_range=9600-9799)
+[config]   BLU_GRAFANA_URL=http://localhost:3000 (monitoring.grafana_url=http://localhost:3000)
+[config]   BLU_SIZE_CLASS=exact (sizeclass.mode=exact)
+[config]   BLU_PARALLELISM=1 (parallelism.enabled=true)
+[config]   BLU_EMB_BWD=segmented (embedding.backward=segmented)
+[config]   BLU_ALL_BF16=1 (mixed_precision.enabled=true)
+[config]   BLU_BF16_LOGITS=1 (mixed_precision.bf16_logits=true)
+[config]   BLU_BACKEND=nccl (backend=nccl)
+[config]   BLU_ZERO_V2=1 (zero1.variant=v2)
+[config]   BLU_SYMMETRIC=1 (zero1.symmetric=true)
+[config]   BLU_GLOBAL_CLIP=1 (zero1.global_clip=true)
+[config]   BLU_GRAD_VIEW=1 (zero1.grad_view=true)
+[config]   BLU_FP32_REDUCE=0 (zero1.fp32_reduce=false)
+[config]   BLU_BF16_REDUCE=0 (zero1.bf16_reduce=false)
+[config]   BLU_NO_OVERLAP=0 (zero1.no_overlap=false)
+[config]   BLU_NO_OVERLAP_BWD=0 (zero1.no_overlap_bwd=false)
+[config]   BLU_OVERLAP_REFRESH=0 (zero1.overlap_refresh=false)
+[config]   BLU_GLOBAL_CLIP_STRICT=0 (zero1.global_clip_strict=false)
+[config]   BLU_ZERO_INPLACE=1 (zero1.no_inplace=false)
+[config]   BLU_MUON_RB=0 (zero1.muon_reduce_broadcast=false)
+[config]   BLU_MUON_PIPELINE=1 (zero1.no_muon_pipeline=false)
+[config]   BLU_BLUCCL_FUSED_EMB=0 (bluccl.fused_embedding_backward=false)
+[config]   BLU_MIX_ROOT=/root/gautam_k/pt_data/mix (env wins over data.data_dir=/data)
+[config]   BLU_CKPT=0 (env wins over checkpointing.enabled=true)
+[config]   BLU_LOG_ENABLED=0 (env wins over logs.enabled=true)
+[config]   BLU_MONITOR=0 (env wins over monitoring.enabled=true)
+[precision] bf16 logits ON — frees ~3 GiB ([B,T,vocab] fp32 activation + gradient). Gradients are unaffected (fp32 softmax stats, exact 1.0 backward seed), but the REPORTED loss is bf16 and quantizes to ~0.06 steps: compare tokens/s and grad-norm across an A/B, not the loss digits.
+================ Configuration ================
+  d_model         : 2304
+  n_layers        : 26
+  q_heads/kv_heads: 18 / 6  (G=3)
+  head_dim        : 128
+  ffn_hidden      : 6144  (SwiGLU)
+  context_length  : 4096
+  rope_theta      : 10000  (interleaved=NeoX)
+  vocab_size      : 50304
+  weight_tying    : ON
+  precision       : resid bfloat16 | logits bfloat16 | embed bfloat16
+                    (matmuls bf16, QK-norm+RoPE fp32, optimizer masters fp32 — all fixed)
+  B x T           : 8 x 4096
+  world_size      : 1
+  global_batch    : 1048576  (grad_accum=32)
+  max_lr / min_lr : 0.0012 / 0.00012
+  warmup / steps  : 200 / 8000
+  WSD stable_steps: 6200  (decay tail=1600)
+===============================================
+[comm] backend nccl for the ZeRO collectives
+Initializing model on CUDA device 0...
+Number of parameters: 1588229888
+==================== MFU accounting ====================
+  device            : NVIDIA H200 x 1
+  peak BF16 (dense) : 989.400 TFLOP/s per GPU
+  cluster peak      : 0.989 PFLOP/s
+  fwd FLOPs/token   : 3.667 GFLOP  (causal)
+  fwd+bwd /token    : 11.001 GFLOP  (causal, x3) <-- headline
+  fwd+bwd /token    : 12.473 GFLOP  (PaLM convention)
+  6*N cross-check   : 9.529 GFLOP  (weight matmuls only; excludes the T-dependent attention core)
+  model FLOPs/step  : 11.535 PFLOP  over 1048576 tokens
+  100% MFU would be : 11658.766 ms/step
+  note              : no activation checkpointing in this loop, so HFU == MFU
+========================================================
+[BluCCL] fused embedding backward ON (N=32768 C=2304 V=50304, workspace 19.328 MB)
+[embedding] backward: segmented (sorted segments, fp32 sums, deterministic)
+[ZeRO-1] BLU_GRAD_VIEW=1 requested: gradients accumulate directly into the reduce-scatter buffer. Each group reports below whether it engaged. NOTE this changes micro-step gradient accumulation to the wire dtype -- A/B the loss curve.
+[ZeRO-1] BLU_GLOBAL_CLIP=1: clipping on the norm over ALL parameter groups (DeepSpeed semantics) instead of per group
+[ZeRO-1] overlap: reduce=off (monolithic, after backward) | refresh=off (synchronous publish in step)
+[ZeRO-1] variant: v2 reduce-scatter/all-gather | symmetric memory: requested  (BLU_ZERO_V2=1 BLU_SYMMETRIC=1)
+[ZeRO-1/Muon] reduce-scatter/all-gather layout: 6 bucket(s), 12 collectives/step, shard 1472200704 elems/rank, padding 0.000% (flat buffer 2808.000 MB)
+[ZeRO-1/Muon] BLU_GRAD_VIEW=1 DECLINED: world_size == 1 -- gradients stage through flat_grad_ as before.
+[ZeRO-1/Muon] adjust_lr=match_rms_adamw | params=1472200704 (156 orthogonalized / 0 AdamW) muon_elems=1472200704 | W=1 owned=1472200704 (156 tensors) | master+momentum: 11232.000 MB/GPU + grad scratch 108.000 MB
+[ZeRO-1 v2] BLU_GRAD_VIEW=1 DECLINED: world_size == 1 -- gradients stage through flat_grad_ as before.
+[ZeRO-1 v2] build=v2.4  supports: rs+ag | can-symmetric-window | can-fp32-reduce | can-bf16-reduce | can-reshard-v1-ckpt
+[ZeRO-1 v2] ACTIVE: reduce_dtype=bfloat16 (= param dtype)  symmetric=off  overlap=-/-  inplace=ON (442.617 MB of shard buffers not allocated)
+[ZeRO-1 v2] zero1-v2 reduce-scatter/all-gather (standard memory)
+[ZeRO-1 v2] params=116022528 padded=116029440 W=1 shard=116029440 | 5 buckets of 49.980 MB (26204160 elems/rank/bucket) | optimizer state/GPU: 1327.852 MB (vs 1327.852 MB unsharded)
+[ZeRO-1 v2] BLU_GRAD_VIEW=1 DECLINED: world_size == 1 -- gradients stage through flat_grad_ as before.
+[ZeRO-1 v2] build=v2.4  supports: rs+ag | can-symmetric-window | can-fp32-reduce | can-bf16-reduce | can-reshard-v1-ckpt
+[ZeRO-1 v2] ACTIVE: reduce_dtype=float32 (= param dtype)  symmetric=off  overlap=-/-  inplace=ON (0.117 MB of shard buffers not allocated)
+[ZeRO-1 v2] zero1-v2 reduce-scatter/all-gather (standard memory)
+[ZeRO-1 v2] params=6656 padded=15360 W=1 shard=15360 | 1 buckets of 49.980 MB (13102080 elems/rank/bucket) | optimizer state/GPU: 0.176 MB (vs 0.176 MB unsharded)
+[optimizer] MUON + AdamW  (BLU_OPTIMIZER=muon) | muon_lr 0.001 / 0.000 momentum 0.950 wd 0.100 ns_steps 5 publish pipelined (AG per bucket, under NS) adjust_lr match_rms_adamw
+  G0 muon:bfloat16/1472M : zero1-muon whole-parameter reduce-scatter/all-gather | lr 0.001 -> 0.000
+  G1 adamw:bfloat16/116M : zero1-v2 reduce-scatter/all-gather (standard memory) | lr 0.001 -> 0.000
+  G2 adamw:float32/0M : zero1-v2 reduce-scatter/all-gather (standard memory) | lr 0.001 -> 0.000
+[ZeRO-1] grad_clip=1.000 APPLIES TO 116029184 / 1588229888 params (7.31%)
+[ZeRO-1] *** WARNING: grad_clip leaves 92.69% of parameters unclipped (the Muon-path body). ***
+decayed params: 1588101120, non-decayed: 128768 | ZeRO-1 optimizer groups: 3 | world_size: 1
+
+=== Data mixture: preset c2 (phased) ===
+  [stable    ] from step      0 :  commoncrawl=0.580  edufineweb=0.050  code=0.220  math=0.150
+  [anneal    ] from step   6400 :  commoncrawl=0.330  edufineweb=0.250  code=0.220  math=0.200
+=================================================
+[MixedLoader] domain 'commoncrawl': 1 shards, weight=0.580 (/root/gautam_k/pt_data/mix/commoncrawl)
+[MixedLoader] domain 'edufineweb': 1 shards, weight=0.050 (/root/gautam_k/pt_data/mix/edufineweb)
+[MixedLoader] domain 'code': 1 shards, weight=0.220 (/root/gautam_k/pt_data/mix/code)
+[MixedLoader] domain 'math': 1 shards, weight=0.150 (/root/gautam_k/pt_data/mix/math)
+found 1 shards for split val
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+found 1 shards for split val
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+found 1 shards for split val
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+found 1 shards for split val
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+
+Starting training...
+
+
+[mix] step 0 entering phase 'stable'
+[MixedLoader] weights -> {commoncrawl=0.580, edufineweb=0.050, code=0.220, math=0.150}  (phase 'stable')  [selection accounting rebased]
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+  [val] step 0 | val_loss 11.291607 | commoncrawl 11.291608 | edufineweb 11.291608 | code 11.291608 | math 11.291608
+step      0 | train 11.288469 | val 11.291607 | tok/s 48961.15 | norm 19.3557 | dt 21416.49 ms | mfu 54.44% | TF/gpu 538.6 | lr 6.0000e-06 | G0(muon:bfloat16/1472M) 19.2594 | G1(adamw:bfloat16/116M) 1.9286 | G2(adamw:float32/0M) 0.0087 | globalclip 0.5185 | nsrej 0/0 | nsratio 1.010
+step      1 | train 11.288145 | val 11.291607 | tok/s 48980.08 | norm 19.0911 | dt 21408.21 ms | mfu 54.46% | TF/gpu 538.8 | lr 1.2000e-05 | G0(muon:bfloat16/1472M) 18.9957 | G1(adamw:bfloat16/116M) 1.9063 | G2(adamw:float32/0M) 0.0084 | globalclip 0.5246 | nsrej 0/0 | nsratio 1.013
+step      2 | train 11.254285 | val 11.291607 | tok/s 48919.62 | norm 18.9876 | dt 21434.67 ms | mfu 54.39% | TF/gpu 538.2 | lr 1.8000e-05 | G0(muon:bfloat16/1472M) 18.8932 | G1(adamw:bfloat16/116M) 1.8920 | G2(adamw:float32/0M) 0.0082 | globalclip 0.5285 | nsrej 0/0 | nsratio 1.012
+step      3 | train 11.164950 | val 11.291607 | tok/s 48860.53 | norm 19.2791 | dt 21460.59 ms | mfu 54.33% | TF/gpu 537.5 | lr 2.4000e-05 | G0(muon:bfloat16/1472M) 19.1837 | G1(adamw:bfloat16/116M) 1.9157 | G2(adamw:float32/0M) 0.0093 | globalclip 0.5220 | nsrej 0/0 | nsratio 1.001
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+  [val] step 4 | val_loss 11.050129 | commoncrawl 11.050129 | edufineweb 11.050129 | code 11.050129 | math 11.050129
+step      4 | train 11.051249 | val 11.050129 | tok/s 48847.08 | norm 19.0696 | dt 21466.50 ms | mfu 54.31% | TF/gpu 537.4 | lr 3.0000e-05 | G0(muon:bfloat16/1472M) 18.9723 | G1(adamw:bfloat16/116M) 1.9238 | G2(adamw:float32/0M) 0.0107 | globalclip 0.5198 | nsrej 0/0 | nsratio 0.998
+step      5 | train 10.868783 | val 11.050129 | tok/s 48831.33 | norm 18.9189 | dt 21473.43 ms | mfu 54.29% | TF/gpu 537.2 | lr 3.6000e-05 | G0(muon:bfloat16/1472M) 18.8207 | G1(adamw:bfloat16/116M) 1.9256 | G2(adamw:float32/0M) 0.0134 | globalclip 0.5193 | nsrej 0/0 | nsratio 0.997
+step      6 | train 10.657283 | val 11.050129 | tok/s 48879.68 | norm 18.6427 | dt 21452.19 ms | mfu 54.35% | TF/gpu 537.7 | lr 4.2000e-05 | G0(muon:bfloat16/1472M) 18.5407 | G1(adamw:bfloat16/116M) 1.9480 | G2(adamw:float32/0M) 0.0175 | globalclip 0.5133 | nsrej 0/0 | nsratio 0.999
+step      7 | train 10.423043 | val 11.050129 | tok/s 48859.36 | norm 18.1607 | dt 21461.11 ms | mfu 54.33% | TF/gpu 537.5 | lr 4.8000e-05 | G0(muon:bfloat16/1472M) 18.0482 | G1(adamw:bfloat16/116M) 2.0181 | G2(adamw:float32/0M) 0.0205 | globalclip 0.4955 | nsrej 0/0 | nsratio 1.002
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+  [val] step 8 | val_loss 10.147978 | commoncrawl 10.147978 | edufineweb 10.147978 | code 10.147978 | math 10.147978
+step      8 | train 10.162963 | val 10.147978 | tok/s 48843.37 | norm 17.2534 | dt 21468.13 ms | mfu 54.31% | TF/gpu 537.3 | lr 5.4000e-05 | G0(muon:bfloat16/1472M) 17.1352 | G1(adamw:bfloat16/116M) 2.0154 | G2(adamw:float32/0M) 0.0227 | globalclip 0.4961 | nsrej 0/0 | nsratio 1.002
+step      9 | train 9.942894 | val 10.147978 | tok/s 48845.63 | norm 17.0121 | dt 21467.14 ms | mfu 54.31% | TF/gpu 537.3 | lr 6.0000e-05 | G0(muon:bfloat16/1472M) 16.8851 | G1(adamw:bfloat16/116M) 2.0752 | G2(adamw:float32/0M) 0.0224 | globalclip 0.4819 | nsrej 0/0 | nsratio 1.001
+step     10 | train 9.645596 | val 10.147978 | tok/s 48841.20 | norm 17.5728 | dt 21469.09 ms | mfu 54.30% | TF/gpu 537.3 | lr 6.6000e-05 | G0(muon:bfloat16/1472M) 17.4371 | G1(adamw:bfloat16/116M) 2.1799 | G2(adamw:float32/0M) 0.0218 | globalclip 0.4587 | nsrej 0/0 | nsratio 1.001
+step     11 | train 9.397406 | val 10.147978 | tok/s 48865.81 | norm 14.9147 | dt 21458.27 ms | mfu 54.33% | TF/gpu 537.6 | lr 7.2000e-05 | G0(muon:bfloat16/1472M) 14.7880 | G1(adamw:bfloat16/116M) 1.9405 | G2(adamw:float32/0M) 0.0204 | globalclip 0.5153 | nsrej 0/0 | nsratio 1.002
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+[data/val] shard 0/1 edufineweb_val_00000.bin: 100000000 tokens, 3051 global batch(es) of 32768
+  [val] step 12 | val_loss 9.078459 | commoncrawl 9.078460 | edufineweb 9.078460 | code 9.078460 | math 9.078460
+step     12 | train 9.074244 | val 9.078459 | tok/s 48832.37 | norm 13.1094 | dt 21472.97 ms | mfu 54.30% | TF/gpu 537.2 | lr 7.8000e-05 | G0(muon:bfloat16/1472M) 13.0046 | G1(adamw:bfloat16/116M) 1.6543 | G2(adamw:float32/0M) 0.0178 | globalclip 0.6045 | nsrej 0/0 | nsratio 1.001

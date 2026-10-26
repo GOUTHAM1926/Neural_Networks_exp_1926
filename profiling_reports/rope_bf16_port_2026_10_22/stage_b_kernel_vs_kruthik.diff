@@ -1,0 +1,161 @@
+--- /home/blu-bridge016/Downloads/Neural_Networks_exp_1926/profiling_reports/rope_bf16_port_2026_10_22/kruthik_original/FusedRMSRoPE_bf16.cu	2026-10-22 13:39:32.903301628 +0530
++++ src/Kernels/cuda/norm/FusedRMSRoPE_bf16.cu	2026-10-22 13:40:20.264854729 +0530
+@@ -42,7 +42,11 @@
+     else                  { const float2 f = *reinterpret_cast<const float2*>(p); v[0] = f.x; v[1] = f.y; }
+ }
+ 
+-template <bool IS_NEOX, int HD, int TOK_PER_WARP, int WARPS_PER_BLOCK>
++// HAS_POS (packed SFT rows, added 2026-10-22, the same scheme as the fp32 kernels in norm/arch/): false = the original
++// kernel, position = t + pos_offset; true = per-token positions[b*T + t] (several chats per row, each restarting at 0).
++// A template flag, not a runtime branch, so the HAS_POS=false instantiation is the original kernel; positions is
++// appended LAST so the existing parameters keep their places.
++template <bool IS_NEOX, int HD, int TOK_PER_WARP, int WARPS_PER_BLOCK, bool HAS_POS>
+ __global__ __launch_bounds__(32 * WARPS_PER_BLOCK)
+ void fused_qknorm_rope_fwd_bf16_tm(
+     const bf16* __restrict__ q_in, const bf16* __restrict__ k_in,
+@@ -50,7 +54,8 @@
+     const float* __restrict__ q_gamma, const float* __restrict__ k_gamma,
+     const float* __restrict__ cos_sin_cache,
+     float* __restrict__ q_rstd, float* __restrict__ k_rstd,
+-    int Hq, int Hkv, int T, int pos_offset, float eps) {
++    int Hq, int Hkv, int T, int pos_offset, float eps,
++    const int32_t* __restrict__ positions) {   // [B, T], read only when HAS_POS
+ 
+     constexpr int HALF  = HD / 2;
+     constexpr int VECS  = (HD + 31) / 32;
+@@ -105,7 +110,10 @@
+             const float rstd = rsqrtf(part / float(HD) + eps);
+             if (lane == 0) rstd_out[rstd_base + tt] = rstd;
+ 
+-            const float* cs_row = cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
++            // positions: the token's position inside its chat (HAS_POS=false keeps tok_pos + pos_offset)
++            const float* cs_row = HAS_POS
++                ? cos_sin_cache + (long)positions[(long)batch * T + tok_pos] * HD
++                : cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
+             float cs0[W], csp[W], vp[W], out[W];
+             ld_f32<W>(cs_row + lane * W, cs0);
+             #pragma unroll
+@@ -157,7 +165,10 @@
+             const float rstd = rsqrtf(part / float(HD) + eps);
+             if (lane == 0) rstd_out[rstd_base + tt] = rstd;
+ 
+-            const float* cs_row = cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
++            // positions: same rule as the NeoX path above
++            const float* cs_row = HAS_POS
++                ? cos_sin_cache + (long)positions[(long)batch * T + tok_pos] * HD
++                : cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
+             #pragma unroll
+             for (int p = 0; p < PAIRS; ++p) {
+                 const int i = lane + p * 32;
+@@ -175,7 +186,9 @@
+     }
+ }
+ 
+-template <bool IS_NEOX, int HD>
++// HAS_POS: as in the forward. The backward undoes the forward's rotation, so it must use the SAME cos/sin row for each
++// token. The dgamma partials keep their fixed order, so they stay bit-reproducible with positions too.
++template <bool IS_NEOX, int HD, bool HAS_POS>
+ __global__ void fused_qknorm_rope_bwd_bf16_tm(
+     const bf16* __restrict__ dz_q, const bf16* __restrict__ dz_k,
+     const bf16* __restrict__ q_in, const bf16* __restrict__ k_in,
+@@ -184,7 +197,8 @@
+     const float* __restrict__ q_rstd, const float* __restrict__ k_rstd,
+     bf16* __restrict__ dq_in, bf16* __restrict__ dk_in,
+     float* __restrict__ dq_gpart, float* __restrict__ dk_gpart,
+-    int Hq, int Hkv, int T, int pos_offset) {
++    int Hq, int Hkv, int T, int pos_offset,
++    const int32_t* __restrict__ positions) {   // [B, T], read only when HAS_POS
+ 
+     constexpr int HALF  = HD / 2;
+     constexpr int PAIRS = (HALF + 31) / 32;
+@@ -229,7 +243,10 @@
+         const bf16* x  = in_base + tm;
+         bf16*       dx = dx_base + tm;
+         const float  rstd = rstd_in[((long)b * H + h) * T + t];
+-        const float* cs_row = cos_sin + (long)(t + pos_offset) * HD;
++        // positions: the same row the forward used for this token (HAS_POS=false keeps t + pos_offset)
++        const float* cs_row = HAS_POS
++            ? cos_sin + (long)positions[(long)b * T + t] * HD
++            : cos_sin + (long)(t + pos_offset) * HD;
+ 
+         float xh_a[PAIRS], xh_b[PAIRS], dy_a[PAIRS], dy_b[PAIRS], g_a[PAIRS], g_b[PAIRS];
+         float partial = 0.f;
+@@ -300,7 +317,8 @@
+     float* q_rstd, float* k_rstd,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, float eps, bool interleaved,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    const int32_t* positions)
+ {
+     constexpr int TPW = 4, WPB = 8;
+     dim3 block(32 * WPB);
+@@ -308,16 +326,21 @@
+     auto qi = reinterpret_cast<const bf16*>(q_in);  auto ki = reinterpret_cast<const bf16*>(k_in);
+     auto qo = reinterpret_cast<bf16*>(q_out);       auto ko = reinterpret_cast<bf16*>(k_out);
+ 
+-#define LAUNCH_F(NEOX, HDV)                                                                   \
+-    fused_qknorm_rope_fwd_bf16_tm<NEOX, HDV, TPW, WPB><<<grid, block, 0, stream>>>(         \
+-        qi, ki, qo, ko, q_gamma, k_gamma, cos_sin, q_rstd, k_rstd, Hq, Hkv, T, pos_offset, eps)
+-#define DISPATCH_F(NEOX)                                                                      \
++    // HASP selects the per-token-positions instantiation (positions != nullptr)
++#define LAUNCH_F(NEOX, HDV, HASP)                                                             \
++    fused_qknorm_rope_fwd_bf16_tm<NEOX, HDV, TPW, WPB, HASP><<<grid, block, 0, stream>>>(   \
++        qi, ki, qo, ko, q_gamma, k_gamma, cos_sin, q_rstd, k_rstd, Hq, Hkv, T, pos_offset, eps, positions)
++#define DISPATCH_F(NEOX, HASP)                                                                \
+     switch (hd) {                                                                             \
+-        case  64: LAUNCH_F(NEOX,  64); break;                                                 \
+-        case 128: LAUNCH_F(NEOX, 128); break;                                                 \
++        case  64: LAUNCH_F(NEOX,  64, HASP); break;                                           \
++        case 128: LAUNCH_F(NEOX, 128, HASP); break;                                           \
+         default : fprintf(stderr, "fused_qk_norm_rope_forward_bf16_tm: unsupported hd=%d\n", hd); abort(); \
+     }
+-    if (!interleaved) { DISPATCH_F(true); } else { DISPATCH_F(false); }
++    if (positions == nullptr) {   // original path: position = t + pos_offset
++        if (!interleaved) { DISPATCH_F(true, false); } else { DISPATCH_F(false, false); }
++    } else {                      // packed rows: position = positions[b*T + t]
++        if (!interleaved) { DISPATCH_F(true, true); } else { DISPATCH_F(false, true); }
++    }
+ #undef DISPATCH_F
+ #undef LAUNCH_F
+ }
+@@ -332,7 +355,8 @@
+     float* dq_gamma, float* dk_gamma,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, bool interleaved,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    const int32_t* positions)
+ {
+     ensure_part(&d_bf16tm_qpart, &bf16tm_qpart_cap, (size_t)B * Hq  * BF16_BWD_T_CHUNKS * hd);
+     ensure_part(&d_bf16tm_kpart, &bf16tm_kpart_cap, (size_t)B * Hkv * BF16_BWD_T_CHUNKS * hd);
+@@ -342,17 +366,22 @@
+     auto qi  = reinterpret_cast<const bf16*>(q_in); auto ki  = reinterpret_cast<const bf16*>(k_in);
+     auto dqi = reinterpret_cast<bf16*>(dq_in);      auto dki = reinterpret_cast<bf16*>(dk_in);
+ 
+-#define LAUNCH_B(NEOX, HDV)                                                                   \
+-    fused_qknorm_rope_bwd_bf16_tm<NEOX, HDV><<<grid, block, 0, stream>>>(                    \
++    // HASP selects the per-token-positions instantiation (positions != nullptr)
++#define LAUNCH_B(NEOX, HDV, HASP)                                                             \
++    fused_qknorm_rope_bwd_bf16_tm<NEOX, HDV, HASP><<<grid, block, 0, stream>>>(              \
+         dzq, dzk, qi, ki, q_gamma, k_gamma, cos_sin, q_rstd, k_rstd, dqi, dki,               \
+-        d_bf16tm_qpart, d_bf16tm_kpart, Hq, Hkv, T, pos_offset)
+-#define DISPATCH_B(NEOX)                                                                      \
++        d_bf16tm_qpart, d_bf16tm_kpart, Hq, Hkv, T, pos_offset, positions)
++#define DISPATCH_B(NEOX, HASP)                                                                \
+     switch (hd) {                                                                             \
+-        case  64: LAUNCH_B(NEOX,  64); break;                                                 \
+-        case 128: LAUNCH_B(NEOX, 128); break;                                                 \
++        case  64: LAUNCH_B(NEOX,  64, HASP); break;                                           \
++        case 128: LAUNCH_B(NEOX, 128, HASP); break;                                           \
+         default : fprintf(stderr, "fused_qk_norm_rope_backward_bf16_tm: unsupported hd=%d\n", hd); abort(); \
+     }
+-    if (!interleaved) { DISPATCH_B(true); } else { DISPATCH_B(false); }
++    if (positions == nullptr) {   // original path: cache row = t + pos_offset
++        if (!interleaved) { DISPATCH_B(true, false); } else { DISPATCH_B(false, false); }
++    } else {                      // packed rows: cache row = positions[b*T + t]
++        if (!interleaved) { DISPATCH_B(true, true); } else { DISPATCH_B(false, true); }
++    }
+ #undef DISPATCH_B
+ #undef LAUNCH_B
+ 

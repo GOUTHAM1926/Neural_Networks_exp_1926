@@ -1,0 +1,14 @@
+15:33:31 IST start | GPU 0 NVIDIA H200, 0 MiB | vj2_K4b 298cc933  vj2_K5 f3a7f34a  vj2_K5q 8dc36782  vj2_K6 534c44cc  
+15:34:08 IST quick suite vj2_K5 exit=0 | checks passed 296, failed 0, skipped groups 0   (36 s total)
+15:34:43 IST quick suite vj2_K5q exit=0 | checks passed 296, failed 0, skipped groups 0   (34 s total)
+15:35:17 IST quick suite vj2_K6 exit=0 | checks passed 296, failed 0, skipped groups 0   (34 s total)
+15:35:59 IST race round 01 done (vj2_K5 vj2_K5q vj2_K6 vj2_K4b)
+15:36:40 IST race round 02 done (vj2_K5 vj2_K4b vj2_K6 vj2_K5q)
+15:37:20 IST race round 03 done (vj2_K6 vj2_K4b vj2_K5 vj2_K5q)
+15:38:00 IST race round 04 done (vj2_K6 vj2_K5q vj2_K5 vj2_K4b)
+15:38:40 IST race round 05 done (vj2_K5 vj2_K5q vj2_K6 vj2_K4b)
+15:39:22 IST race round 06 done (vj2_K5 vj2_K4b vj2_K6 vj2_K5q)
+15:40:05 IST race round 07 done (vj2_K6 vj2_K4b vj2_K5 vj2_K5q)
+15:40:45 IST race round 08 done (vj2_K6 vj2_K5q vj2_K5 vj2_K4b)
+15:40:45 IST MULTI DONE
+15:41:02 IST PACKED k5_results.tgz

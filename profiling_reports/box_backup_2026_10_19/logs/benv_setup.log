@@ -1,0 +1,35 @@
+11:18:05 IST start | flash-attention 94e22c9 | Build cuda_13.4.r13.4/compiler.38855100_0
+11:18:59 IST torch ready: 2.14.1+cu130 | cuda 13.0 | cudnn 92400
+Submodule 'csrc/cutlass' (https://github.com/NVIDIA/cutlass.git) registered for path 'csrc/cutlass'
+Cloning into '/root/gautam_K/flash-attention/csrc/cutlass'...
+Submodule path 'csrc/cutlass': checked out '7127592069c2fe01b041e174ba4345ef9b279671'
+11:19:05 IST cutlass: 7127592069c2fe01b041e174ba4345ef9b279671
+11:21:59 IST FAILED: FA3 build (benv_fa3_build.log)
+11:25:37 IST start | flash-attention 94e22c9 | Build cuda_13.4.r13.4/compiler.38855100_0
+11:25:41 IST torch ready: 2.14.1+cu130 | cuda 13.0 | cudnn 92400
+11:25:41 IST cutlass: 7127592069c2fe01b041e174ba4345ef9b279671
+Get:1 http://fin-02.clouds.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpython3.12-dev amd64 3.12.3-1ubuntu0.17 [5684 kB]
+Get:2 http://fin-02.clouds.archive.ubuntu.com/ubuntu noble-updates/main amd64 python3.12-dev amd64 3.12.3-1ubuntu0.17 [498 kB]
+Fetched 6182 kB in 2s (3809 kB/s)
+W: Download is performed unsandboxed as root as file '/root/gautam_K/pydev/debs/libpython3.12-dev_3.12.3-1ubuntu0.17_amd64.deb' couldn't be accessed by user '_apt'. - pkgAcquire::Run (13: Permission denied)
+11:25:43 IST python headers: libpython3.12-dev_3.12.3-1ubuntu0.17_amd64.deb
+python3.12-dev_3.12.3-1ubuntu0.17_amd64.deb unpacked in /root/gautam_K/pydev (not installed)
+11:25:59 IST FA3 built
+11:26:07 IST FA4 installed
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+  File "/root/gautam_K/flash-attention/hopper/flash_attn_interface.py", line 24, in <module>
+    import flash_attn_3._C # Registers operators with PyTorch
+    ^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'flash_attn_3._C'
+11:26:09 IST FAILED: imports
+11:28:20 IST start | flash-attention 94e22c9 | Build cuda_13.4.r13.4/compiler.38855100_0
+11:28:24 IST torch ready: 2.14.1+cu130 | cuda 13.0 | cudnn 92400
+11:28:24 IST cutlass: 7127592069c2fe01b041e174ba4345ef9b279671
+11:28:24 IST python headers: libpython3.12-dev_3.12.3-1ubuntu0.17_amd64.deb
+python3.12-dev_3.12.3-1ubuntu0.17_amd64.deb unpacked in /root/gautam_K/pydev (not installed)
+11:28:32 IST FA3 built
+11:28:35 IST FA4 installed
+CHECK torch 2.14.1+cu130 | cuda 13.0 | cudnn 92400 | flash_attn_3 3.0.0 | flash-attn-4 4.0.0b34 | nvidia-cutlass-dsl 4.8.1 | quack-kernels 0.6.5
+11:28:38 IST CHECK torch 2.14.1+cu130 | cuda 13.0 | cudnn 92400 | flash_attn_3 3.0.0 | flash-attn-4 4.0.0b34 | nvidia-cutlass-dsl 4.8.1 | quack-kernels 0.6.5
+11:28:38 IST BENV READY | 6.0G

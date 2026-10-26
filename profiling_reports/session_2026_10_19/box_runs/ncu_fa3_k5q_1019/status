@@ -1,0 +1,6 @@
+11:40:59 IST start | GPU 0 NVIDIA H200, 0 MiB | ours vj2_K5q a804ea04 | ncu Version 2026.3.1.0 (build 38829034) (public-release)
+11:41:10 IST ours_dense exit=0 | kernels profiled 1 | raw 3 lines | source 3650 lines
+11:41:24 IST fa3_dense exit=0 | kernels profiled 1 | raw 3 lines | source 3210 lines
+11:41:34 IST ours_packed exit=0 | kernels profiled 1 | raw 3 lines | source 3482 lines
+11:41:48 IST fa3_packed exit=0 | kernels profiled 1 | raw 3 lines | source 4282 lines
+11:41:48 IST NCU DONE

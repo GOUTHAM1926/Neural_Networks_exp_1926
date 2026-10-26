@@ -1,0 +1,14 @@
+                                        padding      packing  packing / padding
+optimizer steps                             156          151              0.968
+steps per epoch                            78.0         75.5              0.968
+rows per step                                64           20              0.312
+step time, median (s)                     5.014        1.629              0.325
+step time, mean of steps>=10 (s)          5.015        1.630              0.325
+training time per epoch (min)              6.52         2.05              0.315
+whole run incl. val + load (min)          16.99         5.14              0.302
+tokens computed per s                     52282        50281              0.962
+trained (answer) tokens per s             12185        38608              3.168
+chats per s                               12.78        40.65              3.179
+peak GPU memory (MiB, nvidia-smi)        123233        85757              0.696
+val loss at the start                  1.446384     1.449444 
+val loss at the end                    1.283890     1.286579 

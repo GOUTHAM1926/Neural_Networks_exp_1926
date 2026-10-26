@@ -1,0 +1,29 @@
+[precision] bf16 logits ON — frees ~3 GiB ([B,T,vocab] fp32 activation + gradient). Gradients are unaffected (fp32 softmax stats, exact 1.0 backward seed), but the REPORTED loss is bf16 and quantizes to ~0.06 steps: compare tokens/s and grad-norm across an A/B, not the loss digits.
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  SftDataLoader: /root/gautam_k/sft_data/tiny_item3/train/inputs.bin has 0 bytes, meta.json says it should have 524288
+[tall-door-completes-fin-02:1213048] *** Process received signal ***
+[tall-door-completes-fin-02:1213048] Signal: Aborted (6)
+[tall-door-completes-fin-02:1213048] Signal code:  (-6)
+[tall-door-completes-fin-02:1213048] [ 0] /usr/lib/x86_64-linux-gnu/libc.so.6(+0x45330)[0x758f0a245330]
+[tall-door-completes-fin-02:1213048] [ 1] /usr/lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x11c)[0x758f0a29ec0c]
+[tall-door-completes-fin-02:1213048] [ 2] /usr/lib/x86_64-linux-gnu/libc.so.6(gsignal+0x1e)[0x758f0a24527e]
+[tall-door-completes-fin-02:1213048] [ 3] /usr/lib/x86_64-linux-gnu/libc.so.6(abort+0xdf)[0x758f0a2288ff]
+[tall-door-completes-fin-02:1213048] [ 4] /usr/lib/x86_64-linux-gnu/libstdc++.so.6(+0xa5ff5)[0x758f0a6a5ff5]
+[tall-door-completes-fin-02:1213048] [ 5] /usr/lib/x86_64-linux-gnu/libstdc++.so.6(+0xbb0da)[0x758f0a6bb0da]
+[tall-door-completes-fin-02:1213048] [ 6] /usr/lib/x86_64-linux-gnu/libstdc++.so.6(_ZSt10unexpectedv+0x0)[0x758f0a6a5a55]
+[tall-door-completes-fin-02:1213048] [ 7] /usr/lib/x86_64-linux-gnu/libstdc++.so.6(+0xbb391)[0x758f0a6bb391]
+[tall-door-completes-fin-02:1213048] [ 8] /root/gautam_k/sft_v2/BluTrain_sft/bluscript_sft_bin_item3(+0x58a7e)[0x5d1ad9f4ea7e]
+[tall-door-completes-fin-02:1213048] [ 9] /root/gautam_k/sft_v2/BluTrain_sft/bluscript_sft_bin_item3(+0x5f7c5)[0x5d1ad9f557c5]
+[tall-door-completes-fin-02:1213048] [10] /root/gautam_k/sft_v2/BluTrain_sft/bluscript_sft_bin_item3(+0x604f9)[0x5d1ad9f564f9]
+[tall-door-completes-fin-02:1213048] [11] /root/gautam_k/sft_v2/BluTrain_sft/bluscript_sft_bin_item3(+0x2fc0f)[0x5d1ad9f25c0f]
+[tall-door-completes-fin-02:1213048] [12] /usr/lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca)[0x758f0a22a1ca]
+[tall-door-completes-fin-02:1213048] [13] /usr/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b)[0x758f0a22a28b]
+[tall-door-completes-fin-02:1213048] [14] /root/gautam_k/sft_v2/BluTrain_sft/bluscript_sft_bin_item3(+0x3a6f5)[0x5d1ad9f306f5]
+[tall-door-completes-fin-02:1213048] *** End of error message ***
+--------------------------------------------------------------------------
+Primary job  terminated normally, but 1 process returned
+a non-zero exit code. Per user-direction, the job has been aborted.
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------
+mpirun noticed that process rank 0 with PID 0 on node tall-door-completes-fin-02 exited on signal 6 (Aborted).
+--------------------------------------------------------------------------

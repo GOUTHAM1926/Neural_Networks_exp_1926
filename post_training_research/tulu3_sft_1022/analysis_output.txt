@@ -1,0 +1,52 @@
+steps in the final trajectory: 11590 (missing 0), val points: 59
+consistency at the resume points (same checkpoint -> val must match):
+  val @ 8000: run.log 0.856308 | run_resume1.log 0.856308 | IDENTICAL
+  train @ 8000: 0.653908 | 0.653908 | IDENTICAL
+  val @ 9000: run_resume1.log 0.854744 | run_resume_4x.log 0.854744 | IDENTICAL
+  train @ 9000: 0.567569 | 0.567569 | IDENTICAL
+
+val loss along the run (weights after N updates):
+  step     0  epoch 1  val 1.175723
+  step   200  epoch 1  val 1.048921
+  step   400  epoch 1  val 0.992842
+  step   600  epoch 1  val 0.969231
+  step  1000  epoch 1  val 0.943299
+  step  2000  epoch 1  val 0.909609
+  step  3000  epoch 1  val 0.891017
+  step  4000  epoch 1  val 0.876790
+  step  5000  epoch 1  val 0.866865
+  step  5800  epoch 2  val 0.860730
+  step  6000  epoch 2  val 0.859895
+  step  7000  epoch 2  val 0.858981
+  step  8000  epoch 2  val 0.856308
+  step  9000  epoch 2  val 0.854744
+  step 10000  epoch 2  val 0.852799
+  step 11000  epoch 2  val 0.850836
+  step 11589  epoch 2  val 0.850100
+
+val at the end of epoch 1 (interpolated, step 5795.2): 0.860767
+val drop epoch 1 (0 -> 5795): 0.314956 | epoch 2 (5795 -> 11589): 0.010667
+lowest val: 0.850100 at step 11589
+val points that rose over the previous one: 3 of 58; largest rise 0.000713 (at step 6200)
+val change per 1000 steps in epoch 2:
+   6000 ->  7000: -0.000914
+   7000 ->  8000: -0.002673
+   8000 ->  9000: -0.001564
+   9000 -> 10000: -0.001945
+  10000 -> 11000: -0.001963
+train mean, epoch 1, first 500 steps (0-499): 1.0399
+train mean, epoch 1, last 500 steps (5295-5794): 0.8431
+train mean, epoch 2, first 500 steps (5795-6294): 0.8122
+train mean, epoch 2, last 500 steps (11090-11589): 0.7737
+gap val - train (500-step train mean): end of epoch 1 +0.0176 | end of epoch 2 +0.0764
+lr: step 0 1.437e-07, peak 5.000e-05 at step 347, end 5.000e-06
+speed run.log           : mean 43,062 tok/s, mean MFU 51.33%
+speed run_resume1.log   : mean 43,160 tok/s, mean MFU 51.45%
+speed run_resume_4x.log : mean 44,024 tok/s, mean MFU 52.48%
+
+memorization measure, 28 windows of 200 steps (epoch-2 steps 5795-11394):
+  all windows: rows_drop 0.1201, val_drop 0.0556, extra (memorization) +0.0645
+  second half of epoch 2: rows_drop 0.0883, val_drop 0.0218, extra (memorization) +0.0665
+  e.g. window from epoch-2 step 6795: rows_drop 0.1438, val_drop 0.0797, extra +0.0642
+
+wrote ./tulu3_sft_1022_full_run.log, trajectory.csv, memorization_windows.csv, loss_train_val.png, loss_val.png, memorization_check.png

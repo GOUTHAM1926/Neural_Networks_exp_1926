@@ -1,0 +1,16 @@
+17:08:20 IST built: PFT: source 541a4f5e | library b29aa706 F3c: source c6a67163 | library 13dd4231 
+17:08:22 IST SASS check: dense PF 3720 instr (UTMASTG 0, STG.E.128 8, LDS.128 8) | dense PFT 3696 instr (UTMASTG 2, STG.E.128 0, LDS.128 0, COLLECTIVE 0) | packed PFT vs PF 0 differing lines (3480 instr, parameter offsets ignored)
+17:08:23 IST start | GPU 0 NVIDIA H200, 0 MiB | vj2_PF 6653f9f2  vj2_PFT b29aa706  
+17:09:10 IST quick suite vj2_PFT exit=0 | checks passed 296, failed 0, skipped groups 0   (47 s total)
+17:09:32 IST race round 01 done (vj2_PFT vj2_PF)
+17:09:54 IST race round 02 done (vj2_PF vj2_PFT)
+17:10:15 IST race round 03 done (vj2_PFT vj2_PF)
+17:10:37 IST race round 04 done (vj2_PF vj2_PFT)
+17:10:58 IST race round 05 done (vj2_PFT vj2_PF)
+17:11:20 IST race round 06 done (vj2_PF vj2_PFT)
+17:11:42 IST race round 07 done (vj2_PFT vj2_PF)
+17:12:04 IST race round 08 done (vj2_PF vj2_PFT)
+17:12:18 IST ncu vj2_PFT dense | kernels profiled 1
+17:12:31 IST ncu vj2_PFT packed | kernels profiled 1
+17:12:31 IST MULTI DONE
+17:12:31 IST PACKED pft_results.tgz

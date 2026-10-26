@@ -1,0 +1,15 @@
+16:39:33 IST built: PF: source 1888246a | library 6653f9f2 F3c: source c6a67163 | library b33a8a53 
+16:39:34 IST start | GPU 0 NVIDIA H200, 0 MiB | vj2_SM3m b9815e38  vj2_PF 6653f9f2  
+16:40:21 IST quick suite vj2_PF exit=0 | checks passed 296, failed 0, skipped groups 0   (46 s total)
+16:40:43 IST race round 01 done (vj2_PF vj2_SM3m)
+16:41:04 IST race round 02 done (vj2_SM3m vj2_PF)
+16:41:26 IST race round 03 done (vj2_PF vj2_SM3m)
+16:41:46 IST race round 04 done (vj2_SM3m vj2_PF)
+16:42:08 IST race round 05 done (vj2_PF vj2_SM3m)
+16:42:30 IST race round 06 done (vj2_SM3m vj2_PF)
+16:42:51 IST race round 07 done (vj2_PF vj2_SM3m)
+16:43:12 IST race round 08 done (vj2_SM3m vj2_PF)
+16:43:26 IST ncu vj2_PF dense | kernels profiled 1
+16:43:39 IST ncu vj2_PF packed | kernels profiled 1
+16:43:39 IST MULTI DONE
+16:43:39 IST PACKED pf_results.tgz

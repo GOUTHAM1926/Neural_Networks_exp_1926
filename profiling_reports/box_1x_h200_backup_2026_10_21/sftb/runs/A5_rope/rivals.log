@@ -1,0 +1,11 @@
+device NVIDIA H200 | torch 2.14.1+cu130 | q [8,18,4096,128] k [8,6,4096,128] fp32 | theta 10000 eps 1e-06 | iters 300 warm 4.0 s
+packed rows 0-7: 29 chats (3.62 per row)
+ROPE impl=torch_eager case=identity fwd_med_ms=2.4440 fwd_min_ms=2.4381 bwd_med_ms=4.9522 bwd_min_ms=4.9231 fb_med_ms=7.2310 fb_min_ms=7.2173 kept_MiB=387.0 peak_MiB=1920.0 err_q_out=1.06e-06 err_k_out=1.03e-06 err_dq=1.31e-06 err_dk=1.44e-06 err_dwq=1.68e-03
+ROPE impl=torch_compile case=identity fwd_med_ms=0.2696 fwd_min_ms=0.2628 bwd_med_ms=0.7739 bwd_min_ms=0.7570 fb_med_ms=0.8984 fb_min_ms=0.8726 kept_MiB=3.0 peak_MiB=1065.0 err_q_out=1.25e-06 err_k_out=1.03e-06 err_dq=1.31e-06 err_dk=1.00e-06 err_dwq=4.36e-04
+Backend impl 'liger_kernel.ops.backends._cutedsl.rope' for op 'rope' could not be imported: ImportError: cutedsl backend requires the NVIDIA CUTLASS Python DSL (CuTe DSL). Install it with `pip install nvidia-cutlass-dsl`, or when installing Liger-Kernel use `pip install 'liger-kernel[cutedsl]'`.
+Backend impl 'liger_kernel.ops.backends._ascend.rope' for op 'rope' could not be imported: ImportError: cannot import name 'tanh' from 'triton.language.math' (/root/gautam_k/lossenv/lib/python3.12/site-packages/triton/language/math.py)
+ROPE impl=liger case=identity fwd_med_ms=0.7786 fwd_min_ms=0.7685 bwd_med_ms=1.7455 bwd_min_ms=1.7292 fb_med_ms=2.3384 fb_min_ms=2.3287 kept_MiB=3.0 peak_MiB=1058.3 err_q_out=9.80e-07 err_k_out=9.41e-07 err_dq=1.31e-06 err_dk=1.00e-06 err_dwq=8.03e-04
+ROPE impl=torch_eager case=packed fwd_med_ms=2.4829 fwd_min_ms=2.4776 bwd_med_ms=5.0130 bwd_min_ms=4.9813 fb_med_ms=7.3208 fb_min_ms=7.3089 kept_MiB=387.0 peak_MiB=1920.0 err_q_out=9.73e-07 err_k_out=8.96e-07 err_dq=1.37e-06 err_dk=1.19e-06 err_dwq=1.08e-03
+ROPE impl=torch_compile case=packed fwd_med_ms=0.2852 fwd_min_ms=0.2788 bwd_med_ms=0.7860 bwd_min_ms=0.7455 fb_med_ms=0.9163 fb_min_ms=0.8957 kept_MiB=3.0 peak_MiB=1065.0 err_q_out=1.05e-06 err_k_out=8.96e-07 err_dq=1.31e-06 err_dk=1.07e-06 err_dwq=4.02e-04
+ROPE impl=liger case=packed fwd_med_ms=0.7795 fwd_min_ms=0.7709 bwd_med_ms=1.7442 bwd_min_ms=1.7297 fb_med_ms=2.3376 fb_min_ms=2.3309 kept_MiB=3.0 peak_MiB=1058.3 err_q_out=1.05e-06 err_k_out=1.02e-06 err_dq=1.31e-06 err_dk=1.07e-06 err_dwq=6.14e-04
+ROPE RIVALS DONE

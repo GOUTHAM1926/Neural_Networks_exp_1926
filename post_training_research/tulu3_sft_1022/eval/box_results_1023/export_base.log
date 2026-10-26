@@ -1,0 +1,3 @@
+metadata v5: step 22600, epoch 0, loss 1.629256, 648 tensors, 282 model weights
+weights read: 310 HF tensors, dtypes {'float32': 56, 'bfloat16': 226}; layer-0 input norm mean 0.4485, q_norm mean 0.9331
+wrote /dev/shm/gautam_eval/base_fullchess: model.safetensors (3.40 GB), config.json, tokenizer + chat template

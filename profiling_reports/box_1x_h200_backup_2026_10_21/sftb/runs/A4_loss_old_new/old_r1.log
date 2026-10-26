@@ -1,0 +1,79 @@
+device      : NVIDIA H200, 132 SMs, 139.8 GiB total, 139.3 GiB free
+shape       : B=8 T=4096 N=32768 V=50304, logits bf16, targets uint16, ignore 65535
+labels      : /root/gautam_k/sft_data/stage0_ultrachat_5k_T4096/train/labels.bin, 5000 rows, 625 micro-batches, mean trained 0.2330
+timing      : 2000 warm-up + 500 timed calls per pass, CUDA events per call
+
+   grad checksum: 4c73bdf7a5668abe
+== real_first   the first micro-batch of the run: micro-batch 0 (rows 0-7)
+   trained rows : 6112 of 32768 (18.65%), ignore_index 65535
+   F   fwd save_stats         median   0.2334  min   0.2286  mean   0.2334 ms |  0.616 GB ->  2637 GB/s =  54.9% of 4.8 TB/s
+   B   bwd with stats         median   1.4486  min   1.4429  mean   1.4487 ms |  3.912 GB ->  2700 GB/s =  56.3% of 4.8 TB/s
+   F+B trainer pair           median   1.6829  min   1.6757  mean   1.6830 ms |  4.527 GB ->  2690 GB/s =  56.0% of 4.8 TB/s
+   Fv  fwd no stats (val)     median   0.2320  min   0.2274  mean   0.2320 ms |  0.615 GB ->  2652 GB/s =  55.2% of 4.8 TB/s
+   Fv+Bo no-stats pair        median   2.0000  min   1.9904  mean   2.0001 ms |  5.142 GB ->  2571 GB/s =  53.6% of 4.8 TB/s
+   checks       : loss 12.742288 ok | rows computed 6112 (expect 6112) ok | masked row 0 grad bit-zero ok | trained row 95: g[target] -1.640e-04, sum -4.347e-07 ok | no-stats path: loss 12.742288, max|dg| 0.00e+00 ok  => PASS
+
+   grad checksum: 763bb41a711a81c8
+== real_min     fewest trained tokens: micro-batch 287 (rows 2296-2303)
+   trained rows : 2920 of 32768 (8.91%), ignore_index 65535
+   F   fwd save_stats         median   0.1322  min   0.1295  mean   0.1323 ms |  0.294 GB ->  2226 GB/s =  46.4% of 4.8 TB/s
+   B   bwd with stats         median   1.0998  min   1.0936  mean   1.0998 ms |  3.591 GB ->  3265 GB/s =  68.0% of 4.8 TB/s
+   F+B trainer pair           median   1.2319  min   1.2257  mean   1.2319 ms |  3.885 GB ->  3154 GB/s =  65.7% of 4.8 TB/s
+   Fv  fwd no stats (val)     median   0.1304  min   0.1282  mean   0.1305 ms |  0.294 GB ->  2255 GB/s =  47.0% of 4.8 TB/s
+   Fv+Bo no-stats pair        median   1.3850  min   1.3794  mean   1.3850 ms |  4.179 GB ->  3017 GB/s =  62.9% of 4.8 TB/s
+   checks       : loss 12.742343 ok | rows computed 2920 (expect 2920) ok | masked row 0 grad bit-zero ok | trained row 406: g[target] -3.433e-04, sum -7.765e-07 ok | no-stats path: loss 12.742343, max|dg| 0.00e+00 ok  => PASS
+
+   grad checksum: c55fab24cbb10c8d
+== real_median  median trained tokens: micro-batch 458 (rows 3664-3671)
+   trained rows : 7577 of 32768 (23.12%), ignore_index 65535
+   F   fwd save_stats         median   0.2763  min   0.2714  mean   0.2764 ms |  0.763 GB ->  2761 GB/s =  57.5% of 4.8 TB/s
+   B   bwd with stats         median   1.6048  min   1.5975  mean   1.6049 ms |  4.059 GB ->  2530 GB/s =  52.7% of 4.8 TB/s
+   F+B trainer pair           median   1.8820  min   1.8737  mean   1.8820 ms |  4.822 GB ->  2562 GB/s =  53.4% of 4.8 TB/s
+   Fv  fwd no stats (val)     median   0.2750  min   0.2699  mean   0.2752 ms |  0.763 GB ->  2773 GB/s =  57.8% of 4.8 TB/s
+   Fv+Bo no-stats pair        median   2.2622  min   2.2534  mean   2.2621 ms |  5.584 GB ->  2469 GB/s =  51.4% of 4.8 TB/s
+   checks       : loss 12.740235 ok | rows computed 7577 (expect 7577) ok | masked row 0 grad bit-zero ok | trained row 69: g[target] -1.316e-04, sum 3.621e-07 ok | no-stats path: loss 12.740235, max|dg| 0.00e+00 ok  => PASS
+
+   grad checksum: 7d6685a5a7f7925a
+== real_max     most trained tokens: micro-batch 415 (rows 3320-3327)
+   trained rows : 12729 of 32768 (38.85%), ignore_index 65535
+   F   fwd save_stats         median   0.4365  min   0.4301  mean   0.4383 ms |  1.281 GB ->  2935 GB/s =  61.2% of 4.8 TB/s
+   B   bwd with stats         median   2.1661  min   2.1575  mean   2.1661 ms |  4.578 GB ->  2113 GB/s =  44.0% of 4.8 TB/s
+   F+B trainer pair           median   2.5936  min   2.5819  mean   2.5935 ms |  5.859 GB ->  2259 GB/s =  47.1% of 4.8 TB/s
+   Fv  fwd no stats (val)     median   0.4363  min   0.4285  mean   0.4381 ms |  1.281 GB ->  2936 GB/s =  61.2% of 4.8 TB/s
+   Fv+Bo no-stats pair        median   3.2075  min   3.1997  mean   3.2076 ms |  7.139 GB ->  2226 GB/s =  46.4% of 4.8 TB/s
+   checks       : loss 12.745141 ok | rows computed 12729 (expect 12729) ok | masked row 0 grad bit-zero ok | trained row 103: g[target] -7.868e-05, sum -1.114e-07 ok | no-stats path: loss 12.745141, max|dg| 0.00e+00 ok  => PASS
+
+   grad checksum: a2558b74eb04e1d8
+== nomask       masking OFF, every row trained (pretraining path): micro-batch 0 (rows 0-7)
+   trained rows : 32768 of 32768 (100.00%), ignore_index -1
+   F   fwd save_stats         median   1.0376  min   1.0286  mean   1.0377 ms |  3.297 GB ->  3178 GB/s =  66.2% of 4.8 TB/s
+   B   bwd with stats         median   4.3494  min   4.3335  mean   4.3495 ms |  6.594 GB ->  1516 GB/s =  31.6% of 4.8 TB/s
+   F+B trainer pair           median   5.3765  min   5.3636  mean   5.3766 ms |  9.891 GB ->  1840 GB/s =  38.3% of 4.8 TB/s
+   Fv  fwd no stats (val)     median   1.0339  min   1.0279  mean   1.0357 ms |  3.297 GB ->  3189 GB/s =  66.4% of 4.8 TB/s
+   Fv+Bo no-stats pair        median   6.8779  min   6.8630  mean   6.8779 ms | 13.188 GB ->  1917 GB/s =  39.9% of 4.8 TB/s
+   checks       : loss 12.750284 ok | rows computed 32768 (expect 32768) ok | masked row -1 grad bit-zero n/a | trained row 0: g[target] -3.052e-05, sum 3.345e-09 ok | no-stats path: loss 12.750284, max|dg| 0.00e+00 ok  => PASS
+
+   grad checksum: 0000000000000000
+== all_masked   every row masked: backward only writes zeros (floor)
+   trained rows : 0 of 32768 (0.00%), ignore_index 65535
+   F   fwd save_stats         median   0.0348  min   0.0340  mean   0.0348 ms |  0.001 GB ->    17 GB/s =   0.4% of 4.8 TB/s
+   B   bwd with stats         median   0.8213  min   0.8204  mean   0.8214 ms |  3.297 GB ->  4014 GB/s =  83.6% of 4.8 TB/s
+   F+B trainer pair           median   0.8659  min   0.8633  mean   0.8659 ms |  3.298 GB ->  3808 GB/s =  79.3% of 4.8 TB/s
+   Fv  fwd no stats (val)     median   0.0329  min   0.0323  mean   0.0329 ms |  0.000 GB ->    10 GB/s =   0.2% of 4.8 TB/s
+   Fv+Bo no-stats pair        median   0.9157  min   0.9133  mean   0.9159 ms |  3.297 GB ->  3601 GB/s =  75.0% of 4.8 TB/s
+   checks       : loss 0.000000 ok | rows computed 0 (expect 0) ok | masked row 0 grad bit-zero ok | trained row -1: g[target] 0.000e+00, sum 0.000e+00 n/a | no-stats path: loss 0.000000, max|dg| 0.00e+00 ok  => PASS
+
+==================================================================================================
+SUMMARY  (NVIDIA H200, B=8 T=4096 V=50304 bf16, median of 500 calls)
+==================================================================================================
+case          trained |      F ms  %peak |      B ms  %peak |    F+B ms |     Fv ms |  Fv+Bo ms |  check
+real_first     18.65% |    0.2334  54.9% |    1.4486  56.3% |    1.6829 |    0.2320 |    2.0000 |   PASS
+real_min        8.91% |    0.1322  46.4% |    1.0998  68.0% |    1.2319 |    0.1304 |    1.3850 |   PASS
+real_median    23.12% |    0.2763  57.5% |    1.6048  52.7% |    1.8820 |    0.2750 |    2.2622 |   PASS
+real_max       38.85% |    0.4365  61.2% |    2.1661  44.0% |    2.5936 |    0.4363 |    3.2075 |   PASS
+nomask        100.00% |    1.0376  66.2% |    4.3494  31.6% |    5.3765 |    1.0339 |    6.8779 |   PASS
+all_masked      0.00% |    0.0348   0.4% |    0.8213  83.6% |    0.8659 |    0.0329 |    0.9157 |   PASS
+F = forward save_stats, B = backward with stats (the trainer's pair); Fv = forward without stats (validation); Bo = backward that recomputes the stats
+
+per optimizer step on 1 GPU (64 rows = 8 micro-batches, median batch): 8 x F+B 1.8820 = 15.06 ms
+ALL CHECKS PASS (0 cases failed)
