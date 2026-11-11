@@ -5613,3 +5613,25 @@ two resumes).
      GPU visible; three problems found and fixed before any GPU run: lm-eval without accelerate (every benchmark run
      would crash), NLTK ignoring the shared world-writable data folder (IFEval scoring would crash), and the free-GPU
      check that would have shared GPUs with a colleague's job (45.186, 45.187).
+
+## Record of the user's questions (2026-11-11, Sanjay's format / loss ablation, the decision to stop)
+
+237. 2026-11-11 *"Sanjay fixed ChatML; what about the role markers, plain text or special tokens? The end token? His
+     current template? Without a system message, are we secure? Trick 2? Can a system message be added later if not
+     trained? Should we consider the system message?"* From his EOD: im_start / im_end are special tokens, role words
+     plain text, answers end with im_end, no default system prompt, loss on all tokens: the same format as our v11
+     (11-03, report section 9). Trick 2 is stopped by special ids + encoding outside text with special tokens off,
+     not by a system message; his plain-text variants are always open to it; look-alike text is still open until M7
+     measures it. A system message added later to a model that never saw system turns is out of distribution:
+     remove the default prompt but keep the data's own system turns (45.188).
+238. 2026-11-11 *"His last two variants, plain User/Assistant and Tulu-style plain text: the same? Loss on all tokens:
+     isn't that pretraining? SFT = loss on answers only?"* Both are plain text with different marker text ("User:" vs
+     "<|user|>" as text pieces), both open to typed separators. All-token loss grades the question and the markers too
+     (the pretraining loss on chat data); answers-only grades only the answer and its end token (ours) (45.188).
+239. 2026-11-11 *"Any research on all-token loss in SFT? Should we run our own ablation, or is Sanjay's choice already
+     right?"* Shi et al. (NeurIPS 2024) and Huerta-Enochian & Ko (EMNLP 2024), TRL's default (assistant_only_loss=False);
+     Alpaca (corrected: answers only, checked in its train.py), Llama 2, Nemotron answers only. His choice is not wrong
+     but not proven (one run each); proposed: answers only / all tokens / weight 0.1 x 3 seeds with M2 / M7 / M9 (45.188).
+240. 2026-11-11 *"Proceed on the last 4 GPUs only."* Parity part (c) started on GPUs 4-7 at 11:42 (45.188).
+241. 2026-11-11 *"No need now; stop the chat-template tests, document them as future / pending tasks, I will say when."*
+     Stopped (15 processes, GPUs 4-7 free); the setup stays on the node; future tasks 1-3 in 45.188.

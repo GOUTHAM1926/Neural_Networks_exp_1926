@@ -16397,3 +16397,41 @@ forward_ulysses_gqa KV copy fine for U > KV heads; diff 73b3bdd..new when he pus
    comment); tested on the node: GPUs 0-3 busy, 4-7 free.
 Also: the 8 benchmark datasets pre-loaded on the CPU (no GPU visible) so the 8 parallel runs do not all download at
 once. The dry run again: 54 commands.
+
+### 45.188 2026-11-11 10:42-11:43 IST: the format-study evaluation started on the Ada node, then STOPPED by the user -> FUTURE task
+
+Parity test (plan 4.48 step 2), parts (a), (b), (d), (e), on GPU 4 (the user: GPUs 4-7 only; Sukanya's dedup job on 0-3),
+checkpoint m1_smol_v11_s1, 200 val chats, both backends float32 (gautam_fmt/parity_eval/m1_smol_v11_s1/parity.json):
+| part | what | result |
+| --- | --- | --- |
+| (a) | token log-probabilities, HF vs vLLM | mean loss 1.567215 vs 1.567182 (0.002% apart); per-token difference mean 0.00136, largest 0.0406 |
+| (b) | greedy answers (<= 128 tokens), HF vs vLLM | 92.5% identical (185 / 200); where they differ, the first different token median 89, earliest 2 |
+| (d) | vLLM twice | 96.5% identical (193 / 200), not the 100% the plan expected (vLLM's batching changes the order of sums) |
+| (e) | time | HF load 6.4 s, HF log-probs 8.4 s, HF greedy 765 s (one prompt at a time), vLLM load 194 s, vLLM log-probs 2.9 s, vLLM greedy 2.9 s; whole test 993 s |
+Part (c) (the 8 benchmarks with both backends: m1_smol_v11_s1 hf-fmt vs vllm-fmt, SmolLM2-135M-Instruct hf vs vllm, on GPUs
+4-7; code/parity_c.sh, a copy in ~/Downloads/lc_box/fmt_study/) was started at 11:42:07 and stopped by the user about one
+minute later ("no need now; document as future and pending tasks; stop all"): the 15 processes of its session stopped
+with SIGTERM, none left, GPUs 4-7 free, Sukanya's job on 0-3 untouched. Partial outputs left on the node:
+evals_fmt/m1_smol_v11_s1 (no `done` marker: the queue redoes it) and parity_eval/c_* (partial logs).
+
+Same day, the user's colleague Sanjay's EOD (format and loss ablations on P015, 1 run each): ChatML with im_start /
+im_end special tokens, no default system prompt, chosen as the team's format (the same as our v11); all 5 formats within
+~1 point on 10 of 11 benchmarks (averages 26.92-27.35); loss on all tokens kept (26.92) over answers only (26.56: ARC
+-3.1, PIQA -1.7, HumanEval +3.7). Our reading (plan Q&A 237-241): his choice matches our 11-03 decision (report section
+9); plain-text formats ("User: / Assistant:", Tulu-style `<|user|>` text) are open to typed fake separators, which is why
+special ids win on safety, not scores; keep the data's own system turns (no default); the loss result is one run each,
+within seed noise except perhaps ARC, and the literature says it depends on prompt / answer lengths (Shi et al.,
+NeurIPS 2024: loss on instructions helps with long prompts + short answers or little data; Huerta-Enochian & Ko, EMNLP
+2024: a small prompt-loss weight 0.01-0.5 beats both 0 and 1 for short answers); TRL's default for chat data
+(assistant_only_loss=False) trains on all tokens; Alpaca, Llama 2 and Nemotron train answers only.
+
+FUTURE / PENDING (the user will say when; everything is ready on the node: vllmenv, scripts, eval data, NLTK data):
+1. Parity part (c) (code/parity_c.sh, ~20-30 min on 4 GPUs), then the 54 evaluations of the first pass
+   (W=$F T=$F/code PY=$V VPY=$V ONLY='_v(1|7|10|11|12|17)_s[0-9]+$' EVAL_GPUS_FILE=... bash code/sft/fmt_evalq.sh queue;
+   ~2.5-5 h on 4 GPUs, ~1.2-2.5 h on 8); decide how to treat (d)'s 3.5% vLLM run-to-run difference (accept and report,
+   or vLLM's deterministic mode).
+2. The loss ablation: ChatML (v11) x {answers only, all tokens, prompt-loss weight 0.1} x 3 seeds, with the benchmarks
+   and M2 / M7 / M9 (the safety side effect of all-token loss); a prompt-loss weight in fmt_torch_sft.py first (labels
+   inside each chat only); ~3-4 h.
+3. Questions for Sanjay: are im_start / im_end the reserved ids 1 / 2; do chats keep their own system turns; is
+   outside text encoded with special tokens off at serving; does generation stop on ids 2 and 0.
