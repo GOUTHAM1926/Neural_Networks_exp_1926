@@ -84,9 +84,14 @@ How to read it:
 - **For an AdamW-pretrained model**, Muon SFT was mixed against AdamW SFT: MMLU +3.3, HumanEval +0.6, MBPP +0.3, GSM8K -2.5
   (column 2 vs column 4).
 
-### Table 7: Muon SFT on a model pretrained with AdamW (Qwen2.5-7B)
+### Table 7: Muon SFT on a public model that was not pretrained with Muon (Qwen2.5-7B)
 
 Setup: the Qwen2.5-7B base, the Tülu 3 SFT mixture packed to 8k, learning rate cosine from 2e-5 to 2e-6.
+
+Note: the paper does **not** say which optimizer pretrained Qwen2.5-7B. Its own Tables 5 and 10 list the Qwen2.5 optimizer as
+"Unknown", and the Qwen2, Qwen2.5 and Qwen3 reports do not name it either. Only the first Qwen report (2023, arXiv 2309.16609,
+section 2.4) names one: "We adopt the standard optimizer AdamW" (beta1 0.9, beta2 0.95, eps 1e-8). So Qwen2.5 was very likely
+pretrained with AdamW too, but that is not stated; what is certain is that it was not pretrained with Muon.
 
 | benchmark (metric, shots) | AdamW SFT | Muon SFT |
 |---|---|---|
@@ -98,14 +103,15 @@ Setup: the Qwen2.5-7B base, the Tülu 3 SFT mixture packed to 8k, learning rate 
 - The paper calls this "on par". In the numbers, Muon SFT is a little lower on all four (0.3 to 4.0 points).
 - Its conclusion: "it is more effective to apply Muon during the pretraining phase rather than during supervised
   fine-tuning."
-- So Muon SFT gives no gain on a model pretrained with AdamW. The gain comes from keeping Muon when the model was pretrained
-  with Muon.
+- So Muon SFT gives no gain on a model that was not pretrained with Muon. The gain comes from keeping Muon when the model was
+  pretrained with Muon.
 
 ### What it means for us
 
 - Our bases are Muon-pretrained, so the comparison that applies is column 1 vs column 3 of Table 6: **Muon SFT**.
 - Their SFT recipe (Tülu 3 mix, 2 epochs, peak learning rate 5e-5) is the recipe I used for the 1.7B Tülu 3 SFT run (section 5).
-- If a future base is pretrained with AdamW, Table 7 says AdamW SFT is the safe choice for it.
+- If a future base is pretrained with AdamW (or anything other than Muon), AdamW SFT is the safe choice for it: on Moonlight's
+  AdamW-pretrained twin, Muon SFT was mixed (Table 6, column 2 vs column 4), and on Qwen2.5-7B it was a little lower (Table 7).
 
 ## 4. What other papers say about the SFT optimizer (checked in the full texts)
 
@@ -151,7 +157,10 @@ Setup: the Qwen2.5-7B base, the Tülu 3 SFT mixture packed to 8k, learning rate 
   validation loss), on more data and more than one seed.
 - The four-pair test can only be run with an AdamW-pretrained twin of the same base, which I do not have. Until then,
   Moonlight's Table 6 is the evidence.
-- For any future base pretrained with AdamW, use AdamW for SFT (Moonlight Table 7).
+- For any future base pretrained with AdamW (or anything other than Muon), use AdamW for SFT (Moonlight Table 6, columns 2
+  and 4, and Table 7).
+- Correction (2026-11-11): the first version of this document called Qwen2.5-7B "pretrained with AdamW". The Moonlight paper
+  lists its pretraining optimizer as "Unknown" (Tables 5 and 10); this version says "not pretrained with Muon" instead.
 
 ## Sources
 
@@ -161,5 +170,6 @@ Setup: the Qwen2.5-7B base, the Tülu 3 SFT mixture packed to 8k, learning rate 
 - GLM-4.5, arXiv 2508.06471: https://arxiv.org/abs/2508.06471
 - Wen et al., arXiv 2509.02046: https://arxiv.org/abs/2509.02046
 - Essential AI, arXiv 2505.02222: https://arxiv.org/abs/2505.02222
+- Qwen Technical Report (the first Qwen), arXiv 2309.16609, section 2.4: https://arxiv.org/abs/2309.16609
 - My records: the SFT work documentation, sections 37.4-37.7 (the test, 7 October) and 45.105 (the 135M stage 1); my SFT
   research document, section 8.

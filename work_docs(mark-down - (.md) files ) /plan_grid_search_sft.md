@@ -5641,3 +5641,36 @@ two resumes).
      on a Muon-pretrained base; the four pairs are Moonlight's Table 6. Document written (45.189).
 243. 2026-11-11 *"Push it too, no docx; add it to the sft folder."* Master in BluTrain sft/docs, mirror in work_docs, README
      links added; push commands given.
+244. 2026-11-11 *"Table 7: Qwen 7B was already pretrained with AdamW, that's why AdamW SFT was best?"* The paper lists Qwen2.5's pretraining optimizer as "Unknown" (Tables 5, 10); it was not pretrained with Muon (AdamW likely, not stated). On it AdamW SFT was a little higher on all four; the lesson stays: keep the pretraining optimizer. Document corrected (45.190).
+
+## Record of the user's questions (2026-11-11 afternoon and evening: future tasks, CP coverage, the BluBLAS merge with Aparna)
+
+245. 2026-11-11 *"What are all the future tasks we documented? Bring all."* 45 open items in one list (work doc 45.191),
+     done / dropped items listed separately.
+246. 2026-11-11 *"Context parallelism: all tested, all working well, sure? In all 360 degrees?"* No: CP=2 is proven correct
+     on the cases run (135M 4k / 64k / 128k, 1.6B 4k; 1.6B 64k runs only with CP); not tested: CP + data parallel,
+     checkpoint resume, GRAD_ACCUM > 1, long runs, U = 3 / 6, overlap_refresh ON and smaller points (work doc 45.192).
+247. 2026-11-11 *(Aparna's chat)* *"How many modifications did we make in BluBLAS? How many conflict with hers? Which are
+     better in ours and which in hers? How do we merge without losing anything or the best performance? Check her
+     branches on P032 / P015 for her tests."* 20 changes (18 fixes + stall fix + per-batch bias); 2 text conflicts
+     (8 hunks), 2 joint-test points, 16 clean; keep my fixes, tables and bias, her switch / plan / mirror; her filter into
+     my tables; her Muon work on the compiler line overlaps ours (same function name); her P032 numbers -0.35% to -0.4%
+     (work doc 45.193).
+248. 2026-11-11 *"ok bro"* (to the hunk-by-hunk resolution) and *"ok bro proceed"*: merge applied, laptop builds, SASS
+     check, RTX 3060 suite and tile-list test run.
+249. 2026-11-11 *"ok, next?"* (on her SM89 line): option 2, the line kept as a comment -> every existing kernel
+     byte-identical (5,453 / 5,453).
+250. 2026-11-11 *"ok bro proceed"* (RTX 3060 smoke run of the symmetric test): 75 / 75 pass (all equal to OFF on sm_86).
+251. 2026-11-11 *"Let's do it on P015, GPUs 4-7 are free"*, then *"I'm going for a break, monitor and proceed with all
+     planned things"*, then *"use only one GPU, the last GPU"*: the whole test on P015 GPU 7 (45.193).
+252. 2026-11-11 *"It decreases the 135M's performance, right? We didn't test the limitations; how can we push directly?"*
+     The push turns nothing on (switch off by default, no caller on our line): byte-identical kernels, identical GEMMs,
+     same SFT step time. The slowdown exists only if a caller turns it on for small matrices (estimate +0.09 ms per
+     optimizer step for the 135M, -24 ms for the 1.6B at 1 GPU); a size threshold belongs to phase 2.
+253. 2026-11-11 *"She too has that switch on and off? So nothing conflicts and all merges easily?"* Yes, the switch is her
+     design; the merge now takes `master` e392dbb so ours descends from it (master can fast-forward); still separate: the
+     Muon code on her compiler line, Kathir's MoE-Trials.
+254. 2026-11-11 *"We push only to our remote branch, not master; I'll tell her, then everything goes to preproduction-135M."*
+     Pushed by the user and verified: BluBLAS cfa0e92, TI 4d5c738, BluTrain 597360b (dist_side_gautam_lottn only).
+255. 2026-11-11 *"Give the updated doc with the message in it, one doc to send her."* "Read first" section added to
+     blublas_my_fixes_vs_symmetric_change_merge_plan.md; the user sent it.

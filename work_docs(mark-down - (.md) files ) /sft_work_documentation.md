@@ -16446,3 +16446,159 @@ which we do not have. The four pairs are Moonlight's Table 6, now with all four 
 Muon SFT: MMLU 55.3, HumanEval 53.7, MBPP 55.5, GSM8K 62.1), plus Table 7. Correction to §37.6 and the research document
 §8.4: Table 7 (Qwen2.5-7B, AdamW-pretrained) has Muon SFT a little LOWER on all four (71.4 / 79.3 / 71.9 / 89.8 AdamW vs
 70.8 / 77.4 / 71.6 / 85.8 Muon); the paper calls it "on par", and "≈" was too kind.
+
+### 45.190 2026-11-11: correction -- Qwen2.5-7B's pretraining optimizer is not stated (Moonlight Table 7)
+
+The user asked whether Qwen2.5-7B (Moonlight Table 7) was pretrained with AdamW. Checked in the paper: section 3.5.2 does not
+say, and Moonlight's own Tables 5 and 10 list the Qwen2.5 optimizer as "Unknown" (the Qwen reports do not name it either; our
+§37.6 table already had "not stated"). So "pretrained with AdamW" in §37.6's summary, in the research document §8.4, in
+45.189 and in the first version of optimizer_choice_muon_vs_adamw_for_sft.md was an assumption. Correct: Qwen2.5-7B was not
+pretrained with Muon (AdamW likely, not stated). On it AdamW SFT scored a little higher than Muon SFT on all four benchmarks
+(the paper: "on par"; GSM8K 89.8 vs 85.8). The document is corrected in both copies (BluTrain sft/docs and work_docs), with a
+correction note in its section 6.
+
+### 45.191 2026-11-11 ~15:00 IST: every documented future task, in one list (the user: "bring all")
+
+Collected from the memory notes, this document (45.8.5, 45.63, 45.108 part 3, 45.169, 45.188) and BluTrain sft/README.md
+section 9, each checked against later records; done or dropped items are listed at the end, not as open.
+
+| # | task | state | where |
+|---|---|---|---|
+| 1 | Format-study evaluation on the Ada node: parity part (c), then the 54 evaluations; decide on vLLM's 3.5% run-to-run difference | set up on the node (GPUs 4-7); stopped by the user 11-11 | 45.188 |
+| 2 | Loss ablation: ChatML x {answers only, all tokens, prompt weight 0.1} x 3 seeds + M2 / M7 / M9; prompt-loss weight in fmt_torch_sft.py first | ~3-4 h | 45.188 |
+| 3 | Four questions for Sanjay (ids 1 / 2, own system turns, special tokens off for outside text, stop on ids 2 and 0) | not asked | 45.188 |
+| 4 | Marker-name test (original names vs our own vs random strings), last stage of the format study | after the final template | Q&A 194 |
+| 5 | CP + data parallel (more GPUs than U) | not tested; 4+ H200 | README 9, 45.192 |
+| 6 | CP beyond the KV heads: Adhitya's KV-copy path or his ring + Ulysses hybrid; ask him; diff 73b3bdd..new when he pushes | waiting on Adhitya | CP notes 11-07 |
+| 7 | Push our branch into preproduction-135M (note to Navin about the segmented switch); port e9e310c (empty_cache step 0) to the 135M trainers; 135M trainer rope_theta fixed at 10000 | the user's word | 11-06 |
+| 8 | 135M eqab pretraining trainer +44.9% with the bf16 atomic embedding backward (TI d067e89 block order): fix S1 not approved; S2 = Navin's call | proposed | 11-06 |
+| 9 | BluBLAS on one path with Aparna's symmetric change | DONE later the same day (45.193); her check pending | 45.193 |
+| 10 | overlap_refresh on 8 GPUs (4 GPUs: ON -0.4%), then the production YAML default | 8 GPUs needed | 45.172 |
+| 11 | Production YAML key monitoring.production missing in ConfigBridge.h (one table line) | not applied | 45.159 |
+| 12 | Copy / zero size split per tensor | kept as future | 45.169 |
+| 13 | Trained-rows switch: 0 trained tokens and > 1 GPU untested | open | README 9 |
+| 14 | Fused / chunked lm_head + loss | "later" (10-28) | 45.129-45.131 |
+| 15 | DFT and focal loss | since 10-06 | loss doc 11 |
+| 16 | Packing step-count ablation (runs 1, 2a, 2b, 2c, 3, 4 x 2 seeds) | no result recorded | 44.1 |
+| 17 | `--seq-len` without default and without the 131,072 cap | not started | Q&A 190 |
+| 18 | Long chats need a long-context checkpoint first (YaRN / extension); side experiment 32k SFT on a 4k checkpoint with YaRN | measured 11-07 (loss ~6.9 past 4,096) | README 11 |
+| 19 | SFT Q&A questions Q4, Q5, Q6, Q12, Q13 | open in the 10-15 list | 45.8.5 |
+| 20 | SFT backward not bit-identical run to run (attention atomics; BluBLAS split-K odd N) | open | README 9 |
+| 21 | Deterministic dQ for Vj2 | "not now" (10-16) | 45.8.5 |
+| 22 | Dense attention forward tie with FA3: diagonal-first with QPU's loop order | open | 45.63 |
+| 23 | Packed-row tile waste (T5); runtime metadata cost (T6) | listed 10-30 | 45.108 |
+| 24 | Attention tests never run: 3.1, 3.2, 3.3, 3.4, 3.6, 3.7, 3.8, 3.9 | listed 10-15 | 45.8.3 |
+| 25 | Generic attention for lower GPUs (FA2-style rewrite, dS from fp32 P, dK/dV spills at head size 128) | open | README 9 |
+| 26 | Loss kernels: CudaNativeType rule, 16-byte forward loads | to check | README 9 |
+| 27 | B300: sm103 loss forward ignores ignore_index; no causal head-size-128 attention / packed rows | before SFT on B300 | memory |
+| 28 | BluBLAS "transposed, M/N not multiple of 64" (Muon 48 / 32): very likely fixed by the 11-05 fixes; the exact Muon shapes not re-run | confirm | 45.108 item 2 |
+| 29 | BluBLAS dead code with the same cp.async defect: delete or fix | the user's call | 45.158 |
+| 30 | Open decisions of 11-04: Newton-Schulz coefficients rounded to bf16 at the BluBLAS API; TI cuBLAS-build addmm drops the same bias shapes | open | 45.153 |
+| 31 | Racecheck warnings in TI matmul_bf16_optimized | open | memory |
+| 32 | Casting #1 / #3 / #4 | parked 09-24 | memory |
+| 33 | Madhu's open points: autograd::add_ stale output_nr (no callers); the version counter is never bumped | her open points | TI_fixes md |
+| 34 | PDL on the remaining kernels (unprofiled tok/s on vs off) | listed 10-21 | 45.63 |
+| 35 | Casts: optional nsys alignment check | optional | 45.63 |
+| 36 | GEMM hybrid (our pins + Kota's dispatcher) | paused since 09-17 | memory |
+| 37 | BluBLAS GEMM research list | parked | 45.108 |
+| 38 | Matmul fusion scopes | stopped 10-27 | 45.103 |
+| 39 | Re-explain ignore_index | owed since 09-21 | memory |
+| 40 | Learning session on masked attention work (segstart vs seqlens) | moved to later 10-16 | 45.10 |
+| 41 | Pushes: optimizer doc correction, work log 45.190 / Q&A 244, the BluBLAS report | pending | - |
+| 42 | Same Qwen sentence in post_training_research_sft.md section 8.4 | offered | 45.190 |
+| 43 | Work log entry for the BluBLAS report | this entry + 45.193 | - |
+| 44 | Revoke and replace the org PAT leaked 11-03 | no record that it was done | memory |
+| 45 | Group message to colleagues after the pushes | 11-04 | 45.153 |
+
+Done or dropped (not open): loss sum above 65,536 (10-30); long context 16k-128k (10-31); segmented embedding in SFT;
+trained-rows blockers (11-03); Muon guard and diagnostic syncs, empty_cache step 0 (11-04); 13 GEMM bugs, CUDA-call
+items 3, 4, 5-8, 9, 13 (11-05); before/after grid (11-06); CP code (pushed 11-11); contiguous fix d59740b; casting #2;
+H200 vector casts; CUDA-call items 11 and 12 (dropped 11-06); bfd_split (10-31: dropping is the only method);
+chat-template study phase 1 (11-03: ChatML).
+
+### 45.192 2026-11-11: context parallelism for SFT -- what is tested and what is not
+
+The user: "all tested, all working well, sure? Tested in all 360 degrees?" Checked against the 11-07 results
+(profiling_reports/cp_2026_11_07_2x/box_results/results_2x.txt) and the run logs.
+
+Tested (2x H200, 11-07; each test CP off vs CP=2, same data and weights, 30 steps; noise = two identical CP-off runs):
+
+| case | step-0 val loss | step-0 grad norm, CP=2 vs off | noise | step time | memory per GPU |
+|---|---|---|---|---|---|
+| 135M, 4k, B 4 | equal (1.424576) | +0.000% | 0.000% | 55.9 -> 49.7 ms | 23.4 -> 21.6 GB |
+| 135M, 64k, B 1 | equal | -0.019% | 0.56% | 250.7 -> 158.2 ms | 61.5 -> 36.3 GB |
+| 135M, 128k, B 1 | equal | +0.18% | 0.24% | 492.9 -> 297.9 ms | 111.0 -> 62.2 GB |
+| 1.6B, 4k (random init) | equal | +0.017% | - | 480.0 -> 274.5 ms | 66.7 -> 42.4 GB |
+| 1.6B, 64k | 1 GPU out of memory | - | - | 861 ms | 96.6 GB |
+| control: CP=2 without the TI fix | equal | -6.9% | | | |
+
+The runs used Muon, the segmented embedding, ZeRO-1 with the reduce overlap on, bf16 logits, packed rows, grad clip,
+validation at step 0.
+
+Not tested: (1) CP + data parallel (loader split, counts / U, gradient sum over more ranks) -- high; (2) checkpoint save +
+resume under CP (save interval 1000, 30 steps) -- high; (3) GRAD_ACCUM > 1 -- medium; (4) a long run (hundreds of steps)
+-- medium; (5) U = 3 or 6 on the 1.6B -- medium; (6) overlap_refresh ON -- low-medium; (7) validation mid-run -- low;
+(8) AdamW -- low; (9) a CP rank with 0 trained tokens in its half -- low; (10) other GPUs -- unknown. By design: U must
+divide the KV heads (CP=4 impossible on the 135M); the trained-rows switch is refused with CP; at 4k CP is slower than data
+parallel (49.7 vs 38.4 ms). Proposed before a real long-context SFT run: tests 1-3 (about 25 min on 4 GPUs).
+
+### 45.193 2026-11-11 15:30-19:10 IST: BluBLAS -- my GEMM fixes merged with Aparna's symmetric-output change, tested, pushed
+
+**Why.** Aparna (chat 11-11): her BluBLAS symmetric change (cb42c13, in `master` as e392dbb = PR #4) and my fixes
+(297f372, 0b552f0, a6d4292 on `dist_side_gautam_lottn`) branched from ea666ab; pushing either one to preproduction-135M
+would drop the other. Her answer to my report: "just merge and push, I'll check". Report for her (with the message at the
+top): work_docs/blublas_my_fixes_vs_symmetric_change_merge_plan.md (sections "Read first", 8, 9).
+
+**Her work, read on GitHub and on P032 (/localstorage/Aparna, read-only).** BluBLAS cb42c13; Tensor-Implementations
+dc7414f and BluTrain bad5ecc "muon_optimization" on her compiler line (TI coconut / infer-comp / jit-sft-nova, BluTrain
+master_v2_compiler). Only TI coconut turns the symmetric mode on (Newton-Schulz A = X X^T and B = b A + c A@A, through a
+per-call scope). Both lines define `newton_schulz_orthogonalize_batched` with the same signature: a trial merge of the two
+TI lines merges Optim.cpp without a conflict but with two definitions (build fails), plus 7 conflicted TI files and 9
+BluTrain files (her compiler line; not on the preproduction path). Her P032 measurements (1.5B JIT, before / after,
+15 steps): -0.35% / -0.36% / -0.4% on 1 / 2 / 8 GPUs. Third BluBLAS line: Kathir's MoE-Trials conflicts with mine in the
+BF16 and FP16 warp-specialized templates (separate).
+
+**Our BluBLAS changes, counted:** 3 commits, 20 changes = 18 bug fixes (2 in 297f372, 3 in 0b552f0, 13 in a6d4292) + the
+CPU-stall fix + the FullBatched per-batch bias. Text conflicts with hers: 2 of them (tile tables, per-batch bias; 8 hunks
+in Bgemm_sm90_warpspecialized_template.cuh); 2 more needed joint tests (3-D C store vs her mirror; fallback / beta 0 vs her
+SM89 line); 16 clean.
+
+**Resolution** (explained to the user hunk by hunk, applied after "ok bro proceed"): hunks 1, 2, 5, 6, 8 (bias) = mine;
+hunk 3 (tile cache) = my GPU-built tables + a new `blublas_tile_order_table_sym_lower` (her walk and filter, filled on
+the GEMM's stream, count from a formula, own store of 256 tables, nullptr -> full plan); hunks 4, 7 = her `plan.map`;
+`sm90_tile_plan` takes the stream; her old code kept as comments; her SM89 line commented (the user chose option 2:
+every existing kernel byte-identical).
+
+**Tests.**
+
+| test | where | result |
+|---|---|---|
+| SASS of the whole library, a6d4292 vs merge | laptop, 101 objects | 5,453 / 5,453 kernels identical; new: mirror (4 copies), symmetric fill (21) |
+| sm_86 GEMM suite, 7,220 cases | RTX 3060 | 0 failed both; bitwise equal except 32 fp32 split-K (the same 32 differ between two a6d4292 runs) |
+| symmetric tile list vs her builder | RTX 3060 | 1,160 grids, 718,335 entries equal |
+| GEMM suite, 7,220 cases | P015 GPU 7 | 0 failed both; 222 fp32 split-K differ, and two a6d4292 runs differ in the same 222 |
+| addmm suite (A, B, C; bf16 / fp16 / fp32 / fp64) | P015 GPU 7 | ALL PASS both, identical result lines |
+| symmetric ON, 75 cases | P015 GPU 7 | all pass; 7 visibly mirrored (the per-batch-bias Newton-Schulz addmm), the rest equal to the full GEMM |
+| speed ON / OFF | P015 GPU 7 | n 2304: 0.62-0.71; n 768: 0.87 / 1.04; n 512 / 256: up to 1.38 (slower) |
+| 135M SFT, 30 steps, 4 + 4 runs | P015 GPU 7 | same losses, step time 104.8-105.0 vs 104.2-105.1 ms |
+| the 84 GEMM shapes of the 135M SFT step, 2 runs per library | P015 GPU 7 | bit-identical in all 4 runs |
+
+The SFT step-0 grad norms of the merge (2.5155-2.5158) sat above a6d4292's (2.5152-2.5154) in 4 + 4 runs; from step 1 on
+the groups overlap (merge mean higher at 14 of 30 steps). The 84-shape test shows every GEMM of the step is bit-identical
+and repeatable, so the spread comes from the step's other run-to-run sources (attention atomics), not from BluBLAS.
+
+**P015 traps (recorded).** Every GPU is in compute mode Exclusive_Process: a holder process blocks our own tests (the
+first run: 228 groups "device busy"; now lockrun skips holders in that mode). Persistence mode is off: every new process
+re-initializes the GPU (~10-14 s), so 294 one-group processes took ~70 min per library; the suite now runs one process
+per type. The user limited the run to GPU 7 ("use only one GPU, the last GPU").
+
+**Push (the user, ~19:10 IST; verified on GitHub file by file).** Merge of `master` (not her branch), so the commit
+descends from `master` (master can fast-forward; TI pointer merges resolve by themselves): BluBLAS
+`dist_side_gautam_lottn` a6d4292..cfa0e92 (parents a6d4292 + e392dbb; diff md5 29ad4b9d = the tested patch; the 8 files
+equal the tested ones), Tensor-Implementations d59740b..4d5c738 (pointer only), BluTrain 572c3ac..597360b (pointer only);
+author Goutham Kumar. `master` and `preproduction-135M` untouched: Aparna checks first, then everything goes to
+preproduction-135M together.
+
+**Next.** Aparna's check; phase 2 = her switch in our batched Newton-Schulz above a measured size (her tall-without-
+transpose, fused cast and bf16 apply ideas A/B-tested one by one; 135M and 1.6B trainer A/B). Records:
+profiling_reports/blublas_symmetric_merge_2026_11_11/ (patch, merged files, tests, pkg, box_results_p015, push_1111).
