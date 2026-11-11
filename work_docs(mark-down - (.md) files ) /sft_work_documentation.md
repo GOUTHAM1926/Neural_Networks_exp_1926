@@ -9961,3 +9961,6439 @@ it. It added two exact points:
 | `Neural_Networks_exp_1926/work_docs(mark-down - (.md) files ) /pingpong_crosscheck_for_nova_2026_10_26.md` | my question document to her Claude (870 lines; its first reply is in Appendix A) |
 | `Neural_Networks_exp_1926/pingpong_crosscheck_answer_2026-10-26.md` | her Claude's full answer (534 lines) |
 | `Neural_Networks_exp_1926/reports_harshini_ping_pong/` | the 8 kernel files (mlir, ptx, cubin, sass × ping-pong / cooperative) |
+
+### 45.96 2026-10-26 evening: matmul audit, second full pass — every scope for "use the GEMM's fp32 accumulator directly" (bf16 in, fp32 out)
+
+**Context (the doubt).** The user asked to go through the training script once more, find every place where a matmul's
+fp32 accumulator could feed the next op directly (or where a bf16-in / fp32-out GEMM would help), and NOT to change the
+RoPE kernel. Code read, not run: trainer `BluTrain_lottn/train/production_zero/bluscript_zero_ckpt.cpp`
+(dist_side_gautam_lottn 3b80f15; the team's newest pretraining branch dist_side_merge_BLUCCL 885ff4d has the same
+trainer except 1 config line) and its library `Tensor-Implementations` b1443a5 (a superset of the team pin 02d0d185).
+Production config: `BLU_ALL_BF16=1` (residual, logits, embedding all bf16, so every `to_dtype` around the GEMMs is a
+no-op), `BLU_GRAD_VIEW=1` (gradients accumulate in the bf16 reduce-scatter buffer), Muon + AdamW, ZeRO v2, BluBLAS.
+Shapes per micro-step: M = 8 x 4096 = 32,768 tokens, d 2304, q 2304 (18 x 128), k/v 768 (6 x 128), ffn 6144,
+vocab 50,304, 26 layers. Numbers below are minimum-traffic ESTIMATES from tensor sizes
+(script `traffic_1026.py`; 1 GB at ~4 TB/s = ~0.25 ms). Only the nsys run decides which ones matter.
+
+**How every matmul runs (proof).**
+- Forward: `nn::Linear::forward` -> `autograd::matmul(input, weight)` (NN.cpp:266-270) -> `MatrixOps.cpp:19` flattens
+  [B,T,C] to [B*T,C] -> `OwnTensor::matmul` -> `cuda_matmul` (GenMatmul.cu:39). Output dtype = input dtype (bf16);
+  beta is always 0.
+- Backward: `MatmulBackward::apply` (MatrixBackward.cpp:57-75) allocates NEW grad_a and grad_b every call and runs
+  `cuda_matmul_backward` (MatmulBackward.cu:694-709, beta_a = beta_b = 0). The bf16 weight-gradient GEMM even
+  hard-codes `beta = 0` (MatmulBackward.cu:647); `beta_b` is used only on the batched-reduction path.
+- The engine adds every gradient that reaches the same tensor (`sum += ...`, Engine.cpp:343) and copies a strided lead
+  gradient to contiguous first (Engine.cpp:322-341).
+- A weight's gradient then goes to `AutogradMeta::accumulate_grad` (AutogradMeta.cpp:114-199): first micro-step adopt,
+  later micro-steps `*grad_ += update` (bf16 + bf16 under grad_view).
+- The production SM90 BLAS (ea666ab) supports beta != 0 (dispatcher comment at Bgemm_sm90_dispatcher.cu:1185:
+  "correctness PASS (beta=0/0.5, all 3 layouts)"), so beta = 1 needs no new kernel.
+
+**Every matmul and its neighbour (per micro-step).**
+
+| Matmul (trainer line) | Today | Already fused? |
+|---|---|---|
+| wQ, wK, wV (:610-612), 3 GEMMs on the same h | q,k -> `fused_rms_rope_bf16` (:630); v -> transpose view -> `.contiguous()` copy in SDPA (AttentionOps.cpp:400-402) | No. RoPE: leave as is (user) |
+| Attention S, P, O | inside the attention kernel, fp32 registers | Yes |
+| wO (:671) | attention output [B,Nq,T,hd] -> transpose+reshape copy (:669) -> GEMM -> separate residual `add` (:672) | No |
+| gate_up (:708) | separate `swiglu` kernel (:709) | No (BluBLAS has an unwired SwiGLU epilogue) |
+| down (:710) | separate residual `add` (:711) | No |
+| lm_head, tied wte (:810-812) | `contiguous(transpose(wte))` copy every micro-step, GEMM writes 3.3 GB bf16 logits, separate CE | No |
+| dX of wQ/wK/wV | 3 GEMM outputs + 2 engine adds (Engine.cpp:343) | No |
+| dX of down | writes d_act -> separate swiglu backward reads d_act + gu | No |
+| dO into attention backward | strided view -> engine contiguous copy (Engine.cpp:341) | No |
+| dW of all 6 weights x 26 + wte | new bf16 tensor, then `accumulate_grad` add | No |
+| wte gradient (tied) | lm_head dW -> TransposeBackward view -> contiguous copy (the library's own TODO at Engine.cpp:328-340: "~180 ms recoverable" per 10-step profile) + embedding scatter grad, summed | No |
+| Vj2 dK/dV | bf16 partial per q head, summed in fp32 later | Partly |
+| Muon NS (Optim.cpp:1524-1567) | A = X X^T; B = bA + cA^2 (addmm epilogue); X = aX + BX (addmm epilogue); then `as_type(fp32)`; tall matrices transposed (fp32 copies) before and after | Linear combos yes; casts/transposes no |
+
+**All scopes found (ranked by estimated traffic, per micro-step unless said).**
+
+| # | Change | Est. saved | Precision | Effort / note |
+|---|---|---|---|---|
+| C2 | One QKV GEMM: forward reads h once, writes q,k,v into 3 separate buffers by column range (2304 = 12x192, 3072 = 16x192: tile edges line up, so RoPE stays untouched); backward dX = one GEMM with K = 3840 (A operand from 3 buffers), sum inside the fp32 accumulator | 23.6 GB from the 2 add kernels (47 GB counting GEMM operand reads) | dX: 5 roundings -> 1 | Medium-high (split-pointer epilogue + 3-descriptor operand). Muon keeps per-matrix views. The compiler team packed wQKV only in their Nova JIT script (master_v2_compiler c50d2d0 `bluscript_jit_ddp_qkvpacked.cpp`), not in this trainer |
+| C2-lite | No weight change: dX GEMMs chain with beta = 1 into one buffer | 15.7 GB | 5 -> 3 | Low-medium (engine must hand the buffer to the next MatmulBackward) |
+| C5 | SwiGLU in the gate_up epilogue (still store gu for backward) | 20.9 GB | same | Medium; BluBLAS `Bgemm_sm90_swiglu_fused_template.cuh` exists, unwired, 08-14 NaN history |
+| C5b | SwiGLU backward in the down-dX epilogue (reads gate+up tiles, writes dgate+dup; d_act never written) | 20.9 GB | d_act not rounded to bf16 | Medium; same idea as cuBLASLt's DGELU epilogue |
+| C4 | lm_head + cross-entropy fused (logits never written) | 19.8 GB + 3.3 GB peak memory | logits stay fp32 | High (largest work item) |
+| C3 | Residual add in the wO and down epilogues (`blublasBgemmAddmm` already takes an MxN "bias") | 15.7 GB | 2 roundings -> 1; also allows an fp32 residual at bf16 cost (bf16-in, fp32-out) | Low-medium: addmm path + 2-D flatten + AddmmBackward check |
+| A2 | wO reads attention output head-major and its dX writes dO head-major (rank-4 TMA), no transpose copies | 15.7 GB | none | Medium; careful: rank-4 descriptors broke multicast before (memory: MN4D) |
+| C1 | dW added in the GEMM epilogue (beta = 1) into the grad buffer; fix MatmulBackward.cu:647 to use beta_b | 6.4 GB, removes 157 add kernels | 2 roundings -> 1 (bf16 buffer), or fp32 main_grad = Megatron `gradient_accumulation_fusion` (bf16-in, fp32-out) | Low-medium: MatmulBackward must get the param's buffer and still fire the ZeRO post-accumulate hooks |
+| A1 | wV writes v head-major; dV read head-major | 5.2 GB | none | Medium (same TMA work as A2) |
+| L1 | lm_head forward without the `contiguous(transpose(wte))` copy: `cuda_matmul` already takes a transposed B (GenMatmul.cu:49-70, OP_T); the trainer comment at :798-803 saying there is no trans_b entry point looks outdated | 0.5 GB | none | Low; needs a test |
+| L2 | wte gradient written directly in [vocab, d] layout (no materialize copy), then beta = 1 with the embedding gradient | 0.5 GB+ (library note: ~180 ms per 10-step profile) | fewer roundings | Medium |
+| C6 | Vj2 dK/dV partials in fp32 | costs +15.7 GB | removes the known dV deviations | Precision trade, attention side |
+| M1 | Muon: last NS GEMM writes fp32 directly (skip `as_type`) | 5.9 GB per optimizer step (all ranks) | none | Low (bf16-in, fp32-out) |
+| M2 | Muon tall matrices (wK, wV, down): iterate on X^T X from the right instead of transposing (no fp32 transpose copies) | 7.4 GB per optimizer step | none | Low-medium |
+| M3 | Muon: X X^T and A A are symmetric, compute half the tiles (symmetric GEMM, see the AMD paper and Dion3; Gram Newton-Schulz goes further) | ~half the FLOPs of 2 of 3 NS GEMMs | none | Medium |
+
+**Not matmul, but next to them (listed only):** (1) the residual-gradient sums (engine adds dx_norm + d_residual,
+2 per layer) = 23.6 GB per micro-step; could be folded into the RMSNorm backward kernel. (2) RMSNorm forward output h is
+written then read by the GEMMs; folding the per-row 1/rms into the GEMM epilogue is possible but complex.
+
+**Where a bf16-in / fp32-out GEMM variant is actually needed:** C1 fp32 main_grad (Megatron style), C3 fp32 residual
+stream, M1 Muon's last NS GEMM. Everything else is an epilogue fusion with bf16 output.
+
+**RoPE:** wQ/wK -> `fused_rms_rope_bf16` is listed but no change is proposed (user, 10-26).
+
+**Changes from the 10-24 audit (§45.93):** C1 is 6.4 GB (now including wte); C2 needs the split-pointer epilogue to keep
+RoPE untouched; new items C5b, A1, A2, L1, L2, M2, M3; found MatmulBackward.cu:647 hard-codes beta = 0 and the trainer's
+trans_b comment is outdated.
+
+**Next:** one nsys run on the 2x H200 box `95.133.254.29`, GPU 0, a few production steps, to time the kernels each item
+removes: the add kernels (engine sums, accumulate_grad, residual adds), swiglu fwd/bwd, the contiguous/transpose copies,
+CE fwd/bwd, and Muon's casts/transposes/GEMMs. The measured milliseconds decide the order.
+
+Sources: Megatron Bridge fusions (gradient_accumulation_fusion), https://docs.nvidia.com/nemo/megatron-bridge/0.6.0/apidocs/bridge/bridge.utils.fusions.html ;
+cuBLASLt epilogue enum (DGELU / DGELU_BGRAD), https://docs.nvidia.com/cuda/nvmath-python/1.0.0/bindings/generated/nvmath.bindings.cublasLt.Epilogue.html ;
+symmetric X X^T kernel, https://arxiv.org/pdf/2511.17127 ; Dion3, https://arxiv.org/pdf/2608.11612 ;
+Gram Newton-Schulz, https://tridao.me/blog/2026/gram-newton-schulz/
+
+### 45.97 2026-10-26 20:01–20:35 IST: matmul audit MEASURED — nsys of the production trainer, every 45.96 item timed (2x H200 95.133.254.29, GPU 0)
+
+**Context.** The user asked to measure every scope from 45.96 (C1–C6 and the rest), check that nothing was missed, and
+analyse the whole picture. The user was on a break and told me to run the planned steps myself on GPU 0 only.
+
+**How it was run.**
+- Box `loud-sun-glows-fin-03` (2x H200, CUDA 13.0, nsys 2025.3.2). OUR GPU = 0; GPU 1 is a teammate's job, never touched.
+- Tree: `dist_side_gautam_lottn` (BluTrain 3b80f15 + TI b1443a5) copied from the laptop to `~/gautam_k/audit/tree`.
+  Built with `make -j64 profiler tensor dist SM_ARCH=90` (BUILD_EXIT=0) and
+  `make _ablation_compile MODE=production_zero` (yaml-cpp 0.8.0 built into `~/gautam_k/local`).
+- Data: the 4 edufineweb shards plus val, linked as the 4 mix domains.
+- Config: the production YAML minus `monitoring.production` (that key is unknown to this tree's ConfigBridge.h).
+  `--print-config` confirmed ALL_BF16, bf16 logits, grad_view, Muon, ZeRO v2. No BLU_MAX_STEPS.
+- World size 1, so 32 micro-steps per step, the same per-GPU work as one production micro-batch.
+- New opt-in profiler switch: `BLU_NVTX=1` makes every library `PROFILER_SCOPE` an NVTX range.
+  It is in `Profiler/include/profiler/RecordFunction.h`; off by default (one cached check).
+  Tested on the RTX 3060 first: ranges appear with 1, none with 0.
+- Script `profiling_reports/matmul_audit_2026_10_26/box/nsys_audit.sh`, two captures, each 180 s delay + 50 s:
+  - A: `BLU_NVTX=1 -t cuda,nvtx`;
+  - B: `BLU_NVTX=0 -t cuda` + GPU metrics at 10 kHz.
+- Analyzer: `analyze_capture.py` (run on the box, CPU only).
+- Results: `profiling_reports/matmul_audit_2026_10_26/box_runs/nsys_1026_2001/`. The `.nsys-rep` files are kept;
+  the 833 MB sqlite exports are not copied (re-make them with `nsys export`).
+
+**Run facts.**
+- Steps 0–6 at 21.84–22.20 s/step (47.9k tok/s, MFU ~53%).
+- Capture A has 71 complete micro-steps (117,204 kernels, 3.8M ranges).
+- Capture A vs B kernel times agree within ~1% (NVTX did not change GPU times).
+- SM clock median 1500 MHz at 691 W: the 700 W power cap holds the clock, not the GPUs' 1980 MHz boost.
+- Peak memory 96,755 MiB.
+- **At world size 1, `BLU_GRAD_VIEW` is DECLINED** ("world_size == 1"). Gradients accumulate in fp32 through the F2 fused
+  kernel (`accum_lowp_fp32_vec_kernel`); on 8 GPUs the bf16 view path runs instead. C1 below is the fp32 path.
+
+**Per micro-step (mean of 71): 680.4 ms of GPU kernel time; GPU idle inside forward+backward only 1.3%.**
+
+| Category | ms / micro | % |
+|---|---|---|
+| GEMM (bgemm_sm90_kernel, 537 calls) | 474.9 | 69.8 |
+| attention (v62 fwd 28.1, Vj2 bwd 80.7 + prep/convert/greduce 9.7) | 118.5 | 17.4 |
+| RMSNorm fwd + bwd | 21.0 | 3.1 |
+| SwiGLU fwd + bwd | 19.2 | 2.8 |
+| elementwise adds | 16.5 | 2.4 |
+| RoPE fwd + bwd (keep as is) | 14.9 | 2.2 (bwd includes `reduce_dgamma_bf16_tm` 5.0 ms) |
+| copies | 6.2 | 0.9 |
+| loss (CE fwd + bwd) | 2.9 | 0.4 |
+
+**Each 45.96 item, measured (ms per micro-step; x32 per optimizer step).**
+
+| Item | Kernels found | ms / micro | % |
+|---|---|---|---|
+| C5b SwiGLU backward (`swiglu_bwd_v21_vec_kernel_sm90`, 26) | DRAM 50% read + 30% write while it runs = memory-bound | 12.14 | 1.78 |
+| C2 q/k/v dX sums (engine `add_inplace_kernel_flat_sm90`, 52, each ~104 us = ~4.4 TB/s) | the engine adds that run right before RMSNormBackward | 5.39 | 0.79 |
+| C2 extra: 3 small GEMMs vs 1 merged (q/k/v fwd+dX+dW = 2,847 us per layer; one 2304x3840 GEMM at the big-GEMM rate ~670 TF/s ≈ 2,598 us) | estimate | ~6.5 | ~0.95 |
+| C5 SwiGLU forward (`swiglu_fwd_vec_kernel_sm90`, 26) | memory-bound | 7.10 | 1.04 |
+| C3 residual add forward (`add_kernel`, 52) | | 5.48 | 0.81 |
+| residual-gradient sums (engine adds before the next GradAccumulator, 52; not matmul) | could fold into RMSNorm backward | 5.40 | 0.79 |
+| A1+A2 layout copies (v contiguous 0.67; attention-out reshape 1.95; backward materialize copies 3.05) | | 5.67 | 0.83 |
+| C1 accumulate_grad (157 fused fp32 accumulates + small adds, fp32 path at world 1) | | 4.86 | 0.71 |
+| C4 CE forward + backward (lm_head GEMMs 3 x 11.1 ms stay) | | 2.90 | 0.43 |
+| C6 Vj2 dK/dV reduce (`gqa_dkdv_greduce_vj2`, 52) | | 2.80 | 0.41 |
+| L1 lm_head `contiguous(transpose(wte))` | | 0.45 | 0.07 |
+| **Sum** | | **~58.7** | **~8.6** |
+
+Fusing does not remove all of that time: the epilogue does part of the work. A realistic gain is ~60–75% of it,
+about 35–45 ms per micro-step (5–6.5%), before any clock effect. Under the 700 W cap, less DRAM traffic also means
+less power, which can let the clock rise.
+
+**GEMM efficiency (H200 spec 989 TF/s; at the measured 1500 MHz the reachable rate is ~750 TF/s).**
+- Big GEMMs (gate_up, down, lm_head; fwd, dX, dW): 667–697 TF/s, 67–70% of the spec. Tensor pipe 90.4% active while
+  GEMMs run (capture B), so they are clock-limited, not stalled.
+- dW of the square 2304x2304 weights (wQ 604 us, wO 600 us): 575–580 TF/s, 58%. 162 tiles of 128x256 on 132 SMs is
+  1.23 waves. New item G1: ~4.5 ms per micro-step if lifted to the big-GEMM rate.
+- wK/wV (N = 768) in all passes: 562–623 TF/s, 57–63%.
+
+**Optimizer (per step, world size 1 owns all 156 Muon matrices).**
+- Wall time 275–283 ms, of which kernel time 182.6 ms and idle 92–100 ms (35%).
+- 331 host syncs per step (`cudaStreamSynchronize`). That is the per-tensor nonfinite check + norm diagnostic in
+  ShardedMuon::update_one.
+- Newton-Schulz GEMMs 140.8 ms; momentum 7.4; casts ~9.7; transposes 3.4; nonfinite check 4.1; apply 3.9.
+- On 8 GPUs each rank owns ~1/8 of the matrices. New item O1: batch the per-tensor checks to drop the syncs.
+- M1/M2 (casts/transposes) are small; M3 (symmetric GEMMs) applies to part of the 140.8 ms.
+
+**What was not in the 45.96 table:**
+- G1, the dW wave-quantization above.
+- O1, the optimizer host syncs above.
+- RMSNorm fwd+bwd 21 ms runs at only ~41% of DRAM bandwidth, so the kernel itself has room (not matmul).
+- RoPE backward's `reduce_dgamma_bf16_tm` takes 5.0 ms per micro-step (RoPE left as is, user 10-26).
+- CPU launch overhead is NOT a problem (1.3% idle).
+
+**Order by measured time:**
+1. C5b + C5 SwiGLU fwd/bwd into the GEMM epilogues (19.2 ms).
+2. C2 merged QKV (~11.9 ms).
+3. C3 + residual-gradient sums (10.9 ms).
+4. A1/A2 layouts (5.7 ms).
+5. C1 (4.9 ms) and G1 (~4.5 ms).
+6. C4 (2.9 ms + memory).
+7. C6 (precision only).
+
+Optimizer O1 is a separate small fix.
+
+### 45.98 2026-10-26 21:00–21:40 IST: first fusions built and tested — C3 (residual add in the GEMM) and C1 (dW accumulated in the GEMM), Kota's BLAS ea666ab
+
+**Decision (user).**
+- Build on Kota's pushed BLAS `ea666ab` (the one production links).
+- Test fast, check each result 2–3 independent ways, all kernels optimized (not naive).
+- Never run on a GPU that has another process.
+
+**Where the code is.**
+- Laptop: `~/Downloads/BluTrain_fuse` (a copy of BluTrain_lottn at 16bce82). Not committed.
+- Box: `~/gautam_k/audit/tree_new`, with the original `tree` kept as the OLD arm.
+- Every change is behind an env switch; the default path is the original code. Checked: `old` vs `off` step-0 loss and grad
+  norm are bit-identical (11.286944 / 19.7546).
+
+| Change | File | Switch |
+|---|---|---|
+| addmm with a FULL M x N bias uses `Sm90Config_128x256x64_regsplit` | BLAS `Bgemm_addmm_sm90.cu` | `BLU_ADDMM_RS=1` |
+| residual add inside the wO / down GEMM via `autograd::addmm` (2-D views, x = M x N bias) | trainer `residual_linear()` | `BLU_FUSE_RESID=1` |
+| bf16/fp16 weight-gradient GEMM uses `beta_b` (was a hard-coded 0) + `cuda_matmul_backward_accum_b` | `MatmulBackward.cu/.cuh` | (beta 0 for every existing caller) |
+| MatmulBackward/AddmmBackward accumulate dW into the weight's existing same-dtype gradient slot (ZeRO grad view) | `MatrixBackward.cpp` `wgrad_accum_target()` | `BLU_FUSE_WGRAD=1` |
+| `accumulate_grad` skips its add when the update IS the slot (hooks still fire) | `AutogradMeta.cpp` | — |
+
+Kota's 2026-08-20 note says `_regsplit` was slower for addmm. That was measured with `bias_numel == N` on GPT-2 shapes.
+For the full-matrix bias on our shapes it is faster (below).
+
+**C3, standalone** (`box/test_c3_resid_addmm.cu`, M 32768, N 2304, median of 100 interleaved reps; 2 runs per config, and
+once more against the new library on GPU 1 — all agree within 1%):
+
+| Shape | GEMM + add (today) | addmm, Kota's config | addmm, register-split | GEMM alone |
+|---|---|---|---|---|
+| wO, K 2304 | 0.615 ms | 0.587 ms (−4.5%) | **0.576 ms (−6.1%)** | 0.509 ms |
+| down, K 6144 | 1.470 ms | 1.457 ms (−1.0%) | **1.430 ms (−2.6%)** | 1.365 ms |
+
+- Precision vs fp64 (96 rows): outputs not correctly rounded go from **28.9–29.2% to 0.12–0.37%**; mean error from
+  0.85 to 0.25 ULP; worst case from 256 ULP (cancellation of x + proj) to 31–86 ULP.
+- Backward: gradient checksums of x, A, W are bit-identical between the two paths.
+- The fused kernel still costs +0.065–0.07 ms over the plain GEMM (the bias read is not hidden). It saves about 2 ms
+  per micro-step of the 5.5 ms the adds cost.
+- Kernel names (nsys): the plain GEMM is `Sm90WarpspecConfig<128,256,64,...,24,240,...>` (register split);
+  Kota's addmm was the same tile WITHOUT the split (`...,0,0,...`, BiasMode 4).
+
+**C3, trainer** (1 GPU = GPU 0, production config, world 1, steps 2–4 of each run):
+- old 21,738 ms, off 21,788 ms (same code: the noise is 0.23%), **c3 21,644 ms (−0.66% vs off, −0.44% vs old)**.
+- The standalone prediction was −0.29% (64 ms per step).
+- Step-0 loss 11.287024 vs 11.286944 (fewer roundings); later steps are inside the old/off band.
+- Peak memory +126 MiB. Clock 1,500 vs 1,485 MHz at 692 W.
+- Single short runs; a teammate's job was on GPU 1 during off and c3.
+- The planned 6-run ABBA was cut to 3 runs at the user's request (10-minute limit).
+
+**C1, standalone** (`box/test_c1_wgrad_accum.cu`):
+- Setup: a bf16 weight with a pre-set, zeroed bf16 gradient slot (the ZeRO view), 4 micro-steps, wQ/wO + gate_up + down.
+- Order: OFF, ON, OFF, ON, under nsys.
+- Precision is identical in every repeat:
+
+  | | mean \|err\|/RMS | p99 | median | not correctly rounded |
+  |---|---|---|---|---|
+  | OFF | 2.28e-3 | 1.03e-2 | 0.50 ULP | 50% |
+  | ON | 1.86e-3 (−18%) | 8.9e-3 (−14%) | 0.40 ULP | 40% |
+
+- The slot keeps its storage (ZeRO reduces from it).
+- With fusion ON the 48 `add_inplace_kernel_sm90` calls (21.5 us each) are gone.
+- But the beta = 1 dW GEMMs run **+1.5–4.8% slower** (normalised by the unchanged kernels in the same run):
+  +10–55 us per GEMM vs 10–43 us saved.
+- **No net speed gain with this BLAS.** The C tile is read in the epilogue without a prefetch; that needs a TMA
+  prefetch like addmm's bias.
+
+**C1, trainer:** not run.
+- At world size 1 ZeRO declines the gradient view, so the slot is fp32 and C1 cannot engage.
+- GPU 1 was busy with a teammate's job.
+- A 2-GPU run (world 2 = the production path) is still to do.
+
+**SwiGLU (C5/C5b): Kota's fused kernel cannot serve training as it is.**
+- `blublasBgemmSM90_dispatch_swiglu_nn` (128x256 regsplit) writes only the activation [M, N/2].
+- It pairs gate column j with up column j+128 inside each 256-wide tile, so the gate_up columns would have to be
+  reordered into 128-blocks. Muon's orthogonalization is equivariant to column order, so that is safe; checkpoints
+  need the mapping.
+- The backward needs gate/up stored, so a second output in the epilogue is required, plus a new SwiGLU-backward
+  epilogue in the down-dX GEMM.
+- User 10-26: "his swiglu epilogue fused thing isn't optimized that much".
+
+**Next:** C1 trainer A/B on 2 GPUs when both are free; SwiGLU dual-output epilogue (our own); C1 beta prefetch in the
+BLAS; C2 merged QKV.
+
+### 45.99 2026-10-26 21:53–22:15 IST: trainer A/B finished — C3 confirmed on both GPUs, C1 measured at world size 1 (2x H200 95.133.254.29)
+
+All runs: production config (`box/pz_nsys_config.yaml`), 1 GPU per run, binary `pz_new` (md5 295847fe), library
+libtensor 1c42217b. Every run is stopped after step 3. Every number below is the mean `dt` of **steps 2–3** of every run
+(the same window everywhere; steps 0–1 are warm-up). Before every run the script checked that the GPU had no process.
+Compared with `box/compare_ab.py` plus a same-window recompute.
+
+**C3 (residual add inside the wO / down GEMM), three independent pairs:**
+
+| Pair | GPU | Order | off (ms) | c3 (ms) | c3 vs off |
+|---|---|---|---|---|---|
+| `ab_fuse_np1_1026_2126` | 0 | old, off, c3 | 21,802.1 | 21,640.6 | −0.74% |
+| `ab_fuse_np1_g0_1026_2207` | 0 | off, c3 | 21,822.4 | 21,770.0 | −0.24% |
+| `ab_fuse_np1_g1_1026_2207` | 1 | c3, off | 21,601.5 | 21,436.2 | −0.77% |
+| **mean** | | | | | **−0.58%** |
+
+- All three pairs are negative, in both orders (off first and c3 first). The standalone prediction was −0.29%.
+- GPU 1 is about 1% faster than GPU 0 in absolute terms, so pairs are compared only on the same GPU.
+- Peak memory +126 MiB in every pair (96,725 → 96,851 MiB). Clock 1,485–1,500 MHz, 692 W (power cap) in every run.
+- Loss: step 0 is 11.287024 with c3 vs 11.286944 (one rounding fewer in the residual add). Step 3 is 11.136471–11.136490
+  with c3 vs 11.136460–11.136486 with off — the same band.
+
+**old vs off (must be equal: same code with every switch off):** on steps 2–4 old 21,738.4 and off 21,788.3 ms
+(+0.23%). `compare_ab.py` printed +2.94% because it averages every step ≥ 2 and old's step 6 took 25,136 ms (a one-off
+slow step); old and off ran to step 6, c3 only to step 4. The same-window number is the right one; the 2.94% is not a
+real difference. (`compare_ab.py` should be changed to cut every run to a common last step.)
+
+**C1 (dW accumulated inside the GEMM, beta = 1), trainer, `ab_fuse_np1_1026_2153`, GPU 0, order v, vc1, vc1, v:**
+- At world size 1 ZeRO normally declines the gradient view. The new switch `BLU_GRAD_VIEW_W1=1` (in
+  `dist/zero/src/ShardedMuon.cpp`) keeps the view on at world size 1, so the gradient slot is the bf16 view as in
+  production and C1 can engage. "engaged" was printed in both vc1 runs and in neither v run.
+- v: 21,620.8 and 21,603.4 ms (spread 0.08%). vc1: 21,652.0 and 21,658.1 ms. **vc1 is +0.20% slower.**
+- This matches the standalone result: the beta = 1 dW GEMMs are 1.5–4.8% slower because the epilogue reads the C tile
+  without a prefetch, and that costs more than the removed add kernels save.
+- Peak memory unchanged (90,805 MiB in all four runs). Loss at step 3: 11.136155–11.136177 (v) and 11.136141–11.136163
+  (vc1) — the same band; the precision gain (−18% gradient error, §45.98) is too small to show in 4 steps.
+- Verdict: C1 is correct and more precise, but it needs a TMA prefetch of the C tile in the BLAS epilogue before it can
+  be faster. Not to be switched on until then.
+
+**Copied off the box before the instance was cut (22:20 IST):**
+- `profiling_reports/matmul_audit_2026_10_26/box_runs/`: every run folder (logs, status, nvidia-smi samples), the two
+  nsys captures (`capA.nsys-rep`, `capB.nsys-rep`), the small c1/c3 sqlite files, `build_logs/`, and
+  `box_scripts_as_run_on_box/` (the scripts exactly as they ran, including `ab_fuse_pin.sh`). 99 MB.
+- Checked with a checksum dry-run of rsync: no file differs between the box and the laptop.
+- The 7 edited source files on the box (`tree_new`) have the same md5 as `~/Downloads/BluTrain_fuse` on the laptop.
+- Not copied: the two big sqlite exports (795 MB; they can be made again from the `.nsys-rep` files with
+  `nsys export`), the binaries `pz` / `pz_new` (rebuildable), and the training data shards.
+
+**Next:** SwiGLU dual-output epilogue (our own, §45.98); TMA prefetch of the C tile for beta = 1 (makes C1 a gain);
+C2 merged QKV; a longer run for precision; commit the `BluTrain_fuse` changes (user).
+
+### 45.100 2026-10-26 night: two doubts answered (SwiGLU / RoPE precision; how much was done), the EOD, and the plan for 2026-10-27
+
+#### 1. Doubt: "is the current SwiGLU in fp32 or bf16? If bf16, what is the use of the epilogue?"
+
+**Answer: storage is bf16, but the math is already fp32 inside the kernel.** Checked in the code the trainer runs
+(`Tensor-Implementations/src/Kernels/cuda/activations/arch/SwiGLUKernels_sm90.cu`):
+- Forward `swiglu_fwd_vec_kernel_sm90` (line 107): loads gate and up as bf16, converts each with `__bfloat162float`
+  (`to_f_sw90`), computes `(a / (1 + __expf(-a))) * b` in fp32 (`swiglu_op_sw90`), rounds once with `__float2bfloat16`
+  (`from_f_sw90`), stores bf16.
+- Backward `swiglu_bwd_v21_vec_kernel_sm90` (line 200): loads grad, gate, up as bf16, converts to fp32, computes
+  dA and dB in fp32 (`swiglu_bwd_op_sw90`), rounds each to bf16, stores.
+
+So the "fp32 op next to the matmul" in our trainer means **fp32 math in registers with bf16 storage**. Under
+`BLU_ALL_BF16=1` no tensor between kernels is fp32.
+
+Today's forward chain (two roundings and one extra memory round trip):
+```
+gate_up GEMM:  fp32 accumulator g, u
+               -> ROUND to bf16 (1)          <- g, u lose precision here
+               -> write gu to HBM (805 MB)
+swiglu kernel: read gu (805 MB)
+               -> to fp32                    <- the lost bits do not come back
+               -> swish(g) * u in fp32
+               -> ROUND to bf16 (2) -> write act (403 MB)
+```
+With the epilogue (C5):
+```
+gate_up GEMM:  fp32 accumulator g, u
+               -> swish(g) * u in fp32, from the EXACT g, u
+               -> ROUND once -> write act (403 MB)
+```
+- Precision: swish is computed from the exact fp32 g, u, not the bf16-rounded ones. One rounding instead of two.
+- Speed: the 805 MB read and one launch disappear (SwiGLU forward = 7.10 ms per micro-step today).
+- Writing fp32 to memory and running the op separately would give the same precision but at twice the bytes (1.6 GB
+  written + 1.6 GB read): slower. The epilogue gives the precision without the traffic. That is the whole reason for
+  the epilogue.
+- The same holds for every fp32 op next to a matmul. C3 proves it: the residual add was already fp32 math, and the
+  not-correctly-rounded share still fell from 29% to 0.1–0.4%, because the matmul output was no longer rounded to bf16
+  before the add.
+
+Caveats for SwiGLU:
+- The backward still needs g and u, so gu is still written (bf16), as in Liger and Megatron. The backward then uses
+  the rounded g, u while the forward used the exact ones. The mismatch is small.
+- C5b does the same for the backward: the down-dX GEMM's fp32 d_act goes straight into the fp32 SwiGLU-backward math,
+  so d_act is never rounded or written.
+- The SwiGLU precision gain is NOT measured yet. Plan: the same fp64 test as C3.
+
+#### 2. Doubt: "so it is the same as RoPE? read/write bf16, compute in fp32?"
+
+**Yes.** The bf16 RoPE kernel the trainer uses (`Tensor-Implementations/src/Kernels/cuda/norm/FusedRMSRoPE_bf16.cu`,
+called through `fused_qk_norm_rope_forward_bf16_tm`, line 295):
+- Loads q/k as bf16 and converts with `__bfloat1622float2` (lines 21–27).
+- RMS (`rsqrtf`, line 105), gamma (fp32) and the cos/sin rotation (fp32 cache) are all fp32 math.
+- Rounds once with `__float22bfloat162_rn` / `__float2bfloat16_rn` (lines 32–37, 171–172) and stores bf16.
+
+So SwiGLU, RoPE, the residual add and the gradient add all follow the same pattern: bf16 in memory, fp32 math inside.
+RoPE's input also comes straight from the wQ/wK matmuls, so the same epilogue idea would apply there. It is left as it
+is (user, 2026-10-26: do not change the RoPE kernel).
+
+#### 3. Doubt: "did we do all the experiments, or only 2–3 things?"
+
+**All 15 audit items were measured (timed with nsys, §45.97). Only 2 were built and tested.**
+
+| Item | Timed with nsys | Built + tested (speed, memory, precision) |
+|---|---|---|
+| C3 residual add in wO / down matmul | yes (10.9 ms incl. residual-gradient sums) | **yes**: 0.58% faster than switch off, +126 MiB, not-correctly-rounded 29% → 0.1–0.4% |
+| C1 weight-gradient add in the matmul | yes (4.9 ms) | **yes**: 0.20% slower than switch off, same memory, gradient error 18% lower |
+| C5 / C5b SwiGLU fwd + bwd | yes (19.2 ms, the biggest) | no. Kota's fused kernel only read: it writes only the activation, so it cannot serve training |
+| C2 merged q/k/v | yes (~11.9 ms) | no |
+| A1 / A2 layout copies | yes (5.7 ms) | no |
+| C4 lm_head + loss | yes (2.9 ms) | no |
+| C6, L1, L2, M1, M2, M3 (small) | yes | no |
+| G1 (square dW wave quantization), O1 (optimizer host syncs) — found by the measurement | yes | no |
+
+Also NOT done: a real "fp32 output" GEMM variant (write fp32 to memory, then the op separately). The claim that it
+doubles the bytes comes from tensor sizes, not from a run. What was measured: no separate cast kernels exist around
+the matmuls (the casts are free; under `BLU_ALL_BF16=1` every `to_dtype` there is a no-op).
+
+#### 4. The EOD sent for 2026-10-26 (continuation after the user's own "so todayyy y ,,, ," line)
+
+The user's own blocks above it: goal "implement that fusion of bf16-input-fp32-output matmul with adjacent fp32 ops and
+ablate on speed, memory and numerical precision benefits"; "what i did: 1. Done". I suggested changing "Done" to
+"partly done: 2 fusions built and tested, the rest measured" (section 3 above); the user's choice.
+
+---first , a small background , every matmul in our trainer takes bf16 inputs and adds up the products in fp32 inside the gpu registers , then rounds the result to bf16 and writes it to memory , and the next small op ( residual add , swiglu , weight-gradient add ) reads it back , so the idea today was to use that fp32 result directly inside the matmul's last stage ( the epilogue ) for the next op , instead of writing it , reading it again and rounding twice , i went through the whole pretraining script again and listed every matmul and the op right after it in forward , backward and the muon optimizer , 15 possible changes in total , leaving the rope kernel as it is , then i measured all of them with nsys on the production trainer on h200 , one micro-step is 680.4 ms of gpu time , the matmuls take 69.8% of it , and the small ops next to the matmuls that can be fused add up to 58.7 ms , 8.6% of the micro-step , i also confirmed that the bf16 to fp32 casts cost nothing by themselves , they happen in registers and no separate cast kernel runs , so just writing fp32 output instead of bf16 does not help , it only doubles the bytes the next op has to read , the gain comes only when the next op is moved into the matmul epilogue ,,, ,
+
+| op next to the matmuls | ms per micro-step | % of micro-step |
+|---|---|---|
+| swiglu forward + backward | 19.2 | 2.8 |
+| q/k/v: 3 separate matmuls + their gradient sums | ~11.9 | ~1.7 |
+| residual adds + residual-gradient sums | 10.9 | 1.6 |
+| layout copies around attention | 5.7 | 0.8 |
+| weight-gradient adds | 4.9 | 0.7 |
+| cross-entropy forward + backward | 2.9 | 0.4 |
+| other (dk/dv reduce, lm_head transpose copy) | 3.3 | 0.5 |
+| total | 58.7 | 8.6 |
+
+---from this list i built the first two fusions on kota's blublas ea666ab ( the one production uses ) , fusion 1 ( c3 ) moves the residual add after the attention output matmul ( wo ) and the mlp down matmul into the matmul epilogue , so the fp32 result is added to the residual in registers and rounded only once , i used kota's existing addmm path with the full residual passed as the bias , and switched it to the register-split tile config , because for a full-size bias it is 1.9% faster than his default addmm config on both wo and down , fusion 2 ( c1 ) makes the weight-gradient matmul add its result straight into the weight's gradient buffer ( beta = 1 ) , instead of writing a new tensor and adding it with a separate kernel , both are behind switches that are off by default , and with the switches off the trainer gives a bit-identical loss and grad norm to the original code , i checked each fusion 3 ways , a standalone kernel test against an fp64 reference , nsys timing of every kernel , and short a/b runs of the real trainer with the production config , each pair on the same gpu and in both run orders ,,, ,
+
+---results of fusion 1 ( c3 ) , the fused kernel alone is 6.1% faster than matmul + separate add on wo and 2.6% faster on down , precision improved a lot , outputs that are not correctly rounded went from 29% to 0.1–0.4% against the fp64 reference , and the mean error went from 0.85 to 0.25 ulp , backward gradients are bit-identical to the unfused path , in the real trainer one step is 0.58% faster than the same binary with the switch off , from 3 separate pairs on gpu 0 and gpu 1 ( 0.74% , 0.24% and 0.77% faster , all 3 faster in both run orders ) , which is more than the 0.29% the standalone numbers predicted , peak memory is 126 mib higher than with the switch off , and the loss is the same ,,, ,
+
+| fusion | kernel alone (vs unfused) | trainer step time (vs switch off) | peak memory (vs switch off) | precision (vs unfused, fp64 reference) |
+|---|---|---|---|---|
+| c3 residual add in wo / down matmul | 6.1% / 2.6% faster | 0.58% faster (3 pairs) | +126 mib | not correctly rounded 29% → 0.1–0.4% |
+| c1 weight-gradient add in matmul | weight-gradient matmuls 1.5–4.8% slower | 0.20% slower (4 runs) | same | gradient error 18% lower |
+
+---results of fusion 2 ( c1 ) , the gradient error is 18% lower than the unfused path , and the separate gradient add kernels are gone , but the weight-gradient matmuls with beta = 1 run 1.5–4.8% slower than with beta = 0 , because kota's blas epilogue reads the old gradient tile without prefetching it , so one trainer step is 0.20% slower than with the switch off ( memory and loss the same ) , so i kept it off for now , it becomes a gain once the blas prefetches that tile with tma , the same way it already does for the addmm bias , i also checked kota's fused swiglu matmul for the biggest item in the list , it writes only the activation , but training also needs the gate and up values for the backward pass , so for training we need our own epilogue that writes both ,,, ,
+
+---so in short , moving the next op into the matmul epilogue works and is correct , c3 is a clear win on both speed and precision , c1 is a precision win but needs one blas change before it is faster , and most of the 8.6% is still left to take , all results , scripts and code are saved on my laptop , tomorrow i will build our own swiglu epilogue that writes both the activation and gate/up ( the biggest item , 19.2 ms per micro-step ) together with the swiglu backward inside the down matmul , then add the tma prefetch for the beta = 1 tile so c1 becomes faster , and then merge the 3 q/k/v matmuls into one ,,, ,
+
+verda h200 usage — 26/10/2026: ran 2 nsys captures of the production pretraining trainer (71 micro-steps, 117,204 kernels, one with nvtx ranges, one with gpu metrics), test_c3_resid_addmm (wo + down, 4 configs, 2 runs each + 1 on the new library), test_c1_wgrad_accum (off/on/off/on under nsys) and 11 trainer a/b runs (old, off, c3, view, view+c1) on gpu 0 and gpu 1, with full sm_90a rebuilds of the library and trainer
+
+work — 26/10/2026: measured every matmul and the op next to it in the production pretraining trainer on h200, then built two fusions on kota's blublas ea666ab that use the matmul's fp32 result directly (the residual add inside the wo and down matmuls, and the weight-gradient add inside the weight-gradient matmul) and measured their speed, memory and precision against the unfused code
+
+#### 5. State at the end of 2026-10-26 and the plan for 2026-10-27
+
+**Where everything is:**
+- Code: `~/Downloads/BluTrain_fuse` on the laptop (a copy of BluTrain_lottn at 16bce82). **Not committed** (the user
+  commits). The 7 edited files are listed in §45.98; their md5 matched the box tree before the box was cut.
+  Switches, all off by default: `BLU_ADDMM_RS=1`, `BLU_FUSE_RESID=1` (C3), `BLU_FUSE_WGRAD=1` (C1),
+  `BLU_GRAD_VIEW_W1=1` (keeps the bf16 gradient view at world size 1, for 1-GPU tests of C1).
+- Profiler switch `BLU_NVTX=1`: committed by the user in BluTrain_lottn 16bce82.
+- Results: `profiling_reports/matmul_audit_2026_10_26/` (scripts in `box/`, analyzer `analyze_capture.py`, every run in
+  `box_runs/`, 99 MB, checksum-verified against the box).
+- The 2x H200 box 95.133.254.29 was cut by the user at ~22:20 IST. A new box needs: copy `BluTrain_fuse`, build
+  (`make -j$(nproc) profiler tensor dist SM_ARCH=90` + `make _ablation_compile MODE=production_zero`), yaml-cpp 0.8.0,
+  and the data shards linked as the 4 mix domains (§45.97).
+
+**Plan for 2026-10-27, in this order:**
+1. **SwiGLU dual-output epilogue (C5), our own**, CPU work first: the gate_up GEMM writes gu (bf16, for the backward)
+   AND act = swish(g) * u computed from the fp32 accumulator. Gate column j and up column j must be in the same tile:
+   either reorder the gate_up weight columns into blocks (Muon is equivariant to column order, so safe; checkpoints
+   need the mapping) or give the epilogue two N-ranges. Then a standalone test like C3: speed vs gate_up GEMM + swiglu
+   kernel, and precision vs fp64.
+2. **SwiGLU backward in the down-dX epilogue (C5b)**: the fp32 d_act goes straight into the SwiGLU-backward math
+   (reads the gu tile), writes dgate and dup; d_act is never written.
+3. **C-tile TMA prefetch for beta = 1** in the BLAS epilogue (the way addmm prefetches its bias), so C1 becomes faster
+   instead of 0.20% slower. Then re-run the C1 trainer A/B.
+4. **C2 merged q/k/v** (~11.9 ms per micro-step).
+5. Later: a longer run for precision (loss over hundreds of steps with C3 on); A1/A2 layouts; C4; G1; O1.
+6. Small fix: `box/compare_ab.py` must cut every run to a common last step (it printed a false +2.94% old vs off,
+   §45.99).
+
+Ask before every GPU run; check that the GPU has no process in the same command; never touch RoPE.
+
+### 45.101 2026-10-27: new 4x H200 box, smoke gate, and C5 built — SwiGLU inside the gate_up GEMM epilogue (production template)
+
+#### 1. The box (4x H200, `ssh 95.133.252.206`, hostname `clear-cable-completes-fin-03`)
+
+- root, 176 CPUs, 668 GB RAM, driver 580.178.04 (CUDA 13.0), nvcc 13.2 (`/usr/local/cuda`), nsys 2025.5.2,
+  yaml-cpp 0.8.0 installed system-wide. The build is SASS-only (`-gencode arch=compute_90a,code=sm_90a`), so the 13.2
+  compiler with the 13.0 driver is fine.
+- **Shared through a GPU claim board** (`/root/gpu_board`, set up today at 10:38 IST by a teammate; the files carry no
+  name). Rules: `gpuboard --as gautam_k status`, `claim <gpu> <minutes> "<what>"` (exit 2 = refused, do not start), run
+  only on the claimed GPU, `release` when done. Every run today went through it. The user asked whether to delete it; I
+  advised against (aparna had a live claim; it may be wired into teammates' laptop hooks) and left it untouched.
+- **Disk:** `/` is 193 GB and filled up during the day (teammates' folders: aparna 38 GB, adwaid 20 GB, madhu 18 GB,
+  Ananya 17 GB, harshini 16 GB, ...; ours 1.7 GB). At 13:07 IST it showed 0 bytes free. I stopped our build, then moved
+  our tree and data to `/dev/shm/gautam_k` (RAM-backed, 335 GB, gone after a reboot; the source stays on the laptop)
+  with symlinks at the old paths. Logs, binaries and run folders (a few MB) stay in `/root/gautam_k` so the board sees
+  our processes as `gautam_k`.
+- Layout: `/root/gautam_k/audit/{tree_new -> /dev/shm, box/, runs/, pz_new}`, `/root/gautam_k/pt_data -> /dev/shm`.
+
+#### 2. Setup and smoke gate (GPU 1)
+
+- Copied `~/Downloads/BluTrain_fuse` (40 MB, no .git) and the scripts; built with `make -j64 profiler tensor dist
+  SM_ARCH=90` (501 s) and `make _ablation_compile MODE=production_zero ABLATION_OUT=.../pz_new` (38 s).
+- Data: the 4 edufineweb train shards + val, md5 equal to the laptop's `master_gau_latest/data` (the 10-26 source).
+- **First smoke (11:24–11:33 IST) did NOT match 10-26:** step-0 loss 11.288469 vs 11.286944. Cause: the data layout. On
+  10-26 every domain folder (`mix/{commoncrawl,edufineweb,code,math}`) linked all 4 shards + val; the copy I uploaded
+  came from the 10-21 backup, which links 1 shard per domain, so the loader read different batches. Fixed the links.
+- **Smoke rerun (11:34–11:41 IST) PASSED:** step-0 loss off 11.286944 and c3 11.287024, val 11.291607 / 11.291675 —
+  identical to 10-26 to the last digit. Step 2: 21,328 ms (off), 21,303 ms (c3). Steps 0–1 are slow on this box
+  (27–38 s vs ~22 s on 10-26); from step 2 on the time is normal, so A/B uses steps >= 2.
+- Results: `profiling_reports/matmul_audit_2026_10_26/box_runs_1027/ab_fuse_np1_g1_1027_1123` (mismatched data) and
+  `..._1134` (passed).
+
+#### 3. C5 design: put the epilogue in the PRODUCTION template, not Kota's fused copy
+
+- Kota's `Bgemm_sm90_swiglu_fused_template.cuh` is a 4,307-line older copy of the GEMM template with a `FusedSwiGLU`
+  flag; it writes only the activation and pairs gate column j with column j + 128 inside each 256-wide tile, so the
+  weight would need its columns reordered. The user (10-26): "his swiglu epilogue fused thing isn't optimized that much".
+- **Which kernel runs gate_up today (nsys 10-26, capB):** `Sm90WarpspecConfig<192,128,64,0,8,1,24,160,...>`, NN —
+  the 192x128 register-split tile, 1,846 calls, 2.78 ms each. Not 128x256.
+- So the new epilogue goes into `Bgemm_sm90_warpspecialized_template.cuh` (the template the plain GEMM uses), as a new
+  template flag `DualSwiGLU` (default false, so every existing kernel is unchanged). The main loop stays exactly the
+  production one.
+- **How the pairing works without reordering the weight:** for NN the producer loads B with one 4-D TMA box of BN
+  columns (in 64-column chunks, smem chunk-major). In DualSwiGLU mode it issues two half boxes into the same stage:
+  gate columns `block_col*BN/2 ...` into the first half and the matching up columns `N/2 + block_col*BN/2 ...` into the
+  second half (B descriptor built with box BN/2; same total bytes, same mbarrier count). In the wgmma accumulator a
+  thread's `acc[r]` and `acc[r + CREGS/2]` are the same row and columns col and col + BN/2 (`wgmma_frag_rowcol`:
+  col = 2*t0 + v0 + 8*v2), so gate j and up j are in one thread.
+- **Epilogue:** (1) write the full tile (bf16) into the warpgroup's store buffer as usual; (2) TMA-store it to `gu` at
+  its normal places — gate chunks to columns `block_col*BN/2 + ...`, up chunks to `N/2 + block_col*BN/2 + ...` — as two
+  commit groups; (3) `cp.async.bulk.wait_group.read 1` (gate chunks read out of smem), then compute
+  `act = (g / (1 + __expf(-g))) * u` from the fp32 accumulators (the unfused kernel's expression, `swiglu_op_sw90`) into
+  the gate chunks' space; (4) TMA-store act through a second map (passed in the kernel's `Bias_tmap` slot).
+  No extra shared memory: the regsplit configs leave only ~19 KB free, too little for a separate act buffer.
+- Because `gu` is still written in the normal [gate | up] layout, the backward is unchanged: `MatmulBackward(h, W)` and
+  `SwiGLUBackward(gu)` exactly as before. Muon, checkpoints and the weight layout are untouched.
+
+**Code (laptop `~/Downloads/BluTrain_fuse`, not committed):**
+
+| File | Change |
+|---|---|
+| BLAS `SM90/Bgemm_sm90_warpspecialized_template.cuh` | kernel flag `DualSwiGLU` (static_asserts: NN only, no beta/bias/split-K, plain store buffer, BN % 128 == 0); producer two half-box B loads; epilogue split gu store + act; new launcher `launch_bgemm_sm90_swiglu_dual<Config>` (tensor-map cache, same tile order, PDL) |
+| BLAS `SM90/Bgemm_sm90_swiglu_dual.cu` (new) | `extern "C" bool blublasBgemmSM90_swiglu_dual_nn(A, B, GU, ACT, M, N, K, bn, stream)`; bn 128 -> `Sm90Config_192x128x64_regsplit`, bn 256 -> `Sm90Config_128x256x64_regsplit`; returns false (nothing launched) if the shape does not fit |
+| TI `autograd/operations/MatrixOps.{h,cpp}` | `autograd::matmul_swiglu(x, w)`: `make_binary_op<MatmulBackward>` whose forward runs the fused kernel (gu) and hands back act; act gets `SwiGLUBackward(gu)` as in `swiglu()`. Falls back to matmul + swiglu. `BLU_SWIGLU_DUAL_BN=256` picks the 128x256 tile |
+| trainer `bluscript_zero_ckpt.cpp` `SwiGLUMLP::forward` | `BLU_FUSE_SWIGLU=1` -> `matmul_swiglu(reshape(h, [B*T, d]), gate_up.weight)`, reshape act back; default off |
+
+#### 4. C5 standalone test (`box/test_c5_swiglu_dual.cu`, GPU 1, 13:13 IST, claimed on the board)
+
+Shapes: production gate_up M 32768, K 2304, N 12288 (F 6144), h ~ N(0,1), W ~ N(0, 0.02) (the trainer's init std);
+plus a small odd shape M 1000, K 512, N 1024 (partial row tiles). OLD = `matmul` (production dispatch) + `swiglu_forward`.
+
+| Check (gate_up) | Result |
+|---|---|
+| gu vs the plain GEMM | **bit-identical**, 0 of 402,653,184 differ, both tiles (also the small shape) |
+| act vs fp64, not correctly rounded | OLD **34.04%** -> NEW **0.24%** (both tiles) |
+| act vs fp64, mean error | 0.435 -> 0.269 ulp |
+| act vs fp64, max error | 10,472 ulp in OLD and NEW alike (exact value near zero: the fp32 accumulation itself, same in both) |
+| backward: grads of h and W | **identical** checksums (OLD graph vs `matmul_swiglu`); the op ran the fused kernel |
+| time per call (median of 100, interleaved) | OLD 3.0659 ms -> **NEW bn128 2.9556 ms (−3.60%)**, NEW bn256 3.0026 ms (−2.07%) |
+| fused epilogue cost over the plain GEMM | +0.169 ms (bn128) vs the swiglu kernel it replaces 0.279 ms |
+
+Small shape: act not-correctly-rounded 34.31% -> 0.04%, bn128 −2.1%, bn256 +12.3% (too small to matter).
+
+Expected trainer gain: ~0.11 ms x 26 layers ≈ 2.9 ms per micro-step ≈ 0.4% (before any clock effect).
+Log: `box_runs_1027/c5/c5_run1.log`.
+
+#### 5. C5 trainer A/B (GPU 1, 12:44–13:02 IST, `box_runs_1027/ab_fuse_np1_g1_1027_1244`)
+
+Order off, sw, sw, off (`sw` = `BLU_FUSE_SWIGLU=1`), each stopped after step 3, mean dt of steps 2–3:
+
+| Run | step 2 | step 3 | mean |
+|---|---|---|---|
+| 01_off | 21,304.1 | 21,342.1 | 21,323.1 |
+| 02_sw | 21,352.6 | 21,280.2 | 21,316.4 |
+| 03_sw | 21,340.3 | 21,389.5 | 21,364.9 |
+| 04_off | 21,479.0 | 21,406.0 | 21,442.5 |
+
+- **sw vs off: 21,340.7 vs 21,382.8 ms = −0.20%** (the standalone predicted −0.4%).
+- The two off runs differ by 0.56% (drift over the 18 minutes), larger than the effect, so this alone does not size it;
+  the 6-run A/Bs below add samples.
+- Step-0 loss: sw 11.286920, off 11.286944 (act rounded once less); step 3 inside the same band (11.136475–11.136498).
+
+#### 6. Keeping GPU 1 busy (user, 2026-10-27: "plan everything before ... don't waste GPU time")
+
+- Builds never touch the tree a GPU run is using: `tree_new` (C3/C1/C5, used by the 12:44 A/B), `tree_dev` (+ beta
+  prefetch), `tree_c5b` (+ C5b), each a full copy in `/dev/shm/gautam_k` with its own trainer binary
+  (`pz_new`, `pz_dev`, `pz_c5b`).
+- Queue scripts on the box wait for the previous GPU job and for their build, then claim GPU 1 on the board and run
+  back to back: `box/queue_1027.sh` (C1 prefetch test, then 6-run A/B) started 21 s after the C5 A/B released GPU 1;
+  `box/queue2_1027.sh` (C5b tests, then 6-run A/B) waits for queue 1. If its build had failed it would have run more A/B
+  samples instead of leaving GPU 1 idle.
+- `box/ab_fuse_pin.sh` arms added: `sw`, `c3sw` (tree_new); `dv` (bf16 gradient view at world 1 = the production
+  gradient path), `dvc1`, `dvall` (= view + C1 + C3 + C5) on tree_dev; `xv`, `xswb` (view + C5b), `xall` (view + C1 +
+  C3 + C5 + C5b) on tree_c5b. The library check now compares `readlink -f` paths (trees are symlinks into /dev/shm).
+
+#### 7. C1 with the C-tile TMA prefetch (beta != 0)
+
+- **Change** (template, `BETA_SMEM_PREFETCH`): when beta != 0 the epilogue loads the C tile into the store buffer with
+  one bulk TMA per chunk through `C_tmap` (C_in is C for every beta launch in this template), exactly like the Full-bias
+  prefetch, and each lane reads its two old values from smem at the offset it then stores to. Replaces the per-element
+  global read. Same arithmetic (`v += old * beta`). Only for the plain per-warpgroup store buffer; `-DBLUBLAS_NO_BETA_TMA`
+  reverts. Rows >= M keep the `global_row < M` guard (a partial tile of batch b would otherwise read batch b+1).
+- **Bit-identical:** `test_c1` today (tree_dev, GPU 1) printed the SAME checksums as on 10-26 for all three shapes with
+  C1 on (`065280d9b70965a5`, `b3c6758c9178bd2a`, `2cf2d964b5e291fc`) and off; precision lines identical.
+- **Speed (nsys, 4 micro-steps x 3 shapes, `box_runs_1027/c1p/k_*.csv`):**
+
+  | Kernel | C1 on (r1 / r3) | C1 off (r2) |
+  |---|---|---|
+  | gate_up dW, 128x256 TN | 41.7 / 42.1 ms (beta 1) | 41.6 ms (beta 0) |
+  | down dW, 192x192 TN | 19.1 / 18.2 ms | 18.0 ms |
+  | wQ/wO dW, 128x192 TN | 7.8 / 7.8 ms | 7.7 ms |
+  | add_inplace (48 calls) | 0 | 1.0 ms |
+  | all kernels | 203.4 / 201.5 ms | 201.7 ms |
+
+  The beta = 1 dW GEMMs now cost +0.0–1.2% over beta = 0 and the add kernels are gone: C1 is break-even in the
+  standalone (−0.2 ms on r3, +0.3 ms on r1 of ~202 ms). Its value is the 18% lower gradient error.
+
+#### 8. C5b design: SwiGLU backward inside the down-dX GEMM
+
+- Plain path today: `d_act = dY . Wd^T` (NT, 128x256 register split, bf16 out) -> `swiglu_bwd_v21` reads d_act + gu,
+  writes dgu. 12.14 ms per micro-step (§45.97), d_act rounded to bf16 in between.
+- **Kernel** (template flag `SwiGLUBwd`, NT only): the tile's fp32 accumulators are d_act. Per warpgroup, in its own
+  store buffer: TMA-load the gate tile `gu[:, j]` (through the `Bias_tmap` slot = a map over gu [M, 2F]) -> each lane
+  keeps its gate values in registers (bf16x2, CREGS/2 registers) -> TMA-load the up tile `gu[:, F + j]` -> compute
+  `dgate = (d * (g*sig*(1-sig) + sig)) * u`, `dup = d * (g*sig)` (the unfused kernel's `swiglu_bwd_op_sw90`, same
+  grouping) -> dup over the up slot (same lane) -> store dup to `dgu[:, F + j]` -> after its smem is read, dgate into the
+  buffer -> store to `dgu[:, j]`. One mbarrier, two phases. No extra shared memory.
+- **Autograd:** a new node `SwiGLUDownBackward(gu, act, Wd, has_resid)` for `y = [x +] swiglu(gu) . Wd` (op
+  `autograd::swiglu_down`, forward = the usual addmm / matmul under no-grad). Edges: x (residual), gu, Wd. Backward:
+  dx = dY; dWd = act^T dY with the new `cuda_matmul_wgrad` (only the dW GEMM, C1-aware: beta 1 into the slot); dgu
+  from the fused kernel (fallback: matmul + swiglu_backward). The gradient goes straight to gu; act's own SwiGLU node is
+  bypassed (act kept as data, `detach()`). Saved tensors = the same as before (act, Wd, gu).
+- **Trainer:** `BLU_FUSE_SWIGLU_BWD=1` in `SwiGLUMLP::forward` (with `BLU_FUSE_SWIGLU` for gu/act and
+  `BLU_FUSE_RESID` for the residual inside the down GEMM). `BLU_SWIGLU_BWD_BN=128` picks the 192x128 tile.
+- **Files:** template (flag, epilogue branch, `launch_bgemm_sm90_swiglu_bwd`), `Bgemm_sm90_swiglu_dual.cu`
+  (`blublasBgemmSM90_swiglu_bwd_nt`), TI `MatmulBackward.{cu,cuh}` (`cuda_matmul_wgrad`), `MatrixBackward.{h,cpp}`
+  (node), `MatrixOps.{h,cpp}` (`swiglu_down`, `matmul_swiglu(..., Tensor* gu_out)`), trainer. Test
+  `box/test_c5b_swiglu_bwd.cu` (speed vs GEMM + swiglu_bwd, dgu vs fp64, autograd: grads of x and Wd identical to the
+  unfused graph, dgu from the fused kernel).
+
+#### 9. All-fusions A/B without C5b (GPU 1, 13:06–13:32 IST, `box_runs_1027/ab_fuse_np1_g1_1027_1306`)
+
+Production gradient path at world 1 (`BLU_GRAD_VIEW_W1=1`, bf16 gradient view as on 8 GPUs), order dv, dvc1, dvall,
+dvall, dvc1, dv, steps 2–3 (`compare_ab.py <dir> 2 1 dv`; the script now reads only GPU 1's smi rows and cuts every run
+to a common last step):
+
+| Arm | Runs (ms) | Mean | vs dv |
+|---|---|---|---|
+| dv (production path) | 21,268.9 / 21,309.9 | 21,289.4 | — |
+| dvc1 (+ C1 with prefetch) | 21,265.9 / 21,273.1 | 21,269.5 | **−0.09%** |
+| dvall (+ C1 + C3 + C5) | 21,203.5 / 21,149.1 | 21,176.3 | **−0.53%** |
+
+- Peak memory 90,803 MiB in every arm (unchanged). Clock 1,485–1,515 MHz at 692–693 W (power cap) in every arm.
+- Step-0 loss dvall 11.287017 vs 11.286944 (fewer roundings); steps 1–3 in the same band.
+- Lesson on GPU use: each trainer launch spends ~65 s in start-up plus two slow steps, so runs stopped at step 3 kept GPU
+  1 busy only ~40% of the time (smi samples). From queue 2 on, every A/B launch runs to step 7 (6 measured steps).
+
+#### 10. C5b standalone (`box_runs_1027/c5b/c5b_run.log`, GPU 1, 13:32 IST) and C5 second run
+
+| Check (down-dX, M 32768, F 6144, d 2304) | Result |
+|---|---|
+| dgu vs fp64, not correctly rounded | OLD **25.98%** -> NEW **0.14%** (both tiles) |
+| dgu vs fp64, mean / max error | 0.346 / 17.2 ulp -> 0.251 / 19.2 ulp |
+| time per call vs GEMM + swiglu_bwd (1.8147 ms) | **192x128: 1.7522 ms (−3.45%)**, 128x256: 1.7928 ms (−1.21%) |
+| fused epilogue cost over the plain GEMM (1.3566 ms) | +0.396 (192x128) / +0.436 (128x256) vs the swiglu_bwd kernel 0.458 ms |
+| autograd: grads of x and Wd vs the unfused graph | **identical** |
+| autograd: "node used the fused kernel" | printed 0 — a TEST bug: it compared the leaf's fp32 gradient buffer with the kernel's bf16 output by checksum. Fixed (`test_c5b2`: converts to bf16 and compares element by element); rerun queued (queue 3) |
+
+C5 second independent run (`c5_run.log`, against the tree_c5b libraries): −3.29% (first run −3.60%), gu bit-identical,
+act precision identical to the first run.
+
+The node defaults to the 128x256 tile; the 192x128 tile is faster in the standalone, so queue 3 repeats the A/B with
+`BLU_SWIGLU_BWD_BN=128` (arms `xswb8`, `xall8`).
+
+#### 11. Why the gains are smaller than the 10-26 projection (user: "why it's not performing as we expected")
+
+**The trainer gains match what the kernels predict.** From the standalone medians (ms per call, OLD = GEMM + separate
+kernel, NEW = fused, "GEMM alone" = the plain GEMM), net per call x calls per micro-step x 32 micro-steps / 21,311 ms
+(the production-path step, median):
+
+| Item | Separate kernel removed | Fused epilogue adds back | Net / call | Kept | Expected step change |
+|---|---|---|---|---|---|
+| C3 wO / down | 0.106 / 0.105 ms | 0.067 / 0.065 ms | 0.039 / 0.040 ms | 37–38% | −0.31% (both) |
+| C5 gate_up (192x128) | 0.279 ms | 0.169 ms | 0.110 ms | 40% | −0.43% |
+| C5b down-dX (192x128) | 0.458 ms | 0.398 ms | 0.060 ms | 13% | −0.23% |
+| C5b down-dX (128x256, the tile the 13:33 A/B ran) | 0.458 ms | 0.443 ms | 0.015 ms | 3% | −0.06% |
+
+Expected C1+C3+C5+C5b(128x256) = **−0.80%**; measured in the trainer (13:33 A/B, median) = **−0.84%**. Expected C5b
+alone (128x256) −0.06%, measured −0.20% (within the A/B's resolution).
+
+**What fell short is the 10-26 projection** (§45.97: "60–75% of the 58.7 ms fusable time", i.e. 5–6.5% per step). It
+assumed the fused epilogue's work would be hidden. It is not, for two measurable reasons:
+
+1. **Bytes: a fusion removes only the intermediate tensor's write and read.** The rest of the op's memory traffic
+   still happens, now inside the epilogue. Per layer and micro-step: C3 604 -> 302 MB (−50%), C5 2.01 -> 1.21 GB
+   (−40%), C5b 2.42 -> 1.61 GB (−33%). The "kept" share follows the byte cut.
+2. **Serialization: the epilogue does not overlap the next tile's MMAs.** In our persistent kernel each consumer
+   warpgroup runs its tile's K loop and then its epilogue; while it stores (and, for C3 / C5b, first waits for the
+   bias / gate / up tiles to arrive), its tensor cores are idle. The C5 epilogue's extra act write ran at ~2.4 TB/s
+   (403 MB in 0.169 ms) where the separate swiglu kernel moved 1.21 GB at ~4.3 TB/s; the C5b epilogue waits
+   synchronously for two TMA loads (gate, then up).
+
+**Next lever:** overlap the epilogue with the next tile's MMAs — the CUTLASS ping-pong schedule (one consumer
+warpgroup's epilogue runs while the other computes; §45.95) and/or prefetching the epilogue inputs (residual, gate,
+up tiles) during the K loop. These GEMMs are compute-bound (gate_up 670 TF/s), so most of the epilogue cost
+(C5 0.169, C5b ~0.4, C3 ~0.065 ms per call; ~15 ms per micro-step together) could hide: up to ~−2% more per step.
+
+#### 12. Why there are no memory savings, and the C5b +866 MiB
+
+- Every fusion built so far removes SHORT-LIVED buffers (the GEMM output before the add, d_act, the dW temporaries).
+  The peak is set by the tensors SAVED for the backward (MLP alone: h + gu + act = 1.36 GB per layer, ~35 GB over 26
+  layers), which none of these fusions change. Only C4 removes a saved tensor (the 3.3 GB of logits).
+- C5b raised the nvidia-smi peak by 866 MiB (90,803 -> 91,667-91,669 in every C5b run). Tracing the code, the live
+  tensors at the worst moment are the same with and without it (gu + act + dgu ≈ 1,920 MiB either way), so the
+  suspicion is the caching allocator (memory RESERVED, not memory IN USE: a 768 MiB dgu allocated in a different order
+  makes the allocator take a fresh block from CUDA). Being measured, not assumed:
+  - `test_mem_mlp` (4 stacked MLP blocks, production shapes, one mode per process: old / c5b / c5c5b / all) prints
+    live memory after the forward and the allocated vs reserved peaks;
+  - the trainer now prints `[MEM] step N | active_peak | allocated_peak | reserved_peak | allocated_cur |
+    reserved_cur | cached_free | cuda_mallocs` after every step with `BLU_MEM_STATS=1` (the existing end-of-run [MEM]
+    line is never reached by runs stopped at step 7); ladder 2 runs with it on.
+
+
+### 45.102 2026-10-27: all SFT work pushed to `dist_side_gautam_lottn`, then every 10-21 / 10-24 benchmark re-run on the pushed code (H100 and the 8x H200 node P032)
+
+#### 1. What was pushed (the user pushed; I prepared and checked)
+
+Prepared in `~/Downloads/BluTrain_push` (branch `dist_side_gautam_lottn`), build-checked on the 2x H100 box
+(`root@217.177.40.23`, GPU 1), pushed by the user at about 17:00 IST.
+
+| repo | commits | what |
+| --- | --- | --- |
+| Tensor-Implementations | `b1443a5..f7aa40f`: `bda3a34`, `f7aa40f` | `bda3a34`: RoPE positions + the bf16 RoPE backward (`FusedRMSRoPE_bf16.cu` and its wiring). `f7aa40f`: generic attention + tests (`test_rope_positions.cu`, `test_varlen_attention.cu`, `sanitize_vj2.cu`). 19 files: 16 SFT files from `BluTrain_sft` (md5 = the SFT_package_2026_10_24 manifest) + the 3 tests. My only edit: a 29-line comment header in `FusedRMSRoPE_bf16.cu` (positions, cp.async backward, measured speeds, 44/44 bit-identity, tests). |
+| BluTrain | `16bce82..5c0999c`: `cb16155`, `a755643`, `1dbb18b`, `5c0999c` | `cb16155`: TI bump. `a755643`: `train/production_zero/bluscript_sft.cpp` + `sft/`. `1dbb18b`: the 12 `sft/` files the root `.gitignore` had skipped. `5c0999c`: DCP fix. |
+
+Checked on GitHub after the push: BluTrain `dist_side_gautam_lottn` = `5c0999c` -> TI `f7aa40f` -> BluBridge-BLAS `ea666ab`
+(PR #3). The box tree was compared with the pushed blobs file by file: 1322 of 1322 equal.
+
+- **The SFT trainer** `train/production_zero/bluscript_sft.cpp` is a 3-way merge: base `909ab75`, ours = the BLUCCL
+  trainer of this branch, theirs = `BluTrain_sft/bluscript_sft.cpp`. Every edit was asserted (scratchpad
+  `merge_trainer/resolve.py`). The adaptations:
+  - `MPI_Allreduce` / `MPI_Abort` -> `dist::comm::allreduce_scalar` / `abort_job`;
+  - the SFT loaders put batches on the LOCAL rank's GPU;
+  - `BLU_INIT_FROM` loads over `nccl_pg`, else a "dcp" group (BluCCL at W > 1, a single-rank group at W = 1) kept in
+    `init_pg` and reused by the checkpointer;
+  - fingerprint and shard CSV columns are skipped in SFT, and the CSV adds `trained_tokens`;
+  - this branch's built-in RoPE theta is 10000 (the old SFT tree had 500000), so a run must always set `BLU_ROPE_THETA`.
+- **`test_loss_grad_inplace.cu` was left out.** It calls the removed 5-argument opt-in loss API; the in-place
+  backward has been the only path since 10-21.
+- **Trap: the root `.gitignore` ignores `*.py *.md *.png`.** So `git add sft` silently skipped 12 files. Fix:
+  `sft/.gitignore` with `!*.py !*.md !*.png`, pushed as `1dbb18b`.
+- **DCP fix (`5c0999c`, `dist/Distributed_Checkpointing/src/DistributedCheckpointing.cpp`).**
+  - Before: `rescue_missing_shard_files` required every file listed in `metadata.bin`, the optimizer shards
+    included. So `BLU_INIT_FROM` with only `metadata.bin` + `data_rank_0.bin` stopped with exit 134.
+  - Now: a weights-only load (`optimizer == nullptr`) rescues only the files that hold the module's tensors.
+  - Checked on the H100: the same-chats SFT run then starts at step-0 loss 1.449952, as on 10-21.
+
+#### 2. Re-run on the 2x H100 (GPU 1, 10-27 afternoon)
+
+Every 10-21 / 10-24 step on the pushed code (box tree = pushed blobs, 1322/1322):
+- attention quick suite 292/292 and full suite 1245/1245. The 4 refusal checks were removed on 10-24, so the counts
+  are 4 lower than 10-21's 296 / 1249.
+- attention scoreboard (forward + backward, ours / theirs):
+  - dense vs FA3 / FA4 / cuDNN: 0.981 / 0.964 / 0.879;
+  - packed: 0.926 / 0.930 / 0.900;
+  - H200 on 10-21: 0.982 / 0.970 / 0.873 dense, 0.935 / 0.923 / 0.881 packed.
+- loss: fastest in 6/6 cases (Liger 1.07-1.22x); old vs new 0.53-0.99 with gradients bit-identical 6/6; in-place
+  backward bit-identical 12/12.
+- bf16 RoPE: fastest in 16/16; 44/44 bit-identical for all 4 builds.
+- same-chats SFT run: step 0 exact (1.449952, val 1.446384).
+- Results: `profiling_reports/sft_benchmarks_2026_10_21/box_runs_h100_1027/`.
+
+#### 3. Re-run on the 8x H200 node P032 (GPUs 0-5, six lanes in parallel, 19:29-19:53 IST)
+
+Same pushed tree (`/localstorage/gautam_k/sftpush/BluTrain`), run script `sftb/run_p032.sh`.
+Lanes:
+- g0: S1, FULL
+- g1: B1, A1, R24
+- g2: A3, A3b
+- g3: A4, B2, A5
+- g4: C padded
+- g5: C packed, C same-chats
+
+All 6 lanes exit 0. Results: `profiling_reports/sft_benchmarks_2026_10_21/box_runs_p032_1027/`.
+
+| test | 10-21 report (H200) | 10-27 P032 | same? |
+| --- | --- | --- | --- |
+| attention quick / full suite | 296 / 1249 pass | 292 / 1245 pass, 0 fail (the 4 refusal checks removed 10-24) | yes |
+| scoreboard dense fwd+bwd vs FA3 / FA4 / cuDNN | 0.982 / 0.970 / 0.873 | 0.980 / 0.963 / 0.867 | yes (same or slightly better) |
+| scoreboard packed fwd+bwd | 0.935 / 0.923 / 0.881 | 0.922 / 0.890 / 0.857 | yes |
+| dense forward vs FA3 | 1.006 (tie) | 1.008 (tie) | yes |
+| loss fwd+bwd, ours (ms): fewest / first / median / most / nomask / all masked | 1.003 / 1.173 / 1.255 / 1.530 / 2.603 / 0.789 | 0.996 / 1.168 / 1.249 / 1.523 / 2.661 / 0.788 | yes |
+| loss: fastest in | 6/6 (Liger 1.29-1.39x, torch.compile 1.5-4.9x) | 6/6 (Liger 1.16-1.21x, torch.compile 1.50-4.96x) | yes; Liger is ~10% faster on this node, ours is unchanged |
+| lm_head + loss, median batch: ours / CCE / Liger FLCE | 34.93 ms / 0.91x / 0.95x | 34.84 ms / 0.90x / 0.95x | yes (the known gap, report section 7) |
+| loss old -> new (new / old) | 0.485-0.911, gradients bit-identical | 0.502-0.909, gradient checksums equal in all 4 runs | yes |
+| in-place backward | 12/12 bit-identical | 12/12 bit-identical | yes |
+| fp32 RoPE path (A5), packed: ours vs torch.compile | fwd 0.210 vs 0.285 ms, bwd 0.521 vs 0.786 | fwd 0.210 vs 0.277, bwd 0.516 vs 0.648 | ours unchanged; torch.compile's backward is 18% faster on this node |
+| positions test / identity check | 37/37, bit-identical | 37/37, bit-identical | yes |
+| bf16 RoPE (R24): fastest in | 16/16 fwd, bwd, total (smallest lead 1.06 / 1.14 / 1.15x) | 16/16 fwd, bwd, total (smallest lead 1.05 / 1.12 / 1.14x) | yes |
+| bf16 RoPE bit-identity | 44/44 in all 8 outputs x 4 builds | 44/44 x 4 builds | yes |
+| bf16 RoPE backward+reduce, original -> cp.async, SFT B4 | 253.3 -> 109.2 us (2.32x) | 269.5 -> 119.6 us (2.25x) | yes (both kernels ~6-10% slower on this node) |
+| rivals agree on packed rows / negative controls | 21/21 pass, 7/7 controls fail | same (the 7 "error" lines are the 7 controls) | yes |
+| padded SFT run: step 0 train / val, val drop | 1.449952 / 1.446384, 0.1625 | 1.449952 / 1.446384 (exact), 0.1625 | yes |
+| packed SFT run: step 0, val drop | 1.4034 / 1.4494, 0.1629 | 1.403362 / 1.449444, 0.1629 | yes |
+| same-chats run: step 0, end val | 1.449952, 1.283943 | 1.449952 (exact), 1.283984 | yes (4e-5 = run-to-run, dQ atomics) |
+| step time median padded / packed / same chats | 5.014 / 1.629 / 2.183 s | 4.928 / 1.587 / 2.143 s | 1.7-2.6% faster |
+| peak GPU memory padded / packed | 123,233 / 85,757 MiB | 117,039 / 82,987 MiB | lower; cause NOT checked (it scales with the micro-batch, so it is activation memory) |
+
+Notes:
+- The full suite took 1375 s here against 546 s on 10-21: the 6 lanes shared the node's CPUs. It is a correctness
+  suite, so this changes nothing.
+- The P032 GPUs are shared. After our lanes, GPU 5 ran someone's vLLM (72 GB) and GPU 7 Sanjay's
+  `/localstorage/sanjay/BluTrain/bluscript_sft_bin`.
+
+#### 4. The BluBLAS pointer question (PR #3 vs PR #2)
+
+- Our branch: TI `f7aa40f` -> BLAS `ea666ab` (PR #3, the optimized addmm: full [M, N] bias with a TMA prefetch, FP16
+  dispatcher).
+- `preproduction-135M` was on PR #2. adhitya's TI commit `03d3790` (10-22, "135M MixedDataloader") moved the BLAS
+  pointer back from `ea666ab` (PR #3) to `35e51a0` (PR #2).
+- Fixed today, pushed by the user: TI `37f2bdc` (BLAS -> `ea666ab`) and BluTrain `7a61192` (`preproduction-135M` ->
+  TI `37f2bdc`).
+- TI master stays as it is (Kathir's call).
+
+#### 5. Madhu's branch `gautam_attn_loss` (TI)
+
+It is not our branch. GitHub shows only the newest commit of the branch picked in the dropdown.
+- The branch is the BLUCCL base `02d0d18` + one commit, `afca3b6` (madhu-373, 10-20 21:23, "Attention optimised for
+  pre-training and now attention have the varlen feature also").
+- Of its 25 files, 11 equal our files today, 4 equal our 10-21 push, and 10 differ.
+- Its `GQA_fwd_sm90.cu` is an older forward (it has the SM3m / PF / K5q / F3c variants, no QPU).
+- Nobody committed to `dist_side_gautam_lottn`.
+
+### 45.103 2026-10-27 afternoon and evening: the matmul fusions finished — C2, L1, C4, two trainer ladders, precision, G1, C2F, epilogue knock-out, profile of the best set, memory; stopped at 19:57
+
+Box: 4x H200 `95.133.252.206`, GPU 1 (claimed on the board until 22:11 IST, released at 19:57). Every number below is
+in `profiling_reports/matmul_audit_2026_10_26/box_runs_1027/runs/` (copied to the laptop before the stop).
+Code: laptop `~/Downloads/BluTrain_fuse` (NOT committed). Every fusion is an env switch, off by default.
+
+#### 1. The new fusions, standalone (production shapes: M = 32,768 tokens, d 2304)
+
+| item | what | speed | precision vs fp64 (share of outputs NOT correctly rounded, OLD -> NEW) | log |
+| --- | --- | --- | --- | --- |
+| C2 | q/k/v dX as ONE K-grouped GEMM: dh = dq Wq^T + dk Wk^T + dv Wv^T (was 3 GEMMs + 2 adds) | 1.1019 -> 0.8419 ms (-23.6%) | 45.23% -> 0.20% (max 262,295 -> 195.6 ulp: near-zero outputs); small shape 45.40% -> 0.06% (max 2843.77 -> 0.77 ulp) | `tree_c4/c2_run.log` |
+| L1 + L2 | lm_head without the transposed copy (`linear_nt`), forward and backward | 29.758 -> 29.239 ms (-1.74%; fwd -2.31%, bwd -1.46%) | bit-identical (logits, dx, d(wte)) | `tree_l1/l1_run.log` |
+| C4 | lm_head + cross-entropy fused, 4 row chunks, dW accumulated in fp32 | 50.37 -> 51.32 ms (+1.88%) | loss and dx bit-identical; d(wte) differs in 0.79% of values (rel L2 3.9e-4: the fp32 accumulation over chunks) | `tree_c4/c4_cmp.log` |
+| C4 memory | the same op | allocator peak 4,100 -> 1,968 MiB | | `tree_c4/c4_mem_*.log` |
+| C5 (§45.101) | SwiGLU in the gate_up GEMM epilogue | gate_up 3.0618 -> 2.9609 ms (-3.29%, bn 128) | act 34.31% -> 0.04%; gu bit-identical | `c5b/c5_run.log` |
+| C5b (§45.101) | SwiGLU backward in the down-dX GEMM epilogue | 1.8171 -> 1.7571 ms (-3.30%, bn 128) | dgu 25.98% -> 0.14% | `tree_c2/c5b_run.log` |
+
+- Autograd checks: C2's node uses the fused kernel, and grad Wq / Wk / Wv are bit-identical to the unfused graph.
+  C5b gives grad x and grad Wd identical.
+- **One MLP block, error against an fp32 reference** (`tree_c2/grad_block_run.log`; rel L2 error, OLD / NEW):
+
+  | tensor | OLD error / NEW error |
+  | --- | --- |
+  | y | 1.03x |
+  | dx | 1.01x |
+  | da | 1.01x |
+  | dWo | 1.01x |
+  | dgamma | 1.08x |
+  | dWgu | 1.07x |
+  | dWd | 1.19x |
+
+  So the fused block is 1-19% closer to fp32, every tensor.
+
+#### 2. Trainer A/B ladders (1 GPU, the production gradient path `BLU_GRAD_VIEW_W1=1`)
+
+Method:
+- Each arm runs to step 7.
+- Step time = median of steps 2-7 without step 6. Steps 0-1 are start-up, and step 6 is slow in every run.
+- Each arm runs twice in ABBA order; I take the mean of the two runs.
+- These numbers replace the ones in my afternoon note (-1.09 / -2.09 / -1.78%). No method reproduces those from the
+  logs; every median method gives the numbers below.
+
+| run | arm | ms per step | vs base |
+| --- | --- | --- | --- |
+| ladder 1 (`ab_fuse_np1_g1_1027_1413`, tree_c2) | base | 21,314.7 | |
+| | + C3 | 21,274.5 | -0.19% |
+| | + C5 | 21,217.5 | -0.46% |
+| | + C5b (bn 128) | 21,143.9 | -0.80% |
+| | + C1 | 21,112.4 | -0.95% |
+| ladder 2 (`_1512`, tree_c4) | m0 production | 21,321.0 | |
+| | m1 = C3 C5 C5b C1 | 21,136.3 | -0.87% |
+| | m2 = m1 + C2 | 20,921.3 | -1.87% |
+| | m3 = m2 + L1 | 20,930.8 | -1.83% |
+| | m4 = m3 + C4 | 20,994.6 | -1.53% |
+| C2F (`_1741`, tree_c2f) | n3 (= m3) | 20,904.4 | |
+| | n3d = n3 + q/k/v dW as one GEMM | 20,844.5 | -0.29% |
+| final (`_1903`) | n0 production | 21,317.0 | |
+| | **n3d = best set** (C3 C5 C5b C1 C2 L1 C2F-dW) | **20,857.2** | **-2.16%** |
+| | n4d = n3d + C4 | 20,933.3 | -1.80% |
+
+- The train loss at step 7 is 10.3526-10.3528 in every arm (production 10.352685 / 10.352702).
+- `mref` (production + fp32 residual / logits / embedding, the precision reference) costs 22,567 ms per step
+  (+5.4% over production in the same run).
+
+#### 3. Values through the whole model (step 0, run `_1615`)
+
+| arm | grad norm, two runs | distance from the fp32 reference (mean of two runs) |
+| --- | --- | --- |
+| reference (fp32 residual / logits / embedding) | 19.7515 / 19.7518 | |
+| production (bf16) | 19.7539 / 19.7533 | 0.0019 |
+| all fusions (m4) | 19.7507 / 19.7506 | 0.0010 |
+
+- The fused grad norm is about 2x closer to the reference. The run-to-run noise is about 0.0006.
+- Step-0 loss: reference 11.286931, production 11.286944, fused 11.287018. So the fused loss is 7e-5 further away
+  (the reference rounds the logits elsewhere).
+- From step 1 on the reference itself trains differently (fp32 residual), so only step 0 compares like for like.
+
+#### 4. Memory (allocator `[MEM]` lines of ladder 2, MiB; nvidia-smi peak of run `_1903`, GPU 1 only)
+
+| fusions on | used, peak | reserved, peak | used at the end of a step | nvidia-smi peak |
+| --- | --- | --- | --- | --- |
+| none (production) | 88,139 | 90,305 | 20,197 | 90,899 |
+| + C3 C5 C5b C1 | 88,139 (0) | 90,305 (0) | 20,197 | 90,899 (0) |
+| + C2 | 88,139 (0) | 90,305 (0) | 20,197 | 90,899 (0) |
+| + L1 (= the best set) | 87,917 (-222) | 90,083 (-222) | 20,197 | 90,675 (-224) |
+| + C4 | 86,001 (-2,138) | 86,475 (-3,830) | 20,197 | 87,059 (-3,840) |
+
+- 20,197 MiB = weights + optimizer states + gradients, the same in every arm.
+- The peak (~88 GB) = the activations saved for the backward. The fusions remove only short-lived buffers that are
+  already freed at that point. So they save memory TRAFFIC (the speed gain), not memory SIZE.
+- Only two items cut the peak: L1 (the transposed lm_head copy, -222 MiB) and C4 (the logits).
+- Trap: the run's `.smi.csv` logs all 4 GPUs (other people's jobs too), so filter it by GPU index.
+
+#### 5. Items tested and closed
+
+- **G1, a different tile for the dW GEMMs (`g1/g1.log`): no gain. The dispatcher already picks the best tile.**
+  - wQ / wO: dispatcher 569.4 us (611 TF/s); the best other tile is 128x192 at 578.4 us (+1.6%).
+  - wK / wV: dispatcher 194.0 us; 128x128 gives 191.1 us (-1.5%, noise level).
+  - Every non-split tile is bit-identical; split-K changes the values.
+- **C2F, q/k/v forward and dW as ONE N-grouped GEMM (`NGroup3` template parameter, `tree_c2f/c2f_run.log`).**
+  - Bit-identical to the 3 GEMMs: forward, and dW for 5 tile configs with beta 0 and 1.
+  - Forward is slower: 853.4 -> 870.3 us (+1.98%), so it is kept off.
+  - dW: 980.7 -> 866.0 us (-11.70%, 128x192_rs); in the trainer -0.29%. It is in the best set.
+- **Epilogue knock-out (`epi_ko/`, 3 builds x 2 runs; `BLUBLAS_KO_STORE` / `BLUBLAS_KO_EPI`, measurement only).**
+  - With the C store to HBM removed, the GEMMs get 0-4% faster (8% only for the small wK/wV dX). So the store is
+    already hidden, and a ping-pong epilogue has little to gain there.
+  - The `KO_EPI` build is invalid: some GEMMs got slower without the epilogue (lm_head dX 9.08 -> 15.7 ms).
+
+#### 6. Profile of the best set
+
+The nsys captures of n3d ran 19:39-19:49. All files are on the laptop
+(`nsys_best_1027_1939/`: `.nsys-rep`, the stats CSVs, and both `.sqlite` files, byte sizes checked).
+- capA: with NVTX, 274 s.
+- capB: no NVTX, GPU metrics on, 251 s.
+- Use the copied sqlite, because the laptop's nsys (2025.3) is older than the box's (2025.6).
+- **Not analysed yet.** This is the first step next time (what is left per micro-step after the fusions).
+
+#### 7. Stop and copy (user, 19:55: "stop, copy everything, the 4x box may close")
+
+- The 40-step check run (production / best set / fp32 reference) was stopped at its start; it has no results.
+- The GPU 1 claim was released on the board.
+- Copied: every run folder, the box scripts (`box_scripts/`), the build logs (`audit_top/`) and the profile.
+- The newest box tree vs the laptop `BluTrain_fuse`: 1218 of 1219 source files equal by md5. The one difference is
+  the measurement-only KO guards, which exist only on the laptop. So the laptop has everything.
+
+#### 8. What is not done
+
+- **Not built:**
+  - A1 / A2: head-major v and O / dO through new TMA maps, ~0.8% estimated;
+  - R: the residual-gradient add after the RMSNorm backward, ~0.8%;
+  - C6: attention dK / dV partials in fp32, precision only;
+  - M1-M3: Muon matmuls, once per optimizer step;
+  - O1: optimizer host syncs, only at 1 GPU;
+  - the ping-pong epilogue.
+- **Not run:**
+  - the 40-step loss / precision check;
+  - any multi-GPU trainer check (all of the above is 1 GPU);
+  - the profile analysis.
+- **Not committed:** `~/Downloads/BluTrain_fuse`.
+
+### 45.104 2026-10-27 evening: SFT of the 135M production base — what we have and what we don't (continue 10-28)
+
+#### 1. The base model
+
+The 135M production base, step 428,945 = 899.6B tokens at 2,097,152 tokens per step. Its config (the user's
+screenshot and Navin's `training_meta.json`):
+
+| setting | value |
+| --- | --- |
+| width / layers / heads | d_model 512, 37 layers, 4 query / 2 KV heads (G = 2), head_dim 128 |
+| ffn / vocab | ffn 1408 (SwiGLU), vocab rows 49,280 |
+| embeddings | tied, `embed_scale` = x sqrt(d_model) on the input side |
+| RoPE / norms | theta 50000 (NeoX half-split), QK-norm, rms_eps 1e-5, qk_eps 1e-6 |
+| context / precision | context 4096, all-bf16 |
+| pretraining run | B x T 16 x 4096, world 16, grad_accum 2, LR 3.5e-4 -> 3.5e-5, WSD (warm-up 2000, stable 760,939, decay tail 190,735) |
+| checkpoint loss | `dcp_loss` 2.2604 |
+
+#### 2. The checkpoint
+
+- **P032 has only half of it.** `/localstorage/preproduction/BluTrain/checkpoints_decay_D150/blumodel_step_428945` on
+  P032 holds only `data_rank_8.bin` ... `data_rank_15.bin` (8 x 73,510,656 B = the optimizer shards of the 2nd node).
+  `metadata.bin` and ranks 0-7 are on P022. Each node's `/localstorage` is its own disk; they are not shared.
+- **Navin's export (laptop: `work_docs(...)/navin_135m_checkpoints_tokenizer/`).**
+  - Files: `model.safetensors` (319,302,040 B, bf16, Hugging Face Qwen3 layout, 410 tensors, `lm_head` NOT tied),
+    `config.json` (Qwen3ForCausalLM), the tokenizer files, `training_meta.json`.
+  - Checked: `embed_tokens` = bf16(`lm_head` x sqrt(512) in fp32), with 0 mismatches in 25,231,360 values.
+  - So `lm_head` = BluTrain's `wte`, exact, and the HF file folded the embedding scale into `embed_tokens`.
+  - BluTrain applies the scale as bf16(sqrt(512)) = 22.625. Our trainer does the same, so loading `wte` from
+    `lm_head` and keeping `embed_scale` on reproduces the pretraining forward exactly.
+  - The HF file holds q_gamma / k_gamma (fp32 in BluTrain) rounded to bf16: a small precision loss on 2 x 128 x 37
+    values.
+
+#### 3. The tokenizer
+
+- Navin's `tokenizer.json` = Dinesh's pretraining tokenizer (`/localstorage/dinesh/smol135/tokenizers/ours_49152/tokenizer.json`):
+  vocab, merges, the 17 special tokens, normalizer, pre-tokenizer and decoder are all identical.
+  - Only Navin's adds a post-processor that puts `<|endoftext|>` first.
+  - sha256: Navin `b2b3ad98...`, Dinesh `5539b455...`.
+- The special tokens: 49,152 ids, ids 0-16 = SmolLM2's set (`<|endoftext|>` 0, `<|im_start|>` 1, `<|im_end|>` 2).
+  ids 49,152-49,279 are reserved rows that never occur in the data. Dinesh's README: "SFT and DPO: use ChatML".
+- **The ChatML rows are almost untrained.**
+  - In `lm_head`, rows 1 and 2 have cosine 0.93 with a reserved (never-seen) row, and 0.95 with each other.
+  - Rows 7, 8 and 14 are exactly equal to reserved row 49,152.
+  - Row 0 (`<|endoftext|>`, which starts every document) is trained (cosine -0.15).
+- How the role names tokenize: `assistant` -> `ass` + `istant` (2 pieces); `user`, `system` -> 1 token each.
+
+#### 4. The code that trained it
+
+- `preproduction-135M` (adhitya `f37c616`, 10-22) = our `3b80f15` + the 135M trainers.
+- `bluscript_zero_ckpt_135m_eqab.cpp` = `bluscript_zero_ckpt.cpp` + `MixedDataloader135.h` + `BLU_MICRO_B` +
+  `BLU_VOCAB`.
+- That `bluscript_zero_ckpt.cpp` adds `embed_scale`, the shape env knobs, `BLU_EXPORT` (`export_safetensors`), the
+  "ours" two-stage mix, `BLU_LR_MULT`, `BLU_GLOBAL_BATCH`, `BLU_SEED` and `BLU_EMBED_WD`.
+- Its TI (`37f2bdc` -> `03d3790`) = our `b1443a5` + the pretraining `MixedDataloader.h` + BLAS PR #3. So our TI
+  `f7aa40f` (+ the SFT kernels and the bf16 RoPE) is a superset for SFT.
+- **Not known yet:** the pretraining optimizer (Muon or AdamW). The config block in the screenshot does not show it.
+
+#### 5. What I changed today (laptop `~/Downloads/BluTrain_push`, branch `dist_side_gautam_lottn`)
+
+4 files, +188 / -32, NOT committed, NOT built, NOT run on a GPU.
+- **`train/production_zero/bluscript_sft.cpp`.**
+  - `embed_scale`, copied from `f37c616`: the config field, YAML key `embed_scale`, `BLU_EMBED_SCALE`, a bf16
+    [1] tensor, `x * sqrt(d_model)` after the embedding, and a config-block line.
+  - Shape knobs with the 135M branch's names: `BLU_D_MODEL`, `BLU_Q_HEADS`, `BLU_KV_HEADS`, `BLU_FFN_HIDDEN`,
+    `BLU_VOCAB`, with a check that `q_heads x head_dim = d_model`.
+  - The SFT loaders now get `cfg.vocab_size`.
+- **`sft/SftDataLoader.h`:** the end token comes from `meta.json` (`end_id`). Files without it are GPT-2 data with
+  end 50256, so old data still loads.
+- **`sft/run_sft.sh`:** `OPT=muon|adamw`, `WARMUP`, `VAL_FREQ`, and the shape knobs passed through. The 135M line:
+  `N_LAYERS=37 ROPE_THETA=50000 D_MODEL=512 Q_HEADS=4 KV_HEADS=2 FFN_HIDDEN=1408 VOCAB=49280 EMBED_SCALE=1`.
+- **`sft/prepare_sft_data.py`:** `--tokenizer <tokenizer.json>` selects template `chatml-v1`.
+  - Format: `<|endoftext|><|im_start|>role\n...<|im_end|>\n...`; the targets are each answer + its `<|im_end|>`
+    (id 2); padding is id 0.
+  - A chat whose text holds `<|endoftext|>`, `<|im_start|>` or `<|im_end|>` is dropped.
+  - Ids must stay below the tokenizer's 49,152.
+  - Both self-tests pass on the laptop:
+    - GPT-2 / tulu-plain-v1 unchanged;
+    - ChatML: `<|endoftext|><|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n[[Hello.<|im_end|>]]\n...`.
+
+#### 6. Still missing before the first run
+
+1. **Weights.**
+   - Either a loader for Navin's safetensors in the trainer: HF names -> BluTrain names, Linear weights transposed,
+     `gate_up` = [gate | up], `wte` = `lm_head`, `q_norm` / `k_norm` -> `q_gamma` / `k_gamma`, skip `embed_tokens`;
+   - or the DCP files from P022 (`metadata.bin` + `data_rank_0..7.bin`) for the existing `BLU_INIT_FROM`.
+2. **Packed attention at 4 / 2 heads.** It has never been tested; the suite covers 18/6, 12/4, 8/8, 32/8, 8/1.
+   Add 4/2 and run it once.
+3. **Data.** Download + prepare `HuggingFaceTB/smol-smoltalk` on P032 (revision `f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc`;
+   a Python env with `datasets` + `tokenizers`).
+4. **Build** the library + `bluscript_sft_bin` on P032 from the changed files.
+5. **Step-0 check.** The loss of the loaded model on pretraining val data must be close to `dcp_loss` 2.26; that
+   proves the load.
+6. **The pretraining optimizer** (Muon or AdamW): ask Navin, or read the decay run's log.
+
+#### 7. Proposed settings, with the reasons
+
+- **Data:** `smol-smoltalk`. Hugging Face built it for SmolLM2-135M / 360M-Instruct: 460k train / 24.2k test chats,
+  Apache-2.0. It has shorter Magpie-Ultra chats, no function calling, less rewriting / summarisation and no advanced
+  math, because small models have limited capacity.
+  - For comparison: our 1.7B run used `tulu-3-sft-olmo-2-mixture-0225` (the Tülu 3 mix for OLMo 2, incl. OLMo-2-1B),
+    minus Aya.
+  - `tulu-3-sft-mixture` was for Llama-3.1-Tulu-3 8B / 70B / 405B.
+  - OLMo 3's SFT data (Dolci) is for 7B / 32B at 32K context.
+- **Template:** ChatML with the tokenizer's own ids 1 / 2 (Dinesh's README). No default system prompt.
+- **Learning rate:** 1e-4, from SmolLM2's own ratio of SFT LR to pretraining peak LR:
+
+  | model | pretraining peak | SFT LR | SFT / peak |
+  | --- | --- | --- | --- |
+  | SmolLM2-1.7B (paper §5.2) | 5e-4 | 3e-4 | 0.6 |
+  | SmolLM2-135M / 360M (paper §6; alignment-handbook `recipes/smollm2/sft/config_smol.yaml`) | 3e-3 | 1e-3 | 0.33 |
+  | ours | 3.5e-4 | 1e-4 (proposed) | 0.29 |
+
+  The 1.6B value 2e-5 is below our base's final pretraining LR (3.5e-5).
+- **Optimizer:** the same as pretraining (Moonlight: Muon-pretrained + Muon-SFT was best; our 1.7B decision).
+  Unknown until item 6 above is answered.
+- **Batch:** 128 chats per step (SmolLM2: 8 GPUs x 4 x 4 accumulation), 2 epochs, cosine, warm-up 10% (SmolLM2) — or
+  our usual 3%; to decide. Memory is no limit at 135M (pretraining ran 16 x 4096 per GPU). Rows per step are set from
+  the packed data's chats per row.
+- **Context:** 4096, as pretrained.
+- **GPUs:** P032 0-3 (world 4).
+- **Time estimate:** pretraining ran at ~250k tokens/s per GPU (from the checkpoint times: 2,384 steps x 2.1M tokens in
+  21 min on 16 GPUs). So 2 epochs of smol-smoltalk on 4 GPUs is about 15-20 min.
+
+#### 8. The user's three later tests (documented, not now)
+
+1. **Kernels at context 8192 and at the 135M shapes** (4 / 2 heads, d 512, vocab 49,280), against FA3 / FA4 / cuDNN /
+   Liger / torch.compile. All our benchmarks so far are T 4096 with the 1.6B / 1.7B shapes.
+   - Long-context SFT itself also needs RoPE theta scaling + long chats (or a long-context stage first).
+   - The weights do not depend on T, so the trainer can run 8192, but the base never saw positions above 4096.
+   - With packing, positions restart in every chat, so 8192 rows alone teach nothing about long context.
+2. **The whole SFT pipeline against other post-training frameworks** (TRL and others): speed, memory, loss.
+3. **The special-token ablation:**
+   - A: ChatML as is, with rows 1 / 2 nearly untrained;
+   - B: plain-text markers as in our 1.7B template (`<|assistant|>` = several pieces, `assistant` = `ass` + `istant`);
+   - C: ChatML with rows 1 / 2 (and any new reserved-row tokens) set to the mean of the trained rows (Hewitt 2021,
+     HF `mean_resizing`).
+
+   Same data and settings; pick the best by val loss + a dev suite.
+
+### 45.105 2026-10-28: SFT of the 135M production base — the staged grid (data mix x chats per step x LR x special tokens x schedule), built, verified and started on P032
+
+#### 1. What was decided (user, 2026-10-28)
+
+The base: our 135M production model, step 428,945 = 900B tokens (Navin's Hugging Face export).
+- Its benchmarks (user sheet): average of 9 tasks 34.43, against SmolLM2-135M's 34.13 (before long context) and 34.49
+  (final). So SmolLM2-135M's SFT recipe is the right reference.
+- Context 4096 (the base never trained longer), packing, our 10-15 "53.0" template, 2 epochs, all bf16.
+- Muon: pretraining used it. The 16 optimizer shards on P032 total 1,176,170,496 B. Muon + AdamW state for this model
+  is 1,176,290,304 B; AdamW-only would be 1,612,760,064 B.
+- Factors: data mixes, chats per step, learning rate, special tokens (2 arms), scheduler.
+- Run in stages, because the full product is 1,536 runs (~160 h on 8 GPUs):
+
+| stage | what | runs |
+| --- | --- | --- |
+| 1 | LR {1e-6, 3e-6, 1e-5, 3e-5, 1e-4, 3e-4} x chats per step {32, 64, 128, 256}; m1, arm A, cosine | 24 |
+| 2 | at the best (LR, batch): scheduler {cosine, linear, constant, WSD} x arm {A, B} | 8 |
+| 3 | data mixes (base + one domain, then combinations) at the best settings | ~9-18 |
+| 4 | LR re-check around the best on the final mix (+ a pre-decay checkpoint if we get one) | ~4-8 |
+
+**Why these values:**
+- **LR:** your colleague's 1e-6..1e-5 range, which is Tülu 3's 8B 5e-6 / 70B 2e-6 for big models. Small models use
+  more: SmolLM2-1.7B 3e-4 at pretraining peak 5e-4; SmolLM2-135M 1e-3 at peak 3e-3 (alignment-handbook
+  `config_smol.yaml`); SmolTulu-1.7B 9e-5 at batch 8; our 1.7B 5e-5. Our pretraining peak is 3.5e-4, so the top
+  value is 3e-4.
+- **Chats per step:** 128 is Tülu 3's and SmolLM2's value, on their data. SmolTulu (arXiv 2412.08347, ablation on a
+  135M model): GSM8K / ARC prefer a high LR-to-batch ratio, IFEval / HellaSwag a low one. So we sweep 32 to 256.
+- **Schedulers:** cosine (SmolLM2), linear (Tülu 3), constant, WSD (our pretraining shape). Published SFT recipes do
+  not use WSD (the colleague's point); it is one arm only.
+- **Not swept here:** Yano et al. (arXiv 2603.16127, ICLR 2026) found that pretraining without LR decay fine-tunes
+  better. That is a base-checkpoint question for stage 4, if we get the pre-decay checkpoint.
+
+**Special tokens:**
+- What the tokenizer already has: ids 0-16 are SmolLM2's set (<|im_start|> / <|im_end|> ChatML tokens), put in when
+  Dinesh built the tokenizer. Their rows are near-untrained: cos 0.93 with a never-used reserved row.
+- Arm A: our markers as plain text (<|assistant|>\n = <, |, ass, istant, |, >, \n).
+- Arm B: <|system|>, <|user|>, <|assistant|> as new ids 49152-49154 (reserved rows, no resize). Each row is the mean
+  of the rows of the pieces it splits into (Laguna M.1/XS.2 report, arXiv 2605.27605, §4.1.1, read today).
+  - Laguna also runs a 100-step embedding-only warm-up. It was their fix for a large MoE (their small model was fine
+    with random rows), so we do not use it unless arm B spikes.
+  - OLMo 3 (arXiv 2512.13961) §3.5.4: chat special tokens in midtraining made the model print them (GSM8K 49.43 -> 0);
+    "leave special tokens for SFT stage".
+
+#### 2. Data
+
+| set | source | chats | note |
+| --- | --- | --- | --- |
+| smol-smoltalk | HF, made for SmolLM2-135M/360M-Instruct; rev f73fe857 | 460,341 train / 24,229 test | general 59%, code 10.4% (self-oss-instruct), OpenHermes 10.3%, constraints 7.5%, rewrite 5.8%, summarise 5.2%, no math; explore-instruct-rewrite dropped (CC-BY-NC) |
+| Tülu 3 OLMo-2 mix 0225 | rev d91a0785 | 866,138 | used for OLMo 2 incl. 1B; Aya (non-English) and olmo_hardcoded ("I am OLMo") dropped |
+| Dolci-Instruct-SFT (OLMo 3) | rev bd3c8f3a, ODC-BY | 2,152,112 | we take only its new parts: OpenThoughts3+ Science 99k, Precise IF 137k |
+
+Other datasets and the models trained on them:
+- tulu-3-sft-mixture: 939,343 chats, Llama-3.1-Tülu-3 8B / 70B / 405B.
+- tulu-3-sft-olmo-2-mixture: 939,344 chats, OLMo-2 7B / 13B.
+- Dolci-Think-SFT 7B / 32B: 2.27M / 2.25M chats, long reasoning, Olmo-3 Think.
+
+**Mixes** (`sft/mixes/*.json`):
+- Ready for stage 1: m1_smol (453k), m2_tulu (766k), m3 = m1 + grade-school math.
+- Domain mixes for stage 3, OLMo 3 Table 18 style:
+  - GEN = smol-smoltalk without its code part;
+  - the packs:
+
+    | pack | sources |
+    | --- | --- |
+    | MATH | Tülu persona GSM, OpenMath2-GSM, algebra, persona math |
+    | CODE | self-oss-instruct, Evol CodeAlpaca, persona Python |
+    | SCI | Dolci Science, SciRiff |
+    | IF | Tülu persona IF, Dolci Precise IF |
+    | SAFETY | WildGuardMix, WildJailbreak, CoCoNot |
+
+  - mixes d0 GEN, d1-d5 GEN + one pack, d6 + math + code, d7 + math + code + sci, d8 all.
+- Every domain mix validates on the same 2,000 smol-smoltalk test chats, so val losses compare across mixes.
+
+**Batch rule:**
+- Rows per step = the count whose chats per step (rows x mean chats per packed row) is closest to the target, among
+  counts that split into micro-batches of at most 16 rows (pretraining proved 16 x 4096 fits).
+- m1 arm A (4.98 chats per row) gives:
+
+  | target chats per step | rows per step (micro-batch x accumulation) | steps |
+  | --- | --- | --- |
+  | 32 | 6 (6 x 1) | 30,318 |
+  | 64 | 13 (13 x 1) | 13,992 |
+  | 128 | 26 (13 x 2) | 6,996 |
+  | 256 | 52 (13 x 4) | 3,498 |
+
+m1 prepared (both arms):
+- 452,974 train chats -> 90,954 packed rows (arm A), 4.98 chats per row.
+- 293.9M trained tokens of 372.5M positions; mean chat 822 tokens.
+- Val 2,000 chats, 1,276,154 trained tokens, identical in both arms.
+
+#### 3. Code (laptop ~/Downloads/BluTrain_push, branch dist_side_gautam_lottn, not committed; work folder ~/Downloads/sft135)
+
+- **`sft/hf_to_blutrain.py`**: Navin's HF file -> BluTrain weights, for BLU_INIT_FROM_RAW.
+  - Check 1: `lm_head` is our tied table and `embed_tokens` = bf16(lm_head x sqrt(512)), 0 of 25,231,360 values
+    differ.
+  - Check 2: a numpy forward of all 37 layers. Mean next-token loss on English / code / math text: 1.450 as built,
+    against 10.862 with gate/up swapped, 2.623 with GPT-J RoPE, 9.276 without the embedding scale.
+  - `--new-tokens` = arm B (sub-piece means, extended tokenizer).
+- **`sft/blutrain_to_hf.py`**: a run's export -> HF model + our chat template (message text trimmed).
+  - Round trip: Navin's file -> ours -> back, 410/410 tensors bit-identical.
+  - Template vs training token ids: 2000/2000 chats in both arms. Before the fix, arm A was 1997 and arm B 1856,
+    because newlines at the ends of messages merge with the template's "\n"; the fix strips message text at both ends.
+- **`sft/prepare_sft_data.py` v3**:
+  - `--tokenizer` + `--template tulu-plain-v1|tulu-special-v1|chatml-v1`, with BOS id 0 and end id 0.
+  - The drop rule (text holding <|endoftext|>, <|im_start|>, <|im_end|> or a marker) is identical in both arms.
+  - Arm B applies the length limit with arm A's length, so both arms keep the same chats. First version: B kept 53
+    more; the base tokenizer is now used for that length.
+  - `--mix`, `--part-cache`, `source_field` (Dolci).
+  - The GPT-2 path writes byte-identical files (5/5 against the committed script).
+- **`sft/ref_val_loss.py`**: the end-to-end gate.
+- **Trainer `bluscript_sft.cpp`:**
+  - BLU_INIT_FROM_RAW, which reads every weight back from the GPU and requires it bit-equal to its file.
+  - BLU_EXPORT (`export_safetensors` from preproduction-135M).
+  - BLU_SFT_SCHEDULE cosine | linear | constant | wsd (BLU_SFT_DECAY_FRAC 0.2). Every decay ends at LR / 10.
+  - The loader takes the model's vocab and the end id from `meta.json`.
+  - First P032 build stopped on "embed_scale is bound but missing from field_keys()": the YAML key was removed; the
+    knob is env-only, as on preproduction-135M.
+- **`test_varlen_attention.cu`**: `VARLEN_HEADS=4/2`.
+- **Scripts:** `sft135_p032.sh` (build, gate, grid = a GPU queue: one run per free GPU, the next line when one frees),
+  `eval_queue.sh`, `prep_p032.sh`.
+
+#### 4. Gates on P032 (all passed)
+
+- **Packed attention at 4 query / 2 KV heads:** quick suite 238 / 0 failed (57 s), full suite 287 / 0 failed (165 s).
+- **Trainer step-0 val loss vs the numpy reference (8 packed rows):**
+
+  | arm | trainer | reference | difference | weights loaded bit-equal |
+  | --- | --- | --- | --- | --- |
+  | A | 1.545264 | 1.544934 | 0.02% | 372/372 |
+  | B (v2 binary, WSD schedule printed) | 1.570207 | 1.569311 | 0.06% | 372/372 |
+
+#### 5. Stage 1 started 12:32 IST (all 8 GPUs; the user had the colleagues' jobs stopped)
+
+- The queue started 8 runs: 6 at 128 chats per step, 2 at 64.
+- 0.47-0.51 s per step at 128 chats, about 217k tokens/s per GPU and ~50 GB per run.
+- The step-0 val loss of the base on m1 val is 1.425918.
+- Exports and evals: the eval queue converts each final model and runs lm-eval (IFEval, GSM8K, HellaSwag, ARC-e/c,
+  PIQA, Winogrande, MMLU; chat template), with SmolLM2-135M-Instruct through the same harness as the reference.
+
+### 45.106 2026-10-28 afternoon: stage 1 stopped, 8192 kernel benchmarks, framework comparison part 1, two optimizations parked, research for the new SFT plan
+
+#### 1. Stage 1 (135M, m1 smol-smoltalk, arm A, cosine, Muon) — results, and why it was stopped
+
+- **User 14:55:** stop all SFT runs and evals, use GPUs 0-5 for the 8192 benchmarks; the grid plan will be redone
+  ("we were wasting GPU compute"). Killed by PID: the stuck c64 lr3e-4 run, the c64 lr1e-4 re-run, the c64 lr3e-4
+  continuation (`_r2`), the eval queue. Every run saved a checkpoint every 1000 steps, so each can be resumed.
+- **Final val loss** (base 1.425918):
+
+  | LR | 128 chats/step | 64 chats/step |
+  | --- | --- | --- |
+  | 1e-6 | 1.2039 | 1.1841 |
+  | 3e-6 | 1.1464 | 1.1281 |
+  | 1e-5 | 1.0804 | 1.0674 |
+  | 3e-5 | 1.0252 | 1.0280 |
+  | 1e-4 | 0.9900 | (stopped) |
+  | 3e-4 | 1.0023 | (stopped) |
+
+  A parabola in log(LR) through 3e-5 / 1e-4 / 3e-4 puts the val-loss optimum at 1.26e-4 (predicted 0.9891): the bottom
+  of the bowl is flat.
+- **Evals (lm-eval, our chat template; same harness for all):**
+
+  | model | MMLU | ARC-c | ARC-e | HellaSwag | IFEval | PIQA | Winogrande |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | base 900B | 0.230 | 0.258 | 0.543 | 0.349 | 0.291 | 0.664 | 0.511 |
+  | LR 1e-6 (128) | 0.250 | 0.253 | 0.543 | 0.354 | 0.302 | 0.672 | 0.509 |
+  | LR 1e-5 (128) | 0.246 | 0.256 | 0.538 | 0.349 | 0.354 | 0.665 | 0.529 |
+  | LR 1e-4 (128) | 0.244 | 0.236 | 0.492 | 0.339 | 0.405 | 0.663 | 0.509 |
+  | SmolLM2-135M-Instruct | 0.247 | 0.271 | 0.506 | 0.345 | 0.366 | 0.663 | 0.535 |
+
+  **Val loss and benchmarks disagree:** the best val loss (1e-4) follows instructions best (beats SmolLM2-Instruct)
+  but forgets knowledge (ARC-e 0.543 -> 0.492); 1e-5 keeps knowledge, follows instructions less well.
+- **Two hangs:** a training run SHARING its GPU with an lm_eval stopped dead twice (100% util, ~127 W, no log): at step
+  273, and right after the step-1000 checkpoint. Root cause not found (gdb blocked by ptrace_scope). Rule: never share
+  a training GPU.
+
+#### 2. Kernel benchmarks at 8192 and at the 135M shape (all done, 16:54)
+
+- **What was added (laptop, uncommitted):** `test_varlen_attention.cu` — `VARLEN_BENCH_T` (row length of BENCH,
+  BENCHDENSE and the new G14 group; rows per call = 32768 / T) and **G14** (long rows: dense vs the reference + design A
+  vs fp64, A == alone bitwise, isolation); the rival scripts take `BENCH_T` / `BENCH_HEADS` / `BENCH_V` / `BENCH_D`.
+  Scripts: `profiling_reports/sft_benchmarks_8192_2026_10_28/` (run_8k.sh lanes, run_8k_v2.sh shared job queue,
+  scoreboard_8k.sh, repack_rows.py, collect_8k.py) -> P032 `gautam_k/sftb8k`.
+- **8192 real-data rows:** the same chats packed into 8192-token rows (`repack_rows.py`, the prep script's own FFD):
+  stage-0 5,000 chats 3.30 -> 6.61 per row; m1 452,974 chats 4.98 -> 9.96 per row.
+- **Correctness:** all pass — G14 at 8192: 69/69 (18/6), 69/69 (4/2), 552/552 (8 more head ratios); G14 at 4096 for
+  all 10 ratios: 690/690. The checks are real (dense rows, real rows with 13/24/90 chats, A == alone: 0 mismatches).
+- **Attention scoreboard** (ours / rival time, forward + backward, steady state, nsys kernel times, 2 ABBA rounds):
+
+  | shape | dense vs FA3 / FA4 / cuDNN | packed vs FA3 / FA4 / cuDNN |
+  | --- | --- | --- |
+  | 135M, 4/2, T 4096 | 0.872 / 0.896 / 0.809 | **0.715** / 0.858 / 0.803 |
+  | 135M, 4/2, T 8192 | 0.974 / 0.933 / 0.826 | 0.877 / 0.865 / 0.814 |
+  | 1.6B, 18/6, T 4096 | 0.979 / 0.979 / 0.896 | 0.924 / 0.922 / 0.881 |
+  | 1.6B, 18/6, T 8192 | 0.983 / 0.972 / 0.873 | 0.950 / 0.943 / 0.904 |
+  | all 9 GQA ratios (4/2 ... 32/8), T 4096 and 8192 | 0.970-0.996 vs FA3 | 0.715-0.973 vs FA3 |
+
+  Every GQA shape beats FA3, FA4 and cuDNN, dense and packed (102 of 102). Dense FORWARD alone at 4096 is 0.5-1.4%
+  slower than FA3 (1.005-1.014); the backward more than pays for it (as in the 10-21 report). MHA 8/8 lost (1.017 /
+  1.065, two dK/dV head-sum kernels with nothing to sum); the user dropped MHA (not our model) and the G=1 fix was
+  reverted. Cross-check: 4096 18/6 is within ~1% of 10-21 / 10-27 (dense 0.979 vs 0.982, packed 0.924 vs 0.935), so
+  running 6 scoreboards at once did not bias them.
+- **Loss** (rival / ours time, forward + backward): Liger 1.16-1.24x, torch.compile 1.5-5x, PyTorch bf16 2.3-7.9x,
+  PyTorch fp32 7.8-27x; ours 6/6 checks pass in all 3 configs. **lm_head + loss** (ours = cuBLAS GEMMs + our loss):
+  Liger FLCE 1.04-1.29x, CCE 2.7-3.7x.
+- **QK-RMSNorm + RoPE** (the bf16 kernel the trainer uses since 10-22): torch.compile 1.14-1.42x, Quack 1.24-1.53x,
+  Liger ~2x, FlashAttention ~3x, eager 19-24x.
+
+#### 3. Framework comparison, part 1 (16:39-16:58)
+
+- **Setup (identical in every run):** our 135M as a training-exact HF model (`modeling_blu.py`: tied, x22.625,
+  q/k eps 1e-6, no padding_idx; gate loss 1.544934 = numpy reference, diff 2e-7); our packed rows in our order (T+1
+  tokens per row, so HF's shift meets our labels; FA3 varlen through position_ids); our Muon ported to PyTorch
+  (`blumuon.py`: gate+up orthogonalized together, our clip rule, our get_lr; forced into every Trainer subclass; the
+  run fails if another optimizer ran); 2,600 rows x 2 epochs = 400 steps at 4096 (1,300 rows, 432 steps at 8192), LR
+  1e-4, val every 50; 1 GPU each, nvidia-smi memory sampled every second for all. Frameworks share benv's torch 2.14.1
+  and FA3 build (`gautam_k/fw/env_*`, a .pth file).
+- **Results, T 4096:**
+
+  | framework | step-0 loss | loss diff vs ours, mean / max | grad norm vs ours | tokens/s | ours faster by | peak GPU |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | ours | 1.466161 | - | - | 263,029 | - | 50.0 GB |
+  | TRL 1.16 | 1.466143 | 0.0007 / 0.0039 | 1.002x | 94,353 | 2.79x | 65.0 GB |
+  | TRL + Liger | 1.466207 | 0.0007 / 0.0036 | 1.000x | 146,318 | 1.80x | 46.0 GB |
+  | Unsloth 2026.10.9 | 1.466013 | 0.0008 / 0.0042 | 1.000x | 146,131 | 1.80x | 4.4 GB* |
+
+  T 8192: ours 247,446 tokens/s; TRL 2.70x, TRL+Liger 1.75x, Unsloth 1.78x slower; memory 46.3 / 60.5 / 42.9 / 4.2 GB.
+- **Read:** precision is equal (all follow ours step by step within bf16 noise); we are 1.75-2.8x faster; memory is
+  where we are not best (Liger's fused lm_head + loss never builds the logits). *Unsloth offloads activations to CPU RAM
+  ("Double buffering enabled (parallel H2D + compute)"), refused FA3 for an fp32-loaded model (used FlexAttention),
+  and replaced the pad token; its own end-of-run val loss differs from ours in opposite directions (1.228 vs 1.214 at
+  4096, 1.202 vs 1.213 at 8192) while TRL's matches to 0.0003 -> to be settled with one shared evaluator on the saved
+  models. Still to do: the shared evaluator, Axolotl and LLaMA-Factory (part 2), full 2-epoch runs (part 3).
+
+#### 4. Two optimizations parked for later (user decision 2026-10-28: "we will do both later; continue SFT now")
+
+1. **Logits only at trained positions** (gather trained rows -> lm_head -> loss -> scatter dX). With packing the waste
+   is only the prompt share: m1 21%, m2 33%, d8 27%. lm_head + loss is 16.8 ms of a 202 ms step (8.3%), so it saves
+   ~1.5-2.4% per step and 1.1-1.7 GB (the logits are 5.25 GB at 13 x 4096 x 49,280 bf16). Same math; last-bit
+   differences only (different GEMM row count / summation order). Needs M rounded up to a multiple of 256 (the BluBLAS
+   M/N % 64 bug). The 10-17 estimate (36 -> 9.5 ms) was for padded rows and no longer applies.
+2. **Fused / chunked lm_head + loss** (never store all logits): removes the whole ~5 GB; this is why TRL+Liger used
+   ~4 GB less than us. Liger's fused version was 1.27x slower than ours, so speed must be checked while building it.
+
+#### 5. Research read for the new SFT plan (all from the original sources)
+
+- Our Google Doc, tab "SFT: what it is" (1,556 lines, read in full via the txt export); Tülu 3 (2411.15124) §3, §4,
+  §8.2; OLMo 3 (2512.13961) §3.5.4, §4.2, §5.2, §5.5, A.6.1, Tables 17, 18, 28, 29, 30, 47; Tülu 2 (2311.10702);
+  LIMA (2305.11206); SmolLM2 (2502.02737) §5-6 + Appendix F; alignment-handbook `recipes/smollm2/{sft,dpo}/config_smol.yaml`;
+  12 tokenizer configs on HF; our pretraining eval sheet.
+- Key facts used in the plan:
+  - **SmolLM2-135M SFT:** smol-smoltalk (460,341: magpie-ultra-short 270,838, self-oss-instruct 48,071,
+    openhermes-50k 47,492, constraints 34,433, rewrite 26,657, summarize 24,021, longalign 3,560, explore-instruct
+    3,017, everyday 2,252; no math, no safety), LR 1e-3 (= 1/3 of their pretraining peak 3e-3), cosine, 10% warmup,
+    2 epochs, 128 chats/step, max 8192, AdamW; then DPO on UltraFeedback (LR 1e-6, beta 0.5).
+  - **SFT LR / pretraining peak:** Tülu 3 0.017, OLMo 3 Think 0.17 (5e-5), OLMo 3 Instruct 0.27 (8e-5, 1M-token
+    batch, 2 epochs, packing at 32K), SmolLM2-135M 0.33, SmolLM2-1.7B 0.6 -> ours (peak 3.5e-4) ~6e-5 to ~1.2e-4.
+  - **Pretraining evals:** ours 900B avg 34.43 vs SmolLM2-135M 34.49 (equal); both weak at GSM8K (~2%) and TriviaQA (~4%).
+  - **Special tokens (checked in the tokenizer files):** Tülu 3 and OLMo 2 Instruct use PLAIN-TEXT role markers
+    (OLMo 2 even though ChatML ids exist in its vocab; Tülu ignored Llama 3's header tokens); OLMo 3, Qwen2.5/3 and
+    SmolLM2 use ChatML special tokens already present in their base tokenizers; OLMo 3 Instruct and Hermes 3 reuse
+    reserved slots for new tags; Hermes 2 Pro grew the vocab; LIMA added a separate end-of-turn token. Hermes =
+    Nous Research (fine-tunes of Meta's Llama and of Mistral); its ChatML + `<tools>`/`<tool_call>`/`<tool_response>`
+    format became a common standard (Qwen2.5 uses the same tags; vLLM's parser is named "hermes").
+  - **OLMo 3 Table 29:** Instruct SFT started from the Think SFT checkpoint (instruct data had traces removed): +3.3
+    average (MATH +5.6, GPQA +4.7, HumanEval+ +4.9, IFEval +3.7), answer length unchanged.
+  - **OLMo 3 Table 28:** base mix 100K + up to 100K of one domain; each domain raises its own benchmark and often
+    lowers another; their final mix keeps part of every domain.
+
+#### 6. Open: the 13 factors of the new plan (to decide one by one with the user, then schedule overnight)
+
+1 domains (multilingual out?), 2 data sources per domain, 3 quality pipeline (decontamination, licences, filters,
+identity examples), 4 chat format / special tokens, 5 evaluation (dev + locked unseen suite, faster evals), 6 learning
+rate (range, grid, how to find the optimum), 7 chats per step (with an LR sweep per batch), 8 schedule and warmup,
+9 data amount and epochs (WSD decay branches), 10 row length 4096 vs 8192, 11 base checkpoint 900B vs 750B,
+12 seeds and checkpoint merging, 13 think-SFT warm start (Table 29).
+
+### 45.107 2026-10-29: the SFT plan for the 135M base moved to its own files; component 0 decided, component 9 (chat format and special tokens) planned
+
+**Update 2026-10-30:** plan version 5 is §4.48 of `plan_grid_search_sft.md` (all format choices A-N, versions v16-v22
+proposed, evaluation on vLLM after a parity test, the study separate and first).
+
+From 2026-10-28 on, the new SFT plan for the 135M production base is recorded factor by factor in
+`plan_grid_search_sft.md` (this folder): every question, every answer with its proof, what other teams did and did not
+do, and the tests. This section only points there, so that nothing is written twice.
+
+- **Component 0, the tokenizer:** DECIDED 2026-10-28: the 135M model's own tokenizer, no tests (plan file, "Fixed: the
+  tokenizer").
+- **Factor 1, domains:** DECIDED 2026-10-28 (multilingual out, with one +Aya arm). On 2026-10-29 night the user added a
+  rule: no amount of any domain (safety included) is assumed; amounts are decided only by tests in factors 2 and 9.
+- **Component 9 (factor 4), chat format and special tokens:** researched and planned, 2026-10-28 to 10-29 (plan file
+  §4.1-4.39). Plan version 4, in one place in §4.38: 15 formats x 3 data mixes (m1, m2, d8) x 3 seeds, a learning-rate
+  check, stages F0-F4, measurements M1-M9 plus the protectability table P0 (quality, stopping, history use, leakage,
+  benchmarks with and without the template, answer variety, fake separators, hidden orders, refusal behaviour); safety
+  measured and used as a decision criterion; 8 fairness and safety rules checked by code. The F0 build plan (13 steps,
+  each with its file and check) is §4.39. Real prompt-injection incidents are told in §4.37. Waiting for the user's OK;
+  nothing has been run.
+- **For colleagues:** `chat_template_special_tokens_tests.md` and `.docx` (this folder) explain all of it from zero:
+  the basics, every team's format in time order, think and tool tokens, the safety side, what was and was not measured,
+  and every planned test.
+- **Proofs:** `profiling_reports/sft_chat_format_2026_10_28/` and `profiling_reports/sft_chat_format_2026_10_29/`.
+- **Open:** the DPO data script converts chat text with the special-token switch ON in its "special" mode (plan
+  §4.31 Q1); decided after the component 9 tests.
+
+### 45.108 2026-10-30: back to kernels — the user's six tasks, the answers to the four questions, and every kernel future task in one list
+
+**User, 2026-10-30:** the component-9 chat-format study is postponed (all CPU work done, nothing run on a GPU). Our job is
+the kernel side: kernel modifications and optimizations. Modelling is done by others; we keep everything ready and step
+in only if they cannot. Branch rule (same day): everything about SFT, and every optimization that affects SFT, goes on
+our branch `dist_side_gautam_lottn` (laptop `~/Downloads/BluTrain_push`); experimental big reworks such as the matmul
+fusion scopes stay separate (another branch, or a local folder such as `~/Downloads/BluTrain_fuse`). All facts below
+were checked in the code of `~/Downloads/BluTrain_push` (BluTrain `5c0999c`, TI `f7aa40f`, Context_Parallelism
+submodule pin `661b6ef`) and in the records named; nothing was run.
+
+#### 1. The four questions, answered from the code and the records
+
+**Q1. "We have context parallelism, so 16k / 32k / 64k should need nothing new, only a check of the wiring?"** No, not
+for SFT. Facts:
+
+- The SFT trainer `train/production_zero/bluscript_sft.cpp` has no context parallelism at all. It runs any row length
+  through `BLU_SFT_T` (`:1303`, row length = RoPE cache length), one GPU holds whole rows.
+- The context-parallel code is a separate repository (`dist/Context_Parallelism`, adhityablubridge, pinned at
+  `661b6ef` of 2026-08-30; its newest remote state is not checked yet). It has its OWN attention kernels: ring mode =
+  `GQA_causal_cp_fwd_sm90.cu` / `GQA_causal_cp_bwd_sm90.cu` (copies derived from our older v62 / v44), Ulysses mode =
+  `gqa_fused_flash_attn_forward` (`ContextParallel.h:1863`; its own comment says this symbol is Blackwell-only after
+  the TI upgrade) or a CP-local fused kernel. None of these knows chat boundaries: there is no chat plan / cu_seqlens
+  anywhere in the repository (searched), and the Ulysses path takes "a single scalar pos_offset" per sequence
+  (`bluscriptCP.cpp:1309`). So packed SFT rows (several chats per row, each attending only to itself, positions
+  restarting per chat) cannot go through the context-parallel path today. Our SFT kernel changes (packed attention
+  design A, per-chat RoPE positions, the SFT loss) are not in it.
+- On one GPU our kernels have no length limit: the forward v62 needs only `T % 256 == 0` (`GQA_fwd_generic.cu:56-57`),
+  the backward Vj2 `S % 128 == 0` (`GQA_bwd_generic.cu:167`). Tested so far: rows of 8,192 (G14, 10-28: 69/69, 69/69,
+  552/552) and one 16,384-token chat in G12 (§45.8.3 item 3.3 lists the full G12 run as not done). Never tested or
+  benchmarked: 16,384 / 32,768 / 65,536-token rows.
+- **A real blocker found:** the loss reduction drops tokens when one GPU's micro-batch holds more than 65,536 tokens.
+  `LossKernels.cu:561-584` (validation forward) and `:1110-1125` (training forward with saved stats): stage 1 writes one
+  partial per 256 tokens, stage 2 is ONE block of 256 threads, and `sum_reduction_kernel` (`:249-273`) loads one value
+  per thread, so only the first 256 partials = 65,536 tokens are summed. This is the 2026-09-22 open defect
+  (memory "Loss-kernel defects 2 of 3 FIXED", measured: at 131,072 rows half the loss vanishes, error 5.008e-01). It
+  changes only the LOGGED loss (training and validation); the backward rebuilds from the saved max / sum and is right.
+  Pretraining (8 x 4,096 = 32,768) and our 10-28 benchmarks (32,768 tokens per call) never reach it. Long-context SFT
+  does: 8 x 16,384, 4 x 32,768 and 2 x 65,536 are all 131,072 tokens, so the logged and validation loss would be half
+  the truth with no error. It must be fixed first.
+- Memory, 1.6B model: the production pretraining step at 8 x 4,096 = 32,768 tokens peaked at 88,139 MiB allocated
+  (10-27, peak = saved activations). Saved activations grow with tokens per micro-batch, so 65,536 tokens on one GPU
+  would need about twice that (an estimate from the measured peak, not measured) and does not fit a 141 GB H200
+  without recompute or context parallelism. The 135M model fits easily.
+- Which context-parallel mode could reuse our kernels: in Ulysses mode, after the all-to-all every GPU holds the WHOLE
+  sequence for a subset of the heads, so our design-A packed kernels and the per-chat plan work unchanged (with Hq / cp
+  query heads); the limit is that the key/value heads must divide by the CP degree (135M: 2 KV heads, so CP <= 2;
+  1.6B: 6 KV heads, so CP 2, 3 or 6). Ring mode splits the sequence across GPUs, so a chat can span GPUs and every ring
+  step needs chat-aware masking: new kernel work.
+
+**Q2. "Is the lm_head on untrained tokens the only place we lose?"** For speed, almost: in the latest scoreboard
+(10-28, §45.106 part 2) we are faster than every rival in every attention, loss, RoPE and lm_head+loss entry, except
+the dense attention FORWARD alone at 4,096, 0.5-1.4% slower than FA3 (forward + backward we win). Where we lose is
+MEMORY: framework comparison at T 4,096 (§45.106 part 3) ours 50.0 GB vs TRL + Liger 46.0 GB, because we keep all logits
+(5.25 GB at 13 x 4,096 x 49,280 bf16) and Liger's fused lm_head + loss never builds them. The two parked fixes (10-28):
+(1) logits only at trained positions: with packed data the untrained share is the prompt only (m1 21%, m2 33%, d8 27%),
+lm_head + loss is 16.8 ms of a 202 ms step (8.3%), so ~1.5-2.4% per step and 1.1-1.7 GB; (2) fused / chunked
+lm_head + loss: removes the ~5 GB of logits. Who already does (1): TRL's default loss `chunked_nll` moves the trained
+tokens to the front and runs lm_head + loss only on chunks that hold trained tokens (`kernel_diff_sft_pretraining.md`
+§3, `trl sft_config.py:281-292`); Apple CCE skips ignored rows inside its fused kernel (measured 10-17: it beat
+cuBLAS + our loss by 13% on padded data only because of that). Liger FLCE and the others: to be checked in their source
+before building. Our experiment C4 (fused lm_head + CE with chunks, `BLU_FUSE_LMHEAD_CE` + `BLU_CE_CHUNKS`, in the
+separate fusion tree `~/Downloads/BluTrain_fuse`, pretraining trainer) measured -2.1 GB live / -3.8 GB held, and cost
+~0.3% speed against the ladder step before it (§45.103).
+
+**Q3. "Attention computes the masked tokens too and masks afterwards: is that what everyone does, isn't it waste?"**
+Mostly no, we skip. Our packed attention (design A, the FlashAttention varlen way) starts every chat's tile grid at
+the chat's first token, so a tile never holds two chats; tiles of other chats and tiles fully above the diagonal are
+never computed. Only two kinds of pairs are computed and then given weight 0: the upper half of each chat's diagonal
+tile (key after query) and the empty rows of each chat's partly filled last tile; the pad tail of a row is computed as
+its own segment. Counted on the stage-0 packed data with the kernels' own tile rules (§45.9): 11.54% of the computed
+pairs are thrown away (7.48% inside diagonal tiles, 3.83% empty rows of chat-end tiles, 0.23% pad tails); one plain
+causal 4,096 sequence throws away 3.01%. FA2 / FA3 / FA4 / cuDNN use the same tile rule (whole diagonal tile computed,
+then masked). The result never changes (G10 / G11: every chat bit-identical to the same chat run alone); only time.
+The most this could ever save is 11.5% of the attention time (all waste removed); the attention share of an SFT step
+is not measured yet, so the step gain is not known. Cuts listed since 10-15 (§45.8.4): skip pad-tail segments (write
+zeros), smaller tiles or a shared masked tile for chat ends, a cheaper diagonal tile.
+
+**Q4. "The metadata (chat indexes, valid counts) is made at runtime after the batch is on the GPU, not in
+preprocessing: does that add overhead; what do others do; can it be done before?"** What is where today:
+
+- Made in PREPROCESSING (files, `prepare_sft_data.py`): the chat lengths of every row (`seq_lengths.bin` int32 +
+  `seq_offsets.bin` int64 [N+1], TRL's seq_lengths) and the trained-token count of every row (`valid_counts.bin`).
+- Made at RUNTIME, on the CPU, once per micro-batch, before the forward (`SftDataLoader.h:125-155`,
+  `bluscript_sft.cpp:184-191`, `gqa_chat_plan_build` in `GQA_fwd_generic.cu`): (a) the RoPE positions, B x T int32
+  (0 .. L-1 for every chat and for the pad tail), written in a host loop from the file's lengths; (b) the attention plan
+  = the work lists of every chat for every query head (forward units, Vj2 blocks sorted longest first, dQ tiles, generic
+  segments), packed into one buffer. Then two asynchronous uploads on the compute stream (positions; plan, through the
+  caching allocator). No GPU kernel, no wait for the GPU. The loss denominator is a sum of the file's valid counts.
+- The cost has never been measured on its own. It is hidden if the CPU runs ahead of the GPU; it shows as GPU idle
+  time at the start of each micro-step if something makes the CPU wait for the GPU before it (a host sync). Measure
+  first: NVTX around the loader + plan, nsys, host time per micro-batch and the GPU gap at micro-step start, at T 4,096
+  and at 65,536 (the work grows with B x T).
+- What others do (to be confirmed in source before quoting): HF `DataCollatorWithFlattening` builds position_ids per
+  batch on the CPU in the data-loader workers; FlashAttention varlen takes cu_seqlens at runtime and schedules from
+  them. If our cost shows: build the NEXT micro-batch's positions + plan in a background thread while the GPU runs the
+  current one (pinned buffers); or make positions on the GPU from the lengths; or store positions in the files (+4 bytes
+  per token). The plan depends on the head count and the kernels' tile sizes, so it belongs at runtime, not in files.
+
+#### 2. The six tasks, step by step (order proposed in part 4)
+
+**T1. Long context: 16,384 / 32,768 / 65,536 for SFT (lottn).**
+1. Fix the loss reduction for more than 65,536 tokens per micro-batch (a grid-stride or multi-pass stage 2); keep the
+   sum order of today for <= 65,536 so pretraining and our existing runs stay bit-identical; test at 32,768 / 65,536 /
+   65,537 / 131,072 / 262,144 against a CPU fp64 sum (the test case `batch_131072_half_dropped` exists).
+2. Read every place that multiplies B x T x something in an `int` along the SFT path (loader offsets, loss, RoPE,
+   attention plan, embedding, logits B x T x V = 3.2e9 at 65,536 x 49,280 elements: above 2^31) and list each one.
+3. Correctness on one GPU at T 16,384 / 32,768 / 65,536: the attention test G14 with `VARLEN_BENCH_T`, the G12 long-chat
+   group, packed == alone bit-identical, the RoPE positions test, the loss test above; compute-sanitizer on Vj2 design A
+   (§45.8.3 item 3.4, never run).
+4. Benchmarks at the same lengths and at the 135M and 1.6B head shapes: attention dense + packed vs FA3 / FA4 / cuDNN,
+   loss vs Liger / compile, RoPE vs compile / Quack, lm_head + loss vs Liger FLCE / CCE (the 10-28 scripts take
+   `BENCH_T`); real data repacked to each length (`repack_rows.py`).
+5. Trainer: 135M SFT smoke at each length (memory, tokens/s, loss falls); 1.6B memory at 16,384 and 32,768 tokens per
+   micro-batch.
+6. Context parallelism: fetch the newest `Context_Parallelism` remote first (rule: latest remote branches), read its
+   ring and Ulysses paths, then decide with the user: Ulysses + our design-A kernels (no new kernel; needs the all-to-all
+   to carry the chat plan and positions) or ring with chat-aware masking (new kernels). The long-context team owns that
+   repository: anything there is agreed with them first.
+
+**T2. lm_head + loss only on trained tokens, then fused / chunked (lottn).**
+1. Read the sources: TRL `chunked_nll`, Apple CCE, Liger FLCE, torchtune, Megatron, Unsloth: who skips untrained rows,
+   how they gather, how dX goes back.
+2. The BluBLAS guard: reproduce the transposed-operand wrong numbers at M/N in {32, 48, 96, 100} vs a CPU reference
+   (open since 09-26), then a guard with a fallback, or always round M up to 256 with filler label 65535.
+3. Build: indices of trained positions -> gather hidden rows -> lm_head GEMM [M x d] -> loss -> scatter dX (zeros
+   elsewhere); dW from the M rows only. The trained positions can come from the labels on the GPU or from the files.
+4. Check: loss and gradients vs today within bf16 noise (last-bit differences expected: different GEMM row count and
+   sum order); standalone time + memory; trainer A/B on the same step window.
+5. Then fused / chunked lm_head + loss (never store all logits), speed checked while building (Liger's was 1.27x slower
+   than ours); C4 in the fusion tree is the starting point.
+
+**T3. Split over-long chats (bfd_split) instead of dropping them (lottn, CPU first).**
+1. Count the drops: at T 4,096 m1 drops 4,091 chats (0.9% of the chats it could keep), m2 19,162 (2.5%)
+   (`~/Downloads/sft135/data/*/train/meta.json`); count again at 8,192 / 16,384 / 32,768.
+2. Settle the open points of §45.4 with the user: where to cut (TRL cuts every max_length tokens, even inside a turn;
+   the packing doc's option 6 cuts between whole turns), the end token only in the last piece, which tokens of a piece
+   that starts inside an answer are trained, whether to repeat the prompt at the start of each piece. A later piece
+   never sees the earlier one (packing doc §7.6): only a longer row fixes that.
+3. Build `--overlong split` in `prepare_sft_data.py` (drop stays the default). Each piece is its own segment, so
+   positions restart and the attention plan treats it as a chat: no kernel change.
+4. Self-tests: pieces put back together = the chat; no piece longer than T; labels per piece as decided.
+5. Ablation drop vs split, same data, same steps (GPU, later, on the user's word).
+
+**T4. The user's own walkthrough (the user does it, no help unless asked).** Reading map, in this order:
+`sft/prepare_sft_data.py` -> `sft/SftDataLoader.h` -> `train/production_zero/bluscript_sft.cpp` against
+`bluscript_zero_ckpt.cpp` (the whole difference is 61 lines, `kernel_diff_sft_pretraining.md` §0) -> the three changed
+kernel groups in TI: loss (`src/Kernels/cuda/loss/LossKernels.cu`, `LossOps`, `LossBackward`), RoPE
+(`src/Kernels/cuda/norm/FusedRMSRoPE_bf16.cu`), attention (`attention/arch/GQA_fwd_sm90.cu`, `GQA_bwd_vj2_sm90.cu`,
+`GQA_fwd_generic.cu` = dispatch + chat plan, `GQA_bwd_generic.cu`). Docs: `kernel_diff_sft_pretraining.md`,
+`attention_kernel_optimizations_h200_2026_10_10_to_2026_10_21.md`, §45.9 (tiles), `sft_packing_algorithms_bfd_ffd.md`.
+
+**T5. Masked work inside attention (lottn).** Count the waste again at 8,192-65,536 on the real mixes (script
+`profiling_reports/tile_waste_2026_10_15/`); measure the attention share of an SFT step (nsys); only if the bound is worth
+it, build the cuts of Q3 in order of size (chat-end tiles 3.83%, diagonal 7.48%, pad tails 0.23%), each tested
+bit-identical (G10 / G11) and raced.
+
+**T6. Runtime metadata (lottn).** The measurement of Q4 first; build the one-step-ahead version only if it shows a GPU
+gap.
+
+**After the SFT work: the matmul fusion scopes (separate tree, stopped 10-27, memory "Matmul fusion").** Best set n3d
+-2.16%; next: the 40-step loss / precision validation (n0 n3d mref), nsys_best analysis, then R, A1/A2, C6, M1-M3, O1,
+ping-pong epilogue overlap, the 8-GPU check, `compare_ab.py` common last step.
+
+#### 3. Every kernel future task found (memory + this document), with where it belongs
+
+| # | task | state | branch |
+| --- | --- | --- | --- |
+| 1 | Loss sum loses tokens above 65,536 per micro-batch (logged / validation loss only) | open since 09-22; blocks T1 | lottn |
+| 2 | BluBLAS bf16 GEMM, transposed operand, M/N not multiple of 64: wrong numbers, no error | open since 09-26; blocks T2 | BluBLAS (guard via lottn TI) |
+| 3 | Logits only at trained positions (Q11) | parked 10-28 -> T2 | lottn |
+| 4 | Fused / chunked lm_head + loss | parked 10-28 -> T2; C4 experiment exists | lottn after proof |
+| 5 | bfd_split for over-long chats | decided 10-15 "not now" -> T3 | lottn |
+| 6 | Long context 16k-64k: correctness, benchmarks, memory, CP decision | new -> T1 | lottn |
+| 7 | Packed-row tile waste (chat-end tiles, diagonal, pad tails) | listed 10-15 -> T5 | lottn |
+| 8 | Runtime metadata cost | new -> T6 | lottn |
+| 9 | Attention tests never run (§45.8.3): 3.1 G11 on Vj1d A, 3.2 refusals, 3.3 full G10-G13, 3.4 sanitizer on Vj2 A, 3.6 Vj2 vs Vj1d in pretraining, 3.7 full CLASSIC 605, 3.8 error values vs b1, 3.9 B-1 race (3.5 covered by the 10-28 scoreboard) | listed 10-15 | lottn |
+| 10 | Dense attention forward alone 0.5-1.4% slower than FA3: diagonal-first with QPU's loop order kept | open 10-19 | lottn |
+| 11 | Deterministic dQ for Vj2 (only if bit-identical runs are needed) | decided 10-16 "not now" | lottn |
+| 12 | CORRECTED same day (part 5): the SFT trainer has the pretraining trainer's embedding code byte for byte; our launcher `run_sft.sh` passes no YAML, so every SFT run so far used the built-in default = bf16 atomicAdd, not Kruthik's segmented kernel. Fix: `BLU_EMB_BWD=segmented` in `run_sft.sh` + a check | open, urgent | lottn |
+| 13 | Loss: forward shared-memory loads 8 x 2-byte (10-19 item 4) and the CudaNativeType rule (item 1): check whether the pushed 16-byte commits already cover them | to check | lottn |
+| 14 | DFT and focal loss (loss op variants) | experiment, 10-06; only if the modelling side asks | lottn |
+| 15 | Lower GPUs (Ada / RTX 3060) generic attention: hd64 dQ fail (fp32 P for dS), FA2-style rewrite (4 warps, cp.async), dK/dV hd128 spills, D once | open 10-24 | lottn |
+| 16 | B300: sm103 loss forward ignores ignore_index; no causal hd128 attention on B300 | only before SFT on B300 | lottn |
+| 17 | PDL on the remaining kernels (unprofiled tok/s on vs off) | pretraining list 10-21 | lottn |
+| 18 | Matmul fusion scopes (above) | stopped 10-27 | separate (BluTrain_fuse) |
+| 19 | BluBLAS GEMM research: in-place descriptor accumulation, divergent control flow, setmaxnreg per shape, depth 4 on V6 (blocked: no PTX fence), 192x192 cluster flip, low-K amortisation, L2 pollution ncu-in-trainer, L2 flush ON for standalone claims | parked; GEMM hybrid paused by the user since 09-17 | separate |
+| 20 | Racecheck warnings in TI `matmul_bf16_optimized` | open 10-05, never changed a result | separate |
+| 21 | Casting #3 `data<T>()` unchecked reinterpret (827 sites), #4 the unexplained ~1 ms of bf16 logits, #1 bf16 wte (keep fp32) | parked 09-24 | separate |
+| 22 | Re-explain `ignore_index` (why -100 cannot work with uint16 targets, why -1 is the default) | owed to the user since 09-21 | - |
+
+Checked and NOT open any more: casting #2 (the shard-grad fp32 temporary, now a direct convert in
+`ShardedOptimizer.cpp:994-1012`), H200 vector casts (already on, 10-21), RoPE bf16 backward (pushed in TI `bda3a34`).
+
+#### 4. Proposed order
+
+1. Item 1 (loss over 65,536) and item 2 (BluBLAS guard): small, and each blocks a task.
+2. T1 long context (it also runs the item 9 tests, at long rows).
+3. T2 trained-only logits, then fused / chunked.
+4. T6 measurement and T5 count + measurement (cheap measurements; build only if worth it).
+5. T3 bfd_split (CPU), its ablation when a GPU is given.
+6. The matmul fusion scopes, in their own tree.
+T4 runs alongside, by the user. Every GPU run is asked for first; box commands are run by the user.
+
+#### 5. Second round of questions (2026-10-30), answered from the code
+
+**Q5. "Kruthik's fused embedding backward is what pretraining uses; who changed the SFT trainer to the naive one? We
+never modified embedding kernels."** Nobody changed the kernel or the trainer:
+
+- `bluscript_sft.cpp` has the pretraining trainer's embedding code unchanged (`bluscript_zero_ckpt.cpp:965-980,
+  1428-1440` vs `bluscript_sft.cpp:1143-1158, 1897-1909`: diff = identical). The kernel is chosen at run time by the
+  config key `embedding.backward` (env `BLU_EMB_BWD`; `ConfigBridge.h:65`): `segmented` = Kruthik's sorted-segment
+  kernel (`dist/communication/BluCCL/kernels/fusions/embedding_fused.cu`, fp32 sums, deterministic), `cooperative`,
+  or `atomic`.
+- The production pretraining YAML sets `embedding: backward: "segmented"` (`bluscript_zero_ckpt_config.yaml:100-101`);
+  every pretraining run in our records prints `[embedding] backward: segmented` (102 lines, e.g. the 10-27 matmul
+  audit runs).
+- Our SFT launcher `sft/run_sft.sh` (written by us) unsets every `BLU_*` variable and starts the trainer with no YAML
+  (the trainer takes one only through `--config` or `BLU_CONFIG`, `ConfigBridge.h:220-269`). The run then prints
+  `[config] no YAML (env and built-in defaults only)` and `[embedding] backward: built-in default (atomicAdd for bf16,
+  cooperative for fp32)`, and because `run_sft.sh` sets `BLU_ALL_BF16=1` the embedding is bf16 (`precision: ... embed
+  bfloat16` in the same log), so the bf16 atomicAdd kernel ran: non-deterministic, and the YAML's own comment gives
+  ~15-93% error on frequent tokens (audit M1). Seen in all 6 SFT run logs kept on the laptop
+  (`profiling_reports/sft_benchmarks_2026_10_21/box_runs_{p032,h100}_1027/*/run.log`); the 135M runs use the same
+  script.
+- Fix: `BLU_EMB_BWD=segmented` in `run_sft.sh` (works on 1 GPU and with NCCL: "segmented runs on the local GPU";
+  tokens per micro-batch stay B x T with packing, so its fixed-N workspace fits). Check: step-0 loss identical, the wte
+  gradient against an fp64 reference (old vs new), run-to-run identical, step time. Not done yet.
+- Also to check: which other production YAML settings the SFT runs do not get because no YAML is passed.
+
+**Q6. "4k and 8k fit on the GPU, so no context parallelism needed? From 16k our kernels do not work, so we use his CP
+attention kernels instead of ours? Is his document masking the same as our varlen? What must be done, for which
+lengths, which kernels, and is CP its own submodule?"**
+
+- What fills GPU memory is the number of TOKENS per micro-batch on one GPU (B x T), not T alone: our attention never
+  stores the T x T matrix (it keeps O(T) per row: the output and LSE). Measured: 1.6B pretraining step at 8 x 4,096 =
+  32,768 tokens peaked 88,139 MiB (10-27); 135M at 13 x 4,096 = 53,248 tokens used 50.0 GB (10-28). So 1.6B at 16k
+  (B 2) or 32k (B 1) holds the same 32,768 tokens and should fit; 1.6B at 64k (B 1) is 65,536 tokens, about twice,
+  above 141 GB (estimate from the measured peak). 135M at 64k should fit (estimate). To be measured in T1 step 5.
+- Our kernels do work above 8k: no length limit (forward T % 256, backward S % 128). Never tested or timed above 8,192
+  rows; the loss sum bug above 65,536 tokens is the one real failure. For packed SFT the attention cost of a row
+  depends on its chats' lengths (each chat attends only to itself), so a 64k row of short chats costs about the same
+  attention as 16 rows of 4k.
+- Context parallelism is not an attention-kernel swap. It splits ONE row across several GPUs; per-token ops (all
+  matmuls, norms, SwiGLU, embedding, loss) run unchanged on each GPU's slice. What changes: attention (needs the other
+  GPUs' keys/values: ring passes them around, Ulysses swaps sequence for heads with an all-to-all), RoPE (each slice
+  needs its true positions), the loader (each GPU takes its slice), the loss denominator and the gradient sum (over the
+  CP group too), and load balancing (causal rows: head-tail split).
+- His code has NO document masking: no chat lengths / cu_seqlens / segment ids anywhere in `context_parallel/` or his
+  trainer (searched). His ring kernels (`GQA_causal_cp_{fwd,bwd}_sm90.cu`) are copies of our older v62 / v44 plain
+  causal kernels; his RoPE takes one position offset per sequence. So they are not the same as our varlen design A, and
+  using them would lose per-chat attention, per-chat positions and our newer attention speed work (QPU forward, Vj2).
+- His CP lives in his own trainer (`Scripts/Blutrain/bluscriptCP.cpp`, Llama style, ring / Ulysses / hybrid, CP x DP).
+  Neither our SFT trainer, nor the pretraining trainer, nor BluTrain's Makefiles reference it (searched). It builds
+  against BluTrain's Tensor-Implementations (its Makefile, `TENSOR_DIR := $(BLUTRAIN_ROOT)/Tensor-Implementations`).
+- Where it sits: `dist/` is a plain folder of BluTrain; `dist/Context_Parallelism` is a SEPARATE git repository
+  (`adhityablubridge/Context_Parallelism`) added as a git submodule (`.gitmodules`; the other submodule is
+  Tensor-Implementations). Our branch records CP commit `cf1372d`; the laptop checkout is at `661b6ef` (2026-08-30)
+  and does not even contain `cf1372d`, so it is stale: fetch it (read-only) before reading his code in detail.
+- What would make long-context SFT work, in order: (1) measure the largest row that fits one GPU per model, and use
+  no CP up to it; (2) above it, Ulysses first: before attention an all-to-all gives every GPU the whole row for Hq / cp
+  query heads and Hkv / cp KV heads, so OUR attention kernels and OUR chat plan run unchanged (built for the full row
+  and the smaller head count); RoPE runs on the slice with the slice's per-chat positions; limit: the KV heads must
+  divide by the CP degree (135M: 2 KV heads -> CP 2; 1.6B: 6 -> CP 2, 3 or 6); (3) ring only if more GPUs per row are
+  needed than Ulysses allows: then chat-aware ring kernels (new work: a chat can span GPUs and the head-tail split cuts
+  chats). In our trainer: a CP group (his process group / DeviceMesh or ours), the loader slicing, the loss
+  denominator and gradients over DP x CP. From his module we would take the communication pieces (the all-to-all, ring
+  rotation, K/V packing, LSE merge, load balancer); which file does what is read after the fetch. The long-context team
+  owns that repository: agree with them first. Alternative to CP for memory only: activation recompute (the SFT
+  trainer has none today).
+
+#### 6. Third round (2026-10-30): two user rules, and the loss-sum bug explained
+
+**Rules from the user:** (1) SFT runs take the same settings pretraining enables: pass the production YAML and put only
+the SFT settings on top; `run_sft.sh` must set `BLU_EMB_BWD=segmented`; launchers, env and YAML are checked, not only
+the trainer. (2) The user does the work by hand from now on (audits, fixes, tests, measurements); I explain, give the
+steps and review. The production-YAML audit (which settings the SFT runs miss) is done by the user this way. Caution
+when passing the YAML: it also holds pretraining-only values (data mix, steps, schedule, checkpoint folders), so each
+key is decided: keep, or override for SFT.
+
+**The loss-sum bug.**
+- Setup: the loss forward writes one loss value per token row of the micro-batch (B x T rows; untrained rows write 0)
+  into a float array, then adds them up in two kernels (`LossKernels.cu:561-584` validation forward, `:1110-1125`
+  training forward). Stage 1: blocks of 256 threads; each thread loads ONE value, each block adds its 256 values -> one
+  partial sum per 256 rows. Stage 2: ONE block of 256 threads adds the partials, again ONE value per thread
+  (`sum_reduction_kernel`, `:249-273`, has no loop). So stage 2 reads partials 0-255 only: 256 x 256 = 65,536 rows.
+- Example, B x T = 131,072 (8 x 16,384): stage 1 makes 512 partials; stage 2 thread i reads partial i for i = 0..255;
+  partials 256-511 (rows 65,536-131,071) are never read. The printed loss is the first half's sum / the full step's
+  trained-token count: about half the true value, no error, no warning.
+- Not a check or a guard: a missing loop. Not ours: the one-block stage 2 is in the library at least since 2026-04-10
+  (commit `b31e831`, Kathir, which moved the file to this path; the file itself dates from 2026-01-12, `919c678`).
+  Our 2026-09-25 commit `ad10e7d` only added the denominator argument to stage 2. Found by us 2026-09-22 while writing
+  `test_sparse_ce_ignore_index.cu`; kept open because production never reaches it.
+- Not related to the tokenizer or to token ids: only the NUMBER of rows (tokens) per micro-batch on one GPU matters.
+- What it breaks: the logged training loss and the validation loss. Not the gradients: the backward uses the per-row
+  max / sum saved by the forward and the step's token count, never this sum.
+- Who hits it: nobody so far (every run log on the laptop is <= 8 x 4,096 = 32,768 rows; the 135M screen script caps
+  micro-batches at 16 rows = 65,536 = the last size summed in full; the 10-28 framework run at T 8,192 is not on the
+  laptop, check its B). Long-context SFT hits it at once.
+- The same two-stage code is copied into the other losses of the file (`:1418-1714`, MSE / BCE and others); one fix
+  of `sum_reduction_kernel` covers all.
+- The test already exists, in the old master only: `~/Downloads/BluTrain_sft/Tensor-Implementations/Tests/kernel_tests/
+  test_sparse_ce_ignore_index.cu` (cases `batch_65536_last_good`, `batch_65537_boundary`, `batch_131072_half_dropped`,
+  `:1057-1072`; build + run line at `:37-38`). Not in the lottn tree.
+- Fix idea (to be done by the user): each thread of a block adds a STRIDED series instead of one value
+  (`for (i = start; i < n; i += stride) v += input[i]`). When every thread gets at most one value (all of today's
+  cases up to 65,536 rows) the additions happen in the same order as today, so the result is bit-identical; above it,
+  stage 2 adds every partial.
+- Checks: the 3 test cases + larger (262,144, 524,288) against a CPU sum; bit-identical output for <= 65,536 rows old
+  vs new; time of the two reduce kernels old vs new (they are microseconds next to the loss kernel itself).
+- **Does it hit pretraining and the long-context team? (user's question, same day)** Same kernel for everyone; it is
+  not SFT-specific. It fires when ONE GPU computes the loss over more than 65,536 tokens in one call. Production
+  pretraining: 8 x 4,096 = 32,768 per GPU, not hit. Aditya's context-parallel trainer (`bluscriptCP.cpp`, laptop copy
+  `661b6ef` of 08-30) uses the SAME TI loss for training and validation (`autograd::sparse_cross_entropy_loss`,
+  `:2811`, `:2860`), but each GPU computes it only on its own slice, logits `[B, T_local, vocab]` with T_local = T / CP
+  (`:2856`); default B = 2 (`:126`, env `CP_B`). So a run is hit only if B x T / CP > 65,536 (e.g. T 131,072 on 2 GPUs
+  with B 2 = 131,072: hit; T 65,536 on 2 GPUs with B 2 = 65,536: not hit). Their perplexity / needle evaluation uses
+  their own kernel (`context_parallel/EvalNLLKernel.cu`: one block per position, no two-stage sum), not this one. Even
+  when hit, the weights are right (the backward never reads this sum); only the printed training / validation loss is
+  too low, by about 65,536 / (tokens per GPU). Their current run settings are not visible from the laptop: checking
+  them (B, T, CP size in their logs) or telling Aditya is the user's call.
+- **Verification request for the long-context team (2026-10-30):** `cp_verification_request_2026_10_30.md` (this
+  folder), to be given by the user to the Claude session on Adhitya's machine: Q1-Q7 the loss-sum bug in their path
+  (library version, call sites, rows per call, run inventory, an optional zero-logits GPU test: printed loss must be
+  ln V for every N), Q8 which embedding backward their trainer runs, Q9-Q13 context-parallel facts for our plan. The
+  reply comes back as `cp_verification_reply_<date>.md`; we check it against the code before believing it.
+
+#### 7. Fourth round (2026-10-30): Adhitya's reply, how a fix reaches everyone, the generic-attention package, context length
+
+**Adhitya's reply** (`cp_verification_reply_2026-10-30.md`, written by the Claude session on his machine, read-only):
+- Q1 bug present in his library source; Q3 gradients unaffected; Q4 his evaluation uses his own kernel.
+- Q5: every training / validation launcher has <= 32,768 rows per loss call (his 64k / 128k runs use CP 4-8, so 8,192
+  to 16,384 per GPU). The one hit: the LongRoPE search fitness at CP = 1, T = 131,072 before 2026-08-10, printed PPL
+  7.55 where his own NLL kernel gave 59.87 (the bug predicts 7.74). His notes blamed a "2^32 elements" limit; his
+  Claude now says that diagnosis was wrong and it was this bug. His chunked search is safe only while B x 16,384 <=
+  65,536.
+- Q8: his LC-8k and D150 8k / 16k runs set `CP_BF16_EMBED=1`, so they used the bf16 atomicAdd embedding backward (the
+  same issue as our SFT runs).
+- Q10-Q12: document masking exists on the ring path only (with `CP_ATTN_FUSION=split`, ids from EOT scanning, no
+  cu_seqlens); RoPE positions are NOT restarted per document; his ring kernels are forks of our v62 / v44; Ulysses on
+  H100 needs `CP_ULYSSES_CPLOCAL=1`. Q13: largest per GPU = 1 x 16,384 (680M-class, H100, 74.1 GB).
+- **Our check of the reply:** it says his library is TI `master` at `1c84859` (2026-08-24), but the code it quotes
+  (`count_valid_targets_kernel`, the `denom` argument of stage 2) is NOT in `1c84859` (checked in our clone:
+  `ad10e7d`, 2026-09-25, is not an ancestor; the file at `1c84859` has neither). So his working tree is not plain
+  `1c84859`, or the commit was read wrongly. The bug is in both versions, so the conclusion holds; the exact version
+  must be settled with real `git log -1` / `git status` on his machine. His local `libtensor.a` (2026-08-18) is older
+  than his source, and the server builds were not checked.
+
+**Does fixing it on our branch fix everyone?** Only the builds made from a library commit that contains the fix. Each
+team builds from its own branch: Adhitya's BluTrain `context-parallel-integration` uses TI `master`; pretraining
+colleagues use their own branches. So: fix, test and measure on `dist_side_gautam_lottn`; push (with the other
+optimizations, as the user decided); get it into TI `master` (PR #111 from `preproduction-135M` is open, or a separate
+PR); then each team pulls AND rebuilds libtensor. Until then nobody is at risk as long as one GPU gets <= 65,536 rows
+per loss call (B x T / CP for Adhitya).
+
+**Generic attention package for a junior colleague:** `generic_attention_varlen_package_2026_10_30/` + `.zip` (this
+folder): README (.md + .docx), the 4 library files + the test exactly as pushed in TI `f7aa40f` (same bytes as the
+files tested on 10-24), the parent versions (`bda3a34`), the diff, the RTX 3060 test logs (hd 128: 292 pass + 1 KNOWN;
+hd 64: 291 pass + 1 fail, the bf16-P dQ case), the stage-0 labels file the test needs, an md5 manifest. Not done: the
+full test run, an Ada run, an end-to-end trainer run on a lower GPU, the hd 64 dQ fix, any optimization.
+
+**Context length when continuing from a checkpoint (research, sources read 2026-10-30):**
+- Not in the weights or optimizer state (RoPE has no learned position table; Muon / AdamW state is per parameter). What
+  IS tied to it: the RoPE settings (theta, any YaRN / LongRoPE scaling and its mscale) must be the ones the checkpoint
+  was trained with; and the model has only learned distances up to the length it was trained at.
+- Changing T in the same pretraining run is normal: Llama 3 went 8K -> 128K in six stages inside pretraining (~800B
+  tokens, RoPE base 500,000; arXiv 2407.21783 §3.4.2); DeepSeek-V3 4K -> 32K -> 128K with YaRN, 1,000 steps each
+  (2412.19437); Qwen2.5 4,096 -> 32,768 in the final pretraining stage, RoPE base 10,000 -> 1,000,000 (2412.15115 §3.3);
+  SmolLM3 4k -> 32k (theta 1.5M) -> 64k (theta 5M), 50B tokens each (HF blog); OLMo 3 8,192 -> 65,536 with YaRN on
+  full-attention layers (2512.13961 §3.6). The other direction exists too: sequence-length warmup (short first; Li et
+  al., arXiv 2108.06084).
+- SFT lengths: Qwen2.5 SFT "two epochs with a sequence length of 32,768 tokens" = its base's length (§4.1); Tülu 3 SFT
+  max length 4,096 on Llama 3.1 (a 128K base) = shorter (model cards); Llama 3 SFT is mostly short (average 846 tokens)
+  plus 0.1% synthetic long-context data, because "naively applying our existing SFT recipe with only short-context data
+  resulted in significant regressions" in long context; short-only DPO did not hurt (§4.3.4, Table 7); SmolLM2-135M
+  SFT max length 8,192 (alignment-handbook recipe, read 10-28); SmolLM3: SFT length not stated, APO data limited to 24k;
+  OLMo 3: SFT packing at 32K per our 10-28 reading of the report, not re-confirmed today.
+- For our packed SFT the row length T does not set the positions the model sees (positions restart per chat); T sets
+  the longest chat kept, memory and chats per step. Rule: T <= the length the checkpoint was trained at, T >= the
+  longest chat to keep. A long-context checkpoint from Adhitya needs his exact RoPE cache in our trainer
+  (`bluscript_sft.cpp:831` builds plain RoPE from theta only; his runs use YaRN / LongRoPE options) and some long chats
+  in the mix to keep the long ability.
+
+#### 8. Fifth round (2026-10-30): Adhitya's embedding flag, delivering the fix, SFT length for a long checkpoint, what a checkpoint holds
+
+- **`CP_BF16_EMBED=1`:** the bf16 storage is not the problem; the bf16 atomicAdd backward his library picks for a bf16
+  embedding is. Our production pretraining also keeps the embedding in bf16 but runs the segmented kernel (fp32 sums
+  per row, one write). His trainer and his library version have no segmented option (his reply, Q8). His choices: drop
+  the flag (fp32 embedding -> the library's cooperative kernel: fp32 sums, deterministic; for 135M the fp32 table is
+  49,280 x 512 x 4 B = 101 MB) or wire the segmented kernel into his trainer. His call; his own proposed check (same
+  checkpoint, flag 0 vs 1, embedding-gradient norm on frequent rows) measures it.
+- **Delivering the loss fix through `preproduction-135M`:** works once his Tensor-Implementations is moved to that
+  branch (or to `master` after PR #111) and rebuilt. That branch also carries everything else (DPO merges, our
+  attention / RoPE / loss changes), so his CP code must be rebuilt and re-checked against it. Keep the loss fix as ONE
+  small commit so anyone can also cherry-pick just it.
+- **Our SFT chat lengths (tokens, `seq_lengths.bin` of the T 4,096 builds; computed 10-30):**
+
+  | mix | chats kept | median | p90 | p99 | p99.9 | 2,049-4,096 | dropped > 4,096 |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | m1 smol | 452,974 | 905 | 1,364 | 1,531 | 3,052 | 1,511 | 4,091 (0.90%) |
+  | m2 Tülu | 744,023 | 454 | 1,264 | 3,116 | 3,947 | 21,867 | 19,162 (2.51%) |
+  | m3 smol + math | 549,217 | 671 | 1,346 | 1,509 | 2,832 | 1,511 | 4,091 (0.74%) |
+
+  m1 has more chats above 4,096 (4,091) than between 2,049 and 4,096 (1,511): a separate group of very long chats,
+  probably smol-smoltalk's LongAlign part (3,560 chats; not checked per source). So at T 4,096 we drop exactly the
+  long-context part of the data. The lengths of the dropped chats are not known; a prep run at a large T counts them.
+- **SFT length for a long-context checkpoint:** T <= the checkpoint's trained length; T >= the longest chat we want to
+  keep; to keep the long ability, include some long chats (Llama 3: short-only SFT regressed long context; 0.1% long
+  data fixed it), which needs T >= their length. Be ready for any T: loss fix, bfd_split, RoPE table matching the
+  checkpoint (YaRN / LongRoPE), context parallelism only if one chat does not fit one GPU.
+- **What the 135M checkpoint holds** (`~/Downloads/sft135/ckpt_A`, Navin's base converted, fp32): 372 tensors,
+  134,396,672 numbers: `wte.weight` [49,280, 512]; per layer (x37) `attn_norm.weight` [512], `wq` [512, 512], `wk`
+  [512, 256], `wv` [512, 256], `wo` [512, 512], `q_gamma` [128], `k_gamma` [128], `mlp_norm.weight` [512], `gate_up`
+  [512, 2,816], `down` [1,408, 512]; `norm_f.weight` [512]. No shape contains the row length; `meta.json` records
+  `"context_length": "4096"` as a note only. The RoPE table [T, 128] is built at start from theta
+  (`bluscript_sft.cpp:831`) and never saved. Optimizer (ShardedMuon, `ShardedMuon.h:638-642`): fp32 master copy and
+  fp32 momentum for every weight number (flat lists, each GPU owns a slice; per-tensor views), plus an fp32 second
+  moment (v) for the AdamW part (the embedding and the 1-D tensors).
+
+#### 9. The loss-sum bug: what the other libraries do, the fix design, and the test plan (2026-10-30)
+
+**User's rule for SFT length (recorded in `plan_grid_search_sft.md` X5 and Q&A 127-132):** support every choice
+correctly first (loss fix, bfd_split, RoPE table equal to the checkpoint's, CP only for a chat that does not fit one
+GPU); before any SFT measure the chat lengths and pick T from the data and memory; every chat packed whole.
+
+**How others turn per-token losses into one number** (local clones in `~/Downloads/sft_research/` at the commits
+given; PyTorch and CUB read from GitHub `main` on 2026-10-30):
+
+| library | per-token losses | how they are added up | any N? | fixed order? |
+| --- | --- | --- | --- | --- |
+| PyTorch `F.cross_entropy` (CUDA `nll_loss_forward_reduce_cuda_kernel_2d`, `aten/src/ATen/native/cuda/Loss.cu`) | inside the same kernel | ONE block, each thread loops `for (i = threadIdx.x; i < nframe; i += blockDim.x)`, then a shared-memory tree; block size `clamp(2^round(log2(N/16)), 32, 1024)`; mean = sum / total_weight | yes (loop) | yes, no atomics |
+| `torch.sum` (`aten/src/ATen/native/cuda/Reduce.cuh`) | — | each thread adds a strided slice; block tree / warp shuffles; several blocks write partials, the LAST block (found with an atomic counter) reads them in index order | yes | yes for a given configuration |
+| CUB `DeviceReduce` (`cub/device/dispatch/dispatch_reduce.cuh`, `kernels/kernel_reduce.cuh`) | — | pass 1: grid capped at occupancy x SMs x a subscription factor, each block consumes many tiles; pass 2: one block over the WHOLE range of partials (`ConsumeRange(0, num_items)`) | yes | yes (stable mode) |
+| Liger 19d92e7 (`ops/cross_entropy.py:378, 467`) | Triton, one program per row, already divided by the trained count (a host `.item()`) | `torch.sum(loss_1d)`; note `loss_1d` is in the INPUT dtype (bf16 logits -> each row's loss rounded to bf16 first) | yes | yes |
+| FlashAttention 94e22c9 (`ops/triton/cross_entropy.py:187`, `losses/cross_entropy.py:68-69`) | fp32 per row | `loss.sum() / (target != ignore_index).sum()` | yes | yes |
+| Quack 77a750c (`cross_entropy.py:380`, wrapper `:745-760`) | fp32 per row | `loss.sum() / count` | yes | yes |
+| TransformerEngine 39c30c5 (`pytorch/triton/cross_entropy.py:110-113`) | per row, count made in the kernel | `loss_1d.sum() / n_non_ignore` | yes | yes |
+| Megatron-LM 8b2f660 (`pretrain_gpt.py:256-258`) | per token | `torch.sum(losses * loss_mask)`, tokens = `loss_mask.sum()` | yes | yes |
+| torchtitan 1e4d33d (`components/loss.py:56`) | — | `F.cross_entropy(pred.float(), labels, reduction=...)` = PyTorch's kernel above | yes | yes |
+| **ours** (`LossKernels.cu`) | inside the CE kernel, fp32 per row | stage 1 many blocks, one value per thread; stage 2 ONE block of 256, one value per thread, NO loop | **no: only the first 65,536 rows** | yes |
+
+Nobody ends with a one-value-per-thread pass over an unbounded count: either a general sum that loops (torch.sum, CUB)
+or one block that loops (PyTorch's own loss). **Our own library already has the right pattern** in two places:
+`muon_sumsq_finalize_kernel` (`MuonKernels.cu:94-105`) and `grad_norm_cleanup_kernel` (`MultiTensorKernels.cu:154-166`):
+`for (int i = tid; i < n; i += blockDim.x) v += partials[i];`.
+
+**Audit of every single-block launch in our library** (`grep "<<<1,"` in `src`): the bug is only in
+`sum_reduction_kernel`'s stage 2 (sparse CE forward with and without stats, and the CCE / MSE / MAE / BCE forwards,
+`LossKernels.cu:561-584, 1110-1125, 1405-1720`). `count_valid_targets_kernel`, the Muon and grad-norm finalize kernels
+loop already. Side finding, not fixed now: the CCE / MSE / MAE / BCE forwards launch on the default stream (no stream
+argument, `:1405-1720`), unlike the sparse CE path; not on our trainer's path.
+
+**Fix design (to be written by the user):** in `sum_reduction_kernel`, replace the single load with a strided loop:
+`float v = 0.0f; for (int64_t i = blockIdx.x * (int64_t)blockDim.x + tid; i < n; i += (int64_t)gridDim.x * blockDim.x)
+v += input[i];` then the same tree. Keep every launch as it is.
+- Why bit-identical up to 65,536 rows: stage 1 runs ceil(N/256) blocks x 256 threads, so the stride is >= N and each
+  thread still gets at most one value; stage 2 has <= 256 partials, so again one value per thread. `0.0f + x == x`
+  exactly (losses are >= 0, so no -0.0 case), and the tree is unchanged.
+- Above 65,536 rows stage 2's threads loop over all partials: every row counts.
+- 64-bit loop index (the old `unsigned int i` would wrap at 2^32 rows).
+- Rejected: one block looping over all rows (PyTorch-style; changes the order for every N, so today's numbers change);
+  an atomicAdd of block partials (not deterministic); CUB (new dependency, different order).
+
+**Test and measure plan (the user runs it; I review):**
+1. Port `test_sparse_ce_ignore_index.cu` (only in the old tree `~/Downloads/BluTrain_sft/.../Tests/kernel_tests/`) to
+   the lottn tree. The 4 loss functions it calls exist in lottn with the same signatures (checked).
+2. Run it BEFORE the fix: `batch_65536_last_good` PASS, `batch_131072_half_dropped` XFAIL (marked diagnostic).
+3. Apply the fix; turn the three `batch_*` cases from diagnostic into must-pass; add 262,144 and 524,288 rows; check
+   BOTH forwards (validation `..._impl_vec` and training `..._impl_vec_save_stats`); add the zero-logits case (every
+   row's loss = ln V exactly: 10.825840 for V = 50,304).
+4. Bit-identity: old and new library, same inputs, N = 1 / 255 / 256 / 257 / 32,768 / 65,536: the loss float must be
+   byte-equal (print the hex bits).
+5. Trainer: step-0 train / val loss of a normal 8 x 4,096 run identical old vs new; then a run with more than 65,536
+   tokens per micro-batch (for example the 135M at B 20 x 4,096 = 81,920; 13 x 4,096 used 50 GB on 10-28, so check
+   memory first): the old val loss about 65,536 / 81,920 = 0.8 of `ref_val_loss.py`'s numpy reference, the new one
+   equal to it.
+6. Time: the two reduce kernels old vs new at N = 32,768 / 65,536 / 131,072 / 1,048,576 (nsys or CUDA events); the
+   loss kernel itself takes far longer.
+7. compute-sanitizer memcheck on the test.
+8. One small commit for the fix (+ the test), so anyone can cherry-pick it alone.
+
+#### 10. Sixth round (2026-10-30): proof of which versions Adhitya has (library, BluBLAS, embedding, Context_Parallelism)
+
+The user asked for proof, not statements: does Adhitya really use Tensor-Implementations (TI) `master`, or the latest?
+He pushed to `preproduction-135M`, so does he have everything? Is his BluBLAS still PR #2? Is his embedding old too?
+
+Method: `git fetch` of TI, BluTrain, BluBridge-BLAS and Context_Parallelism from GitHub (2026-10-30, read-only), then
+`git log` / `git ls-tree` / `git show <commit>:<file>` in our clones. Every line below can be re-run by hand (commands
+at the end).
+
+**A. TI `master` = `1c84859`, and master has not moved since 2026-08-24.**
+- `git log -1 origin/master` -> `1c84859 2026-08-24 Kathir | All sm90 optimized kernels for production with submodule
+  updated too. (#110)`. `git rev-list --count 1c84859..origin/master` = 0.
+- `preproduction-135M` (tip `a9e37e6`, 10-29) is 90 commits ahead of it; 0 commits of master are missing from it.
+
+**B. Adhitya's context-parallel BluTrain branch pins exactly that master.**
+- BluTrain `origin/context-parallel-integration`, tip `0df6ecd` (adhityablubridge, 2026-09-26 15:57, "After
+  BluscriptCP updation with fixed DCP before testing").
+- `git ls-tree` on it: `Tensor-Implementations` -> `1c84859` (TI master); `dist/Context_Parallelism` -> `5472925`
+  (2026-09-26).
+- His reply read `refs/heads/master` = `1c84859`, last pull 2026-09-26 15:02: consistent with this branch.
+
+**C. But the files his Claude quoted are NOT the files of `1c84859`.**
+- Every `LossKernels.cu` line he quoted (109, 174, 342, 486, 704, 938, 965) matches our commit `ad10e7d` (2026-09-25,
+  the SFT loss work; same file bytes as `1ed2ac3`, 09-24) and does not match `1c84859`. Examples at `1c84859`: line 174 =
+  `float target_logit = ...`; `count_valid_targets_kernel` occurs 0 times; `*denom` occurs 0 times; the `TODO(SFT)`
+  sm103 comment does not exist (in `03d3790`, `f7aa40f` and the preproduction tip it is at line 1096, not 938).
+- `ad10e7d` is NOT an ancestor of `1c84859` (`git merge-base --is-ancestor` -> no).
+- His `LossOps.cpp:315-321` quote matches `1c84859` (the `..._save_stats<LogitT>` call is at 315 there, at 436 in
+  `ad10e7d`).
+- A search of every TI commit holding his `LossKernels.cu` bytes (blob `82d9a8d`) found NONE whose `LossOps.cpp` line
+  315 matches. So his working tree is not any single commit: it is `master` plus local file changes, or the reply read
+  files from more than one place. His Claude read only `.git` refs (no `git status`), so it could not see this.
+- His local `libtensor.a` is dated 2026-08-18, older than both. What was built on the H100 / H200 servers where the runs
+  ran: nobody has checked.
+- The loss bug is present in both versions: at `1c84859` `sum_reduction_kernel` line 51 loads one value per thread, and
+  stage 2 is `<<<1, reduce_threads>>>` over `reduce_blocks` partials (sparse CE lines 314-324). The code comment there
+  already says "a single block of reduce_threads can only sum reduce_threads elements" but stage 2 still has no loop.
+  Master divides by all rows (no ignore_index there), so the printed loss is again about true x 65,536 / N.
+
+**D. He did push to `preproduction-135M`, but for his 135M pretraining trainers, not for context parallelism.**
+- TI `03d3790` (adhityablubridge, 2026-10-22 20:03): `include/MixedDataloader.h` (+202 / -35) and the BluBridge-BLAS
+  pointer. Parent `b1443a5` = our 10-21 commits (loss 16-byte loads, Vj2 backward, QPU forward). The same change was
+  re-committed as `749b632` (committer root, 10-26) on `madhu_post-training`.
+- BluTrain `f37c616` (adhityablubridge, 2026-10-22 20:04): `MixedDataloader135.h`, `bluscript_zero_ckpt_135m_eqab.cpp`,
+  `bluscript_zero_ckpt_bluccl_multi_135m_eqab.cpp`, Makefile and BluCCL IB changes. Pointers: TI `03d3790`,
+  Context_Parallelism `cf1372d`. Parent `3b80f15` = our lottn tip of that time.
+- So the tree he committed from on 10-22 had everything up to 10-21. That is not the tree his context-parallel runs
+  build from (B), and it is not "everything latest": after 10-22 `preproduction-135M` got our BLAS fix `37f2bdc`, the
+  SFT package `0315c19`, the DPO merges and `a9e37e6`.
+
+**E. BluBLAS: PR #2 in both of his trees. His 10-22 commit moved the pointer BACK from PR #3.**
+- BluBridge-BLAS history: `57a2212` = "Merge pull request #1" (06-13); `35e51a0` = "Merge pull request #2" (08-24);
+  `ea666ab` = "Merge pull request #3" (08-31) = BLAS `master` tip (fetched 10-30; no PR #4).
+- PR #3 adds one commit, `969fda4` "optimized addmm kernel" (dhanakumarK777, 08-27): 4 files
+  (`Bgemm_sm90_swiglu_fused_template.cuh`, `Bgemm_sm90_warpspecialized_template.cuh`, `Hgemm_sm90_dispatcher.cu`,
+  `Hgemm_sm90_warpspecialized_template.cuh`), +247 / -22.
+- Pointers: TI `1c84859` -> `35e51a0` (PR #2). TI `b1443a5` (our 10-21) -> `ea666ab` (PR #3). TI `03d3790` (his,
+  10-22) -> `35e51a0` (PR #2; his message says "BluBridge-BLAS at 35e51a0"). TI `37f2bdc` (ours, 10-27) -> `ea666ab`.
+  `preproduction-135M` tip and `dist_side_gautam_lottn` -> `ea666ab`.
+
+**F. Embedding: the segmented kernel cannot run in his context-parallel trainer.**
+- Library side: the pluggable embedding-backward hook is `df2f8a6` (kiruthikkanna-m, 2026-09-16); the
+  `BLUTRAIN_EMB_BWD` switch first appears in `a60099b` (10-01). Neither is in `1c84859` (`df2f8a6` ancestor of
+  `1c84859`: no; of `03d3790`: yes). `1c84859` has only `BLUTRAIN_EMB_BWD_COOPERATIVE` (2 uses), as his reply said.
+- BluTrain side: `BLU_EMB_BWD` and the BluCCL fused embedding first appear in `0d65161` (kiruthikkanna-m, 10-01).
+  `git grep` on `context-parallel-integration`: 0 files mention `BLU_EMB_BWD`, the fused embedding or its install.
+- Result in his CP trainer: fp32 `wte` -> the library's cooperative kernel (fp32 sums, deterministic); bf16 `wte`
+  (`CP_BF16_EMBED=1`, his LC-8k / D150 runs per his reply) -> bf16 atomicAdd.
+- NEW, not verified further: his two 135M trainers on `preproduction-135M` (`bluscript_zero_ckpt_135m_eqab.cpp`,
+  `bluscript_zero_ckpt_bluccl_multi_135m_eqab.cpp`) also never install the segmented kernel and read no YAML (0
+  mentions). `BLU_ALL_BF16=1` makes `wte` bf16 there (lines 1031-1034), which gives bf16 atomicAdd unless the env
+  `BLUTRAIN_EMB_BWD=cooperative` is set (library `03d3790`, `EmbeddingKernels.cu:393-410`). No launch script in the repo
+  names these trainers, so which flags any 135M pretraining used is UNKNOWN. Our SFT base `ckpt_A` is Navin's
+  checkpoint; which trainer made it is also not recorded here.
+
+**G. Context_Parallelism: the code behind his recent runs is not on GitHub.**
+- GitHub `adhityablubridge/Context_Parallelism` `main` tip = `cf1372d` (2026-10-16, "forward inreadoc masking
+  kernel"). His reply's local `main` = `009b371`: `git log 009b371` -> unknown revision. So `009b371` exists only on
+  his machine.
+- His CP BluTrain branch pins `5472925` (09-26), older than both. Our branches and `preproduction-135M` pin `cf1372d`.
+
+**What is proven and what is not:**
+- Proven: his GitHub CP branch = TI master `1c84859` + BLAS PR #2 + no segmented embedding; his 10-22 push =
+  everything to 10-21 except BLAS (moved back to PR #2), for the 135M trainers only.
+- Not proven: what was compiled into the binaries that produced his runs (workstation tree is mixed, workstation lib
+  is from 08-18, servers unchecked, CP `009b371` unpushed).
+- To prove it, on EACH machine where the runs ran (read-only; his call): `git -C <BluTrain>/Tensor-Implementations
+  log -1 --format='%H %ci'` and `git status --short`; the same in `BluBridge-BLAS` and `Context_Parallelism`;
+  `ls -l --time-style=full-iso <TI>/lib/libtensor.a`; and on the binary that ran (`bluscriptCP_exec`):
+  `cuobjdump -symbols <exe> | grep -c count_valid_targets_kernel` (0 = master-era loss, >0 = 09-24-or-later loss) and
+  `strings -a <exe> | grep -cx BLUTRAIN_EMB_BWD` (0 = library older than 10-01).
+
+**How the fix reaches him:** his CP branch builds TI `master`. He gets the loss fix only when (a) it is in `master`
+(PR #111 or a separate PR) and he moves his TI pointer to it and rebuilds, or (b) he moves his TI pointer to
+`preproduction-135M` after we push and rebuilds. Either way his CP code must be re-checked on the newer library (90
+commits, plus BLAS PR #3).
+
+Commands used (re-run by hand in `~/Downloads/BluTrain_push/Tensor-Implementations` after `git fetch origin`):
+- `git log -1 origin/master`; `git rev-list --count 1c84859..origin/preproduction-135M`
+- `git show 1c84859:src/Kernels/cuda/loss/LossKernels.cu | sed -n 174p` (and the same with `ad10e7d`)
+- `git show 1c84859:src/Kernels/cuda/loss/LossKernels.cu | grep -c count_valid_targets_kernel`
+- `git merge-base --is-ancestor ad10e7d 1c84859 && echo yes || echo no`
+- `git ls-tree <commit> BluBridge-BLAS`; in `BluBridge-BLAS`: `git log --first-parent --oneline ea666ab | head`
+- in `~/Downloads/BluTrain_push`: `git ls-tree -r origin/context-parallel-integration | grep ^160000`;
+  `git show --stat f37c616`; `git grep -c BLU_EMB_BWD origin/context-parallel-integration -- .`
+
+#### 11. Seventh round (2026-10-30): what Adhitya's servers actually hold and run (P022 / P032, read-only)
+
+The user logged in to P022 and P032 (shared `operator` login) and ran read-only commands I gave; I matched every
+result against our clones. Method: `git hash-object <file>` on the box gives the git ID of the file's exact bytes
+(works without a repository); on the laptop `git log --all --find-object=<id>` and a scan of all 1,247 TI commits name
+the commits that hold those exact bytes.
+
+**Where his work lives:** `/localstorage/adhi_l32/` on both boxes (P022 also has `adhi_a`, `adhi_p6`, and both have
+`adhi_l32_from_p22`, `adhi_ladder`); `/data/adhi_lc` (P032) is an evaluation setup (RULER eval, eval watcher) that
+links into `/localstorage/adhi_l32/evalstack/`. One source copy per experiment: `ablate_2026-10-16`, `ablate_2026-10-17`,
+`lc_D150_2026-10-26`, `pt_D150_2026-10-27`, `synagg_2026-10-28`.
+
+**No folder is a git checkout.** Every Tensor-Implementations / BluBridge-BLAS / Context_Parallelism folder is a plain
+copy (no `.git`); `ablate_2026-10-17/src_orig` has a `.git` pointer file whose target was not copied. So versions are
+identified by file content.
+
+**What the runs launch (from his run scripts):** every `run_d150*.sh` sets
+`LD_LIBRARY_PATH=$BT/Tensor-Implementations/lib`, runs `$BT/dist/Context_Parallelism/build/bluscriptCP_exec`, and sets
+`CP_BF16=1 CP_BF16_RESID=1 CP_BF16_EMBED=1 CP_BF16_LOGITS=1`; the `diag_*.sh` scripts show
+`O=/localstorage/adhi_l32/lc_D150_2026-10-26; BT=$O/BluTrain`. `pt_*.sh` / `synagg_run.sh` add `$BT/dist/lib` (BluCCL)
+and pass `YARN_SCALE` / `YARN_ORIG_MAXPOS`. The program loads `libtensor.so` at run time (`readelf -d`: NEEDED
+`libtensor.so`; RUNPATH `$ORIGIN/../../Tensor-Implementations/lib`, relative to the program's own folder). For
+`/localstorage/adhi_l32/bin/bluscriptCP_exec` (built 10-13) that path does not exist (`ldd`: `libtensor.so => not
+found`), so it only runs with `LD_LIBRARY_PATH` set. My earlier check of the program file itself (`cuobjdump` /
+`strings` on `bluscriptCP_exec`, all 0) looked in the wrong file: the kernels are in `libtensor.so`. The D150 programs
+(`.../build/bluscriptCP_exec`, one level deeper) were not reached by the `-maxdepth 5` search.
+
+**Fingerprints (first 12 hex of the git blob ID) and what they are:**
+
+| file | ID | = the file in |
+| --- | --- | --- |
+| LossKernels.cu | `82d9a8ddda81` | `1ed2ac3` / `ad10e7d` (09-24/25, our SFT loss work) until `43a5c3f` (10-21) |
+| LossKernels.cu | `dd6aea6cadd2` | `fc4459b` (10-21) onward: `b1443a5`, `03d3790`, `f7aa40f` |
+| LossOps.cpp | `9191d1911a98` | `1ed2ac3` / `ad10e7d` onward (unchanged on our line) |
+| LossOps.cpp | `effa323bd649` | TI `master` `1c84859` (and older) |
+| EmbeddingKernels.cu | `1d61b0d69b26` | `248bb3c` (08-14) .. before the hook `df2f8a6` (09-16) = the `1c84859` / `ad10e7d` file: no hook, no `BLUTRAIN_EMB_BWD` |
+| EmbeddingKernels.cu | `2424c4275589` | `a60099b` (10-01) onward: has `BLUTRAIN_EMB_BWD` |
+| MixedDataloader.h | `46795095197e` | `8808f89` (09-22) .. `02d0d18` (10-09) |
+| MixedDataloader.h | `fbfe91a08a1a` | his `03d3790` (10-22) |
+| BLAS `Bgemm_sm90_warpspecialized_template.cuh` | `15f2d7d507fd` | BLAS `35e51a0` = PR #2 (PR #3 `ea666ab` has `cba3c513059b`) |
+| same BLAS file | `65f0f2122035` | BLAS `0e211dc` (08-01) .. `577d5e0` (08-17): before PR #2 |
+| CP `Makefile` | `362b64c6b4c4` | CP `cf1372d` (10-16) |
+| CP `bluscriptCP.cpp` | `da22cf7a0ff0` (P022), `687a503e2a65` (P032), `fb90fdd7b15d` (P032 failed copy) | none is in GitHub Context_Parallelism (main up to `cf1372d`): unpushed versions; the two boxes differ |
+
+**Each source copy (all five files checked together against every TI commit):**
+
+| copy | box | libtensor built (box clock) | matches | meaning |
+| --- | --- | --- | --- | --- |
+| `lc_D150_2026-10-26/BluTrain` (the D150 runs' `$BT`) | P022 / P032 | 10-26 23:16 / 10-26 14:12 | TI `ad10e7d`, `7810aea`, `97735ad`, `3a08ade` or `d96b991` (09-25..09-28, our `dist_side_merge`; BluTrain `dist_side_merge` `a264586`..`909ab75` point at them); BLAS PR #2, as those commits pin | NOT TI master. Loss = `ad10e7d` code (65,536 bug present, ignore_index + denominator present); embedding = pre-hook file (bf16 -> atomicAdd); BLAS PR #2 |
+| `ablate_2026-10-16/src`, `src_v3` | P022 | 10-07 21:37 | same as above | same |
+| `ablate_2026-10-17/src_orig` | P022 | 10-05 22:03 | TI files = `a60099b` / `a9bc08c` (10-01..10-05), but BLAS file = PR #2 while those commits pin PR #3 | mixed: TI updated, BLAS submodule not (fits a `git pull` without `git submodule update`; not proven) |
+| `pt_D150_2026-10-27/src8k` | P022 | 10-22 20:14 | exactly his commit `03d3790` (all five, incl. BLAS PR #2) | his 10-22 tree: our 10-21 loss / attention / RoPE + his MixedDataloader, BLAS PR #2 |
+| `pt_D150_2026-10-27/BluTrain`, `synagg_2026-10-28/BluTrain` | both | 10-22 20:14:22 | lib only, no sources | same build second as `src8k`: probably copies of that build (md5 not yet checked) |
+| `lc_D150_2026-10-26/BluTrain_dp16`, `BluTrain_p22` | both | 10-26 23:16:32 | lib only | same build second as P022's D150 copy: probably copies |
+| `lc_D150_2026-10-26/BluTrain_failed_localsrc` | P032 | 10-26 14:05 | NO single commit: LossKernels `ad10e7d` + LossOps `1c84859` + BLAS from before PR #2 (08-01..08-17) | the same mix his reply quoted (LossKernels at `ad10e7d` lines, LossOps at `1c84859` lines); the folder name says it failed; replaced 7 minutes later by the `BluTrain` copy |
+
+**Conclusions (proven unless marked):**
+- His reply's "Tensor-Implementations master @ `1c84859`" describes his workstation's git refs, not what his D150
+  long-context runs loaded. Those runs loaded a library built from our `dist_side_merge` TI of 09-25..09-28 (exact
+  commit among the five: one more fingerprint check).
+- The pt_D150 (10-27) / synagg (10-28) runs point `LD_LIBRARY_PATH` at copies whose library has the same build second
+  as the `src8k` copy, which is exactly `03d3790` (copy status: md5 pending).
+- BluBLAS is PR #2 in every copy that ran; the failed copy is older than PR #2.
+- Embedding in the D150 runs: the pre-hook library file plus `CP_BF16_EMBED=1` in every run script = bf16 atomicAdd.
+  The segmented kernel is in none of them.
+- Loss: the 65,536-row bug is in both library versions (`ad10e7d` and `dd6aea6`); his per-call N <= 32,768 (his reply)
+  so it did not fire in these runs.
+- His Context_Parallelism trainer sources on the boxes are versions that GitHub does not have, and they differ
+  between P022 and P032.
+
+**Still open (one more read-only command on each box):** pin the exact commit of the D150 copy with four more
+fingerprints (expected IDs: `include/dtype/Types.h` `7abc76239c69` = `ad10e7d`, `1a96ab6a6ed2` = later;
+`ReductionKernels.cuh` `2cd8ee962ed5` = up to `7810aea`, `e2b89b86d7e4` = from `97735ad`; `ConversionKernels.cu`
+`d2bcf3a7e2d7` = up to `97735ad`, `0b614f4cbfed` = from `3a08ade`; `LinearBackward.cpp` `e3f8c9fff012` = up to
+`3a08ade`, `bbe67802edd2` = `d96b991`); md5 of every `libtensor.so` copy; the dates of the real
+`build/bluscriptCP_exec` files; the `O=` / `BT=` lines of `run_d150*.sh` and `lc*_run.sh`.
+
+**Closed (same day, the last read-only command on both boxes):**
+- **Exact commit of the D150 copy = TI `d96b991`** (2026-09-28, the tip of our `dist_side_merge`; BluTrain
+  `dist_side_merge` `909ab75` points at it). On both boxes the four extra fingerprints are `Types.h` `1a96ab6a6ed2`,
+  `ReductionKernels.cuh` `e2b89b86d7e4`, `ConversionKernels.cu` `0b614f4cbfed`, `LinearBackward.cpp` `bbe67802edd2`.
+  A scan of all 1,247 TI commits for the nine fingerprints together returns only `d96b991` (it pins BLAS `35e51a0` =
+  PR #2, which the BLAS fingerprint also shows).
+- **Library files (md5 of `libtensor.so`):**
+  - D150, P022 build `d8a12bf7...` (10-26 23:16): P022 `BluTrain`, P022 `BluTrain_dp16`, and copied to P032
+    `BluTrain_dp16` / `BluTrain_p22`.
+  - D150, P032 own build `3a223eda...` (10-26 14:12) in P032 `BluTrain`: same sources (fingerprints identical), a
+    separate build.
+  - P032 `BluTrain_failed_localsrc`: `b3d5fdfc...` (the mixed tree).
+  - `pt_D150_2026-10-27/BluTrain`, `synagg_2026-10-28/BluTrain` (both boxes) and P022 `pt_D150_2026-10-27/src8k`:
+    `101186e1...`, byte-identical: the pt / synagg runs loaded copies of the build in `src8k`, whose sources are
+    exactly `03d3790`.
+  - ablate 10-16 `src` / `src_v3`: `744c9e4f...`; ablate 10-17 `src_orig`: `be26c431...`.
+- **Programs** `.../build/bluscriptCP_exec`: P022 `BluTrain` and `BluTrain_dp16` 10-26 23:17:04 (copied to P032
+  `BluTrain_dp16` / `BluTrain_p22`); P032 `BluTrain` 10-26 21:55.
+- **Run scripts:** `run_d150*.sh` use `BT=${BT:-$O/BluTrain}` (P022 `run_d150.sh`: `BT=$O/BluTrain`;
+  `run_d150_dp16.sh`: `$O/BluTrain_dp16`); `lc_run.sh` / `lc16_run.sh` / `lc32_run.sh` set no `BT` (they go through
+  `run_d150_v4.sh`, per his reply). So by default the D150 runs load the `d96b991` library; an exported `BT` at launch
+  could override it (only the run logs or his shell history would show that).
+- **Not covered:** the LC-8k arms of 10-24 (`run_lc8k.sh`): no such folder under `/localstorage/adhi_*` on these two
+  boxes. The script comments name another machine, "p15: ~/Adhi/BluTrain".
+- **Consequence for delivering the loss fix:** his run trees are plain copies with no `.git`, so "git pull the latest
+  preproduction-135M" cannot work inside them; he needs a fresh clone (or an updated checkout elsewhere) copied into a
+  new experiment folder, then a rebuild.
+
+#### 12. Eighth round (2026-10-30): has the bug been measured, and which fix option is best (with proof)
+
+**Measured so far:** once, on 2026-09-22, in the old tree (`test_sparse_ce_ignore_index.cu`, case
+`batch_131072_half_dropped`, error 5.008e-01). Not yet on our current branch (`f7aa40f`), whose loss kernels changed on
+10-21. Our branch has no sparse-CE test at all (`Tests/kernel_tests/`), so the first step is to copy the test in and run
+it unchanged.
+
+**Proof for choosing the option: an exact CPU emulation of each option's fp32 addition order**
+(`profiling_reports/loss_sum_fix_2026_10_30/emulate_orders.py`). Every add is one IEEE fp32 round-to-nearest add, the
+same as the GPU's `sdata[tid] += ...`, so bit-identity and error are exact (speed is not; that needs the GPU).
+Inputs: "realistic" = per-row CE ~2.5 with 40% of rows ignored (= 0); "zero_logits" = every row = ln 50,304. Error =
+relative error of the fp32 sum against the exact (fp64) sum of the same fp32 values.
+
+Realistic inputs (zero-logits results in the notes below):
+
+| N | A today | B strided loop (proposed) | same bits as A? | D multi-pass tree | same bits? | C PyTorch-style one block | same bits? | E atomicAdd: distinct results in 8 runs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 255 | 3.3e-08 | 3.3e-08 | yes | 3.3e-08 | yes | 4.1e-08 | NO | 1 |
+| 32,768 | 7.2e-09 | 7.2e-09 | yes | 7.2e-09 | yes | 7.2e-09 | yes | 6 |
+| 65,536 | 1.7e-08 | 1.7e-08 | yes | 1.7e-08 | yes | 6.2e-08 | NO | 5 |
+| 65,537 | 1.9e-05 | 2.5e-08 | - | 5.3e-08 | - | 2.5e-08 | - | 4 |
+| 81,920 | 2.0e-01 | 3.8e-08 | - | 2.5e-08 | - | 2.5e-08 | - | 5 |
+| 131,072 | 5.0e-01 | 8.9e-08 | - | 1.0e-08 | - | 6.8e-08 | - | 7 |
+| 1,048,576 | 9.4e-01 | 3.4e-08 | - | 4.5e-08 | - | 3.4e-08 | - | 7 |
+| 4,194,304 | 9.8e-01 | 4.5e-09 | - | 4.5e-09 | - | 4.5e-09 | - | 8 |
+
+- Zero-logits inputs (all rows equal, the worst case for a sequential sum): B 0 up to 262,144, 1.8e-07 at 1M, 4.4e-07
+  at 4M; D 0 everywhere; C 2.6e-07 already at 32,768 and 2.3e-05 at 4M, and C changes the bits at 257 / 32,768 /
+  65,536.
+- A's error above 65,536 is exactly 1 - 65,536/N (0.2 at 81,920, 0.5 at 131,072): the bug.
+- B and D are bit-identical to today for every N <= 65,536 tested (1, 255, 256, 257, 32,768, 65,536), on both inputs.
+
+**Decision: B (strided loop in `sum_reduction_kernel`).**
+- Same bits as today up to 65,536 rows (proven above), so no existing run's loss changes.
+- Above 65,536: relative error <= 9e-8 on realistic data (about 1-2 fp32 ulp), <= 4.4e-7 in the all-equal worst case at
+  4M rows.
+- Deterministic (fixed order, no atomics), like the rest of the library (Muon deterministic norm `a9bc08c`, segmented
+  embedding).
+- Smallest change: the kernel only; the six launch sites, the grid sizes and the `d_partial` buffer stay; no new
+  allocation, no new launch. Same idiom as `muon_sumsq_finalize_kernel` (`MuonKernels.cu:94-105`) and
+  `grad_norm_cleanup_kernel` (`MultiTensorKernels.cu:154-166`).
+- Expected speed: no measurable change up to 65,536 (each thread still loads one value); above it, stage 2 reads all
+  partials instead of the first 256 (at 1M rows, 4,096 floats = 16 KB in one block). Expectation only: the before /
+  after timing on the GPU is the proof.
+
+**Rejected, with the reason:**
+- D multi-pass tree: equally precise (exact on all-equal values), same bits up to 65,536, but one extra launch and one
+  extra buffer per factor of 256 rows, and changes at all six launch sites. The precision gain over B (at most 4.4e-7 ->
+  0, only for all-equal values at 4M rows) is invisible in a printed loss.
+- C PyTorch-style (one block, threads loop over all rows): changes today's bits even at 255 / 257 / 32,768 / 65,536
+  rows; least precise at large N (each thread adds thousands of values in sequence); one block reads every row (slow at
+  large N).
+- E atomicAdd of the block partials: not deterministic (4-8 different results out of 8 runs).
+- CUB `DeviceReduce`: not emulated (its order is internal to CUB). Correction to part 9: CUB ships with the CUDA
+  toolkit, so it is not an outside dependency; the real costs are a different order (today's bits change) and a
+  temp-storage query + buffer per call.
+- Fusing the sum into the CE forward kernel (no per-row array, no stage 1): saves one launch and 2 x N x 4 bytes of
+  traffic (microseconds next to a CE forward of milliseconds) but changes the bits; it belongs to T2 (fused lm_head +
+  loss), not to this fix.
+
+**Plan (the user runs; I review): before -> fix -> after, then push.** The big-N test cases use vocab 8 (the bug depends
+only on N), so even 1M rows need only 32 MB of logits on the laptop RTX 3060. The zero-logits check therefore uses
+V = 8 (ln 8 = 2.0794415) for large N; V = 50,304 (ln V = 10.825840) only for small N. The trainer-level check (step-0
+loss and a > 65,536-token micro-batch) needs a box GPU and the user's word; the laptop trainer build did not complete
+before.
+
+#### 13. The loss-sum fix, measured (2026-10-30, P022 H200 GPU 6, run by me with the user's go-ahead)
+
+**Setup.** P022 (8x H200, CUDA 13.4, GPUs in Exclusive_Process mode). Two trees under
+`/localstorage/gautam_k/loss_fix_1030/`, both exported with `git archive` from the pushed commits (BluTrain `5c0999c`
+Makefile + Profiler, TI `f7aa40f`, BluBLAS `ea666ab`), so "before" is provably our branch: `before/` unchanged,
+`after/` with the fix in `LossKernels.cu` (md5 `064590b4...` -> `63d1a125...`) and the new test. Each built with
+`make -j224 tensor` (exit 0). Records (logs + sources) are in
+`profiling_reports/loss_sum_fix_2026_10_30/`.
+
+**1. The bug on our current branch (the old test, unchanged, before library):** 136 cases, 0 failures, 2 XFAIL =
+`batch_131072_half_dropped` in both forwards, error 5.008e-01 (the same number as 09-22 on the old tree).
+
+**2. The new test (group H added; before library): 154 cases, 16 failures, all in group H above 65,536 rows**:
+
+| rows | error (both forwards) | 1 - 65,536/N |
+| --- | --- | --- |
+| 65,536 / 65,537 | 1.1e-08 (PASS) | 0 / 1.5e-05 (the 65,537th row is a masked one in this case) |
+| 81,920 | 2.012e-01 | 0.2 |
+| 131,072 | 5.008e-01 | 0.5 |
+| 262,144 | 7.510e-01 | 0.75 |
+| 524,288 | 8.752e-01 | 0.875 |
+| 1,048,576 | 9.377e-01 | 0.9375 |
+
+Equal logits (every row's loss = ln V): sum / B = 2.0794415 = ln 8 at 65,536 rows, 2.0794098 at 65,537, 1.6635532 at
+81,920, 0.1299651 at 1,048,576 (error 0.9375). LOSSBITS: from 65,537 to 1,048,576 rows the printed loss is the SAME
+number, 71202.0156 (`0x478b1102`): every row after 65,536 is ignored.
+
+**3. All approaches on the GPU** (`bench_loss_sum_variants.cu`, H200, 12 rounds x 200 calls per arm, arm order rotating
+each round; A2 = A again = the timing noise). Median us per call, "real" input:
+
+| N | A today | B fix | D multi-pass | G last block | H torch.sum-like | F CUB | C one block | E atomicAdd |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 4,096 | 4.96 | 5.00 | 4.99 | 3.40 | 3.55 | 2.93 | 4.40 | 5.48 |
+| 32,768 | 5.34 | 5.37 | 5.41 | 3.60 | 3.69 | 7.03 | 7.53 | 6.17 |
+| 65,536 | 5.04 | 5.08 | 5.01 | 3.89 | 3.69 | 6.63 | 12.71 | 5.56 |
+| 81,920 | 5.01 (wrong) | 5.24 | 7.43 | 4.20 | 3.72 | 6.59 | 15.27 | 5.41 |
+| 262,144 | 5.35 (wrong) | 5.98 | 7.40 | 5.52 | 4.17 | 5.66 | 43.56 | 5.74 |
+| 1,048,576 | 8.59 (wrong) | 11.23 | 10.75 | 12.96 | 4.77 | 5.76 | 166.8 | 11.22 |
+| 16,777,216 | 79.9 (wrong) | 123.9 | 83.1 | 178.0 | 21.2 | 20.5 | 5,718 | 119.8 |
+
+Null arm A2 vs A: within 0.03 us up to 65,536 rows.
+
+| property | A today | B fix | D | G | H | F CUB | C | E |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| correct above 65,536 | NO | yes | yes | yes | yes | yes | yes | yes |
+| same bits as today up to 65,536 | - | yes | yes | yes | NO (32,768) | NO (32,768, 65,536) | NO (32,768) | NO |
+| same result every run (20 runs) | yes | yes | yes | yes | yes | yes | yes | NO (3-16 results) |
+| worst rel. error above 65,536, real / all-equal | - | 5.1e-8 / 1.3e-6 | 5.5e-8 / 0 | = B | 5.3e-8 / 3.5e-7 | 1.0e-7 / 0 | 5.3e-8 / 1.1e-4 | 5.1e-7 / 7.2e-4 |
+| extra memory | N/256 floats | same as today | + N/65,536 floats | + 4 B counter | 1,060 B | 21.5 KB (CUB temp) | 0 | 0 |
+| new state / risk | - | none | none | shared ticket counter (unsafe for two concurrent calls on one counter) | same as G | temp query + buffer per call | none | non-deterministic |
+| launches | 2 | 2 | 2 + 1 per x256 rows | 1 | 1 | CUB's | 1 | memset + 1 |
+
+Reading: no option wins every column. G / H / F are 1-1.5 us faster per call at typical sizes (one launch instead of
+two) or much faster at 1M+ rows, but H / F change today's numbers and G / H add a shared device counter. D is the most
+precise at huge N but slower at 81,920-262,144. B is the only one that is correct everywhere, bit-identical to today,
+deterministic, with no new memory and no new state, and costs nothing up to 65,536 rows (+0.04 us, within the noise);
+above that it adds 0.2 us at 81,920 and 0.6 us at 262,144 rows (where today's answer is wrong anyway).
+
+**4. The whole forward at production shapes (before library; bf16 logits, V = 49,280, uint16 targets, 40% ignored,
+divided by the count of counted rows as the trainer does; median of 12 rounds x 20 calls):**
+
+| rows | printed mean loss | ms per call (fwd_vec / fwd_stats) |
+| --- | --- | --- |
+| 8,192 | 12.7235 | 0.149 / 0.151 |
+| 32,768 | 12.7243 | 0.549 / 0.556 |
+| 65,536 | 12.7454 | 1.099 / 1.113 |
+| 81,920 | 10.1605 (= 0.80 x the true value) | 1.393 / 1.410 |
+| 131,072 | 6.3362 (= 0.50 x the true value) | 2.290 / 2.382 |
+
+The two reduce kernels (~5 us) are 0.5% of the forward at 65,536 rows and 3% at 8,192; a 0.04 us change cannot show.
+
+**Interruption:** at 19:25 Aparna's 8-GPU A/B job (`/localstorage/Aparna/BluTrain_Eager/logs/diag_ab_1030_1922/`,
+mpirun, one `runner_bluccl` per GPU) took all eight GPUs including our GPU 6. With Exclusive_Process mode our "after"
+test failed to open the GPU ("busy or unavailable") and the sanitizer and the last two timing runs were skipped by the
+free check; nothing of hers was touched. Exclusive mode also means the one timing run that did start had GPU 6 alone.
+The remaining runs (after test, sanitizer, a fresh before/after/after/before timing) are queued on P022
+(`chain2.sh`) to start once GPU 6 has been free for two checks in a row. (The `rc=` values in the runner `.out` files
+are the status of `date`, not of `make`: a script bug; the test logs' SUMMARY lines are the result.)
+
+**5. After the fix (GPU 6 free again from 19:28):**
+- New test on the after library: **154 cases, 0 failures** (`after_v2_groupH.log`). Group H passes in both forwards from
+  65,537 to 1,048,576 rows with error = the noise floor (ratio 1.00; 2.27 at 524,288, inside 2 x floor + 1e-5); equal
+  logits give ln V at every size (1.1e-7 at 1,048,576 rows).
+- **Bit-identity:** LOSSBITS identical before and after, both forwards, at 1 / 255 / 256 / 257 / 32,768 / 65,536 rows
+  (V = 8) and 1 / 255 / 256 / 257 / 4,096 rows (V = 50,304). Every other result line (groups A-G, W, X) identical.
+  Above 65,536 the loss now grows with the rows (before: frozen at 71202.0156; after: 89,134 at 81,920, 1,142,103 at
+  1,048,576).
+- **Compiled code:** of the 113 GPU functions in `LossKernels.o`, 112 have byte-identical SASS; only
+  `sum_reduction_kernel<float,float>` changed (96 -> 272 instructions: the loop, unrolled by the compiler).
+- **Whole forward at production shapes, before / after / after / before** (one process each):
+
+  | rows | loss bits | printed loss before -> after | ms/call before (1, 4) | after (2, 3) |
+  | --- | --- | --- | --- | --- |
+  | 8,192 | same `0x414b937b` | 12.7235 | 0.1488, 0.1484 | 0.1496, 0.1493 |
+  | 32,768 | same `0x414b96e3` | 12.7243 | 0.5493, 0.5541 | 0.5498, 0.5550 |
+  | 65,536 | same `0x414becfe` | 12.7454 | 1.0986, 1.0985 | 1.1001, 1.0985 |
+  | 81,920 | fixed | 10.1605 -> 12.7410 | 1.3852, 1.3870 | 1.3886, 1.3887 |
+  | 131,072 | fixed | 6.3362 -> 12.7354 | 2.3238, 2.2979 | 2.2860, 2.3169 |
+
+  At 8,192 rows "after" reads ~0.85 us (0.6%) slower in both entry points; the same arm repeated varies by 0.4 us, and
+  in one process (the variants benchmark) the changed kernel costs +0.04 us. With 112 of 113 kernels byte-identical,
+  the gap is either process-to-process noise or the reduce kernel; one ABBA cycle across processes cannot decide it
+  (§H53: short ABBAs give false positives). An nsys per-kernel timing of both libraries would; not run (below).
+- **Not done:** `compute-sanitizer` (my sanitizer binary failed to load `libblublas.so`: `libtensor.so` needs it and
+  only `LD_LIBRARY_PATH` provides it, as `make run-cuda` sets) and the nsys per-kernel check.
+- **Collision:** our 19:33-19:35 timing held GPU 6 while Aparna launched `diag_gdb2_1030_1933`; her run aborted with
+  "CUDA-capable device(s) is/are busy or unavailable" (Exclusive_Process mode). All our GPU use on P022 stopped there;
+  further GPU-6 runs need a slot agreed with her.
+
+**Commit preparation (laptop, not committed):** the fix and the test are in `~/Downloads/BluTrain_push/Tensor-Implementations`
+(md5 `63d1a125...` and `4efbaf7d...`, the same bytes that passed). The test is listed in the local-only
+`.git/modules/Tensor-Implementations/info/exclude` (kept out of the 10-27 push), so it needs `git add -f`. The TI working
+tree also has an unrelated change to `test_varlen_attention.cu` that must not go in. Commit message:
+`profiling_reports/loss_sum_fix_2026_10_30/commit_message_TI.txt`. `LossKernels.cu` on `preproduction-135M` is
+byte-identical to ours (`dd6aea6`), so the same commit cherry-picks cleanly there; master's (`05ede91`) differs and
+gets it through PR #111.
+
+#### 14. Ninth round (2026-10-30 evening): GPU 6 agreed with Aparna; sanitizer, real memory, GPU-time of every variant, B replaced by B2
+
+The user asked again: were all fixes tried and measured, or one assumed? Were performance, memory and precision
+measured before and after? Honest account: the first recommendation of B (part 12) came from the CPU emulation only;
+eight approaches were then measured on the H200 (part 13) and B chosen from that table; only B was put into the library
+and through the full tests; memory had only been computed, not measured; the trainer-level check was not done. The
+gaps were closed as follows (P022 GPU 6, after the user agreed it with Aparna).
+
+**Sanitizer, before vs after:** `compute-sanitizer --tool memcheck --leak-check full` on the test binary, with the
+before library (via `LD_LIBRARY_PATH`) and with the after library: 0 access errors in both; the same 5 "leaks" in both
+(39,846,400 bytes in 5 allocations, same sizes and addresses), all from `CachingCUDAAllocator::cuda_alloc` (the
+allocator's pool, kept until exit). The test passes under the sanitizer after (154 / 154); before it shows the 16 bug
+failures.
+
+**Memory, measured (device memory in use after the forward calls, one size per process, production shapes):**
+identical before and after: 1,330.8 MiB (8,192 rows), 6,720.8 (65,536), 8,260.8-8,260.9 (81,920), 12,880.8-12,880.9
+(131,072), over before / after / after / before.
+
+**GPU time per kernel (nsys, the whole forward at production shapes, before / after / after / before):**
+
+| rows | sum_reduction_kernel per launch, before | after (B) | CE forward kernel (identical SASS) |
+| --- | --- | --- | --- |
+| 8,192 | 1.727, 1.722 us | 1.882, 1.889 us | 141.5-146.8 us (run 3 slower: clock noise) |
+| 65,536 | 1.834, 1.835 us | 2.035, 2.035 us | 1,075-1,077 us |
+
+Correction to part 13: B's real GPU cost is +0.16-0.20 us per launch, +0.3-0.4 us per loss call (0.22% of the forward
+at 8,192 rows, 0.04% at 65,536). The "+0.04 us" of the variants benchmark was wall time per call, which is set by the
+CPU launch cost (~2.5 us per launch) and hid the GPU difference. The 0.85 us at 8,192 in the cross-process ABBA was
+mostly noise (the byte-identical CE kernel itself ran 3.7% slower in one run).
+
+**Every variant on GPU time** (`bench_loss_sum_variants_v2.cu` under nsys, one size per capture, 1,280 calls per variant;
+two more versions of B added: B2 = one load while the grid covers n, the loop only otherwise; B3 = B with the loop not
+unrolled). GPU us per loss call (launches per call):
+
+| variant | 8,192 | 65,536 | 262,144 | 1,048,576 | same bits as today up to 65,536 | same result every run |
+| --- | --- | --- | --- | --- | --- | --- |
+| A today | 2.69 (2) | 2.88 (2) | 3.66 wrong | 7.19 wrong | - | yes |
+| B strided | 2.97 (2) | 3.21 (2) | 4.36 (2) | 9.97 (2) | yes | yes |
+| **B2 fast path** | **2.62 (2)** | **2.83 (2)** | **3.83 (2)** | **8.10 (2)** | **yes** | **yes** |
+| B3 no unroll | 2.70 (2) | 2.89 (2) | 4.46 (2) | 10.53 (2) | yes | yes |
+| D multi-pass | 2.69 (2) | 2.88 (2) | 4.89 (3) | 8.56 (3) | yes | yes |
+| G last block | 2.60 (1) | 3.13 (1) | 4.77 (1) | 12.42 (1) | yes | yes |
+| H torch.sum-like | 2.72 (1) | 2.85 (1) | 3.37 (1) | 3.98 (1) | NO (32,768, run 1) | yes |
+| F CUB | 2.24 (2) | 2.32 (2) | 2.42 (2) | 2.90 (2) | NO (65,536) | yes |
+| C one block | 3.79 (1) | 11.87 (1) | 42.7 (1) | 165.9 (1) | NO | yes |
+| E atomicAdd | 1.34 (1) | 1.62 (1) | 3.22 (1) | 8.76 (1) | NO | NO |
+
+Host side (wall time per call, launch-bound, run 1 without nsys): CUB 6.6-7.0 us vs 5.0 for the two-launch kernels at
+32,768-65,536 rows; G / H 3.4-4.2 (one launch).
+
+**Decision: B2.** Same bits as today up to 65,536 rows and as B above; deterministic; no new memory or state; GPU time
+equal to today up to 65,536 rows (B was +0.3 us) and lower than B above (3.83 vs 4.36 at 262,144; 8.10 vs 9.97 at
+1,048,576). Still rejected: F (lowest GPU time, but changes today's numbers and has the highest host cost), H (changes
+today's numbers at some sizes, shared counter), G (shared counter; one launch fewer on the host), E (not deterministic),
+C (slow), D (extra launch above 65,536). B2 code: `const int64_t i0 = blockIdx.x * (int64_t)blockDim.x + tid; stride =
+gridDim.x * blockDim.x; if (stride >= n) { if (i0 < n) v = input[i0]; } else { for (i = i0; i < n; i += stride) v +=
+input[i]; }` -- the first branch is exactly the old load (it even keeps a -0.0f, which B's 0 + x would turn into +0.0f).
+B's library and source are kept in `/localstorage/gautam_k/loss_fix_1030/lib_B_strided/`.
+
+**B2 in the library, full re-test (P022 GPU 6, 20:26-20:44):**
+- Rebuild of the after tree with B2 (`LossKernels.cu` md5 `559d0284...`; B's library kept in `lib_B_strided/`).
+- Test: 154 / 154 pass. LOSSBITS: identical to before at 1 / 255 / 256 / 257 / 32,768 / 65,536 (/ 65,537, masked last
+  row) rows for V = 8 and V = 50,304, both forwards; identical to B above 65,536. Groups A-G, W, X identical to
+  before; group H identical to B.
+- compute-sanitizer: 0 access errors; the same 5 allocator-pool blocks as before.
+- nsys, sum_reduction_kernel per launch (before / B2 / B2 / before): 8,192 rows 1.736 / 1.721 / 1.724 / 1.731 us;
+  65,536 rows 1.843 / 1.852 / 1.850 / 1.842 us. Today's GPU time within noise (B was +0.16-0.20 us).
+- Memory: 1,330.9 / 6,720.8 / 12,880.8-12,880.9 MiB at 8,192 / 65,536 / 131,072 rows, before = after.
+- Production shapes: loss bits unchanged up to 65,536 rows; 131,072 rows 6.3362 -> 12.7354.
+- SASS: of 113 GPU functions in `LossKernels.o`, only `sum_reduction_kernel<float,float>` changed (96 -> 280).
+- The laptop repo now holds B2 (same md5 as the tested file); `loss_sum_fix.diff` and `commit_message_TI.txt` in
+  `profiling_reports/loss_sum_fix_2026_10_30/` updated. Still not done: the trainer-level check (needs the 135M
+  checkpoint and data, on P032).
+
+#### 15. Tenth round (2026-10-30): bfd_split, what we documented, re-checked against today's code, and our dropped chats
+
+The user proposed TRL's `bfd_split` instead of dropping chats longer than T, and asked for everything documented on what
+others do. Documented on 10-14 / 10-15: packing doc `sft_packing_algorithms_bfd_ffd.md` sections 7-8 and 11.2 (sources at
+exact commits), this doc §44.2 and §45.4 (the open points). Re-checked today against the current `main` code:
+
+- **TRL** (`trl/data_utils.py`, main, 2026-10-30): still three strategies. `bfd`: "truncates sequences that exceed
+  `seq_length`, discarding overflow tokens" (`on_seq_length_overflow="truncate"`). `bfd_split`: "splits overflow sequences
+  for packing into other examples. Prevents token loss for pre-training or long documents, but may break conversation
+  structure in SFT datasets" (`on_seq_length_overflow="split"`: `ceil(length / seq_length)` fragments, each packed as
+  its own item). `wrapped`: one stream cut every `seq_length`, boundaries ignored. Same as our 10-14 reading.
+- **Megatron-LM** (`megatron/training/datasets/sft_dataset.py`, main): conversations of one sample are appended in
+  order; on overflow it cuts the tokens to `pack_length` and `break`s, so later conversations are dropped and the
+  crossing one loses its end; nothing is split into another sample. So Megatron cuts, it does not split (the user had
+  assumed it splits).
+- **torchtitan:** drops (10-14 reading). **Ours:** drops, `sft/prepare_sft_data.py:379-380` (`reason = "too_long"`).
+
+**Our dropped chats at T = 4,096, by source** (`meta.json` `drops_by_source` of the 10-28 builds):
+
+| mix | too long | by source |
+| --- | --- | --- |
+| m1 smol (and m3, the same smol part) | 4,091 | LongAlign 3,559 (87%), smol-summarize-5k 522 (13%), openhermes-50k 10 |
+| m2 Tülu | 19,162 | WildChat 18,653 (97%), evol_codealpaca 337, flan_v2 111, personahub_ifdata 38, oasst1 13, wildguardmix 4, table_gpt 3, coconot 2, no_robots 1 |
+
+Reading (to be confirmed by measuring the dropped chats):
+- LongAlign (long document + question -> answer) and smol-summarize (long text -> summary) are long-INPUT tasks: the
+  answer depends on the long part. A TRL-style split puts the document and the answer in different pieces that cannot
+  see each other, so the model would be trained to answer or summarise text it was not shown. For these, the right fix
+  is a longer T (with a long-context base and the long-context support of task T1), or dropping.
+- WildChat is real multi-turn user conversations: a split between turns (keep whole turns, each answer with its end
+  token; earlier turns as untrained context when they fit) keeps every answer intact; TRL's blind cut every T tokens
+  would cut inside turns.
+
+**Options:** (A) TRL-exact `bfd_split` (cut every T tokens); (B) turn-aware split (cut only between turns; nobody does
+it by default; packing doc §7.1 option 6, extended with earlier turns as untrained context); (C) a longer T for
+long-input data; (D) keep dropping. They can be combined per source. **Before choosing:** measure the dropped chats
+(total length, number of turns, prompt vs answer length per turn, longest single turn) per source; then an ablation
+drop vs split, same data, same steps (§45.4).
+
+#### 16. The loss fix in the real SFT trainer (2026-10-30, P022 H200 GPU 6, 21:12-21:28)
+
+**Setup.** On P022 only (the user's rule: we own GPU 6 there, not P032). One trainer binary
+(`bluscript_sft_bin` md5 `7fe8b1e5...`), built from BluTrain `5c0999c` + TI `f7aa40f` + BluBLAS `ea666ab` plus the four
+local, unpushed 135M SFT files (`bluscript_sft.cpp` `d8055bc3`, `SftDataLoader.h` `618c6ebb`, `run_sft.sh`,
+`prepare_sft_data.py`: the same code as the 10-28 / 10-30 135M runs). A first attempt with the pushed files alone
+stopped at load ("the chat ... does not end with the end token": the pushed loader hard-codes 50256; the 135M data uses
+end token 0), so the pushed `dist_side_gautam_lottn` cannot run 135M SFT yet. The binary loads `libtensor.so` at run
+time, so before / after = the same binary with `LD_LIBRARY_PATH` pointing at the before library (`05839bfd...`) or the B2
+library (`61cf46d8...`); each run records the library it loaded (`libs_used.txt`). Model 135M `ckpt_A`; data: the first
+20 packed rows of `m1_smol_A/val` (78 chats, 66,487 trained tokens; train = val = the same rows); numpy reference
+`ref_val_loss.py` = **1.606273** (fp32, every chat alone). Settings = `run_sft.sh`'s (muon, lr 5e-5, bf16, 135M shape,
+`INIT_FROM_RAW`) + `BLU_EMB_BWD=segmented` (no production YAML, as in every SFT run so far); 3 steps, validation every
+step. Records: `profiling_reports/loss_sum_fix_2026_10_30/trainer_runs/`.
+
+| run | library | rows per micro-batch (tokens) | val step 0 / 1 / 2 | grad norm step 0 | peak MiB |
+| --- | --- | --- | --- | --- | --- |
+| r1 | before | 20 (81,920) | **1.300650** / 1.281111 / 1.235052 | 2.331747 | 71,465 |
+| r2 | after (B2) | 20 (81,920) | **1.606812** / 1.582793 / 1.524482 | 2.331774 | 71,465 |
+| r7 | after, repeat | 20 (81,920) | 1.606812 / 1.582705 / 1.524777 | 2.332053 | 71,465 |
+| r4 | before | 10 (40,960) | 1.606812 / 1.582354 / 1.525063 | 2.331898 | 39,299 |
+| r5 | before, repeat | 10 (40,960) | 1.606812 / 1.582496 / 1.524892 | 2.332058 | 39,299 |
+| r3 | after | 10 (40,960) | 1.606812 / 1.582671 / 1.524811 | 2.331777 | 39,299 |
+| r6 | after, repeat | 10 (40,960) | 1.606812 / 1.582733 / 1.524832 | 2.331990 | 39,299 |
+
+- **The fix works in the trainer:** with 81,920 tokens in one micro-batch the before library prints 1.300650 (0.81 of the
+  truth: the rows past 65,536 tokens are missing; the same ratio 0.809-0.810 at steps 1 and 2); the B2 library prints
+  1.606812 = the 40,960-token runs = the numpy reference 1.606273 within bf16 (0.03%).
+- **Gradients were never affected:** step-0 grad norms of r1 (before, 81,920) and r2 (after) are 2.331747 / 2.331774,
+  inside the spread of identical repeats.
+- **The training differences after step 0 are the trainer's own run-to-run variation, not the fix:** the same library
+  twice differs as much as before vs after (before twice: grad norm 2.331898 / 2.332058, step-1 val 1.582354 / 1.582496;
+  after twice: 2.331777 / 2.331990, 1.582671 / 1.582733). The step-0 forward (1.606812) is identical in every run that
+  sums correctly. NEW finding (future task): the SFT step's backward is not bit-deterministic run to run (grad norm
+  varies ~1e-4 relative with segmented embedding); on 10-16 two runs gave the same 4-digit grad norm (0.7935). Find the
+  kernel (candidates: attention backward dQ accumulation, any split-K or atomic reduction).
+- **Memory unchanged:** 71,465 MiB at 81,920 tokens and 39,299 MiB at 40,960, before = after. (0.87 MB per token for
+  the 135M, confirming the part-14 / Q&A-135 estimate of 0.9.)
+
+The loss fix is ready to push. The user's plan: push it together with the 19 local 135M files and the long-chat split
+(part 15) once that is built and tested.
+
+#### 17. The long-chat split: TRL's exact behaviour, our design, the tests, the measurement (2026-10-30 evening)
+
+**TRL `bfd_split`, from its code (`trl/data_utils.py` `_pack_bfd` and `sft_trainer.py` collator, main, 2026-10-30):**
+every per-token column (`input_ids`, `attention_mask`, `completion_mask` / `assistant_masks`) is cut at the same
+places; nothing is inserted at a cut (no end token, no role marker, no template token); every piece gets its own
+`seq_lengths` entry; the collator restarts positions at 0 for every entry and sets the label of each piece's first
+token to -100. So piece 1 ends without an end token, a later piece starts mid-text with no question and no earlier
+answer, and only the last piece has the chat's own end token.
+
+**Our `split_turns` (user's design, 2026-10-30):** one loop over the turns of a chat (turn = the non-assistant
+messages, then the answer(s) after them); every piece starts with the start token and the system messages.
+1. A turn that fits after the previous one stays in the same piece.
+2. A turn that does not fit there but fits a new piece starts a new piece (the cut is between turns); the most recent
+   earlier turns that fit in the context budget go in front of it, untrained.
+3. A turn longer than a piece is cut inside its answer: the piece ends mid-answer (no end token, the answer has not
+   ended); the next piece starts with the prefix, the question, the assistant marker and the latest answer tokens, all
+   untrained (at most `--ctx-frac` of a row, default 0.5), then the answer continues; the next turn joins the same
+   piece when it fits (the user's idea: it sees the end of the previous turn). A second too-long turn is cut the same
+   way.
+4. A turn whose question (with the system messages) does not fit the context budget cannot keep its answer with its
+   question: it and every later turn are left out, the earlier turns are kept (whole chat dropped if it is the first
+   turn). Splitting such a question and training on it was rejected: the pieces holding only question tokens have no
+   trained token (zero loss, zero gradient, only compute), and the piece with the answer would see only the end of the
+   question (the model would learn to answer text it was not shown).
+Every answer token is trained exactly once; pieces are copies of the chat's own ids (never re-tokenized), so every
+piece is valid template text; a piece is "complete" exactly when its last id is an answer's own end token.
+
+**Code (laptop `~/Downloads/BluTrain_push`, not committed):**
+- `sft/prepare_sft_data.py`: `--long-chats drop | split_trl | split_turns` (default drop), `--ctx-frac`; message spans
+  recorded by `tokenize_conversation` / `tokenize_chatml` (ids unchanged); `split_trl`, `split_turns`; `collect` applies
+  the policy (a split chat counts once for skip / num); `write_split` writes `seq_complete.bin` (uint8 per chat in
+  seq_lengths order, split modes only) and applies the end-token checks only to complete pieces; per-source counts
+  in `meta.json` `long_chats`; the part cache and `merge` carry the flags. Split modes need `--pack ffd` and are refused
+  for arm B (`tulu-special-v1`: its pieces would not match arm A's).
+- `sft/SftDataLoader.h`: reads the optional `seq_complete.bin` (0 or 1 per chat), checks the end token only for 1,
+  reports the cut pieces; without the file, unchanged.
+- `sft/ref_val_loss.py --make-subset`: copies the matching slice of `seq_complete.bin`.
+- `sft/test_long_chat_split.py`: the tests below.
+
+**Default unchanged (proof):** old vs new script, smol-smoltalk test split, 400 chats, packed, 135M tokenizer: the five
+data files byte-identical; no `seq_complete.bin`; `meta.json` differs only in the script hash, the time, the new
+`long_chats` section and the `packing.seq_complete: null` note.
+
+**Tests (`test_long_chat_split.py`, real 135M tokenizer, both base templates):** hand-made cases (cut between turns;
+one long answer; a long answer then a short turn, which joins the last piece; two long turns; question too long in
+the first and in a later turn; system prompt too long), then 5,000 random chats per template (T 48-256, ctx 0.3 / 0.5
+/ 0.7). Checked on every piece: at most T slots; starts with the prefix; copies the chat's ids; every answer token of
+the kept turns trained exactly once and in order; every trained token preceded by its true predecessor; every piece
+that trains an answer holds that turn's whole question and marker; complete exactly when it ends with an answer's own
+end token; end tokens trained only there; continuation context within the budget; turns left out only from the first
+whose question does not fit. split_trl: exactly the chat cut every T + 1 ids. Result: ALL PASS (tulu-plain-v1: 857
+cut mid-answer, 309 cut between turns, 2,845 question too long, 437 system too long; chatml-v1: 917 / 349 / 2,786 /
+383). The first chatml run failed: a cut landing exactly on `<|im_end|>` was marked "cut" because ChatML's untrained
+newline after it was still counted as answer; fixed (the answer loop stops at the answer's last trained token, and
+completeness is decided from the piece's actual last id).
+
+**Measurement of the over-long chats** (`profiling_reports/long_chat_split_2026_10_30/measure_long_chats.py`, same
+tokenizer and template as the 10-28 data; 457,324 smol + 765,909 Tülu chats scanned; reproduces the dropped counts
+4,091 and 19,162 exactly). Classes: fit = whole chat fits; turns = a cut between turns is enough; answer = one turn is
+longer than T (cut inside an answer); prompt = a question alone fills the row (measured against T; split_turns uses the
+stricter budget, ctx_frac x T):
+
+| T | fit | turns | answer | prompt |
+| --- | --- | --- | --- | --- |
+| 4,096 | 0 | 11,230 | 2,463 | 9,560 |
+| 8,192 | 10,915 | 5,384 | 854 | 6,100 |
+| 16,384 | 19,538 | 2,012 | 153 | 1,550 |
+| 32,768 | 22,043 | 649 | 23 | 538 |
+| 65,536 | 22,998 | 124 | 1 | 130 |
+
+| source (too long at 4,096) | chats | median / p99 / max tokens | multi-turn |
+| --- | --- | --- | --- |
+| WildChat (Tülu) | 18,653 | 8,012 / 76,081 / 215,158 | 14,713 |
+| LongAlign (smol) | 3,559 | 10,448 / 21,934 / 29,050 | 0 |
+| smol-summarize-5k | 522 | 4,744 / 6,613 / 8,504 | 522 |
+| evol_codealpaca (Tülu) | 337 | 4,895 / 7,069 / 7,248 | 0 |
+| flan_v2 (Tülu) | 111 | 5,233 / 16,895 / 69,902 | 0 |
+| others (8 sources) | 71 | | |
+
+Reading: at 4,096 a cut between turns saves 11,230 chats (WildChat 10,697, every smol-summarize chat); 2,463 need a
+cut inside an answer (WildChat 2,140, evol_codealpaca 259); 9,560 have a question longer than the row (every
+LongAlign chat, WildChat 5,816): no split can keep their answers with their questions, only a longer row. At 32,768
+95% of them fit whole (every LongAlign chat); at 65,536 99%.
+
+#### 18. The split on real data, parallel preparation, the GPU gate, the decisions, the documentation (2026-10-30, 21:52-22:30)
+
+**Real data, all three policies** (`profiling_reports/long_chat_split_2026_10_30/mix_long_sources.json`: smol-smoltalk
+sources LongAlign + smol-summarize-5k + openhermes-50k, Tülu WildChat, all chats, 40 val per part; T 4,096, 135M
+tokenizer, tulu-plain-v1, packed). Training set (unaffected by the bug below):
+
+| | drop | split_trl (TRL) | split_turns (ours) |
+| --- | --- | --- | --- |
+| long chats kept | 0 of 22,744 | 22,738 | 12,768 (9,973 dropped: question longer than the budget) |
+| pieces | - | 54,402 (31,670 cut mid-answer) | 44,970 (408 cut mid-answer) |
+| answer tokens kept from long chats | 0 | 102.5 M (the answers of LongAlign and long prompts without their questions) | 78.6 M, each with its question |
+| ids of the long chats -> in the pieces | - | 277.8 M -> 168.3 M (109.5 M question-only, no trained token, left out) | 132.5 M -> 145.5 M (+9.8% repeated context) |
+| rows (whole set) | 30,520 | 71,594 | 66,039 |
+
+**Bug found by the real-data run, fixed:** with splitting, `collect` stopped at "kept items == num", but an item was a
+piece, so the count jumped past num and never equalled it: the split_turns val set took 124,638 chats instead of 80
+and overlapped train (split_trl's val looked right only because its count landed on 80). Fix: count kept chats. A
+regression test runs `collect` itself (val_num counts chats, val and train never share a chat). The summary line and
+`meta.json` `chats_kept` now count chats ("kept 80 chats (88 items after splitting)").
+
+**Parallel preparation, `--workers N`** (the user asked for it): the per-row work is one function (`_examine`) used by
+the serial loop and by forked worker processes (chunks of 2,000 rows, `Pool.imap` returns them in order,
+`TOKENIZERS_PARALLELISM=false`); the parent applies skip, num and every count in order. Each serial run had used one
+core at 100% (the laptop i7-14700K at up to 5.6 GHz; P022's Xeon 8480+ is 3.8 GHz per core and had load 194, so moving
+the serial job there would have been slower). Result: 20 workers 41.8 s vs about 13 min serial for the long-chat mix;
+all 12 data files of split_turns (train + val) byte-identical to the serial run (`cmp`), `meta.json` differing only in
+the creation time; the test suite checks 4 workers == serial on both split modes.
+
+**Decoded real pieces** (`show_pieces.py`, `decoded_pieces_split_turns.txt`): a 12-piece WildChat chat cut only between
+turns (each piece: the start token, the previous turn as untrained context, new turns trained once with their end
+tokens); an 8-piece chat with two cuts inside an answer (the continuation repeats the question, the assistant marker
+and the last answer lines, then trains from the exact next token; the cut piece ends without an end token). Over the
+whole file: all 408 continuation pieces hold the start token, `<|user|>` and `<|assistant|>` in their context.
+
+**The GPU gate (P022 GPU 6):** a new trainer binary with the `seq_complete.bin` loader (`bluscript_sft_bin_split`
+`09f531c1`), the B2 loss library, the 135M checkpoint, `BLU_EMB_BWD=segmented`; data = 20 rows of the split_turns set
+chosen for split pieces (35 chats / pieces, 5 cut mid-answer, 31,519 trained tokens); numpy reference
+(`ref_val_loss.py`, every piece alone, fp32) **1.779986**. Trainer step-0 val: **1.780719 at 10 rows per micro-batch
+(40,960 tokens) and 1.780719 at 20 rows (81,920 tokens)** (bf16 vs fp32: 0.04%; the loss gate was 0.03%); the loader
+reported the 5 cut pieces; training ran (1.781 -> 1.751 -> 1.681). A first try had used one training step and the
+trainer refused the schedule ("warmup + stable leaves no decay tail"); 3 steps as in the loss check. **Negative checks**
+(each stops at load): a cut piece marked 1 -> "row 5: the chat ending at position 4096 does not end with the end
+token"; a value 2 -> "row 1: seq_complete.bin holds 2 (0 or 1)"; the file removed -> the same end-token stop.
+
+**`run_sft.sh` now sets and passes `BLU_EMB_BWD=segmented`** (the user's rule: SFT uses pretraining's settings; its
+YAML sets `embedding.backward: segmented`; before, every SFT run got the bf16 atomicAdd default), with a header note.
+
+**Decisions (user, 2026-10-30):**
+- Chats whose question alone is longer than the row: option A, a longer row with a long-context checkpoint (industry
+  standard); the other ideas are future research (plan X6): a side file of the dropped chats, keeping only the
+  supporting document parts, cutting the middle, training the document as plain text. A question-only piece adds no
+  loss and no gradient (it only costs compute in the forward and backward).
+- A longer T than the checkpoint was trained at: short chats are fine (positions restart per chat); long chats are out
+  of distribution for the checkpoint and SFT alone extends poorly; order: context extension first, then SFT (plan X7 as
+  a side experiment).
+- Keep the SFT package documents (`sft/README.md`, `sft/docs/`) updated in simple English with every SFT change,
+  including what it means for pretraining and the rest.
+
+**Documents updated today:** `sft/README.md` (what-is-where; §3.1 the 135M tokenizer and templates; §3.2 `--long-chats`;
+§3.3 `--workers`; §4 `seq_complete.bin`; §6.1 the loss-sum fix and its meaning for pretraining; §7 the new tests; §8
+`BLU_EMB_BWD`; §9 limits; new §11 the row length and the checkpoint's context length); `sft/docs/
+sft_packing_algorithms_bfd_ffd.md` (§7.4, new §7.8, §8 note, §8.5) and `sft/docs/loss_calculation_in_pretraining_and_sft.md`
+(new §12b), both mirrored to `work_docs/` (md5 equal); `plan_grid_search_sft.md` (X5 update, X6, X7, Q&A 137-138).
+
+**Known limits written down:** `sft/test_sft_dataloader.cpp` still assumes GPT-2 data (50256) and checks the next-token
+shift across chat boundaries, so it does not fit packed 135M data (to update); `prepare_sft_data.py` still refuses
+T > 4,096 (lifted with the long-context tests); the SFT backward is not bit-identical run to run (kernel not found).
+
+**Gate 2 (22:37-22:50): every case in the trainer.** The first gate's 20 rows turned out to hold 29 case-2 pieces and the
+5 case-3 cut pieces, but no case-3 continuation pieces and no whole chats (my row choice counted any later piece as a
+"continuation"). Gate 2 was built by quota from the split_turns training set, with every split chat's case recomputed
+from the original rows (12,768 split chats: 11,441 kept whole in pieces, 1,327 with later turns left out because a
+question did not fit): 830 whole chats (case 1), 4 case-2 pieces, 4 case-3 cut pieces + 8 case-3 continuation pieces
+(question and answer tail as untrained context, then the trained continuation), 40 pieces of case-4 chats; 39,468
+trained tokens; numpy reference **1.716187**. Trainer step-0 val: **1.717223 at 10 rows (40,960 tokens) and 1.717223 at
+20 rows (81,920 tokens)** (bf16 vs fp32: 0.06%); training ran (1.717 -> 1.658 -> 1.534). The step-0 grad norm on these
+rows is 17.36 (both micro-batch sizes) against 2.14 on gate 1's rows; these rows are mostly short openhermes chats;
+not investigated further. (The first launch was cut by a 60 s ssh timeout on my side; the remote run continued and was
+not relaunched.)
+
+**split_trl vs split_turns, answer tokens in later pieces** (training files): split_trl 60.3 M answer tokens in later
+pieces, 31,644 of its 31,664 later pieces start mid-text (no start token, no role marker, no question); split_turns
+48.1 M, 0 of 32,202 start mid-text.
+
+**Pushed (2026-10-30, by the user):** Tensor-Implementations `dist_side_gautam_lottn` `f7aa40f..6aac3bf` ("loss: count every
+row in sum_reduction_kernel"; 2 files: `LossKernels.cu` + `Tests/kernel_tests/test_sparse_ce_ignore_index.cu`); BluTrain
+`dist_side_gautam_lottn` `5c0999c..334ecbb` ("sft: 135M base support, long-chat split, parallel data prep, BLU_EMB_BWD;
+TI with the loss-sum fix"; 24 files: prepare_sft_data.py, SftDataLoader.h, run_sft.sh, bluscript_sft.cpp,
+hf_to_blutrain.py, blutrain_to_hf.py, ref_val_loss.py, test_long_chat_split.py, README.md, the two docs, 12 mix files,
+the TI pointer). Verified on GitHub: the BluTrain branch points at TI `6aac3bf`, which is on GitHub's TI branch; the
+pushed `LossKernels.cu` and `prepare_sft_data.py` equal the tested files; the Context_Parallelism pointer unchanged
+(`cf1372d`). Kept local on purpose: the component-9 study scripts (`fmt_*`, `build_format_study.py`, `chat_formats.py`,
+`format_init.py`, `p0_protect.py`, `verify_format_study.py`, `init_export.py`), the `test_varlen_attention.cu` change,
+the local Context_Parallelism checkout. Next: `preproduction-135M` (its `LossKernels.cu` equals ours before the fix, so
+the TI commit cherry-picks cleanly; the user decides who does it), and tell Adhitya (his run folders have no `.git`: a
+fresh clone).
+
+**preproduction-135M: deferred (user, 2026-10-30).** Checked first: the TI cherry-pick of `6aac3bf` onto
+`preproduction-135M` (`a9e37e6`) is clean, and bringing `334ecbb` to BluTrain's `preproduction-135M` (`60754ce`) has no
+file conflict, only the TI pointer; the DPO scripts on that branch mention `prepare_sft_data.py` only in comments (they
+have their own tokenization copy), so nothing there depends on the changed files. Decision: finish the remaining
+optimizations on `dist_side_gautam_lottn` first, then push everything to `preproduction-135M` together; the user tells
+Kiruthik. Until then, runs built from `preproduction-135M` keep the old printed loss above 65,536 tokens per loss call
+(no current run reaches that).
+
+### 45.109 2026-10-31: long questions in `split_turns` (case 5), the history context and the hidden-copy rule — the best way, found on all 23,253 long chats (CPU only)
+
+**The question (user, 2026-10-30 night).** `split_turns` (pushed in 334ecbb) left out a turn longer than the row whose
+question does not fit the context budget (half a row), and every later turn. The user: leaving the whole turn out
+"just because it has half the context length" is too strict, the answer is still there; keep at least what fits, then
+"think deeply on other things too, find the best variant among all possible choices, test it; permission for CPU only".
+Then: "those 9k chats too should be saved, at least split" and "with an end token or what?".
+
+**End token (answered first).** No end token is added at a cut: a piece that stops inside an answer ends without one
+(an end token there would teach the model to stop halfway). The real end token stays where the answer really ends, in
+its last piece; `seq_complete.bin` marks the cut pieces (unchanged).
+
+**The two kinds of case 5** (counted in `long_chats.json`, all 23,253 long chats, T = 4,096):
+- 5a: the question is over the budget but fits a row with at least 64 answer tokens after it: 2,072 chats (WildChat
+  1,830, evol_codealpaca 229), questions 2,048-4,031 tokens (median 3,292); 3.68 M answer tokens in that turn, 5.10 M
+  in later turns. Leaving these out was too strict: piece 1 can hold the whole question and the start of the answer.
+- 5b: the question alone is longer than that: 9,662 chats (WildChat 5,907, LongAlign 3,559), questions 4,032-151,769
+  tokens (median 9,239); 6.58 M answer tokens, 9.28 M in later turns; 2.6% of the trained tokens of m1_smol + m2_tulu.
+
+**Where the instruction sits** (`question_layout_samples.txt`, 16 real questions): LongAlign = a document, then the
+question at the very end; WildChat = the instruction at the start ("Please summarize the following paper:", "Optimses mon
+code php :") or at the end ("... pourquoi ?", "[Write as Mauro]"). So a piece must keep both ends of a long question.
+
+**Method.** `tokenize_long_chats.py` tokenized the 23,253 chats exactly as `prepare_sft_data.py` does (280,661,419
+ids, 37 s on 24 processes). `study_case5.py` = one splitter for every variant; with case 5 = drop it gives the pushed
+`split_turns`' pieces for all 23,253 chats (checked in every run). The score, per turn kind:
+- **hidden copies per 1,000 trained tokens**: the answer repeats a phrase of 8 tokens that occurs earlier in the chat
+  (question or earlier turns) but is not in the piece before that point; each one teaches the model to write text it
+  cannot see. Checked again with 4-token phrases (the chunk choice uses 8-token phrases, so 4 is a second look);
+- the share of trained tokens with the whole question in the piece; the mean share of the question in the piece;
+- the question's first / last 32 tokens in the piece (the instruction); cost: tokens in the pieces, jumps per piece.
+Reference levels: the pushed split itself has **25.6** on case-2 turns and **33.6** on case 3 (later turns that refer
+to earlier turns which no longer fit); TRL bfd_split 34.0 / 48.9 / 103.6 (5a) / 73.8 (5b) / 78.5 (later turns).
+
+**Stage 1 (19 variants).** 5a (hidden per 1k): keep piece 1 only 6.6 (half the answer); the whole question repeated
+5.3 (5.4 tokens per trained token); end of the question 26.9; first and last halves 48.8; chosen chunks 13.8. 5b:
+chosen chunks 15.3 (LongAlign 1.4), halves 52.7, end 63.8. Later turns after a case-5 turn: about 70 for every layout
+(14.27 M tokens): they cannot see the huge first message. A finding about the pushed split: its case-2 turns are at 25.6.
+
+**Stage 2 (14 variants, 8 and 4-token phrases).** History selection for a turn that starts a piece (chunks of the
+earlier turns that share the most phrases with its answer): case-2 turns 25.6 -> 10.4 (4-token: 58.3 -> 35.5), later
+turns after case 5: 66 -> 41; cost +37.7 M tokens over all long chats (whole-turn context leaves room unused). "Fill"
+(more context when the rest of the answer is short): small gain (5b 15.3 -> 13.3) for +23% tokens on case-5 chats: not
+taken.
+
+**Stage 3 (instruction kept).** Chosen chunks alone keep the question's start in only 22% of 5b pieces (55% in 5a):
+the instruction can be lost. Keeping the first 64 and last 192 tokens always + chunks in between: 100% kept, hidden
+17.4 (5a) / 17.6 (5b) (4-token: 23.1 / 50.7), still below the pushed split's own level. History selection capped at a
+quarter row: case 2 17.8, case 3 31.7, and 136.2 M tokens over all long chats, LESS than the pushed rule (146.1 M).
+
+**Stage 4 (per-turn rule).** The hidden copies sit in few turns. Leaving out a turn with more than 100 hidden copies
+per 1k: whole 74.17 of 77.53 M kept at 10.7; case 3 1.34 of 1.46 M at 9.3; 5a 3.42 of 3.67 M at 5.7; 5b 6.17 of 6.52 M
+at 8.4; later turns after case 5 12.01 of 14.27 M at 20.4. Every kind below the pushed split's level; 97.1 of 103.5 M
+tokens kept (6.1% left out); 4,928 turns.
+
+**Decision (the best of all measured):** case 5 kept (5a: piece 1 = whole question + answer start, then pieces with
+the question's first 64 + chosen chunks + last 192 tokens + assistant marker + a quarter-room answer tail; 5b: every
+piece like that); the history context chosen by the answer (all earlier turns if they fit, else up to a quarter row:
+the last tokens before the turn + chosen chunks); the per-turn hidden-copy rule at 100. Not taken: the whole question
+repeated (5.4 tokens per trained token, and 5b impossible), fill, half-row history (+37.7 M tokens for 17.8 -> 10.4).
+
+**Implemented** in `sft/prepare_sft_data.py` (BluTrain working tree, not pushed):
+- `chat_turns` (the turn grouping, now also marker lengths and answer ends), `ngram_hash`, `split_turns(...,
+  marker_len, long_questions, history)` with inner `chunks`, `question_ctx`, `history_ctx`, `new_piece_ctx`;
+  `drop_hidden_turns(ids, mask, spans, pieces, trace, max_hidden)`;
+- constants `SPLIT_N` 8, `SPLIT_CHUNK` 256, `SPLIT_Q_HEAD` 64, `SPLIT_Q_END` 192, `SPLIT_TAIL_SHARE` 0.25,
+  `SPLIT_MIN_TAIL` 64, `SPLIT_MIN_FIRST` 64, `SPLIT_HIST_FRAC` 0.25, `SPLIT_HIST_END` 512, `SPLIT_MAX_HIDDEN` 100;
+- CLI `--long-questions keep|keep_fitting|drop` (default keep), `--history select|turns` (default select),
+  `--max-hidden` (default 100; negative = off); `meta.json` `long_chats.split_turns` records every setting; the
+  part-cache key includes them; the summary line counts turns left out by the rule;
+- guards for tiny rows only (found by the random tests at T = 96, budget 48): a case-5 piece always keeps at least
+  the first and last question token (the answer tail leaves 2 tokens of room), and a case-5 turn is left out when the
+  budget cannot hold both markers + 3 tokens. Real data never reaches these (room about 2,040 tokens): checked, the
+  23,253-chat results are unchanged.
+
+**Checks (all pass):**
+- all 23,253 chats: new `split_turns(drop, turns)` == pushed `split_turns`; new defaults == the study's chosen
+  layout; `drop_hidden_turns(100)` keeps exactly the stage-4 numbers (`check_production.log`);
+- the 10-28 long-chat mix with `--long-questions drop --history turns --max-hidden -1`: all 12 data files (train and
+  val inputs, labels, valid_counts, seq_lengths, seq_offsets, seq_complete) byte-identical to the 10-30 `split_turns_v2`;
+- `sft/test_long_chat_split.py --cases 5000`: hand-made cases (5a, 5b, `keep_fitting`, history selection picks the
+  chunk the answer copies, the hidden-copy rule both ways) + 5,000 random chats per template (tulu-plain-v1,
+  chatml-v1) with random `--long-questions`, `--history` and thresholds; new rules: chat order, a case-5 piece holds
+  the user marker, the question's first and last token and the assistant marker, the context budget, whole turns
+  in or out under the rule; `--self-test` passes with both tokenizers.
+
+**On the 10-28 long-chat mix** (train, 20 workers, 62.6 s): 22,630 of 22,744 long chats used (10-30: 12,768) as
+62,780 pieces (44,970), 4,210 cut inside an answer (408), **96.27 M answer tokens (78.64 M, +22%)**, 197.95 M tokens
+in the pieces (145.52 M); 4,889 turns and 108 whole chats left out by the rule. Tokens per trained answer token 2.06
+(10-30: 1.85; TRL's split 1.64 but with 3-10x the hidden copies). Val: 6 long chats as 20 pieces.
+
+**Records:** `profiling_reports/long_prompt_variants_2026_10_31/` (README.md lists every file). Data:
+`~/Downloads/sft135/data_split_test/split_turns_v3` (new defaults), `split_turns_pushedflags` (old flags).
+
+**Open:** a GPU gate on the new files (step-0 val loss = numpy reference; needs the user's yes, P022 GPU 6); an eval
+A/B of `--long-questions keep` vs `drop` (needs the eval setup); push (the user commits and pushes).
+
+### 45.110 2026-10-31: the user's simpler split (drop only when the prompt fills the row, otherwise bfd_split style), measured (CPU only)
+
+**The user's points** (plan file Q&A 142-146): repeating the question in front of the rest of a cut answer is
+confusing (a jump from the assistant marker into the middle of the answer); a long answer should be cut like TRL's
+bfd_split (nothing repeated); cut between turns when the row ends inside a later turn; drop a chat only when its prompt
+fills the whole row; bigger context is the permanent fix; the preparation summary must say how many chats fit, were
+split, were dropped, and how many multi-turn chats were cut into separate pieces.
+
+**Facts checked.** The system message is never trained; case 0 (system message >= half a row) hits 0 of the 23,253
+long chats. A piece with no trained token adds zero gradient (no loss terms; in a packed row each chat attends only to
+itself). The end token is the same in bfd_split and split_turns (trained once in the last piece; none added at a cut).
+In split_turns' pieces the repeated question and answer end are untrained, so no answer token is trained twice and none
+is trained without its true previous token. The row length is not hard-coded: `--seq-len` (prep) writes meta.json "T";
+the trainer's `BLU_SFT_T` must match it (the data loader checks).
+
+**The simple split measured** (`study_simple.py`, the same 23,253 long chats and scores as section 45.109; checked by
+`check_simple.py` on every chat: each answer token of a kept turn trained exactly once after its true predecessor).
+Per turn: fits the open piece -> stays; fits a row -> cut between turns (context in front: "none" or the 10-30 rule
+"whole" = latest whole turns in half a row); longer than a row -> first piece = start + system + question + answer
+start, then the rest of the answer in consecutive pieces with only the one id before the cut in front (untrained);
+later turns go on in the last piece; the start + system + question leave no room for one answer token -> the turn and
+every later turn are left out.
+
+| split | chats used | answer tokens trained | tokens in pieces | per trained | hidden per 1k (all) |
+|---|---|---|---|---|---|
+| 10-30 pushed | 12,847 | 78.99 M | 146.1 M | 1.85 | 25.7 |
+| simple, nothing in front | 14,702 | 87.65 M | 125.0 M | 1.43 | 41.3 |
+| simple, earlier whole turns in front | 14,702 | 87.65 M | 165.5 M | 1.89 | 31.6 |
+| 10-31 current (no rule / rule 100) | 23,253 | 103.45 / 97.11 M | 211.1 M | 2.04 | 22.5 / 11.6 |
+| TRL bfd_split | 23,253 | 103.43 M | 170.2 M | 1.65 | 45.3 |
+
+Per kind (simple, whole turns in front): whole turns 25.5, case 3 45.9, 5a 99.8 (3.67 M), turns after a 5a turn 71.1
+(4.88 M). With the hidden-copy rule at 100: nothing in front 77.22 M at 14.2; whole turns 80.19 M at 12.2.
+
+Outcome per chat (simple split): cut between turns only 11,230 (all multi-turn); a turn cut bfd_split style 2,423
+(1,333 single-turn, 1,090 multi-turn); turns kept before a prompt that fills the row 1,049; dropped whole 8,551
+(6,671 single-turn, 1,880 multi-turn; all 3,559 LongAlign, 4,807 of 18,653 WildChat, 185 of 1,041 other).
+
+Turns that start a new piece after a cut between turns: 24,168; 4,572 with a question of <= 20 tokens (real examples
+in `short_starter_examples.txt`: "yes please I need further sections to be translated", "满意"). Hidden copies per 1k:
+91.9 with nothing in front, 55.0 with the earlier whole turns.
+
+Bigger rows (simple split, the same chats): 8,192: 10,915 fit, 5,489 dropped, 95.00 M of 103.45 M kept; 16,384:
+19,538 fit, 1,347 dropped, 100.30 M; 32,768: 22,043 fit, 456 dropped, 102.36 M; 65,536: 95 dropped, 103.18 M.
+
+**Proposed** (waiting for the user's choices): the simple split with the earlier whole turns in front of a turn that
+starts a new piece, the one-id overlap at a cut, the drop only when the prompt fills the row; the hidden-copy rule
+on or off; the preparation summary by outcome and single / multi-turn. Records:
+`profiling_reports/long_prompt_variants_2026_10_31/` (`study_simple.py`, `check_simple.py`, `results_simple.json`,
+`summary_simple.md`, `simple_by_row_length.txt`, `short_starter_examples.txt`).
+
+### 45.111 2026-10-31: DECIDED — long chats stay dropped (`--long-chats drop`); the 10-31 split code undone
+
+**The user's decision:** a multi-turn chat cannot be cut into single turns (every turn needs the turns before it), and
+bfd_split works against what SFT must teach; so every chat longer than the row is dropped, as before and as torchtitan
+does, and the permanent fix is a bigger context length. If ever needed later: exactly bfd_split plus the two extras
+(drop when the prompt fills the row; cut between turns with the earlier turns in front), nothing else.
+**Corrected by the user the same day (45.112): the future option is only TRL's `bfd_split` with the prompt-only pieces
+left out, nothing more.**
+
+**Done:** the four BluTrain files changed on 10-31 (`sft/prepare_sft_data.py`, `sft/test_long_chat_split.py`,
+`sft/README.md`, `sft/docs/sft_packing_algorithms_bfd_ffd.md`) are again byte-identical to the pushed 334ecbb (md5
+checked); the work_docs mirror of the packing doc equals the master again. The 10-31 changes are kept as
+`profiling_reports/long_prompt_variants_2026_10_31/split_turns_1031_not_used.patch` (re-applies cleanly on 334ecbb).
+Nothing to push. The pushed options `--long-chats split_trl` and `split_turns` (10-30) stay in the code, off by
+default. Not needed any more: the GPU gate on `split_turns_v3` and the keep-vs-drop eval A/B; the test data folders
+`~/Downloads/sft135/data_split_test/split_turns_v3` and `split_turns_pushedflags` are unused.
+
+**Checked facts:** torchtitan drops long samples ("avoiding training on truncated responses",
+`torchtitan/hf_datasets/text_datasets.py:145-147, 210-217`); Megatron-LM SFT does not drop, it cuts the end of an
+overflowing row (`megatron/training/datasets/sft_dataset.py:163-172`). What drop costs on the 10-28 long-chat test mix
+(`mix_long_sources.json`): 22,744 chats left out, holding about 102 M answer tokens, next to 132,316 kept chats with
+90.7 M. Bigger rows bring them back: of the 23,253 chats that are long at 4,096, 10,915 fit at 8,192, 19,538 at
+16,384, 22,043 at 32,768 (prep `--seq-len N` + trainer `BLU_SFT_T=N`; the data loader refuses a mismatch).
+**Correction:** `prepare_sft_data.py` still refuses T > 4,096 (RoPE cache + attention limits, sft/README.md section 9);
+the long-context work lifts it, so 8,192 data cannot be made yet.
+
+### 45.112 2026-10-31: the split removed from `dist_side_gautam_lottn` — drop is the only method; the whole story documented in the repo
+
+**The user's request:** the pushed branch (BluTrain 334ecbb, 2026-10-30) has the long-chat split. Undo it: only one
+method, drop every chat longer than the context, no option, no default, no second algorithm; push again. Document in
+the repo everything we tested, researched, thought and decided; if a split is ever needed, only TRL's `bfd_split` with
+the prompt-only full pieces left out, nothing more.
+
+**Checked first:** the remote branch head = local = 334ecbb. 334ecbb also holds the 135M support, `--mix`,
+`--part-cache`, `--workers`, `BLU_EMB_BWD` and the TI loss fix, so the commit cannot simply be reverted; only the split
+parts were taken out.
+
+**Removed (BluTrain working tree, 4 files changed + 1 deleted):**
+- `sft/prepare_sft_data.py` (-262 / +37): `--long-chats`, `--ctx-frac`, `LONG_CHATS`, `split_trl`, `split_turns`, the
+  message `spans` of `tokenize_conversation` / `tokenize_chatml`, the pieces / `complete` / `split` bookkeeping in
+  `_examine`, `collect`, `cached_collect`, `merge`, `write_split` (`seq_complete.bin`, `meta.json` `long_chats`, the
+  split summary line), the split checks in `main`; the end-token checks are strict again (every chat ends with its end
+  token). `_examine` returns (src, reason, rid, ids, mask); the length rule is `reason = "too_long"`.
+- `sft/SftDataLoader.h`: the optional `seq_complete.bin` (the diff against 5c0999c is now only the 135M `end_id`).
+- `sft/ref_val_loss.py`: the `seq_complete.bin` copy in `--make-subset`.
+- `sft/test_long_chat_split.py`: deleted (all its tests were about the split).
+- Docs: `sft/README.md` (section 0 rows, step 6, the files table, new section 3.2 "Chats longer than the row are
+  dropped", section 3.3 note, section 4 bullet, section 7 rows, section 9, section 11 wording);
+  `sft/docs/sft_packing_algorithms_bfd_ffd.md` new section 7.8 (the decision, the user's reasoning, the only future
+  option, the timeline 10-14 to 10-31, every measured number, the facts checked, the removal and its proof), and the
+  lines in 7.4, 7.7, 8 and 8.5; mirrored to work_docs (equal).
+
+**Proof (CPU, laptop):** the pushed script (`git show HEAD:sft/prepare_sft_data.py`, drop mode) vs the new one on the
+same data, 135M tokenizer, `--pack ffd`: the long-source mix with 20 workers (132,316 train + 80 val chats, 22,744 + 6
+too long; 36 s each) and a 6,000 + 80 chat mix (num 3,000 per part) in tulu-plain-v1 and chatml-v1: `inputs.bin`,
+`labels.bin`, `valid_counts.bin`, `seq_lengths.bin`, `seq_offsets.bin` byte-identical in train and val, 5/5 every
+pair; new with 1 worker == new with 8 workers; `meta.json` differs only in `long_chats` and `packing.seq_complete`
+(removed) besides the script hash and time. `--self-test` passes for GPT-2 and the 135M tulu-plain-v1, chatml-v1 and
+tulu-special-v1. The loader header compiles (`g++ -fsyntax-only`, CUDA 13.0 headers), as the pushed one does.
+`git grep` finds no other reference. Records: `profiling_reports/long_prompt_variants_2026_10_31/drop_only_check/`
+(logs, `drop_check_compare.txt`, `blutrain_drop_only.diff`, `md5_new_files.txt`).
+
+**Not changed:** the T <= 4,096 limit of `prepare_sft_data.py` (a separate long-context task); the trainer
+(`bluscript_sft.cpp` never used the split); the local Context_Parallelism checkout and the TI submodule state (not to
+be committed). Next: the user commits and pushes BluTrain `dist_side_gautam_lottn` (the 5 sft paths only).
+
+**Addendum (2026-10-31, same day, plan Q&A 149):** the reasoning, what was built and measured, and the only future
+split (exactly TRL's bfd_split with prompt-only pieces left out) with three examples are now a comment block at the
+length rule in `_examine()` of `sft/prepare_sft_data.py`; the module docstring points to it; the same examples are a
+table in the packing doc section 7.8.2 (mirrored). The data files are still byte-identical to the pushed drop mode (the
+small tulu-plain-v1 mix, 10/10 files); `--self-test` passes. The user wants the push only after every long length
+(16k-128k) works: the long-context tests (task T1) come first.
+
+**Addendum 2 (2026-10-31, plan Q&A 150): the future rule corrected; the hard-coded row length removed; the prep at
+16k-128k.**
+- Future split rule (code comment, packing doc 7.8.2, README 3.2): TRL's bfd_split exactly, plus one rule: a chat that
+  has a question-only block (no trained token in it) is dropped WHOLE, single-turn and multi-turn alike; a chat without
+  one is split by bfd_split as it is. (334ecbb's split_trl dropped only those blocks and kept the rest.)
+- What went wrong before, recorded: on 10-28 the 8,192 kernel benchmarks used rows repacked from 4,096 data
+  (`repack_rows.py`) because `prepare_sft_data.py` refused T > 4,096, and the limit was neither lifted nor reported;
+  on 10-31 I first said `--seq-len` was free. The user's rule: when the context length changes, even for
+  measurements or benchmarks, every hard-coded limit along the pipeline changes with it, and the real pipeline runs
+  at that length.
+- Fixed: `prepare_sft_data.py` accepts multiples of 256 up to 131,072; the `meta.json` length histogram gets a bin per
+  doubling up to T (it stopped at 4,096, so longer chats were missing from it); the self-test also packs at 131,072;
+  `run_sft.sh` reads T from the data's `meta.json` and stops on a different SFT_T or on train / val made with
+  different T. The trainer already takes `BLU_SFT_T` (RoPE cache length = T) and its data loader checks the files' T.
+- Prep at long T (CPU, long-source mix, 20 workers, `profiling_reports/long_prompt_variants_2026_10_31/prep_long_T/`,
+  data in `~/Downloads/sft135/data_long_T/T*`):
+
+  | T | chats kept | too long | rows | chats per row (mean / max) | trained tokens | longest chat |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 4,096 | 132,316 | 22,744 | 30,520 | 4.34 / 163 | 90.7 M | 4,096 |
+  | 8,192 | 142,746 | 12,314 | 22,580 | 6.32 / 327 | 126.7 M | 8,192 |
+  | 16,384 | 151,347 | 3,713 | 17,080 | 8.86 / 604 | 158.6 M | 16,384 |
+  | 32,768 | 153,851 | 1,209 | 10,238 | 15.03 / 1,226 | 179.3 M | 32,756 |
+  | 65,536 | 154,806 | 254 | 5,768 | 26.84 / 1,608 | 189.9 M | 65,507 |
+  | 131,072 | 155,025 | 35 | 3,033 | 51.11 / 2,647 | 192.9 M | 130,533 |
+
+  Every writer check passes at every T (ids, labels, every chat ends with its end token, packing). The too-long counts
+  equal the 10-30 length measurement exactly (the same four sources of `chats.pkl`: 22,744 / 12,314 / 3,713 / 1,209 /
+  254 / 35). T = 4,096 is byte-identical to the pushed script's output (10/10 files).
+- Next, in the user's order: the standalone kernels at 16,384-131,072 (correctness and precision, then benchmarks
+  against the rivals, on these real rows), then the 135M model. Waiting for the GPU go-ahead.
+
+
+### 45.113 2026-10-31: long context (16k-128k), step 1 — the new box, and the code read of the SFT path
+
+**Box:** 4x H200 root@95.133.253.118 (P022 / P032 not available); my ssh is blocked by the permission check, so the
+user runs every box command. Bundle `~/Downloads/lc_box` (PROVENANCE.txt): `sync_to_box.sh` done (checksums match:
+prepare_sft_data.py 50b1ce77, test_varlen_attention.cu d75095b8); `scripts/lc_setup.sh` started 2026-10-31 (PID
+792622): our library, trainer, `bin/tva`, `bin/bench_ce`, `libropeours.so`, and the rivals' envs benv / lossenv /
+rivalenv at the 10-21 / 10-28 versions. GPU 0 was busy with someone's job (97.8 GB).
+
+**Code read (CPU), what grows with T on the SFT path:**
+- Attention (`GQA_fwd_sm90.cu`, `GQA_bwd_vj2_sm90.cu`, `GQA_fwd_generic.cu` plan): row indices are
+  `(b * H + h) * S + t` in int = rows x heads (131,072 tokens x 18 heads = 2.4 M), element offsets up to ~3e8: below
+  2^31 for 131,072 tokens per call at 18/6 and 4/2. The L2-section sizes use long long. The design-A plan grows
+  linearly with the chat length (one entry per 64/128-token tile per head), no 16-bit fields. No T limit found.
+- **RoPE table (`RoPEKernels.cu` `rope_build_cache_cuda`, used by the trainer at init): BUG for T >= 65,536.** The
+  launch puts the position in grid y (`dim3 grid(..., seq_len)`); CUDA allows at most 65,535 there, and there is no
+  error check. At T = 65,536 or 131,072 the kernel does not launch, the table keeps whatever the memory held, and RoPE
+  is silently wrong for EVERY position. The fused QK-norm + RoPE kernel the trainer uses is fine (grid = T chunks x
+  heads x batch; table rows read with long offsets). The same grid-y = T pattern is in three kernels NOT on the SFT
+  path: the sequential `rope_kernel`, the LeRoPE table builder, and `rope_alpha_backward_kernel`.
+- RoPE precision: the library is built with `--use_fast_math`, so the table's `cosf` / `sinf` are the fast
+  intrinsics, whose error grows with the angle (position x frequency reaches ~131,000 rad at 128k). The angle itself
+  is fp32 (as HF's). To be measured on the GPU against fp64 and against HF's formula.
+- Loss: fixed and tested past 65,536 rows per call on 10-30. Embedding, norms, MLP: per token (81,920 tokens per
+  micro-batch ran in the trainer on 10-30).
+- Attention test harness (`test_varlen_attention.cu`): refuses `VARLEN_BENCH_T` above 32,768 (rows per call =
+  32768 / T); its real rows are short stage-0 chats repacked into T-token rows; its fp64 reference holds the score
+  matrix of a kv-head group in memory (G x L x L doubles: at 65,536 with 18/6 heads ~100 GB per matrix), so 65,536
+  and 131,072 need a reference computed in blocks of query rows, and fewer heads for the slow fp64 reference at
+  128k (as G12 used 2/1 at 16,384).
+
+**Step 1 continued (2026-10-31, 13:00-13:20 IST).**
+- The user gave permission to run on any free GPU except GPU 0 and to keep monitoring; my ssh then worked (read-only
+  first). The first setup stopped itself: the box's only disk (200 GB) had 5.2 GB free (colleagues' folders ~118 GB,
+  root's caches 22 GB, of which the Hugging Face cache 19 GB; nothing of ours to delete). Restarted as
+  `OURS_ONLY=1` (our library, trainer and test binaries, ~1 GB; 16 build jobs; a disk watch stops everything below 2 GB
+  free); the rivals' envs (~20 GB) need disk first. LIB build OK 13:12 (libtensor a2c96165, LossKernels.cu 559d0284,
+  GQA_fwd_sm90.cu 7e4197ea; nvcc 13.4).
+- **Harness (`test_varlen_attention.cu`, laptop + box, md5 cd02b34d), changed for 16k-128k:** `VARLEN_BENCH_T` up to
+  131,072 (rows per call = max(1, 32768 / T)); `VARLEN_REAL_DIR` = real packed rows of a prepare_sft_data.py split at
+  that T (BENCH: first / middle / last / the longest chat's rows; G14: the same plus the row with the longest chat);
+  a blocked fp64 reference (`ref_segment_blocked`: query rows in blocks, only the keys a block can see, cuBLAS fp64 /
+  fp32-pedantic GEMMs, dK / dV summed over blocks and rounded once) for segments longer than 16,384 (older tests keep
+  their exact reference); `VARLEN_ONLY=GREF` checks it against `ref_segment` (block heights 1 / 64 / 1000 / all;
+  truth <= 1e-12 relative, floor <= 1e-2).
+- **RoPE table fix prepared (laptop TI working tree, NOT in the box library):** `rope_build_cache_kernel` loops over
+  positions (`pos += gridDim.y`, grid y = min(T, 65,535)) and the launch is checked (throws). Each entry is computed
+  exactly as before, so tables up to 65,535 rows are bit-identical. `tests/test_rope_cache_long.cu -DWITH_FIXED`
+  builds the library's table and the fixed one in one program: NaN-filled buffers, launch status, error vs fp64 and vs
+  HF's fp32 formula per position band, and fixed == library wherever the library built.
+- **Queue** `tests/run_long_checks.sh` (box): builds `tva` and the RoPE test, then runs rope_cache, GREF, and G14 at
+  8,192 / 16,384 / 32,768 / 65,536 / 131,072 on real rows, heads 4/2 and 18/6, each job on whichever of GPUs 1-3 has
+  no process right before it starts (never GPU 0); results in `/root/gautam_k/lc/checks/`.
+
+**Step 2 results (2026-10-31, 13:15-13:25 IST, GPUs 1-3; records `profiling_reports/long_context_kernels_2026_10_31/`).**
+- **RoPE table:** the library's builder is NOT built at 65,536 and 131,072 rows (launch "invalid argument"; the
+  NaN-filled buffer stays NaN; in the trainer the table would hold old memory). The fixed builder builds every length
+  and equals the library bit for bit at 4,096-65,535 rows (8,388,480 of 8,388,480 entries at 65,535). Table error vs
+  exact (theta 50,000, max |cos/sin error| per band [0,4k) [4k,16k) [16k,64k) [64k,128k)): ours (fast-math cosf /
+  sinf, fp32 angle) 5.7e-4 / 2.3e-3 / 9.7e-3 / 1.9e-2; Hugging Face's fp32 formula 2.7e-4 / 1.1e-3 / 4.3e-3 / 8.9e-3
+  (theta 10,000: ours 7.0e-4 ... 2.4e-2, HF 2.4e-4 ... 7.7e-3). A table computed in double would be exact to fp32
+  rounding (~1e-7) at every position.
+- **GREF:** the blocked fp64 reference equals ref_segment, 14/14 (truth <= 8.4e-15 relative; floor <= 2.6e-3).
+- **Attention G14 on real rows at every length** (worst ratio = error / bound, 1.0 = the 2 x floor bound):
+
+  | T | heads | passed / failed | longest real chat | worst O / LSE / dQ / dK / dV | packed vs alone |
+  | --- | --- | --- | --- | --- | --- |
+  | 8,192 | 4/2 | 78 / 0 | 8,192 | 0.45 / 0.00 / 0.72 / 0.60 / 0.72 | bit-identical |
+  | 8,192 | 18/6 | 78 / 0 | 8,192 | 0.50 / 0.00 / 0.57 / 0.58 / 0.84 | bit-identical |
+  | 16,384 | 4/2 | 76 / 0 | 16,384 | 0.50 / 0.00 / 0.56 / 0.71 / 0.72 | bit-identical |
+  | 16,384 | 18/6 | 76 / 0 | 16,384 | 0.50 / 0.00 / 0.60 / 0.67 / 0.66 | bit-identical |
+  | 32,768 | 4/2 | 77 / 1 | 32,756 | 0.60 / 0.00 / 0.71 / 0.84 / 1.17 | bit-identical |
+  | 32,768 | 18/6 | 78 / 0 | 32,756 | 0.50 / 0.00 / 0.63 / 0.74 / 0.99 | bit-identical |
+  | 65,536 | 4/2 | 77 / 0 | 65,507 | 0.61 / 0.00 / 0.97 / 0.77 / 0.93 | bit-identical |
+  | 65,536 | 18/6 | 77 / 0 | 65,507 | 0.46 / 0.00 / 0.71 / 0.73 / 0.91 | bit-identical |
+  | 131,072 | 4/2 | 77 / 0 | 130,533 | 0.58 / 0.00 / 0.82 / 0.77 / 0.87 | bit-identical |
+  | 131,072 | 18/6 | 77 / 0 | 130,533 | 0.50 / 0.00 / 0.94 / 0.86 / 0.94 | bit-identical |
+
+  The one failure (32,768, 4/2): dV of a 124-token chat (row 0 @13072, one of 268 chats), ratio 1.169 = the known
+  mechanism of the kKnown dV entries (Vj1d / Vj2 round each query head's dV partial to bf16 before the fixed-order
+  head sum, the price of bit-identical dK/dV; recorded up to 1.171 on 10-10, kept by the user's decision); the chat
+  alone gives the same bits, so it is not a long-row effect. The longest real chats themselves (130,533 tokens) pass
+  with O 0.34 and dK 0.41 of the bound; no non-finite or unwritten values anywhere. Run times 5-533 s per job.
+- Open (the user's decisions): put the RoPE table fix into the library (bit-identical below 65,536); compute the table
+  in double (more exact; changes the table below 4,096 by up to 5.7e-4); disk for the rivals' envs (~20 GB) before the
+  benchmarks; then the 135M trainer at 16k-128k.
+
+### 45.114 2026-10-31: the RoPE table bug vs the loss bug, what the other libraries do, and --use_fast_math (research, no change yet)
+
+**Same class as the loss bug.** Both are a launch shape that assumes the size fits, with no check and a silent wrong
+result: the loss summed its rows with ONE 256-thread block (rows past 65,536 were dropped; fixed 10-30 with a strided
+loop), the RoPE table puts every position in grid y (CUDA's limit 65,535; the launch fails, nothing checks it, the
+table is never written). Same fix: a loop (`pos += gridDim.y`) plus a launch check.
+
+**Other launches with the same 65,535 limit** (grid y = T): `RoPEKernels.cu:249` (LeRoPE alpha backward) and `:391`
+(sequential `rope_kernel`), `arch/RoPE_sm90.cu:222` and `:265` (the sm90 sequential RoPE). Not used by our SFT trainer
+(it needs the fused QK-norm + RoPE). Checked and safe: SwiGLU sm90 (rows in chunks of SW90_MAX_GRID_Y), RMSNorm
+backward gamma (grid y <= 64), the matmuls (grid y = M / 128).
+
+**RoPE in the other libraries** (local clones: transformers 4cc2aa8, torchtitan 1e4d33d, Megatron-LM 8b2f660,
+TransformerEngine 39c30c5, vLLM f424213, FlashInfer, Liger 19d92e7):
+- transformers `models/llama/modeling_llama.py:105, 111-114`: inv_freq = 1 / base^(arange(0, dim, 2) / dim) in fp32;
+  freqs = position.float() * inv_freq (fp32); cos / sin = torch `.cos()` / `.sin()` (accurate).
+- torchtitan `models/common/rope.py:199, 235-236`: the same in fp32, `torch.polar` (complex64).
+- Megatron `core/models/common/embeddings/rotary_pos_embedding.py:79, 138, 220`: fp32 inv_freq, `torch.outer`, `.cos()`.
+- vLLM `layers/rotary_embedding/base.py:80-101`: fp32 inv_freq, `einsum`, `freqs.cos()` / `.sin()`.
+- TransformerEngine fused RoPE `common/fused_rope/fused_rope.cu`: fp32 freqs from PyTorch, `sincosf` (accurate: the
+  file is not in TE's fast-math list); launch `dim3 blocks(s, b)` = the sequence in grid x, and
+  `NVTE_CHECK_CUDA(cudaGetLastError())` after every launch (lines 620-640).
+- FlashInfer (inference) `include/flashinfer/pos_enc.cuh:119`: angle in fp32, `__sincosf` (the fast intrinsic).
+- Liger `ops/rope.py:67-68`: takes cos / sin from the caller (Hugging Face's).
+So every training library: fp32 angle + accurate cos / sin, no length limit; nobody builds the table with fast math.
+
+**--use_fast_math** (NVCC docs, "Options for Steering GPU Code Generation"): implies `--ftz=true --prec-div=false
+--prec-sqrt=false --fmad=true` (denormals flushed to zero, approximate division and square root) and turns the fp32
+math library calls into the fast intrinsics (sinf -> __sinf, cosf -> __cosf, expf -> __expf, logf -> __logf, powf ->
+__powf, ...; numba-cuda's fastmath page lists the same mapping). Double-precision functions are not affected.
+- Ours: `Tensor-Implementations/Makefile:144-145` (TENSOR_NVCCFLAGS, every kernel of libtensor) and `:177`
+  (BluBLAS), since commit b66f8fc (2026-04-07, "49.1k 44M optimizations"); the Context_Parallelism Makefile too.
+  Not set in run commands. Our test / benchmark builds copied the flag (only the test's own code: the fp64 truth is
+  unaffected, the fp32 floor's division is the fast one).
+- Others: PyTorch's extension flags (`torch/utils/cpp_extension.py` COMMON_NVCC_FLAGS) have no fast math;
+  TransformerEngine applies it PER FILE (softmax, multi-tensor Adam / SGD / l2norm / scale, flash-attn glue; the
+  activations only with NVTE_BUILD_ACTIVATION_WITH_FAST_MATH, default OFF; `common/CMakeLists.txt:757-807`); vLLM per
+  file (`CMakeLists.txt:1135, 1147, 1185`); FlashAttention 2 / 3 on the whole extension (`setup.py:366`,
+  `hopper/setup.py:668`: attention only); Apex on several extensions (`setup.py:184, 203, 240, 262, 410`).
+- What it changes in OUR training kernels: the RoPE table (`cosf` / `sinf` / `powf`; measured 2x HF's error); the
+  loss (`LossKernels.cu`: 41 exp / log calls -> __expf / __logf, plus division); RMSNorm / LayerNorm (sqrt, division);
+  the Adam / multi-tensor optimizer kernels (sqrt, division). Attention and SwiGLU already call the fast intrinsics
+  explicitly (exp2 / ex2.approx / __expf), so the flag does not change them.
+
+### 45.115 2026-10-31: the RoPE fixes and --use_fast_math removed (laptop, not pushed), and the 360-degree A/B (box)
+
+**The user's direction:** fix the bug in every RoPE kernel, remove --use_fast_math from the Makefile, push next time;
+but decide nothing from reading code alone: measure speed, precision, memory and everything else, nothing else may
+change; and measure what a launch check costs.
+
+**Code (laptop `~/Downloads/BluTrain_push/Tensor-Implementations`, uncommitted):**
+- `src/Kernels/cuda/attention/RoPEKernels.cu`: both table builders (plain and LeRoPE) loop over a flat grid, one
+  thread per (position, frequency), every entry computed exactly as before (with head_dim 128 the old grid also left
+  64 of 128 threads idle); `rope_alpha_backward_kernel` and `rope_kernel` take the token from grid x and the batch row
+  from grid y (launch grid (Tlen, B)); every launcher checks its launch (`rope_check_launch`: cudaGetLastError ->
+  throw). md5 0ecee30a.
+- `src/Kernels/cuda/attention/arch/RoPE_sm90.cu`: the two sm90 kernels take the token from grid x, launch (Tlen, B),
+  and check the launch.
+- `Makefile`: `--use_fast_math` removed from TENSOR_NVCCFLAGS (libtensor) and BLAS_NVCCFLAGS (libblublas, the copy our
+  build uses; the standalone BluBridge-BLAS/Makefile and the long-context team's Context_Parallelism Makefile are not
+  touched), with a comment saying why.
+
+**A/B on the box** (`~/Downloads/lc_box/tests/ab_run.sh`; OLD = /root/gautam_k/lc/BluTrain built 13:12, NEW =
+/root/gautam_k/lc/BluTrain_new; every test binary built once without fast math and run against each library through
+LD_LIBRARY_PATH; each trainer run uses its own tree's run_sft.sh, because the launcher puts its own library folder
+first): correctness (RoPE table, per-token RoPE on 4 paths x forward / inverse x 4,096-131,072 with output hashes
+compared old vs new below 65,536 (`tests/test_rope_apply_long.cu`), the library's RoPE / RMSNorm / loss tests,
+attention G14 at 8,192); speed on one GPU in rounds old / new (`tests/bench_launch_check.cu`: 100,000 launches with no
+check, cudaGetLastError, cudaPeekAtLastError; the loss bench; attention BENCH at 4,096 4/2 on real rows; the 135M
+trainer old / new / new / old: step time, peak memory, step-0 val loss vs the numpy reference 1.606273); build time and
+library sizes. The new tree's build started 14:09:57 IST.
+
+### 45.116 2026-10-31: CPU work for the multi-candidate study (the user: test every fix approach like the loss fix, CPU first, GPU only on the user's word)
+
+**The user's questions:** are several fixes compared, as for the loss kernel? Standalone or in the trainer, and is the
+trainer the only way? Answer: until then one fix per kernel; the trainer is only the last step. Ways: standalone
+correctness (fp64 reference, bit-identity vs the old kernel), standalone microbenchmarks (CUDA events, interleaved
+rounds), nsys / ncu inside a real step, compute-sanitizer, then the trainer (step-0 loss vs numpy, step time, memory).
+
+**Research (local clones, exact lines).** Per-token RoPE: vLLM `csrc/pos_encoding_kernels.cu:91, 167` (token =
+blockIdx.x, grid = num_tokens), Apex `csrc/megatron/fused_rotary_positional_embedding.h:32-237` (s in grid x, b in
+grid y), TransformerEngine `fused_rope.cu:620-640` (blocks(s, b), and a THD linear grid). Launch checks: PyTorch
+`c10/cuda/CUDAException.h:86` `C10_CUDA_KERNEL_LAUNCH_CHECK() = C10_CUDA_CHECK(cudaGetLastError())` after every kernel
+launch; TransformerEngine `NVTE_CHECK_CUDA(cudaGetLastError())`. Grid-stride helper: PyTorch
+`ATen/cuda/detail/KernelUtils.h:16-35` (CUDA_KERNEL_LOOP, GET_BLOCKS asserts <= INT_MAX). Limits: grid x 2^31-1,
+y / z 65,535 (measured on the box: 65,535 positions launch, 65,536 -> "invalid argument").
+
+**Audit of the whole library (139 grid definitions, 21 single-block launches):**
+| kernel | breaks when | training path? |
+| --- | --- | --- |
+| RoPE table builders (plain, LeRoPE) | T >= 65,536 | the plain one, at start-up |
+| per-token RoPE: rope_kernel (fp32 / bf16), sm90 neox / gptj, LeRoPE alpha backward | T >= 65,536 | no (the fused kernel is used); pretraining's non-fused path |
+| loss backward fallback `sparse_ce_backward_cuda_vec` (`LossKernels.cu:1056`, grid_reduce{2, rows}) | rows >= 65,536 | no (training uses the stats path, 1-D grid) |
+| embedding fwd / bwd (block 32 x 8) | tokens per call > 524,280 | yes, far above our sizes |
+| SwiGLU sm120 only (block 32 x 4) | rows > 262,140 | no |
+| transpose copy, fallback matmuls | rows > 2.1 M / > 8.4 M | - |
+All 21 single-block reductions loop over their input (count_valid_targets, sum_reduction (fixed 10-30),
+grad_norm_cleanup, Muon finalize). Side finding: the fallback's two kernels launch on the default stream while its
+buffers are allocated on `stream` (not changed).
+
+**Candidates (generated, compiled):**
+- RoPE (`lc_box/tests/rope_variants/gen_rope_variants.py` -> v0.cu .. v3.cu, both RoPE files under
+  OwnTensor::cuda::v<N>): v0 original; v1 token in grid x + flat table (the laptop fix); v2 loop over grid y (token
+  loop, table position loop); v3 flattened (b, t) in grid x + one block per table position; v1-v3 check every launch;
+  v4 = the table built on the CPU. `test_rope_variants.cu` runs all of them in one process (needs no library): tables at
+  4,096 / 65,535 / 65,536 / 131,072 (built, == v0, error vs exact, time, LeRoPE(0) == plain); per-token RoPE on 4
+  paths x forward / inverse x (8, 4096) (2, 16384) (1, 65535) (1, 131072) (== v0, error vs double, time in rotating
+  rounds); LeRoPE backward vs a double sum. Built twice: with --use_fast_math (as the library today) and without.
+- Loss fallback (`lc_box/tests/loss_variants/gen_loss_variants.py` -> l0.cu .. l3.cu, the whole LossKernels.cu under
+  OwnTensor::cuda::l<N>): l0 original; l1 row in grid x; l2 rows loop over grid y (+ a __syncthreads before each next
+  row, shared memory reuse); l3 (row, part) flattened in grid x. `test_loss_fallback_variants.cu`: rows 4,096 /
+  65,535 / 65,536 / 131,072, vocab 4,096, 30% ignored rows: every gradient written, == l0, 72 sampled rows vs a double
+  softmax gradient, time.
+- Launch check cost: `bench_launch_check.cu` (100,000 launches: no check / cudaGetLastError / cudaPeekAtLastError,
+  host and GPU time per launch).
+- Fast math: F0 = the old library, F1 = the new library (built 14:19: 564 s vs 557 s, libtensor 57.5 -> 59.3 MB,
+  libblublas +65 KB; trainer e09d66d7). F2 (fast math per file, like TransformerEngine) only if F1 slows a kernel.
+
+**GPU plan, ready, not started** (`lc_box/tests/ab_run.sh`; builds done separately with ONLY_BUILD=1, then
+SKIP_BUILD=1 for the GPU part): B correctness on free GPUs 1-3 (the two candidate tests + every library test against
+old and new); C speed on one GPU (launch check, loss bench and attention BENCH in rounds, the 135M trainer old new new
+old, one nsys run per library with the per-kernel summary). Disk on the box: 2.4-2.8 GB free and falling (others).
+
+**CPU work finished (2026-10-31, ~15:15 IST).** Every test binary is built on the box (`/root/gautam_k/lc/ab/bin`:
+tva, rope_cache, rope_apply, rope_positions, rope_fwd, rope_bwd, rms_fwd, rms_bwd, sparse_ce, bench_ce,
+bench_launch_check, rope_variants_fm, rope_variants_nofm, loss_variants). Two fixes on the way:
+- the loss candidates first failed to link: LossKernels.cu declares `sparse_ce_fwd_sm103_launch` (defined in
+  arch/CrossEntropyKernels_sm103.cu) inside its own namespace, so a renamed copy named l<N>::...; the generator now has
+  the copies call the library's `::OwnTensor::cuda::sparse_ce_fwd_sm103_launch` (declared once before them); the
+  library exports its 9 instantiations;
+- the shared disk fell to 2.0 GB free during the builds (the build's temp files + others' jobs) and the disk watch
+  stopped our run; the last build used /dev/shm (RAM) for temp files. The trainer saves a checkpoint at its LAST step
+  (`bluscript_sft.cpp:3792`, and run_sft.sh forces BLU_CKPT=1), so the GPU script now keeps every trainer run folder,
+  checkpoint, nsys report and temp file in /dev/shm (335 GB) and copies only logs / summaries to disk; its disk watch
+  stops at 1 GB. Disk at 15:10 IST: 1.9 GB free (our folder ~2.1 GB, of which 0.6 GB object files, rebuildable).
+- GPU part, ready to start on the user's word: `setsid nohup env SKIP_BUILD=1 bash /root/gautam_k/lc/tests/ab_run.sh`
+  (about 1 hour: B ~15-20 min on GPUs 1-3, C ~35-45 min on one GPU).
+
+### 45.117 2026-10-31: the GPU-3 study, results — B correctness and C speed, OLD vs NEW library
+
+**Setup.** The user: "run on GPU 3", one job at a time, keep monitoring. OLD = /root/gautam_k/lc/BluTrain (TI 6aac3bf,
+--use_fast_math, the RoPE token in grid y); NEW = /root/gautam_k/lc/BluTrain_new (RoPE fixes + launch checks, no
+--use_fast_math). Same test binary against each library through LD_LIBRARY_PATH. Started 14:39 IST; B finished 14:48;
+the script then hung (a bare `wait` also waits for its own disk-watch loop, which never ends); fixed (`wait $WP`, the
+workers only) and restarted from C at 14:56; "AB DONE" 15:16:50. All logs: `profiling_reports/long_context_kernels_2026_10_31/ab/`.
+
+**B, correctness.**
+| test | checks | OLD | NEW |
+| --- | --- | --- | --- |
+| rope_variants (with / without fast math) | RoPE candidates v0-v4 side by side (45.116) | v0 fails at >= 65,536 | v1, v2, v3 pass, bit-identical to v0 where v0 runs |
+| loss_variants | loss-fallback candidates l0-l3 | l0: launch refused at >= 65,536 rows, Normalize then wrote gradients from uninitialised partials (rel err 1.7e3 / inf, no NaN) | l1, l2, l3 pass, bit-identical to l0 below 65,536 |
+| rope_cache | the library's table builder at 4,096-131,072 | not built at >= 65,536 (all NaN in the test, garbage in a trainer) | built at every length |
+| rope_apply | per-token RoPE, 4 paths x forward / inverse (= the backward) | 16 cases fail at >= 65,536 ("invalid argument") | 32 / 32 pass; 16 / 16 outputs bit-identical to OLD at 4,096 and 65,535 |
+| rope_positions | fused QK-norm + RoPE (fp32) with per-chat positions, small T | pass | pass |
+| rope_fwd / rope_bwd | RoPE precision vs fp64 | pass | pass; fp32 error 4x smaller (5.7e-7 -> 1.4e-7, now at the fp32 floor); bf16 unchanged |
+| rms_fwd / rms_bwd | RMSNorm precision | pass | pass, identical numbers |
+| sparse_ce | the loss suite | pass | pass; bf16 errors unchanged (+-1%), fp16 0.73x, fp32 forward mostly 12x smaller (9.2e-8 -> 7.7e-9), 4 fp32 cases slightly larger (max 6.8e-8, all pass) |
+| G14 at 8,192, heads 4/2 | packed attention forward + backward on real rows vs fp64 | pass | pass (LSE error 2.1e-6 -> 1.7e-6) |
+
+**C, speed** (GPU 3, one job at a time, two rounds each, rounds agree to 0.1%):
+- Launch check (`bench_launch_check.cu`, 100,000 launches of a 64 K-float kernel): no check / cudaGetLastError /
+  cudaPeekAtLastError all 2.303 us host and 2.327 us GPU per launch. In that test the 2.3 us kernel is the slow side, so a
+  cheaper host cost would not show; in training the checked RoPE launches run once per run (the table at start).
+- Loss (bench_ce, bf16, B 8 x T 4,096, vocab 49,280, median of 500 calls), OLD -> NEW: real median batch forward
+  (with stats) 0.828 -> 1.126 ms (+36%), backward 1.487 -> 1.470 ms, the trainer pair 2.243 -> 2.615 ms (+17%);
+  no masking forward 0.923 -> 1.360 (+47%); validation forward 0.782 -> 1.128 (+44%). Without fast math the forward's
+  expf / logf are the exact (slow) versions; the backward is not affected.
+- Attention BENCH (real 4,096 rows, 4/2): backward -0.3% .. +0.2%; the training forward (ours_A_plan) +0.9% (0.6-1.9%).
+- The 135M trainer (20 steps, gate_loss20, old new new old):
+  | | OLD | NEW |
+  | --- | --- | --- |
+  | step-0 val loss (numpy 1.606273) | 1.606812 (both runs) | 1.606700 (both runs; closer) |
+  | median step time, steps 2-19 | 150.35 ms | 150.75 ms (+0.27%) |
+  | peak memory (allocator [MEM] active_peak) | 38,288 MiB | 38,288 MiB |
+  | losses at step 19 | 1.1143 / 1.1144 | 1.1140 / 1.1144 (run-to-run spread) |
+  (nvidia-smi memory samples every 30 s gave 32.6-39.9 GB depending on the sample moment; not a measurement.)
+- nsys, per kernel inside the trainer: total kernel time +0.44% (3,035.1 -> 3,048.5 ms): loss forward with stats +37%
+  (+7.0 ms), validation loss forward +40% (+3.7 ms), SwiGLU forward +2.5%, attention forward +1.4%, fused QK-norm +
+  RoPE forward +2.0%, AdamW +22% (+0.8 ms; sqrt and division now exact); every GEMM (BluBLAS bgemm) and every backward
+  kernel unchanged.
+
+**What it means for fast math (the user decides).** Removing it everywhere costs +0.27% step time and no memory, and
+gains precision where it matters (fp32 RoPE 4x, the RoPE table 1.8x, fp32 loss mostly 12x). In the bf16-logits training
+path the loss forward got 37% slower and gained NO precision (bf16 errors unchanged). Proposed: no fast math anywhere,
+and the loss kernels call `__expf` / `__logf` explicitly (the bf16 path back to the old speed, its precision unchanged).
+Not done; waiting for the user.
+
+### 45.118 2026-10-31: backward kernels too, and the second bug class: 32-bit element indexes (the user: "are we caring only about forward ops?")
+
+**Backward, the 65,535 grid limit.** RoPE backward = the same kernel run inverse: had the bug, fixed, tested
+(rope_apply "inverse" at 131,072). LeRoPE alpha backward: had it, fixed. Loss backward fallback: has it (fixed, 45.120);
+the training loss backward (stats, in place) has rows in grid x. Fused QK-norm + RoPE backward (the trainer's,
+`fused_qknorm_rope_bwd_ca_bf16_tm`): grid (chunks, 6 heads, B), tokens looped, offsets `long`: no bug. Attention
+backward, RMSNorm backward (chunked rows, 1-D grids), SwiGLU backward (sm90: rows chunked by SW90_MAX_GRID_Y), embedding
+backward, adds, gradient accumulation, the optimizer: no bug at our sizes. Yesterday's fix (10-30) was the loss forward's
+final sum.
+
+**The second class: element numbers past 2^31 / 2^32.** At 128k tokens the logits hold 131,072 x 49,280 = 6.46e9
+values (2^31 = 2.15e9, 2^32 = 4.29e9; with B 1 the line is crossed at ~43,600 tokens, and B 4 x 16k crosses it too).
+The trainer builds the logits whole (`bluscript_sft.cpp:912`, bf16 matmul, then fp32 unless BLU_BF16_LOGITS).
+Read: the loss forward (stats) and the in-place backward use `row * vocab_size` with int64 vocab_size; the fp32 <-> bf16
+conversions use size_t; the sm90 transpose has 64-bit offsets; the strided-copy kernels cut the element number to 32
+bits (45.119). Nothing had been TESTED past 2^31 values (the loss tests used vocab 4,096 or 64 rows).
+
+**The long-row tests written (lc_box/tests/long_t, logs in profiling_reports/long_context_kernels_2026_10_31/long_t):**
+| test | what | NEW | OLD |
+| --- | --- | --- | --- |
+| test_fused_rope_long.cu (generated from the library's test_rope_positions.cu by gen_fused_rope_long.py) | the trainers' fused QK-norm + RoPE: fp32 (T1-T4 checks) AND the bf16 token-major kernels the trainers run (B16, new), forward + backward, packed positions, the library-built table; 4/2 heads, head 128, theta 50,000; T 65,519 (table 65,535 rows) / 65,536 / 2 x 65,536 / 131,072 | 41 / 41 pass. bf16 vs fp64 (same bf16 inputs): output 0.0026-0.0028, dq/dk 0.0023-0.0025, dgamma 1e-6, 0 NaN, the same at 65,519 and 131,072 (bf16 rounding; limit 0.0039); fp32 <= 1e-6; packed == each chat alone bit for bit | the 65,519 config passes with the same numbers; at 65,536 the table build is refused ("invalid argument" caught by the test). In the trainer (OLD, T 65,536 gate, run 16:02) the refused launch is not checked, so the NEXT launch that checks (the bf16 -> fp32 weight conversion at model load) picks up its error: the run aborts at start with the misleading "convert_cuda_bf16_to_fp32_sm90 kernel launch failed: invalid argument" (exit 134); code with no later checked launch would go on with an unfilled table |
+| test_lm_logits_long.cu | the trainer's LM head + loss through the library's autograd (to_dtype, transpose + contiguous of wte, matmul, to_dtype, sparse_cross_entropy_loss with denom, backward), T 32,768 / 65,536 / 131,072 (1.6e9 / 3.2e9 / 6.5e9 logits), fp32 and bf16 logits; reference = the same graph on 4,096-row chunks with the SAME denominator, plus sampled rows (incl. around the 2^31 and 2^32 marks) in double | all pass: loss = the chunk sum (rel <= 7.6e-8), dX bit-identical to the chunks with no all-zero trained row (max dX 6.5e-6 .. 2.3e-5; this non-zero check was added after the first run printed "rel 0"), dW vs the chunk sum 2.8e-3 (bf16 rounding), logits rows vs double 3.4e-3, loss-gradient rows 4e-8 (fp32) / 6e-4 (bf16), 0 NaN | the same |
+| nsys of the above at 131,072 | which kernels run at 6.46e9 logits | BluBLAS bgemm (forward, dX, dW), the loss kernels, the conversions, transpose_tiled on the 25 M-value weight; no strided-copy kernel | - |
+| test_copy_long.cu | Tensor::contiguous() of views with > 2^32 elements | transpose(1,2) of [65536, 40000, 2] wrong from element 4,294,967,296 (947,912,644 wrong of 5.24e9); narrow views pass (they take a memcpy path) | the same (old bug) |
+| test_lerope_long.cu | the LeRoPE alpha backward through the library, both pairings, 4,096-131,072, vs a double sum | pass | fails its 4 cases at >= 65,536 |
+| G14 at 16,384 / 32,768 / 65,536 / 131,072, heads 4/2, real rows | packed attention (G11/G14) and dense rows (G2: one chat = the whole row, the pretraining kernels), forward + backward vs fp64 | all pass; at 131,072 dense O 0.26, dQ 0.22, dK 0.55, dV 0.48 of the limit | (this morning, OLD: the same) |
+
+**The 32k G14 "FAIL" is the known dV outlier, not new.** One chat of 268 (row 0 @13,072, 124 tokens) has dV err
+4.377e-02 vs floor 1.873e-02 (limit 2 x floor, ratio 1.169), identical to the last digit on OLD this morning
+(box_checks/g14_T32768_h4x2.log) and NEW now; this morning's check showed the chat ALONE gives the same ratio. The
+mechanism is recorded in the test's known list for other chats (`test_varlen_attention.cu:1235`): the backward rounds
+each query head's dV partial to bf16 before the fixed-order sum of the 2 heads sharing a KV head (the price of
+bit-identical dK / dV); FA3 sums in fp32 and rounds once; an fp32 head sum brings the error to the floor's. A real but
+small precision cost of the deterministic design, not a long-context or packing bug; the case is to be added to the
+known list with this evidence.
+
+### 45.119 2026-10-31: Tensor::contiguous() past 2^32 elements — proof, every place, three candidates, the split chosen
+
+**Proof.** test_copy_long (45.118); nsys: the failing copy ran `sm90::flat_strided_copy_kernel<uint16, 3, long, 4>`:
+64-bit offsets, but `walk_index((uint32_t)(i0 + c), meta)` cuts the element number, so element 2^32 reads element 0's
+source.
+
+**Every place (both copy files):**
+| file | code | wrong when |
+| --- | --- | --- |
+| arch/ContiguousKernel_sm90.cu | flat_strided_copy_kernel (3f), `(uint32_t)(i0 + c)` / `(uint32_t)i` | >= 2^32 elements (proven) |
+| same | generic_strided_copy_kernel (3d), `(uint32_t)i_base` | >= 2^32 elements |
+| same | strided_inner_vec_copy_kernel (3c), `(uint32_t)v` | >= 2^32 vectors |
+| same | `FastDivmod::make((uint32_t)dims[d])` | a merged dim >= 2^32 (e.g. a 1-D stride-2 view of 4.4e9) |
+| ContiguousKernel.cu (every non-Hopper GPU incl. B300; 1- / 8-byte types on Hopper) | generic_strided_copy_kernel, `(uint32_t)i` and a 32-bit `blockIdx.x * blockDim.x` | >= 2^32 elements |
+| same | transpose_2d_tiled_kernel: `int rows, cols`, `(y + j) * cols + x` in int; launch grid y = rows / 32 | >= 2^31 elements (illegal memory access), and rows > 2,097,120 at ANY size (launch refused, no check, garbage) |
+FastDivmod itself is exact for any n < 2^32 (multiply-high + one correction).
+
+**Candidates** (`lc_box/tests/copy_variants/gen_copy_variants.py` -> cv_all.cu: both files under OwnTensor::<name>; the
+Hopper file one namespace deeper because both define FastDivmod / ContiguousMeta):
+- c0 the original;
+- c1 64-bit element numbers in the int64_t-offset instantiations only (taken when the copy does not fit 32 bits), plain
+  64-bit division by new 64-bit dims (`ContiguousMeta.dims64`); a 64-bit generic kernel; the 2-D transpose only while
+  grid y and int index math hold;
+- c3 split like PyTorch (`TensorIterator::with_32bit_indexing`): a copy that does not fit 32 bits is cut along its
+  outermost dimension into pieces that do (src pointer advanced, the same path as the whole copy, the unchanged 32-bit
+  kernels); a copy whose single outer slice does not fit falls back to c1's kernels.
+Copies below 2^31 elements run exactly the old code in all three.
+
+**Test** (`test_copy_variants.cu`, 16 cases, uint16 / uint32 / uint64 elements = bf16 / fp32 / fp64 copies, the Hopper
+path and the generic path forced as on other GPUs; every element checked on the GPU against the hash of its source index
+computed in 64-bit; one case per process because c0 crashes one; first run voided: it overlapped a benchmark, 45.120):
+| case | c0 | c1 | c3 |
+| --- | --- | --- | --- |
+| 6 cases below 2^31 (Hopper and generic) | pass | pass, same speed | pass, same speed |
+| P transpose 5.2e9 u16, Hopper | wrong from 2^32 | 26.06 ms | 8.05 ms |
+| P transpose 2.6e9 fp32, Hopper | pass 5.57 ms | 11.79 ms | 5.55 ms |
+| narrow 5.2e9, Hopper | wrong | 12.64 ms | 12.49 ms |
+| 1-D stride 2, 4.4e9 (not splittable) | wrong | 24.37 ms | 24.36 ms (c1 kernel) |
+| 2-D transpose 4.6e9, Hopper | pass 14.90 ms | 14.90 | 14.90 |
+| P transpose 5.2e9, generic | wrong | 39.80 ms | 21.51 ms |
+| narrow 5.2e9, generic | wrong | 30.60 ms | 16.53 ms |
+| 2-D transpose 4.6e9, generic (not splittable) | crash: illegal memory access | 84.68 ms | 84.64 ms (c1 kernel) |
+| 2-D transpose 3,000,000 x 16 (48 M elements), generic | wrong: launch refused (grid y) | pass 0.665 ms | pass 0.661 ms |
+| 2-D transpose 2,000,000 x 16, generic | pass | pass | pass |
+| P transpose 5.2e9 fp64, Hopper (the generic code) | wrong | 53.50 ms | 51.75 ms |
+c1 16 / 16, c3 16 / 16, c0 8 / 16 (7 wrong, 1 crash).
+
+**Decision: c3.** Correct everywhere; the old speed wherever the old code was correct; 1.9-3.2x faster than c1 on big
+copies; what PyTorch does. Written into the library by `apply_c3_to_library.py` (the same transformations as the tested
+candidate), comments reworded, plus one guard (`split_copy_32` returns false for ndim > 16: it copies the dims into 16-
+slot arrays before the dispatcher's own ndim check). `src/Views/ContiguousKernel.cu` md5 3490e09b (+ the guard),
+`src/Views/arch/ContiguousKernel_sm90.cu` md5 27f061d3. Not in training's path today (the trainer's 128k logits path makes
+no such copy, nsys above); the generic transpose's grid-y refusal can hit at small sizes on other GPUs. Later (speed only):
+a 64-bit tiled transpose for the unsplittable generic case (217 GB/s through the generic kernel).
+
+### 45.120 2026-10-31: the loss-fallback fix in the library, the final library, the 135M trainer at 4k-128k
+
+**The loss-fallback fix.** Candidate l3 (45.116 / 45.117) written into `src/Kernels/cuda/loss/LossKernels.cu`: the Reduce
+kernel takes (row, part) from blockIdx.x (row = x / 2, part = x % 2; the partial slot bid = part + row * 2 unchanged, so
+the Normalize kernel is unchanged), launch grid 2 x rows in x; plus a launch check after both launches (cudaGetLastError
+-> throw, after freeing the partials). Diff vs the tested l3: comments, line wrapping, 2 includes, the check (verified
+with a diff against l3 regenerated from the original). md5 5ade878a. The fallback's two launches still use the default
+stream (unchanged, noted 45.116). Test through the library (`test_loss_fallback_lib.cu`, rows 4,096 / 65,535 / 65,536 /
+131,072 at vocab 4,096 and 65,536 x 49,280 = 3.2e9 values): fixed 5 / 5 pass; NEW and OLD fail their 3 cases at >= 65,536.
+The library loss suite passes. bench_ce on the fixed library (alone, r2): trainer pair 2.6117 ms (NEW 2.6148 / 2.6144),
+validation + fallback 6.4690 ms (NEW 6.4807).
+
+**The final library** = NEW + the loss fix + the copy fix, built in RAM (`/dev/shm/gk_libfix/tree`: Tensor-Implementations
+copied from BluTrain_new, only those 3 files changed (diff -rq), incremental make recompiled exactly them; every other
+top-level entry links BluTrain_new, so run_sft.sh there loads the final library; checked with ldd before any trainer
+run). Through it: copy_long all pass (the 5.24e9 transpose now correct), lm_logits_long2 all pass, loss fallback 5 / 5,
+loss suite pass, G14 8,192 pass; the trainer at 4,096 (phase C settings): step-0 val 1.606700 (= NEW), peak 38,288 MiB
+(= NEW), median step 150.57 ms (NEW 150.75 / 150.7, OLD 150.35 / 150.2), 20 steps, no error.
+
+**The 135M trainer at long rows (one-row gates).** `make_long_gates.py`: one packed row of data_long_T/T<T>/train, made by
+the real prepare_sft_data.py at that T, cut into a 1-row train = val folder; sft/ref_val_loss.py computes the numpy fp32
+reference (every chat ALONE, positions 0..len-1). The data check (the user: "with the correct preprocessing, not 4k
+packed"): the current prepare_sft_data.py re-run at 16k / 32k / 64k / 128k gives byte-identical inputs, labels,
+valid_counts, seq_lengths, seq_offsets (train and val); meta.json differs only in script_sha256 and created_utc (the
+script got comment edits after 12:28). The data has the real long chats (at 131,072: 219 chats > 65,536, longest
+130,533, 35 dropped as too long). Every gate row holds a chat longer than 8,192 (T 16,384 first used train row 1, whose
+longest chat was 3,985; changed to row 15 (9,841) after the user's question; row "2" was first taken from the val listing
+by mistake and stopped before use).
+| T | row (chats, longest) | trained labels | numpy reference | trainer step-0 val (NEW) | rel gap | peak memory |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4,096 (gate_loss20, B 10) | 20 rows | 66,487 | 1.606273 | 1.606700 | 2.7e-4 | 38,288 MiB |
+| 16,384 | 15 (2, 9,841) | 11,832 | 3.326344 | 3.324437 | 5.7e-4 | 21,270 MiB |
+| 32,768 | 2 (3, 13,054) | 12,140 | 4.245368 | 4.247150 | 4.2e-4 | 32,166 MiB |
+| 65,536 | 2 (11, 6,315) | 41,283 | 3.120122 | 3.120897 | 2.5e-4 | 58,014 MiB |
+| 131,072 | 0 (16, 8,597) | 57,960 | 4.328252 | 4.334521 (NEW and FINAL identical) | 1.45e-3 | 107,640 MiB |
+Each: B 1, 10 steps (EPOCHS 10), Muon, no error, no NaN; at 131,072 ~600 ms per step (NEW 600.6, FINAL 604.9 ms). The
+higher losses at long T are the model's (pretrained at 4,096, it never saw positions past 4,096), not a bug; the gate
+checks the trainer equals the numpy math.
+
+**The 131,072 gap (1.45e-3, 2.5x the others) is from those chats, not from the 131,072-token row.** `repack_gate.py` put
+the SAME 16 chats into 15 rows of 16,384 (and 3 rows of 65,536); the numpy reference is unchanged (each chat alone). The
+trainer at 16,384 on them: step-0 val **4.334521**, and at 65,536 (3 rows): **4.334521**, both identical to the
+131,072 row. So the gap is bf16 rounding on this
+content (16 chats, loss 4.33), and the same loss to 6 digits whether the chats sit in 16k rows or one 131k row is strong
+evidence that packing, positions and attention are exact at 131,072.
+
+**OLD at 65,536 (to show the table bug in training):** the run aborts at start (exit 134): the refused table launch is
+picked up by the next checked launch (bf16 -> fp32 weight conversion at model load), "convert_cuda_bf16_to_fp32_sm90
+kernel launch failed: invalid argument" (see 45.118).
+
+**Memory is linear in tokens per step (B x T), not in T** (the user asked why 4k used more than 16k): peak ~ 8.8 GB +
+0.73 MB x tokens (16,384: 21.3 GB vs line 20.8; 32,768: 32.2 vs 32.7; 4,096 x B 10 = 40,960: 38.3 vs 38.7; 65,536: 58.0
+vs 56.6). Fixed part: weights, optimizer state, buffers; per token: the activations kept for the backward over 37 layers
+and the logits (49,280 values per token); no T^2 term (flash-style attention). Predicted at 131,072: ~105 GB.
+
+**How the GPU work was run, and the mistakes (all ours, all caught):** a follow-up script waited on `grep "AB DONE|ABORT"`
+of a status file that still held an old ABORT line, so it started early and put one test on GPU 3 between two timing
+jobs (stopped after 35 s; the study's own free-GPU check kept its timings clean); a restart's "already running?" check
+counted my own ssh shell, so nothing restarted (GPU idle ~2 min); a kill command matched my own ssh shell (bracket trick
+defeated by the path in the same command line); `timeout` children survive a process-group kill; two runners each saw
+GPU 3 free in the same second (15:44:23) and ran together, voiding bench_ce fixed r2 and the copy test's timings (both
+re-run alone, the voided logs renamed `*_VOID_*`). Rule since then: ONE runner owns GPU 3 at a time (a new one starts
+only after the previous one's process is gone, counted by exact command line); memory feedback_box_ops_traps trap 8.
+
+### 45.121 2026-10-31: fast math only for the loss file (one Makefile line), measured
+
+**Why.** 45.115 removed `--use_fast_math` from the whole library (every kernel now uses the exact `expf`, `logf`, division
+and square root; fast math also flushes tiny values to zero). The A/B (45.117) then showed one real cost: the loss
+forward is slower without fast math (it calls `expf` once per vocabulary value, 49,280 per token). So we tested four
+builds of the loss file only (everything else the same, no fast math):
+- **final**: no fast math (the 45.120 library);
+- **ix**: no fast math, but the 20 `expf` calls of the loss forward written as `__expf` by hand (`LossKernels_Lix.cu`);
+- **pf**: the loss file compiled with `--use_fast_math` through a per-file Makefile line (how TransformerEngine sets
+  flags per file); every other file without;
+- **old**: the old library (fast math everywhere).
+
+**Results** (GPU 3, `run_loss_fm.sh`, records `profiling_reports/long_context_kernels_2026_10_31/loss_fm/`; bench_ce in the
+order final ix pf old old pf ix final, so each build ran twice at mirrored times; the loss suite `sparse_ce` once each):
+| build | sparse_ce (SFT checks) | loss fwd bf16, ms (2 rounds) | loss bwd, ms | trainer pair fwd + bwd, ms | validation + fallback, ms |
+| --- | --- | --- | --- | --- | --- |
+| final (no fast math) | all pass | 1.1266 / 1.1253 | 1.4687 / 1.4687 | 2.6071 / 2.6082 | 6.4682 / 6.4679 |
+| ix (`__expf` by hand) | all pass | 0.9229 / 0.9227 | 1.4690 / 1.4689 | 2.4082 / 2.4113 | 6.2659 / 6.2657 |
+| pf (fast math, this file only) | all pass | 0.8111 / 0.8243 | 1.4869 / 1.4866 | 2.2367 / 2.2409 | 5.5857 / 5.5869 |
+| old (fast math everywhere) | all pass | 0.8096 / 0.8088 | 1.4865 / 1.4865 | 2.2359 / 2.2373 | 5.6060 / 5.6050 |
+No-fast-math loss forward: +39% (1.126 vs 0.810 ms), with no precision gain the suite can see (every build passes every
+check). ix gets only part of it back (the rest of the fast-math speed is in other instructions of the file: division,
+`logf`, flush-to-zero). pf = old to within 0.1-0.5% on every column.
+
+**Decision (the user, 2026-10-31 ~16:50): pf.** The Makefile line (after TENSOR_NVCCFLAGS):
+`$(OBJDIR)/src/Kernels/cuda/loss/LossKernels.o: TENSOR_NVCCFLAGS += --use_fast_math`, with a comment pointing here.
+Checked with a dry run (`make -n`): the default goal is still `all`; the LossKernels.cu compile line has
+`--use_fast_math`; the RoPE file's line (and every other one) has none. So: only the loss kernels use fast math; every
+other kernel is exact, unlike before. The B300 loss file (`CrossEntropyKernels_sm103.cu`) is not in this line (later).
+
+**The trainer with this library (FINAL2 = FINAL + the pf line), 135M at 4,096** (`queue/jobs.sh` job es_tr, GPU 0, rounds
+OLD FINAL2 FINAL2 OLD, phase C settings, 20 steps; median step time over steps 2-19):
+| library | round A | round B | mean | step-0 val (fp64 numpy 1.606273) | peak |
+| --- | --- | --- | --- | --- | --- |
+| OLD (fast math everywhere) | 155.25 | 156.30 | 155.78 ms | 1.606812 | 38,288 MiB |
+| FINAL2 (fast math only for the loss) | 155.99 | 156.73 | 156.36 ms (+0.4%) | 1.606700 | 38,288 MiB |
++0.4% is inside the OLD-vs-OLD spread (0.7%). The step-0 val moved toward the fp64 value (gap 5.4e-4 -> 4.3e-4). Same
+memory. Final val after 20 steps: 1.048535 / 1.048238 (OLD), 1.048549 / 1.048300 (FINAL2): the run-to-run spread of one
+build (the attention dQ uses atomic adds, so runs are not bit-identical) is as large as the difference between builds.
+(GPU 0 runs ~3% slower than GPU 3 for the same job, so pairs are only ever compared on one GPU.)
+
+### 45.122 2026-10-31: fp32 dK/dV partials in the attention backward — measured, NOT adopted
+
+**What it is.** Only the attention backward (Vj2, `GQA_bwd_vj2_sm90.cu`), only dK and dV; the forward and dQ are not
+touched. Today, for grouped-query attention, each query head writes its own dK/dV partial in bf16, then one fixed-order
+kernel (`gqa_dkdv_greduce_vj2`) adds the heads of a group in fp32 and writes bf16. Rounding each partial to bf16 first is
+the cause of the one known G14 miss (32,768, 4/2: dV ratio 1.169 on a 124-token chat; 45.120). The candidate keeps the
+partials in fp32 (twice the bytes written and read), adds in fp32, rounds once. FlashAttention 3 keeps fp32 too, but adds
+with atomic TMA reduce-adds (not deterministic; its deterministic mode costs +31%). We keep the fixed-order sum, so the
+fp32 version is deterministic too (G4: dK/dV bit-identical over repeats).
+
+**The switch.** `BLU_VJ2_DKDV_F32=1` (read once; prints `[vj2] fp32 dK/dV partials (BLU_VJ2_DKDV_F32=1)` to stderr);
+unset = today's path. The kernel became `template<bool CHATS, bool F32P = false>`; F32P = false compiles to the same SASS
+as before (1826 / 1738 / 226 instructions in the three kernels; the 4 other kernels of the file identical), so the
+default costs nothing. fp32 staging: SWIZZLE_128B, box {32, 64}, two passes (dV, then dK).
+
+**Precision (GPU 3, run_dkdv.sh, same library, switch off / on).** G14 (real packed rows vs fp64): 8,192 4/2 and 18/6,
+32,768 4/2, 131,072 4/2 all pass with fp32; at 32,768 the bf16 path fails the one known dV check (77 pass, 1 fail) and
+fp32 passes it: worst dV ratio 1.169 -> 0.571 (dK 0.588). The full classic suite with fp32 (VARLEN_REPEATS=50, 633 s):
+all pass, G4 bit-identical.
+
+**Kernel speed** (BENCH on real rows, backward median ms; dense = full rows, packed = A_plan; ranges over the layouts):
+| T, heads | GPU, rounds | dense: fp32 vs bf16 | packed: fp32 vs bf16 |
+| --- | --- | --- | --- |
+| 4,096 4/2 | 3, off on on off | +3.2 to +4.1% | +3.3 to +13.1% |
+| 8,192 18/6 | 3, off on on off | +1.4 to +2.5% | +2.0 to +13.6% |
+| 4,096 4/2 | 0, bf16 f32 f32wr f32wr f32 bf16 | +3.4 to +3.9% | +3.6 to +13.2% |
+| 8,192 18/6 | 0, same | +1.5 to +2.3% | +1.5 to +13.6% |
+| 32,768 4/2 | 3, off on | -0.3 to +1.5% | +0.5 to +16.4% |
+| 131,072 4/2 | 3, off on | -0.2 to +0.4% | -0.1 to +11.6% |
+The cost is largest where the backward is shortest (many short chats: uniform_512 +11.6 to +16.4%); at long chats it
+fades (131,072 uniform_131072: -0.1%). bf16-vs-bf16 between rounds: within 1%.
+
+**f32wr (a try to make fp32 cheaper).** Between the dV and dK passes, and at the end, wait only until the staging buffer
+has been READ by the TMA store (`cp.async.bulk.wait_group.read 0`, what CUTLASS's tma_store_wait does) instead of until
+the global write is done (`wait_group 0`). Only the fp32 kernels' SASS changes. Result (GPU 0, three-way above): **f32wr =
+f32** on every layout (within 0.5%), so no gain. Its outputs equal f32's: the G14 logs at 8,192 and 32,768 are identical
+line for line except the dQ "diff/atol" numbers of the isolation checks (dQ uses atomic adds, it differs run to run).
+
+**The trainer, and a launcher fact found on the way.** run_dkdv.sh's trainer rounds "f32" ran bf16: no notice line in
+run.log. Cause: `sft/run_sft.sh` removes EVERY `BLU_*` variable of the caller before mpirun (line 82, by design: "any
+other BLU_* variable in the caller's environment is removed first, so a leftover setting cannot silently change the
+run"); mpirun itself passes the environment (tested: a FOO_TEST_X reached the child). So those 4 runs are bf16 x 4 (a
+free null: median step 155.69 / 154.68 / 150.16 / 150.83 ms, final val 1.048268-1.048353). Re-done with a wrapper given as
+BIN (`queue/sft_f32_wrap.sh`: sets the switch, then execs the same trainer binary), job dk_tr, GPU 3, rounds bf16 f32 f32wr
+f32wr f32 bf16 (135M, 4,096 gate, phase C settings, 20 steps):
+| path | round A | round B | mean | vs bf16 | notice in run.log | peak |
+| --- | --- | --- | --- | --- | --- | --- |
+| bf16 | 150.63 | 152.48 | 151.56 ms | - | 0 / 0 | 38,288 MiB |
+| f32 | 151.39 | 154.18 | 152.79 ms | +0.8% | 1 / 1 | 38,368 MiB |
+| f32wr | 153.61 | 152.91 | 153.26 ms | +1.1% | 1 / 1 | 38,368 MiB |
+bf16-vs-bf16 spread 1.2%, so the trainer difference is about the size of the noise, but both fp32 means sit above both
+bf16 means. Step-0 val 1.606700 in all six; final val 1.048139-1.048448 in all six (no visible gain in loss).
+
+**Decision, by the user's rule (2026-10-31: "if and only if speed is same and precision already better proved, then
+only we will fix"):** precision is better (proved), speed is NOT the same (attention backward +3-14% at 4k-8k, trainer
++0.8-1.1%). So the bf16 partials stay. f32wr is dropped (no gain). Open for the user: push the switch as an opt-in
+(default off, SASS-identical, useful for a precision-first run) or leave it out of the push. If bf16 stays, the 32,768 dV
+case goes on G14's known list (open).
+
+### 45.123 2026-10-31: the embedding and sm120 SwiGLU grid-limit candidates — first run, a real old SwiGLU bug, two test bugs
+
+**The candidates** (`lc_box/tests/emb_sw/gen_emb_sw_variants.py`; each candidate = the whole file in its own namespace,
+one test runs all side by side; see 45.118 for the bug: tokens / rows in grid y, limit 65,535 blocks): 0 original;
+1 swap (token / row block in grid x, column block in grid y); 2 y-loop (grid y capped at 65,535, each thread loops); 3 flat
+(one 1-D grid-stride loop with a 64-bit index, PyTorch / TransformerEngine style). Embedding: forward (scalar and
+vectorized fp32) and the atomicAdd backward fallback; limit 524,280 tokens per call (block 32 x 8). SwiGLU sm120: main
+fp32 (float4), tail fp32, typed fp16 / bf16; limit 262,140 rows (block 32 x 4). Every output checked exactly.
+
+**First run** (GPU 3, 17:16-17:19, 142 s, `emb_sw_variants.log`):
+- Embedding: e1, e2, e3 pass every case, 40,960 to 1,048,576 tokens (e0 fails above 524,280 as expected: launch "invalid
+  argument"). Backward fallback speed (fp32, ms; 40,960 / 172,032 / 524,280 / 1,048,576 tokens): e0 0.099 / 0.406 / 1.231
+  / -, e1 0.082 / 0.323 / 1.105 / 2.159, e2 0.106 / 0.435 / 1.319 / 2.074, e3 0.109 / 0.446 / 1.352 / 2.703; bf16 the same
+  order (e1 fastest at 40k-524k).
+- SwiGLU: hidden 1408 (the 135M width) passes for s1-s3 at every row count (s0 fails above 262,140). fp32 speed at 40,960
+  / 262,140 rows: s0 0.160 / 1.008, s1 0.169 / 1.062 (+5%), s2 0.160 / 1.008, s3 0.160 / 1.007. Typed bf16 at 1,048,576
+  rows: s2 4.07 ms vs s1 / s3 6.97 ms (s2's loop gives each block 4 rows' worth of work there).
+- **Every version, s0 included, failed "fp32 hidden 1410 (main + tail)" at every row count.**
+
+**Why: a real bug in the original sm120 fp32 SwiGLU, older than the grid limit.** For hidden % 4 != 0 the float4 main
+kernel uses the row strides `2 * (hidden / 4)` and `hidden / 4` float4s (1410: 704 and 352 float4 = 2,816 and 1,408
+floats), not the real 2,820 and 1,410 floats; a real row is not even 16-byte aligned then (row 1's second half starts at
+float 4,230). So every row after row 0 reads and writes the wrong places; the tail kernel only adds the last hidden % 4
+columns. Not hit by our models (135M hidden 1,408 = 4 x 352) and our H200 never runs the sm120 file, but it is wrong.
+
+**Two bugs in my test.** (1) The SwiGLU reference was s0's own launcher on 4,096-row slices, so it had the same stride
+bug (wrong in a different way per slice): no version could pass 1410. (2) The embedding forward was timed, then the
+untimed check run reset the time to -1 (`run_and_time` sets it to -1 when not timing), so every forward row shows "- ms".
+
+**Fixes (17:25), the new run queued as es_var2:** the reference is its own kernel (one 64-bit grid-stride loop, the file's
+own helpers and expression: bit-identical to any correct kernel); the forward keeps its time; new cases bf16 hidden 1410
+and fp32 hidden 1408 from an input view 4 bytes off a 16-byte boundary (s0 skipped there: its float4 load would fault and
+end the process). SwiGLU candidates 1-3 now take the float4 kernel only when hidden % 4 == 0 and both pointers are
+16-byte aligned, otherwise the scalar kernel for the whole row (`swiglu_sm120_typed_kernel<float>`), as PyTorch does
+(`can_vectorize_up_to` before its vectorized loop) and TransformerEngine (aligned / unaligned launch); the tail kernel is
+then never launched. The regenerated emb_all.cu is byte-identical (md5 03df501e); sw_all.cu changes only in the three
+candidate fp32 launchers (md5 4fd8e389). Built on the box (`emb_sw_variants2`), no warnings.
+
+**How the GPUs were used from 17:07 (the user: GPU 0 is ours for one hour, "use both").** The four waiting runners (135M,
+rivals, emb_sw, dK/dV f32wr) were stopped (exact PIDs, none had a GPU job) and their work put in one job list
+(`lc_box/tests/queue/jobs.sh`) run by two workers: GPU 0 (deadline 18:05 IST: it takes a job only if its time estimate
+ends before that, and stops if another user's process appears on GPU 0) and GPU 3 (after run_dkdv.sh ended). A job is
+claimed with `mkdir` (atomic), so no job runs twice; each job stays on one GPU, so every A/B pair is on one GPU. At
+17:18 the workers were replaced by `worker2.sh` (the job list in a file, read again after every job) to add dk_tr and
+es_var2: the old workers' remaining jobs were pre-claimed, so each old worker ended after its running job and the new
+one on that GPU started only then.
+
+### 45.124 2026-10-31: the embedding and sm120 SwiGLU fixes chosen (e1, s2) and written into the library
+
+**The re-run (es_var2, GPU 0, 17:29-17:32, 204 s, `emb_sw_variants2.log`): candidates 1-3 pass every case**; the
+originals fail above their limits and s0 at hidden % 4 != 0 (22 "FAIL (old)"); s0 skipped on the misaligned view (4).
+Times in ms (one process, each candidate timed the same way: 5 x 10 calls, median); % vs the original where it runs:
+
+Embedding (C 512, V 49,280; N tokens per call 40,960 / 172,032 / 524,280; then 1,048,576 where only the fixed ones run):
+| path | e0 (original) | e1 (tokens in grid x) | e2 (grid-y loop) | e3 (flat 1-D) |
+| --- | --- | --- | --- | --- |
+| fwd fp32 vectorized | 0.0415 / 0.1596 / 0.4770 | -0.2% / -0.0% / -0.0%; 1M 0.950 | +1.7% / +0.3% / -0.2%; 0.952 | -0.5% / +0.1% / +0.0%; 0.949 |
+| fwd fp32 strided weight | 0.356 / 1.478 / 4.488 | -55.7% / -60.0% / -60.7%; 3.50 | +0.0% / +0.0% / +0.0%; 9.02 | +0.6% / +0.5% / +0.5%; 9.02 |
+| fwd bf16 (the trainer's type) | 0.0891 / 0.3639 / 1.1048 | -16.9% / -21.4% / -12.2%; 1.91 | +30.4% / +31.0% / +31.3%; 2.00 | +47.9% / +48.8% / +48.7%; 3.28 |
+| bwd fp32 atomic fallback | 0.0994 / 0.4064 / 1.2322 | -17.0% / -20.6% / -10.3%; 2.16 | +6.9% / +7.1% / +7.1%; 2.07 | +9.6% / +9.9% / +9.7%; 2.70 |
+| bwd bf16 atomic fallback | 0.1511 / 0.6196 / 1.8837 | -12.6% / -14.0% / -7.0%; 3.49 | +2.9% / +3.1% / +3.0%; 3.45 | -2.1% / -2.1% / -2.2%; 3.68 |
+
+SwiGLU sm120 (compiled for sm_90 here: the relative cost of each form; rows 40,960 / 262,140; then 1,048,576):
+| case | s0 (original) | s1 (rows in grid x) | s2 (grid-y cap + row loop) | s3 (flat 1-D) |
+| --- | --- | --- | --- | --- |
+| fp32 hidden 1408 (float4) | 0.1603 / 1.0079 | +5.4% / +5.3%; 1M 4.234 | -0.2% / -0.0%; 4.057 | +0.1% / -0.1%; 4.019 |
+| fp32 hidden 1410 (now scalar) | wrong | 0.345 / 2.851; 11.40 | 0.360 / 2.282; 5.73 | 0.380 / 2.412; 9.64 |
+| fp32 1408, input 4 B off (now scalar) | (faults: skipped) | 0.324 / 2.137; 8.54 | 0.354 / 2.243; 5.59 | 0.380 / 2.409; 9.63 |
+| bf16 hidden 1408 | 0.2754 / 1.7479 | -0.1% / -0.2%; 6.97 | +0.1% / +0.1%; 4.07 | +0.1% / -0.0%; 6.98 |
+| bf16 hidden 1410 | 0.2816 / 1.7870 | -0.1% / +21.0%; 8.39 | +0.1% / +0.1%; 4.16 | -2.0% / -2.0%; 7.00 |
+| fp16 hidden 1408 | 0.2754 / 1.7477 | -0.2% / -0.2%; 6.97 | +0.1% / +0.1%; 4.07 | +0.0% / -0.0%; 6.98 |
+
+**Choice, by the rule agreed for these fixes (pass every case; no slowdown at today's sizes; then the fastest /
+simplest):** embedding **e1** (tokens in grid x): exact everywhere and the fastest at our sizes on every path (bf16
+forward -12 to -21%, the atomic backward -7 to -21%; fp32 vectorized forward equal); e2 / e3 are 30-48% slower on the
+bf16 forward even where no loop runs. SwiGLU sm120 **s2** (grid y capped at 65,535 + a row loop): equal to the original
+at our sizes (within 0.2%), the fastest at 1M rows on the typed and scalar paths (4.07 vs 6.97 ms; 5.6-5.7 vs 8.5-11.4
+ms); s1 is +5% on the fp32 float4 kernel (fails "no slowdown"), s3 is slow on the typed path at 1M. (Before the test I
+expected candidate 1 for both; the measurement says e1 and s2.)
+
+**Into the library (`lc_box/tests/emb_sw/apply_emb_sw_to_library.py`), as minimal edits of the original files** (the
+original comments and layout kept; only the index lines, the grids, the SwiGLU row loop and fp32 launcher change; the
+SwiGLU scalar tail kernel is removed because nothing launches it any more; `<algorithm>` and `<cstdint>` added for
+std::min and uintptr_t; every change has a dated comment pointing here). Proof that the files ARE the tested code:
+(1) host code: outside the kernel bodies, each file equals the tested candidate token for token (comments and whitespace
+removed; asserted by the script); (2) kernels: compiled with the test's flags and compared with `sass_compare.py`
+(cuobjdump -sass, names matched with the candidate namespace removed, addresses and encodings removed): all 9 embedding
+kernels SASS-identical to e1 (forward scalar fp32 / fp16 / bf16, vectorized, backward fp32 / fp16 / bf16, cooperative fp32
+/ bf16), all 4 SwiGLU kernels identical to s2 (float4, typed fp16 / bf16 / float). md5: EmbeddingKernels.cu 292b0f19,
+SwiGLUKernels_sm120.cu b23f0be6.
+
+**FINAL3 = every library file of the push**: FINAL2 + these two + `GQA_bwd_vj2_sm90.cu` with the fp32 dK/dV switch
+(default off, md5 47efdab3 = the file run_dkdv.sh tested); the 9 changed library files md5-equal to the laptop tree; built
+in RAM (`/dev/shm/gk_final3`, incremental make recompiled exactly those 3 files, no warnings). Trainer check queued
+(job f3_tr): FINAL2 / FINAL3 / FINAL3 / FINAL2 at the 4k gate, then FINAL3 on the 131,072 one-row gate (step-0 val must be
+4.334521). The library diff now (laptop, not pushed): Makefile, Tests/kernel_tests/test_varlen_attention.cu,
+SwiGLUKernels_sm120.cu, RoPEKernels.cu, GQA_bwd_vj2_sm90.cu, RoPE_sm90.cu, EmbeddingKernels.cu, LossKernels.cu,
+ContiguousKernel.cu, ContiguousKernel_sm90.cu (10 files, +920 / -158).
+
+**The 135M model at every length (real prepared data at each T, FINAL library; jobs m135_probe on GPU 0 and m135_real
+on GPU 3, 17:23-17:30).** Max B per T (3 steps each on the first B (+1) rows, val = those rows):
+| T | max B | tokens per step | active peak | B + 1 |
+| --- | --- | --- | --- | --- |
+| 4,096 | 42 | 172,032 | 138,184 MiB | 43: out of memory (cudaMallocAsync 946 MiB failed), as predicted (141.8 of 143.8 GB) |
+| 8,192 | 21 | 172,032 | 138,182 MiB | not run: 22 x 8,192 ~ 145 GB predicted |
+| 16,384 | 10 | 163,840 | 132,066 MiB | not run: 11 ~ 145 GB |
+| 32,768 | 5 | 163,840 | 132,066 MiB | not run: 6 ~ 157 GB |
+| 65,536 | 2 | 131,072 | 107,608 MiB | not run: 3 ~ 157 GB |
+| 131,072 | 1 | 131,072 | 107,640 MiB | not run: 2 ~ 207 GB |
+(The probes' "median dt" is one step of a 3-step run: not a speed number.)
+
+20-step runs at 131,072 tokens per optimizer step (the first 20 x ROWS train rows, EPOCHS 1; val on the full val split
+at steps 0 / 10 / 19), GPU 3:
+| T | B x accumulation | median step | tokens/s | val 0 -> 10 -> 19 | active peak |
+| --- | --- | --- | --- | --- | --- |
+| 4,096 | 16 x 2 | 416.0 ms | 313,019 | 2.2135 -> 2.1681 -> 2.1545 | 58,008 MiB |
+| 8,192 | 8 x 2 | 444.9 ms | 292,578 | 2.2258 -> 2.1840 -> 2.1742 | 58,008 MiB |
+| 16,384 | 8 | 539.4 ms | 239,521 | 2.8195 -> 2.6986 -> 2.6622 | 107,604 MiB |
+| 32,768 | 4 | 537.3 ms | 224,485 | 3.0185 -> 2.9000 -> 2.8570 | 107,610 MiB |
+| 65,536 | 2 | 574.6 ms | 210,641 | 4.1812 -> 3.9385 -> 3.8508 | 107,626 MiB |
+| 131,072 | 1 | 681.1 ms | 175,801 | 3.2167 -> 3.0641 -> 3.0185 | 107,652 MiB |
+Every run exit 0, no NaN, val down at every check. Memory = 8,402 MiB + 0.757 MiB x tokens per micro-batch (65,536 ->
+58,013 predicted, 58,008 measured; 131,072 -> 107,624 vs 107,604-107,652). Tokens per second fall with T because the
+attention work per token grows with the chat length (the long-T data has the long chats). The higher losses at long T
+are the base model's (pretrained at 4,096). The 131,072 run's last train loss (7.22) is one row (B 1): a single row's
+loss; val is the reliable number there.
+
+**FINAL3 in the trainer (job f3_tr, GPU 0, 17:44-17:53): passes.** 4k gate, rounds FINAL2 / FINAL3 / FINAL3 / FINAL2
+(phase C settings, 20 steps, median step over steps 2-19): FINAL2 154.39 / 150.88 ms (mean 152.6; the first round is the
+high one), FINAL3 150.65 / 150.47 ms (mean 150.6): not slower. Step-0 val 1.606700 and peak 38,288 MiB in all four; final
+val 1.048126-1.048390 (the run-to-run spread). FINAL3 on the 131,072 one-row gate (B 1, 10 steps): step-0 val
+**4.334521** (= FINAL and NEW, 45.120), peak 107,640 MiB (=), 605.98 ms per step (FINAL 604.9, NEW 600.6), exit 0. So
+every library file of the push works in training at 4k and at 131k.
+
+### 45.125 2026-10-31: attention vs FA3 / FA4 / cuDNN at 4k-128k (the 135M heads 4/2), after all fixes
+
+**Setup** (`lc_box/tests/rivals/scoreboard_long2.sh`, one T per job, queue jobs riv_<T>): ours = the FINAL library
+(md5 89a61736); rivals FA3, FA4 (benv), cuDNN (through PyTorch); heads 4/2, head dim 128, causal. Dense = 32,768 / T
+full rows per call (8 at 4k, 2 at 16k, 1 at 32k-128k); packed = one real packed row of the prepared data at that T (the
+second row in row order of our BENCH export: at 32k-128k that row is almost one long chat, so packed ~ dense there).
+One contender per process under nsys (kernel times only), ABBA rounds (ours fa3 fa4 cudnn | cudnn fa4 fa3 ours), free
+clocks, iterations set from a calibration of ours (~5 s of GPU work each, the 4 s power window), clock / power logged.
+4k, 32k, 64k, 128k on GPU 3; 16k on GPU 0 (each T compared on one GPU). Records `long_t/rivals/attn_T<T>_H4x2/`.
+
+**Ours / rival, forward + backward per call (mean of the two rounds; below 1.00 = ours faster):**
+| T | layout | vs FA3 | vs FA4 | vs cuDNN | single directions above 1.00 |
+| --- | --- | --- | --- | --- | --- |
+| 4,096 | dense | 0.952 | 0.909 | 0.827 | fwd vs FA3 1.003 |
+| 4,096 | packed | 0.875 | 0.885 | 0.812 | - |
+| 16,384 | dense | 0.984 | 0.980 | 0.856 | - |
+| 16,384 | packed | 0.936 | 0.941 | 0.804 | - |
+| 32,768 | dense | 0.989 | 0.990 | 0.860 | bwd vs FA4 1.000-1.003 |
+| 32,768 | packed | 0.986 | 0.981 | 0.829 | fwd vs FA3 1.006 |
+| 65,536 | dense | 0.995 | 0.996 | 0.863 | bwd vs FA4 1.007-1.009 |
+| 65,536 | packed | 0.990 | 0.988 | 0.836 | fwd vs FA3 1.010 |
+| 131,072 | dense | 0.999 | 0.998 | 0.858 | bwd vs FA3 1.001-1.002, vs FA4 1.013-1.014 |
+| 131,072 | packed | 0.993 | 0.990 | 0.829 | fwd vs FA3 1.020 |
+Ours is ahead of all three in every combined case at every T. The lead over FA3 / FA4 shrinks as the rows get longer
+(5-12% at 4k, ~1% at 64k, a tie at 128k dense): at long rows every kernel is near the tensor-core limit, and the short-
+chat advantages of our packed plan matter less. The lead over cuDNN stays 14-20%. Where we trail in one direction: the
+dense backward vs FA4 at 64k-128k (0.7-1.4%) and the packed forward vs FA3 at 32k-128k (0.6-2.0%), both on long chats:
+candidates for later kernel work, not bugs.
+
+**Two script problems on the way (no result affected):** the first riv_* jobs (17:30) stopped at the start because
+scoreboard_long.sh looked for layouts named `real_rows_*` while tva names them `real<T>_rows_*` (fixed in
+scoreboard_long2.sh, re-run); the 4k and 16k summaries then failed on a missing helper (`seq_names.py`, md5 00ae70a6, the
+same file the 10-28 scoreboard used, copied next to scoreboard_free.py) and were remade from the raw traces still in RAM.
+
+**The queue ended 18:17:56.** GPU 0 was used 17:13-17:53 (its worker left the 64k / 128k scoreboards to GPU 3 by the
+18:05 deadline rule); GPU 3 free since 18:18.
+
+### 45.126 2026-10-31: the fp32 dK/dV switch kept as an option, OFF by default — the user's decision, and three checks
+
+**Decision (the user, ~18:20):** keep `BLU_VJ2_DKDV_F32` in the code as an option, OFF by default (training keeps the
+bf16 partials, exactly as before), with the whole experiment written at the switch in simple English, naming the user
+(gautam_reddy_k) as the one who made, tested and decided it. Done in `GQA_bwd_vj2_sm90.cu` (the comment before the
+`f32p` switch; the code is unchanged; md5 09466d3a). Why keep it at all: a precision-first run can turn it on; why off:
+45.122 (no speed parity, no visible loss gain).
+
+**Check 1, the compiled binary** (the library's own nvcc line, -cubin, cuobjdump -sass, addresses / encodings removed):
+the default path of the new file vs the ORIGINAL file in git (HEAD): all 7 kernels instruction-for-instruction the same
+(`gqa_bwd_vj2_kernel<CHATS>` = `<CHATS, false>`: 1712 / 1800 instructions; `gqa_dkdv_greduce_vj2` = `<__nv_bfloat16>`: 224;
+`convert_dq_frag_vj2<false / true>` 216 / 336; `bwd_prep_vj2(_chats)` 144 / 288); the new file vs the tested FINAL3 file:
+all 10 kernels the same (the edit is comments only).
+
+**Check 2, the trainer's own attention API** (`lc_box/tests/switch/test_sdpa_switch.cu`, library FINAL4 = FINAL3 + this
+file): the exact call of bluscript_sft.cpp:757, `autograd::scaled_dot_product_attention(q_bf, k_bf, v_bf, 4, 2, causal,
+0, FlashAttention, chats)`, with the trainer's inputs (q, k fp32 [B, T, H, 128] -> to_dtype bf16 -> transpose; v bf16 ->
+transpose; chats from `gqa_chat_plan_make`; B 2, T 4,096, 7 chats), then backward. Off (twice) and on, GPU 3:
+| | notice line | dK/dV reduce kernel (nsys) | O | dK, dV | dQ |
+| --- | --- | --- | --- | --- | --- |
+| off, run a vs run b | none | `gqa_dkdv_greduce_vj2<__nv_bfloat16>` | identical | identical (deterministic) | differ (atomic adds) |
+| on vs off | 1 line | `gqa_dkdv_greduce_vj2<float>` | identical (forward untouched) | differ | differ |
+
+**Check 3, the real trainer under nsys** (`run_switch_trainer.sh`, the 4k gate, 4 steps; the first try had 2 steps,
+which the trainer refuses: "warmup_steps + stable_steps (1) leaves no decay tail before max_steps (2)"): off ran
+`gqa_bwd_vj2_kernel<(bool)1, (bool)0>` + `gqa_dkdv_greduce_vj2<__nv_bfloat16>`, no notice; on (BIN = an nsys wrapper that
+sets the switch) ran `<(bool)1, (bool)1>` + `<float>`, 1 notice. Step-0 val 1.606700 both; val after 4 steps 1.518903
+(off) / 1.519041 (on). The same nsys run lists what the trainer really runs: embedding forward
+`embedding_forward_kernel_optimized<bf16>` (the e1-fixed kernel; 8 calls), embedding backward BluCCL's segmented
+`comm::fusion::embedding_bwd_*` (not the atomic fallback), RoPE `fused_qknorm_rope_fwd_bf16_tm` / `fused_qknorm_rope_bwd_ca_bf16_tm`
++ `rope_build_cache_kernel` (the fixed table, once), loss `sparse_ce_forward_kernel_vec_save_stats` (train) /
+`sparse_ce_forward_kernel_vec` (val) + `sum_reduction_kernel` + `sparseCENormalize_from_stats_inplace`, SwiGLU
+`swiglu_fwd_vec_kernel_sm90` / `swiglu_bwd_v21_vec_kernel_sm90` (the sm120 file never runs on an H200).
+
+**Multi-GPU / multi-node (the user's question):** every change of 45.113-45.126 is inside a kernel that runs on one GPU;
+with more GPUs each rank runs the same kernels on its own part of the batch, and the splitting / communication is the
+dist side's (ZeRO / BluCCL, the CP submodule), which no change touches. Not run on more than one GPU today (only GPU 3);
+a 2-GPU smoke run is the proof when two GPUs are free. Context parallelism (Adhitya's team) uses RoPE positions past
+65,536 per long row, so the RoPE table fix matters to them (to tell them).
+
+**Loss and RoPE vs the other libraries at long T (the user: only attention was benchmarked):** queued after these checks
+(`run_loss_rope_rivals_long.sh`, GPU 3): RoPE = `rival_bench_long.py` (ours = FusedRMSRoPE_bf16.cu of the FINAL library,
+built without fast math, vs HF eager, torch.compile, Liger, flash-attn Triton, Quack; dense and packed with the REAL chat
+lengths of each T's data; forward and backward; fp64 check); loss = `bench_sparse_ce_long.cu` (ours through the library)
++ `loss_rivals_long.py` (torch fp32 / bf16, torch.compile, Liger; + lm_head: Liger FLCE, Apple CCE), real labels, rows per
+call = the trainer's micro-batch (65,536 tokens at 4k / 8k, 131,072 from 16k). Both copies only add a rows-per-call
+setting / a real-data option to the 10-17 / 10-22 tools.
+
+### 45.127 2026-10-31: long-context SFT with context parallelism — can we just call Adhitya's CP? (re-read at cf1372d)
+
+The user: if one GPU is not enough later, can the SFT trainer call the attention (and RoPE) of Adhitya's CP submodule
+(ring / Ulysses wrappers) instead of writing context parallelism again? Read today from git objects at `cf1372d` (the
+CP commit our branch records, 2026-10-16; the 10-30 reading was partly from the stale laptop checkout `661b6ef`). His
+P022 / P032 run trees are not reachable from here; what they run is from 45.108 parts 10-11 (his reply of 10-30).
+
+**What his CP has (cf1372d):**
+- Trainer `Scripts/Blutrain/bluscriptCP.cpp` (Llama style, 3,720 lines): modes ring / ulysses / hybrid (Ulysses inside,
+  ring outside), CP x DP; pretraining data (uint16 token shards; every CP rank of a group loads the SAME row); head_dim
+  64 or 128.
+- Attention: ring + `CP_ATTN_FUSION=split` = `GQA_causal_cp_fwd_sm90.cu` / `GQA_causal_cp_bwd_sm90.cu`: "CP FORK of
+  Hopper v62" (our forward of 10-xx) and a fork of our older backward v44; rectangular T_q != T_k (head-tail
+  sub-chunks), an is_causal toggle per ring step, (O, LSE) out, merged by `SDPAMerger.h`; constraints head_dim 128,
+  T_q % 256, T_k % 128. Ring + fused = `GQA_fused_*_sm103_cp.cu` (WMMA). Ulysses = the library's
+  `gqa_fused_flash_attn_forward` (Blackwell-only now) or a CP-local kernel (`CP_ULYSSES_CPLOCAL=1`).
+- Document masking (started 10-01, kernels 10-16): `DocMask.h`, `DocIdKernel.cu`; a document id per token, built from
+  the FULL row by scanning for the EOT token (`CP_DOC_EOT`, default 50256), global across the CP group (each rank builds
+  every rank's ids locally, nothing extra on the ring); the split kernels stage the keys' ids in shared memory, find the
+  live band of key tiles per query tile by binary search (`kv_lo`) and skip dead tiles. Only ring + split
+  (`bluscriptCP.cpp:1228-1248` refuses other modes). RoPE positions are NOT restarted per document.
+- RoPE: its own fused QK-norm + RoPE kernels (`fused_qknorm_rope_cp_{fwd,bwd}.cu`), positions = one offset per shard
+  (`RopeDeltas.h`); no per-token position array (the README: per-row labels and multi-GPU CREAM "need an explicit
+  per-token position array in the kernel (deferred)"). The table: CP's OWN `build_rope_cache` in `YARNOps.cpp` (YaRN,
+  built on the CPU in fp32, "bypass the CUDA kernel"); it replaces the library's symbol (his log line
+  `[YaRN] build_rope_cache: seq_len=...` shows it). **Correction to my earlier answer today:** the library's RoPE table
+  bug (no table at T >= 65,536, 45.115) therefore did not hit his CP runs; it hits only callers of the library's own
+  builder at T >= 65,536.
+- His runs (45.108, his reply of 10-30): TI = our dist_side_merge `d96b991` (09-28, fast math everywhere),
+  `CP_BF16_EMBED=1` (the bf16 atomicAdd embedding backward), <= 32,768 rows per loss call (64k / 128k rows at CP 4-8 =
+  8,192-16,384 tokens per GPU), largest per GPU 1 x 16,384 (680M-class, H100, 74.1 GB).
+
+**Our SFT trainer vs his CP trainer:**
+| | ours (bluscript_sft) | his (bluscriptCP) |
+| --- | --- | --- |
+| data | packed SFT rows: inputs, labels (prompt masked), chat lengths / offsets | pretraining token shards, documents split at EOT |
+| attention | library `scaled_dot_product_attention` + chat plan (design A: per-chat tile lists), forward v62 family, backward Vj2 (FA3-style, 10-15) | CP split kernels (forks of our v62 / v44) with per-token doc ids from EOT; or WMMA / Ulysses kernels without masking |
+| RoPE | library `fused_rms_rope_bf16` with per-token positions (restart at 0 per chat); table from the library builder (fixed today) | CP fused QK-norm + RoPE, one offset per shard (positions continue across documents); table from CP's CPU YaRN builder |
+| loss | SFT: trained tokens only, sum / trained count (10-30 sum fix) | pretraining CE |
+| embedding backward | segmented (BluCCL, fp32 sums) | bf16 atomicAdd (`CP_BF16_EMBED=1`) |
+| fast math | only the loss file (today) | everywhere (d96b991) |
+| one GPU per row | yes: 135M up to 131,072 (B 1, 107.6 GB, 45.124) | CP 1-8 |
+
+**Can the SFT trainer just call his attention?** Not as is. (1) His document ids come from EOT scanning; in our SFT data
+the end token and the pad token are both id 0 (meta.json end_id 0, pad_id 0), so EOT scanning would split wrongly: the
+ids must come from our chat boundaries (seq_offsets / seq_lengths) — a small change, and his kernel's dead-tile skip then
+works per chat. (2) RoPE: our rows restart positions per chat; his CP RoPE continues positions across the row. For
+attention inside one chat the result is the same in exact math (RoPE depends only on the distance), but at large
+positions the angles lose precision (our table error grows to 1.9e-2 at 64k-128k vs 5.7e-4 below 4k, 45.115), and a CP
+run would not match a one-GPU run of the same data: so a per-token position array in his RoPE kernels (or our fused
+kernel on each shard, which already takes positions). (3) The SFT loss over a CP group: trained-token sum and count
+summed over CP x DP. (4) Speed: his ring backward is a fork of our older v44, not Vj2.
+
+**Recommendation (as 45.108 Q1, refined):** do not rewrite context parallelism, and do not swap our kernels for his.
+(0) No CP while a row fits one GPU (135M: up to 131,072). (1) Ulysses with OUR kernels: an all-to-all before attention
+turns a sequence slice into the whole row for Hq / U query heads and Hkv / U KV heads, so our attention + chat plan run
+unchanged; RoPE runs on the slice before the all-to-all with the slice's per-chat positions (our fused kernel takes
+positions); an all-to-all back after. Limit: U divides the KV heads (135M: 2; 1.6B: 2, 3 or 6). Take from his module the
+process groups and the all-to-all. (2) Ring only if more GPUs per row are needed: his rotator, LSE merger, head-tail
+load balancer and doc-id ring, with ids from our chats and positions per chat; kernels: his split kernels (doc ids)
+or ours extended to (O, LSE) on rectangular steps. His repository, his team: agree with them first. To confirm what
+P022 / P032 run now: read-only commands on those boxes (the user runs them).
+
+**Found by the long-T RoPE rival run (2026-10-31 19:06): our fused QK-norm + RoPE BACKWARD is slow for one long row.**
+Same 131,072 tokens per call: 16k x 8 rows: ours forward 140 us + backward 202 us = 343 us (1.46x faster than
+torch.compile); 128k x 1 row: forward 140 us + backward **993 us** = 1,133 us (torch.compile 498 us, Quack 487 us: we
+lose 2.3x there); accuracy still the best (y / dx error 1.00 / 1.00 vs 1.7 / 2.8). Cause (`FusedRMSRoPE_bf16.cu:804-805`):
+the backward grid is `(BF16_BWD_T_CHUNKS = 32, Hq + Hkv, B)` with one warp per block, so each row is cut into a FIXED 32
+chunks: 4k x 16 = 3,072 warps of 128 tokens; 16k x 8 = 1,536 warps of 512; 128k x 1 = **192 warps of 4,096 tokens** on 132
+SMs (latency-bound). The forward grid grows with T (no problem). In training at 128k: ~37 x 0.85 ms ~ 30 ms of the 681 ms
+step (~4%). Fix candidates for after the push: the chunk count from T x B (about 128-512 tokens per warp; at 4k exactly
+32, so today's runs stay bit-identical); the dgamma partial rows grow with it (the reduce sums them in a fixed order:
+deterministic, other bits than today at long T). Speed only, not correctness. Also seen: the dense forward at 128k is
+190 us vs 140 us packed: the dense row reads cos / sin rows 0-131,071 (a 64 MB table, larger than L2), packed rows reuse
+small positions; the rivals pay the same (torch.compile 188 us).
+
+### 45.128 2026-10-31: loss and RoPE vs the other libraries at 4k-128k (results)
+
+**Setup** (records `long_t/rivals2/T<T>/`; scripts `loss_rope_rivals_scripts/`): the 135M shape; rows per call = the
+trainer's micro-batch (4k x 16, 8k x 8 = 65,536 tokens; 16k x 8, 32k x 4, 64k x 2, 128k x 1 = 131,072 tokens); real
+labels / real chat lengths of each T's prepared data. 4k / 8k / 16k / 64k on GPU 3, 32k / 128k on GPU 0 (ours and the
+rivals of one T always on one GPU). GPU 0 was ours again from 18:50 (the user); the runner was split into queue jobs.
+
+**Loss** (ours = the library through bench_sparse_ce_long, forward with saved stats + backward; median micro-batch; ms per
+call F+B; x = rival / ours; every case of ours passes every check):
+| T | trained | ours | Liger | torch.compile | torch bf16 | torch fp32 | lm_head + loss: ours (GEMMs + loss) | Liger FLCE | Apple CCE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 4k | 72.8% | 4.140 | 1.21x | 1.87x | 2.92x | 9.90x | 19.61 ms (logits 6.2 GB) | 1.13x (0.21 GB) | 2.61x |
+| 8k | 68.8% | 3.975 | 1.22x | 1.94x | 3.04x | 10.31x | 19.65 | 1.11x | 2.48x |
+| 16k | 57.0% | 7.139 | 1.16x | 2.16x | 3.38x | 11.46x | 38.71 (logits 12.3 GB) | 1.00x (0.37 GB) | 2.05x |
+| 32k | 54.7% | 6.966 | 1.16x | 2.23x | 3.46x | 11.75x | 38.72 | 1.00x | 1.96x |
+| 64k | 50.5% | 6.662 | 1.16x | 2.31x | 3.62x | 12.28x | 38.42 | 0.99x | 1.84x |
+| 128k | 48.9% | 6.532 | 1.16x | 2.36x | 3.69x | 12.53x | 38.35 | 0.99x | 1.79x |
+Loss alone: ours the fastest everywhere. lm_head + loss: at 131,072 tokens per call Liger's fused linear + CE ties us
+(0.99-1.00) with 0.37 GB instead of our 12.3 GB of logits; at 65,536 we lead by 11-13%. (Ours = cuBLAS GEMMs + our loss
+added, not a measured fused run.) The logits work planned after the push (lm_head + loss only on trained tokens, or
+chunked / fused) is the item that closes this, for speed and memory.
+
+**RoPE** (the trainer's fused bf16 QK-RMSNorm + RoPE; packed rows with real chats; GPU time per call fwd + bwd; x = rival /
+ours, below 1 = the rival is faster; accuracy vs fp64 in units of one bf16 rounding of the exact result):
+| T x rows | ours fwd / bwd / total (us) | torch.compile | Quack | Liger | flash-attn Triton | HF eager |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4k x 16 | 71 / 106 / 177 | 1.44 | 1.67 | 2.46 | 3.61 | 24 |
+| 8k x 8 | 71 / 106 / 177 | 1.43 | 1.57 | 2.47 | 3.51 | 24 |
+| 16k x 8 | 140 / 202 / 343 | 1.46 | 2.76 | 2.46 | 4.77 | 24 |
+| 32k x 4 | 142 / 304 / 446 | 1.12 | 7.61 | 1.89 | 9.16 | 18 |
+| 64k x 2 | 171 / 526 / 697 | **0.72** | **0.85** | 1.21 | 1.83 | 12 |
+| 128k x 1 | 140 / 993 / 1,133 | **0.44** | **0.43** | **0.75** | 1.03 | 7 |
+Accuracy (y / dx): ours 1.00 / 1.00 at every T; torch.compile 1.7 / 2.7-3.1, Quack and flash-attn 2.0 / 2.2, Liger 3.4-3.8
+/ 2.9-3.6, eager 3.5-4.1 / 3.7-4.7; dgamma: ours ~1e-6 relative, the rivals 2e-3 to 7e-3. Ours is the fastest and the
+most accurate up to 32k; at 64k and 128k we lose on speed only because of the backward's fixed 32 chunks per row (the
+finding in 45.127's note above; fix after the push). Liger at 4k was first skipped (the env lacked `packaging`;
+installed into our env; re-run: 2.46-2.53x).
+
+**Follow-up (the user, 19:15): YaRN, what his CP module is, and how much work each way is.**
+- YaRN = a different FORMULA for the cos / sin table (some frequencies divided by a scale, plus an attention temperature
+  baked into cos and sin) for context extension; YARN_SCALE = 1 gives plain RoPE. His table is built ONCE at model init
+  (on the CPU, copied to the GPU, installed on every layer by `set_rope_cache`) and reused every step: the same caching as
+  ours (`bluscript_sft.cpp:831`, built once by the library's GPU kernel). Our library has no YaRN (no "yarn" anywhere in
+  TI); the SFT trainer uses plain RoPE with the checkpoint's theta. Needed? Only for chats longer than the base model's
+  pretraining length (135M: 4,096); with per-chat positions, shorter chats never see a position past 4,096. Whether YaRN
+  (or a higher theta) helps long-chat SFT is a test (long-T SFT, plain vs YaRN vs higher theta, long-context evals);
+  adding it = the table builder only (our fused kernel reads the table) + `rope_scaling` in the HF export.
+- His CP module is a LAYER on top of our library and BluTrain's dist code, not another tensor library: from TI / BluTrain
+  it uses the loss (`sparse_cross_entropy_loss`), embedding, matmuls, norms, optimizers, ZeRO-1 (`ShardedOptimizer`,
+  `ShardedMuon`), DataParallel; his own: the CP attention kernels (forks of ours + WMMA), QK-norm + RoPE for CP, table
+  builders (YaRN / LongRoPE / CREAM), the communication (ProcessGroupNCCL, DeviceMesh, rotators, all-to-all), the LSE
+  merger, the load balancer, an eval NLL kernel, and his trainer.
+- Gradients over CP (`bluscriptCP.cpp:21-37`): ZeRO-1 reduce-scatter over all DP x CP ranks, an AVERAGE, which composes
+  per-rank LOCAL-mean losses into the global gradient: right for pretraining (every token counts), wrong-weighted for SFT
+  (each slice holds a different number of trained tokens). For SFT: each rank's loss = its slice's trained-token loss
+  SUM / the GLOBAL trained count (one all-reduce of counts over DP x CP per step), gradients summed: our 10-30 loss-sum
+  rule, with the group widened from DP to DP x CP.
+- His Ulysses layer (`UlyssesAttention.h`): `ulysses_combine` / `ulysses_partition` = an NCCL all-to-all + reshapes (raw
+  collectives), the backward node runs them in reverse; the attention in between is a separate call. So "his wrapper
+  around our kernels" is real: combine -> our `scaled_dot_product_attention(..., chats)` for the whole row and Hq / U heads
+  -> partition; RoPE before combine, on the slice, with the slice's per-chat positions (our fused kernel takes them).
+- Work, compared: (A) his kernels + our SFT features = changes INSIDE his kernels (per-token positions in his CP RoPE,
+  doc ids from chats), his older v44-fork backward, document masking only in ring mode; (B) his all-to-all around our
+  kernels = no kernel change; glue in our trainer behind a CP switch: the CP group (his DeviceMesh / ProcessGroupNCCL),
+  slicing inputs / labels / positions per rank, combine / partition with autograd, the loss count over DP x CP, ZeRO over
+  DP x CP. (B) is less work and keeps our faster kernels.
+- The Ulysses limit: U divides the KV heads. 135M (2 KV heads): U <= 2, but the 135M needs no CP up to 131,072 (one GPU,
+  45.124). 1.6B (6 KV heads): U = 2, 3 or 6; at ~88 GB for 32,768 tokens on one GPU (10-27), 64k needs U = 2 and 128k
+  U = 6 (21,845 tokens per GPU): enough to 128k. Past that: KV-head replication (his GQA helpers) or ring.
+
+### 45.129 2026-10-31: lm_head + loss only on trained tokens — what we had, what every library does today (from code), our benchmark checked, the shapes
+
+**What we had** (§33 of 09-29, §45.33-34 of 10-17, §45.106 of 10-28, memory "logits only at trained positions"):
+the lm_head runs on every position; prompt / pad rows are never used. 10-17 (1.6B, padded v1 data, 77% of rows
+untrained): Apple CCE, which skips them, beat cuBLAS GEMMs + our loss by 13% even with slower GEMM kernels. 10-28 (135M,
+packed): untrained = the prompt only (21-33%); lm_head + loss 8.3% of a 4k step; TRL + Liger used ~4 GB less memory in
+the framework comparison (our bf16 logits: 5.25 GB at 13 x 4,096 x 49,280). Decided 10-28: do both (trained-only rows,
+and a chunked / fused lm_head + loss) after the SFT work.
+
+**Every library, read from its current code today** (git clones fetched today: TRL a03b8fe 10-30, Liger 781a8ae 10-27,
+Megatron dda809c 10-31, torchtitan 8e4990d 10-30, Unsloth e4bf561 10-31; installed on the box: cut-cross-entropy 25.1.1,
+liger_kernel 0.8.5, transformers 5.22.1; wheels read only: unsloth_zoo 2026.10.11, torchtune 0.6.1):
+| library | untrained rows in the lm_head | full logits kept? | how |
+| --- | --- | --- | --- |
+| **TRL SFT** (default now) | **dropped before the matmul** | no | `sft_trainer.py:1660`: `model(**inputs, fused_lm_head=True)`; `trainer/utils.py:1569-1720` `add_fused_lm_head`: `mask = labels != -100`, on CUDA (`_use_triton`: cuda / xpu) `hidden_states[mask]`, `labels[mask]` -> `ChunkedLogProbFunction` (`kernels/chunked_logprob.py:468-720`): cuBLAS `torch.mm` tiles of <= 4,096 rows x 32,768 vocab, a Triton kernel folds each into an online logsumexp; the backward RECOMPUTES each tile, turns it into dlogits in place, accumulates dX and dW in fp32; `masked_scatter` back to [B, T] (zeros); loss = sum / num_items_in_batch. `loss_type="chunked_nll"` is now a deprecated alias of the default `"nll"` (`sft_config.py:107-114`). Work: 8 x N_t x C x V (forward + recompute + 2 backward GEMMs). |
+| **Unsloth** | **dropped** | no | `unsloth_zoo/fused_losses/chunked_logprob.py:337-376` `unsloth_chunked_ce_loss` ("scoring only labelled rows"): `keep = targets != ignore_index; hidden = hidden[keep]`; chunks; forward keeps only the logsumexp, backward recomputes each chunk. Called from `unsloth/models/llama.py:~2100` (`unsloth_fused_ce_loss`). |
+| **Apple CCE** | **dropped** (inside its kernel) | no | `cce.py:163` `valids = _build_flat_valids(...)` = `(targets != ignore_index).nonzero()` (`utils.py:28-42`); the Triton kernel's B = `valids.numel()` and it loads each row through `Valids` (`cce_lse_forward.py:52-162`): matmul + logsumexp fused; backward also skips vocabulary blocks whose probabilities are below `filter_eps` (default "high": an approximation). |
+| Liger fused linear CE | **computed** | no (chunks) | `ops/fused_linear_cross_entropy.py:97-305`: contiguous chunks of ALL B x T rows, `torch.mm(_input_chunk, weight.t())`; ignored rows get zero gradient; the gradient is computed inside the forward (no recompute). Work 6 x N x C x V. |
+| HF transformers (Trainer default) | computed | yes, + fp32 copy | `models/llama/modeling_llama.py:467-472` `logits = self.lm_head(hidden_states)` (`logits_to_keep` = 0: all; it is for generation); `loss/loss_utils.py:51-71` `logits.float()` then `cross_entropy(ignore_index=-100)`, / `num_items_in_batch`. |
+| torchtune | computed | yes (bf16; fp32 only per chunk) | `modules/transformer.py:482-500` `chunked_output`: the output layer on every token chunk; `modules/loss/ce_chunked_output_loss.py:13-81` upcasts one chunk at a time. |
+| Megatron-LM | computed | yes | `pretrain_gpt.py:288-292`: per-token losses of every token, `sum(losses * loss_mask)`. |
+| torchtitan | computed | yes, fp32 | `components/loss.py:74-85` `cross_entropy(pred.float(), ..., ignore_index)`. |
+| **BluTrain (us)** | computed | yes (bf16) | `bluscript_sft.cpp:908-913` `logits = matmul(x_bf [B,T,512], wte^T [512,49280])`; `:3364` `sparse_cross_entropy_loss(logits, target, 65535, &sft_denom)`; the loss backward writes dlogits over the logits (10-21); the forward kernel already skips untrained rows' softmax, the backward still writes their zero rows, the matmul backward multiplies them. |
+
+**Our benchmark of today checked (45.128):** the loss-alone numbers are right (same data, same rows, each library's own
+kernel). The lm_head + loss comparison has two gaps. (1) The libraries that DROP untrained rows with cuBLAS-speed GEMMs
+(TRL's default fused head, Unsloth) were not in it: only Liger (computes every row, like us), Apple CCE (drops rows, but
+its Triton GEMMs are slower than cuBLAS: 1.8-2.6x behind us here) and torch. So "ours is fastest" holds only against
+those. Arithmetic for TRL: 8 x N_t vs our 6 x N, i.e. 1.33 x (trained share) of our GEMM work: 4k median 0.97 (even),
+128k median 0.65 (TRL likely faster). (2) "Ours" = cuBLAS GEMMs (gemm_only, torch) + our loss bench, added; the trainer
+uses BluBLAS (~cuBLAS on these shapes) and was not measured end to end on this path. Why CCE won on 10-17 and loses
+today: 77% skippable rows then (padded data) vs 27-51% now (packed), with its GEMM kernels at about half cuBLAS speed.
+
+**The shapes (135M: C = 512, V = 49,280; per micro-batch; one forward = one micro-batch of B packed rows of T tokens).**
+With packing every row is full length, so N = B x T is FIXED per T; what changes from micro-batch to micro-batch is
+N_t = the trained tokens (answers) in it. Measured N_t (min / median / max over all micro-batches of the real data):
+| T x B | N = B x T | N_t min / median / max | untrained at the median |
+| --- | --- | --- | --- |
+| 4,096 x 16 | 65,536 | 36,551 / 47,730 / 55,719 | 27.2% |
+| 8,192 x 8 | 65,536 | 27,822 / 45,098 / 57,161 | 31.2% |
+| 16,384 x 8 | 131,072 | 34,741 / 74,738 / 108,422 | 43.0% |
+| 32,768 x 4 | 131,072 | 9,242 / 71,682 / 110,898 | 45.3% |
+| 65,536 x 2 | 131,072 | 3,065 / 66,230 / 113,546 | 49.5% |
+| 131,072 x 1 | 131,072 | 77 / 64,114 / 122,664 | 51.1% |
+Today: forward `[N, 512] x [512, 49,280] -> logits [N, 49,280]`; backward `dX [N, 512] = dL [N, 49,280] x W [49,280, 512]`,
+`dW [49,280, 512] = dL^T [49,280, N] x X [N, 512]`: 6 x N x C x V. Trained-only: gather `X_t [N_t, 512] = X[idx]` (idx = the
+trained positions, known on the host from labels.bin, uploaded with the batch: no device-to-host sync, unlike TRL's
+boolean indexing), `logits_t [N_t, 49,280]`, the same loss on N_t rows, `dX_t = dL_t x W`, `dW = dL_t^T x X_t`, scatter dX_t
+into a zero [N, 512]: 6 x N_t x C x V. Example 4k median: 9.92 -> 7.23 TFLOP per micro-batch (-27%), logits 6.46 -> 4.70
+GB; 128k median: 19.8 -> 9.7 TFLOP (-51%), logits 12.9 -> 6.3 GB. Measured GEMM time (gemm_only): 15.5 ms at N 65,536,
+31.8 ms at 131,072 -> about -4.2 ms per 4k micro-batch (-8.4 ms of the 416 ms step, ~2%) and -16 ms per 128k
+micro-batch (of 681 ms, ~2.4%); plus the loss backward's zero-row writes (all-masked backward 1.45 / 2.90 ms = ~45% of a
+trained row's cost) go away.
+
+**The loss with trained-only rows:** every row given to the loss is trained, so the ignore check is never hit (kept: the
+validation path and pretraining still use it, and the filler rows below); the sum and the global denominator are the
+same tokens as today, so the loss value is the same up to summation order. Untrained rows get exactly zero gradient
+from the head (scatter into zeros); they still get gradient through attention from the later trained tokens (unchanged).
+Edge cases: N_t = 0 (a micro-batch of only prompts: 128k min is 77, so near) -> skip the head, zero gradient; BluBLAS
+M not a multiple of 64 (memory "BluBLAS sub-64 transposed GEMM") -> round N_t up to a multiple of 256 with filler rows
+labelled 65535 (the loss skips them).
+
+**Two levels, as decided 10-28:** (1) trained-only rows (above): -27% to -51% of the lm_head work and logits memory, no
+new kernel (gather, our BLAS, our loss, scatter). (2) no full logits: chunks with the gradient computed inside the
+forward (Liger's way, possible because our upstream gradient 1 / global trained count is known before the forward:
+sft_denom) keeps 6 x N_t x C x V with memory of one chunk; TRL / Unsloth's recompute costs 8 x N_t. (1) + (2) together
+would do less work than every library read (TRL 8 x N_t, Liger 6 x N) with Liger-class memory. Before building: add
+TRL's fused head and Unsloth's chunked CE to the lm_head + loss benchmark (gap 1) and measure our trainer's path end to
+end with nsys (gap 2).
+
+**Correction to the table above (read further, 21:00):** Unsloth's DEFAULT path is `UNSLOTH_FUSED_LINEAR=1` ->
+`fused_linear_cross_entropy` -> the op `fused_linear_ce_v2` (`unsloth_zoo/fused_losses/fused_linear.py:1395-1529`):
+`_keep_index` keeps only rows with a target (`targets != ignore_index`, `nonzero`), processes only those, and computes the
+gradient INSIDE the forward (no recompute), `grad_h` zeros + `index_copy_`: work 6 x N_t, memory of a chunk. The
+"keep + recompute" path quoted above is the non-default `UNSLOTH_FUSED_LINEAR=0`. So my sentence "(1) + (2) would do
+less work than every library read" is WRONG: Unsloth's default already is trained-only rows + gradient in the forward.
+Also: TRL's SFTTrainer asks its fused head for ("log_probs", "entropy", "is_top1") (`sft_trainer.py:1192-1195`): two
+metrics on top of the loss.
+
+### 45.130 2026-10-31: the benchmark audit (the user: "how come you can be this neglect?") and the corrected lm_head + loss benchmark
+
+**The mistake.** 45.128's lm_head + loss comparison (and 10-28's, built the same way): "ours" = cuBLAS GEMM time from
+torch + our loss bench, timed separately and added; not our trainer's path (BluBLAS inside libtensor), and the
+libraries that skip untrained rows with fast GEMMs (TRL, Unsloth) were missing. The conclusion "we beat every rival on
+lm_head + loss" (10-28 and today) is withdrawn until the corrected run.
+
+**Every other benchmark of today checked against the trainer's own kernels (the trainer's nsys run, 45.126):**
+- Attention scoreboard (45.125): CORRECT. Our runs' nsys traces show exactly the trainer's kernels:
+  `gqa62::gqa_v62_sm90` forward, `gqa_bwd_vj2_kernel` + `convert_dq_frag_vj2` + `gqa_dkdv_greduce_vj2`, and
+  `bwd_prep_vj2_chats` for packed rows. Coverage note: the packed row picked at 32k-128k is almost one long chat.
+- Loss alone (45.128): measured a DIFFERENT backward kernel than the trainer. The bench calls
+  `sparse_ce_backward_cuda_vec_with_stats` (`sparseCENormalize_from_stats`, out of place); the trainer since 10-21 runs
+  `sparse_ce_backward_cuda_vec_with_stats_inplace` (`sparseCENormalize_from_stats_inplace`, `LossKernels.cu:918, 1174`).
+  Same arithmetic and bytes, so a small difference is expected, but it is not the trainer's kernel: re-measured in the
+  corrected benchmark (our path goes through `sparse_cross_entropy_loss`, i.e. the in-place one).
+- RoPE (45.128): CORRECT launcher: the trainer's autograd path (`Normalizations.cpp:1244`) and the bench's C wrapper
+  both call `fused_qk_norm_rope_forward/backward_bf16_tm`. Precision note: every contender got a cos / sin table made
+  from fp64; our trainer's table comes from our builder (error 5.7e-4 below 4k up to 1.9e-2 at 64k-128k, 45.115), so the
+  precision column is the kernel's, not the trainer's at long positions. Timing unaffected.
+- Bug-fix tests and the trainer gates: through the library, against fp64 / numpy references: correct.
+
+**The corrected lm_head + loss benchmark** (`lc_box/tests/lmh/`: `lmh_prep.py`, `lmh_rivals.py`, `lmh_ours.cu`,
+`run_lmh.sh`):
+- Inputs: X [131,072, 512] bf16 = randn and W [49,280, 512] bf16 = randn x 0.02 (fixed seeds), the same bytes for
+  every contender; the case's real labels (one micro-batch of the prepared data, the trainer's B at each T: 4k x 16,
+  8k x 8, 16k x 8, 32k x 4, 64k x 2, 128k x 1), picked by trained count: 4k min / median / max (36,551 / 47,730 / 55,719
+  of 65,536), 8k / 16k / 32k / 64k median, 128k min / median / max (77 / 64,114 / 122,664 of 131,072).
+- Reference: the exact loss, dX and dW on those bf16 inputs in fp64 (rows of 8,192).
+- Ours (`lmh_ours.cu`, linked to FINAL4 = every push file): the trainer's lines 908-913 + 3364 through the library:
+  to_dtype / transpose / contiguous of W, `autograd::matmul` (BluBLAS), `sparse_cross_entropy_loss(..., 65535, &denom)`
+  (in-place backward), backward; memory from the allocator's counters.
+- Rivals (`lmh_rivals.py`, one process each, each called as its own trainer calls it): hf (transformers 5.22.1
+  ForCausalLMLoss), torchtitan (its 4-line loss at tp 1), torchtune 0.6.1 (chunked_output + CEWithChunkedOutputLoss from
+  its own file), megatron (megatron-core 0.20.0 vocab_parallel_cross_entropy on a one-rank group, * loss_mask),
+  liger_flce (0.8.5), cce and cce_exact (25.1.1), trl_sft (1.17.1: the SFTTrainer head with its 3 outputs; file
+  byte-identical to git a03b8fe) and trl_logprob (loss only), unsloth (unsloth_zoo 2026.10.11 default
+  fused_linear_ce_v2, as unsloth/models/llama.py calls it).
+- Measured per contender: F, B, FB medians (CUDA events; FB is the like-for-like number), peak memory above the inputs
+  over one FB (gradients included), loss error, |dX - ref| / |ref|, |dW - ref| / |ref|, largest element error, largest
+  |dX| on untrained rows (must be 0). Order per case: ours, the 10 rivals, ours again (drift). nsys pass at the end:
+  the GEMM kernels each side really runs.
+- Expected (the user): we should LOSE to the ones that drop untrained rows (TRL, Unsloth, CCE) where the untrained share
+  is large, and win or lose against the ones that compute every row (hf, torchtitan, torchtune, megatron, liger).
+- Built: lmh_ours compiled against FINAL4 (no errors); inputs and the 10 cases written (/dev/shm/gk_lmh, 179 MB).
+  GPU run NOT started (21:09): all four GPUs are taken by another user's 4-GPU job (`./_jit_runner_`, started ~21:00).
+
+**The run (21:10-21:33 IST, the 4x H200 box, one runner per GPU, the user gave all 4 GPUs):** first try's harness read
+our gradients as bf16, but the library keeps fp32 gradients for bf16 parameters (`AutogradMeta.cpp:160-163`), so our dX
+error showed 1.25; fixed (`grad_view()` with its real dtype; that try kept in `long_t/lmh/try1/`) and re-run. 21:16 a
+colleague's `_jit_runner_` took all 4 GPUs; our runners waited (free check before every step), were stopped 21:18 at the
+user's word and resumed 21:19 with `SKIP_DONE=1` (only the steps not done). All 120 (case, contender) runs exit 0, 0
+missing. Ours runs first and last in every case: drift 0.995-1.012 (the GPU did not change state during a case).
+Dtypes: our logits are bf16; our dX / dW gradient buffers are fp32 (the library's rule above), like TRL / Liger's fp32
+accumulation.
+
+**nsys proof of the kernels (T4096_min, `nsys_ours_kern_sum.csv`, `nsys_hf_kern_sum.csv`):**
+- ours: BluBLAS `bgemm_sm90_kernel<Sm90WarpspecConfig<256,128,64,...>>` and `<128,256,64,...>` = 77.8% of GPU time,
+  `sparse_ce_forward_kernel_vec_save_stats` 10.5%, `sparseCENormalize_from_stats_inplace` 9.8% (the trainer's in-place
+  loss backward, 10-21), `transpose_tiled_kernel` 1.2% (W^T). So this is the trainer's path, not cuBLAS.
+- hf: cuBLAS `nvjet_sm90_tst_192x192_64x4_1x2_h_bz_coopB_TNN` + `nvjet_sm90_tst_256x128_64x4_1x2_h_bz_coopA_NTT` = 16.3%;
+  the rest is its fp32 loss: `cunn_SoftMaxForward` 25.5%, `cunn_SoftMaxBackward` 20.4%, copies 27.3% (`logits.float()`
+  and back). HF loses on its fp32 softmax and copies, not on its GEMMs.
+
+**How to read the tables.** One case = one real micro-batch of the prepared 135M data at the trainer's B for that T
+(N = B x T rows, "trained" = rows with a label, i.e. answer tokens). FB = forward + backward of lm_head + loss, median ms
+(CUDA events). Ratio = the contender's FB / our FB: above 1 = we are faster, below 1 = the contender is faster.
+"skip" = drops untrained rows before or inside its GEMM; "all" = computes every row like us.
+
+Table A: speed. Ours = FB ms; every other column = ratio to ours.
+| case | N | trained | ours FB ms | trl_sft (skip) | trl_logprob (skip) | unsloth (skip) | cce (skip) | cce_exact (skip) | liger (all) | hf (all) | torchtitan (all) | torchtune (all) | megatron (all) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 4k min | 65,536 | 55.8% | 18.26 | 0.99 | 0.95 | 0.90 | 0.92 | 2.11 | 1.14 | 2.92 | 2.92 | 3.01 | 3.66 |
+| 4k median | 65,536 | 72.8% | 19.66 | 1.19 | 1.14 | 1.09 | 1.11 | 2.56 | 1.11 | 2.73 | 2.73 | 2.81 | 3.42 |
+| 4k max | 65,536 | 85.0% | 19.90 | 1.37 | 1.30 | 1.25 | 1.26 | 2.95 | 1.13 | 2.71 | 2.70 | 2.78 | 3.38 |
+| 8k median | 65,536 | 68.8% | 19.12 | 1.16 | 1.10 | 1.06 | 1.07 | 2.51 | 1.12 | 2.80 | 2.80 | 2.88 | 3.51 |
+| 16k median | 131,072 | 57.0% | 36.45 | 0.99 | 0.94 | 0.90 | 0.92 | 2.14 | 1.05 | 2.94 | 2.94 | 2.98 | 3.69 |
+| 32k median | 131,072 | 54.7% | 35.29 | 0.97 | 0.93 | 0.90 | 0.92 | 2.14 | 1.06 | 3.02 | 3.02 | 3.06 | 3.80 |
+| 64k median | 131,072 | 50.5% | 35.27 | 0.91 | 0.86 | 0.83 | 0.85 | 1.97 | 1.06 | 3.03 | 3.03 | 3.07 | 3.81 |
+| 128k min | 131,072 | 0.1% (77) | 29.24 | 0.05 | 0.05 | 0.05 | 0.03 | 0.05 | 1.06 | 3.62 | 3.62 | 3.67 | 4.55 |
+| 128k median | 131,072 | 48.9% | 35.28 | 0.89 | 0.85 | 0.81 | 0.83 | 1.90 | 1.06 | 3.03 | 3.03 | 3.07 | 3.81 |
+| 128k max | 131,072 | 93.6% | 39.87 | 1.49 | 1.41 | 1.35 | 1.37 | 3.20 | 1.08 | 2.73 | 2.74 | 2.76 | 3.44 |
+
+Table B: peak memory above the inputs over one FB (gradients included), MB. Two numbers = N 65,536 (4k, 8k) / N 131,072
+(16k-128k); the skippers' memory changes with the trained count, so their range over all cases is given.
+| ours | trl_sft / trl_logprob | unsloth | cce / cce_exact | liger | hf / torchtitan | torchtune | megatron |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6,328 / 12,552 | 240-947 | 223-407 | 113-178 | 241 / 401 | 36,992 / 73,952 | 20,052 / 40,072 | 18,514 / 36,996 |
+Ours = the full bf16 logits [N, 49,280] (6.46 / 12.9 GB) + the fp32 dX / dW; this is the memory gap seen in the 10-28
+framework comparison. HF / torchtitan add an fp32 copy of the logits.
+
+Table C: precision against the fp64 reference, range over the 10 cases (relative error = |x - ref| / |ref|).
+| contender | dX rel | dW rel | vs ours |
+| --- | --- | --- | --- |
+| ours | 1.66e-3 - 3.35e-3 | 1.66e-3 - 3.37e-3 | - |
+| hf, torchtitan, megatron | same as ours to 2 digits in every case | same | equal |
+| trl_sft, trl_logprob | 1.66e-3 - 3.40e-3 | 1.66e-3 - 3.41e-3 | equal (within 3%) |
+| unsloth | same as ours | 1.99e-3 - 1.15e-2 | dW 2.0-5.1x worse (equal only at 128k min) |
+| liger | 2.26e-3 - 2.58e-3 | 2.15e-3 - 9.49e-3 | dW 2.2-4.2x worse |
+| torchtune | same as ours | 2.19e-3 - 4.86e-3 | dW 1.1-2.1x worse |
+| cce (default filter) | 1.88e-2 - 1.94e-2 | 5.17e-3 - 3.34e-2 | 6-11x (dX), 1.3-15x (dW) worse |
+| cce_exact | 1.42e-2 - 1.72e-2 | 1.99e-3 - 2.16e-2 | 5-10x (dX) worse |
+Loss value error: at most 1.0e-5 for everyone, except 128k min (77 trained tokens): 9.5e-5 for ours and most others.
+|dX| on untrained rows: exactly 0 for every contender in every case.
+
+**What the numbers say (the user's expectation checked):**
+1. Against every library that computes every row (Liger, HF, torchtitan, torchtune, Megatron) we are faster in all 10
+   cases: Liger 1.05-1.14x, HF / torchtitan 2.70-3.62x, torchtune 2.76-3.67x, Megatron 3.38-4.55x. As expected.
+2. Against the libraries that drop untrained rows (TRL, Unsloth, CCE with its default gradient filter): we LOSE when 57%
+   or fewer of the rows are trained (4k min, 16k-128k medians: they are 1-19% faster; 128k min with 77 trained tokens:
+   they are 20-35x faster) and WIN when 69% or more are trained (8k median, 4k median, 4k max, 128k max: we are 6-49%
+   faster). The crossover is between 57% and 69% trained. As expected: they do less work only when there are many
+   untrained rows. cce_exact (CCE without the filter) is slower than us in every case except 128k min.
+3. Memory: we hold the full bf16 logits (6.3 / 12.6 GB); the skippers 0.1-0.95 GB, Liger 0.24-0.40 GB.
+4. Precision: ours = HF = torchtitan = Megatron = TRL; Unsloth, Liger and torchtune have 1.1-5x larger dW error; CCE
+   5-15x larger.
+5. The 45.128 / 10-28 sentence "we beat every rival on lm_head + loss" is replaced by: we beat every library that
+   computes every row, in speed, and match the best in precision; TRL / Unsloth / CCE beat us in speed at the trained
+   shares of the 16k-128k data (the long-context case this work is for) and in memory everywhere.
+6. Ours at 128k min (77 trained) is 29.2 ms vs 35.3 ms at the 128k median with the same GEMM shapes; the loss kernels
+   skip untrained rows' softmax; the rest of the difference was not measured separately.
+
+**Next (the user's plan, 45.129 level 1):** the trained-only path as an optional switch (off by default, like Vj1d /
+Vj2): gather the trained rows (indices from the host labels), our BLAS on [N_t, 512], the loss with no ignore check on
+those rows, scatter dX into zeros; N_t rounded up to a multiple of 256 with filler rows. Measured before any decision:
+the gather / scatter overhead, logits alone, loss alone (in-place backward), logits + loss in THIS harness against the
+same rivals, memory, precision, then the trainer's loss and precision over more steps. Decide by the numbers.
+
+Records: `profiling_reports/long_context_kernels_2026_10_31/long_t/lmh/` (`results.jsonl` 120 lines,
+`compare_tables.txt` = the full per-case tables with F / B split and largest-element errors, every log, `status`, the two
+nsys kernel summaries, `try1/`), scripts in `.../scripts/lmh/`.
+
+### 45.131 2026-10-31: "lm_head on trained rows only" — built as a switch (OFF by default), measured
+
+**What was built** (the user: "implement logits only for trained tokens ... optional, like vj1d / vj2 ... measure first,
+decide by benefits"). Switch `BLU_SFT_TRAINED_ROWS=1` (`run_sft.sh`: `SFT_TRAINED_ROWS=1`), off by default; off runs the
+old code unchanged.
+- Library (5 new files, nothing old changed): `autograd::gather_rows(x, rows)` (`RowGatherOps.h/.cpp`,
+  `RowGatherBackward.h`, kernels `src/Kernels/cuda/rows/RowGatherKernels.cu`): forward copies rows `x[rows[m]]` (a
+  filler row -1 gives zeros), backward = zeros + the rows' gradient stored back (rows are distinct: plain stores, no
+  atomics); 16-byte copies; an index past the input traps (never a silent wrong copy).
+- `SftDataLoader::set_trained_rows(true)`: in `next_batch` the trained positions of the batch and their labels are built
+  on the HOST from labels.bin (no GPU-to-CPU sync, unlike TRL's boolean indexing), rounded up to a multiple of 256 rows
+  (at least 256) with filler rows (index -1, label 65535), uploaded with the batch. Rounding: BluBLAS gives wrong numbers
+  for M not a multiple of 64 (memory "BluBLAS sub-64 transposed GEMM").
+- Trainer (`bluscript_sft.cpp`): `BLU::head_rows`; when set, `x_bf = gather_rows(x_bf, rows)` before the lm_head, so
+  logits are [M, 49,280]; the loss gets the gathered labels; `sft_denom` (the global trained count) is unchanged, so the
+  loss is the same tokens / the same denominator. Validation always uses every row.
+- The loss kernel is NOT changed: every row it gets is trained except <= 255 filler rows (which its ignore check skips).
+  The saving is that untrained rows never reach the loss (no zero-gradient rows written).
+- Built on the box as FINAL5 (= FINAL4 + this + the loader vocab_rows fix, 45.130 / Q&A 182): library (only the 2 new
+  files compiled), trainer (md5 ad9cb754), lmh_ours5, loader test. Loader test on the 135M data: all checks pass.
+
+**lm_head + loss, the corrected harness (45.130), ours_trained = this path** (FB ms; ratio = FB / ours_full FB; rivals'
+numbers from 45.130, same inputs; precision vs fp64):
+| case | trained | ours_full | ours_trained | ratio | best rival (FB ms) | ours_trained vs it | peak MB full -> trained |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 4k min | 55.8% | 18.08 | 11.94 | 0.66 | unsloth 16.48 | 1.38x faster | 6,328 -> 3,622 |
+| 4k median | 72.8% | 19.64 | 15.52 | 0.79 | unsloth 21.34 | 1.38x | 6,328 -> 4,704 |
+| 4k max | 85.0% | 19.83 | 18.03 | 0.91 | liger 22.58 | 1.25x | 6,328 -> 5,465 |
+| 8k median | 68.8% | 19.27 | 14.85 | 0.77 | unsloth 20.23 | 1.36x | 6,328 -> 4,460 |
+| 16k median | 57.0% | 36.45 | 23.84 | 0.65 | unsloth 32.98 | 1.38x | 12,552 -> 7,283 |
+| 32k median | 54.7% | 36.17 | 22.93 | 0.63 | unsloth 31.61 | 1.38x | 12,552 -> 7,013 |
+| 64k median | 50.5% | 35.88 | 20.54 | 0.57 | unsloth 29.26 | 1.42x | 12,552 -> 6,473 |
+| 128k min (77) | 0.1% | 29.48 | 0.73 | 0.02 | cce 0.83 | 1.15x | 12,552 -> 442 |
+| 128k median | 48.9% | 35.15 | 20.17 | 0.57 | unsloth 28.43 | 1.41x | 12,552 -> 6,275 |
+| 128k max | 93.6% | 39.76 | 38.88 | 0.98 | liger 43.04 | 1.11x | 12,552 -> 11,897 |
+- Faster than every library in every case (TRL, Unsloth, CCE, Liger, HF, torchtitan, torchtune, Megatron).
+- Precision: dX / dW / loss errors identical to ours_full in every case (= HF / TRL); |dX| on untrained rows exactly 0.
+- Memory: 14-96% less than ours_full, but still the trained rows' full logits: far above the skippers (0.1-0.95 GB).
+  Removing that needs level 2 (chunks with the gradient inside the forward, 45.129); not built.
+- Overhead (nsys, `nsys_ours_trained_*_kern_sum.csv`): gather_rows 24-41 us + scatter 25-42 us per FB = 0.4% of FB;
+  the host build of the rows 0.08-0.24 ms per micro-batch (CPU). Drift r2 / r1: 1.00. ours_full re-measured: same as 45.130.
+
+**The 135M trainer, off / on / off again on the same data** (real 135M data, 131,072 tokens per step, same seed and data
+order; "noise" = |off_r2 - off_r1|, the run-to-run difference with the switch off; `compare_T*.txt`):
+| T | steps | train loss mean / max \|on - off1\| | noise mean / max | val last step off1 / on / off2 | step ms off1 / on / off2 | peak MiB off -> on |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4k | 100 | 1.24e-4 / 4.3e-4 | 1.18e-4 / 4.1e-4 | (see file) | 413.2 / 422.4 / 418.4 | 58,018 -> 56,976 |
+| 8k | 40 | 9.7e-4 / 4.5e-3 | 1.05e-3 / 3.6e-3 | 2.14473 / 2.14558 / 2.14499 | 463.7 / 449.9 / 442.8 | 58,010 -> 57,074 |
+| 16k | 40 | 1.59e-2 / 4.8e-2 | 1.19e-2 / 3.3e-2 | 2.56282 / 2.54353 / 2.55660 | 532.7 / 518.2 / 517.0 | 107,604 -> 104,746 |
+| 32k | 40 | 8.5e-3 / 4.6e-2 | 1.32e-2 / 5.1e-2 | (see file) | 570.2 / 573.3 / 584.3 | 107,682 -> 104,672 |
+| 64k | 40 | 8.4e-3 / 6.3e-2 | 5.95e-3 / 4.6e-2 | 3.64829 / 3.61093 / 3.63483 | 619.2 / 607.3 / 606.2 | 107,628 -> 105,320 |
+| 128k | 50 | 2.08e-2 / 4.4e-1 | 1.52e-2 / 1.6e-1 | 2.84522 / 2.83731 / 2.83759 | 669.6 / 666.1 / 669.8 | 107,652 -> 105,226 |
+- Loss: on vs off is the same size as off vs off (4k, 8k, 32k) or slightly above it (16k, 64k, 128k, where one to a few
+  rows per step make every run noisy: 128k step 27 = off1 7.16 / on 6.72 / off2 7.00). Val loss of "on" stays inside
+  or below the two off runs. No sign of a precision change; the math is the same tokens and denominator, only the
+  summation order differs.
+- Step time: NOT the gain the lm_head numbers predict. Expected (45.131 table x micro-batches): about -8 ms at 4k, -15 ms
+  at 128k; measured on vs the off average: 4k +6.6 ms, 8k -3.4, 16k -6.7, 32k -4.0, 64k -5.4, 128k -3.6 ms, with
+  off-vs-off differences up to 21 ms. Memory: -0.9 to -3.0 GB of the peak (the logits saving at 128k median is ~6.3 GB),
+  so the peak is set somewhere else in the step. Both not explained yet: next = nsys + memory trace of the trainer, off
+  vs on (likely suspects, NOT measured: the allocator meeting a different M every micro-batch; where the peak sits).
+- Decision: NOT adopted yet (default stays off). The standalone win is large and precise; the trainer does not show it
+  yet. Decide after the trainer is profiled.
+
+Records: `profiling_reports/long_context_kernels_2026_10_31/long_t/trained/` (status, builds, loader_test.log,
+compare_T*.txt, every run's log, `lmh/` results + nsys, `lmh/compare_tables_with_rivals.txt`), scripts in
+`.../scripts/trained/` and `.../scripts/lmh/`.
+
+**Audit of the 45.131 tests (22:35, the user: "make sure the test logic and code are correct, rivals and settings"):**
+- GPU placement: the rivals ran (45.130) with 4k on GPU 0, 8k / 16k / 128k min on GPU 1, 32k / 64k on GPU 2, 128k
+  median / max on GPU 3; ours_trained ran with 4k-16k on GPU 0 and 32k-128k on GPU 1. ours_full was re-run next to
+  ours_trained as the anchor: new / old = 0.990-1.008, except 32k 1.025 and 64k 1.017 (GPU 1 vs GPU 2). Normalised to
+  the rivals' GPU, ours_trained is 1-2.5% FASTER than the table says at 32k / 64k; every conclusion holds.
+- Fairness: our trained-rows list is built on the host in the loader (0.08-0.24 ms per micro-batch, outside the timed FB),
+  while TRL / Unsloth / CCE build theirs on the GPU inside their FB (boolean mask / nonzero + a GPU-to-CPU sync). Adding
+  our host time to our FB changes the ratios by at most 1.3%. In the trainer it is inside the step time.
+- Memory: each trainer run prints one [MEM] line, the run's peak (active_peak = allocated_peak); correct.
+- Rivals' settings re-read in lmh_rivals.py: HF (logits.float(), sum / n), torchtitan (eager, its default: compile off),
+  torchtune (8 output chunks, its default), Megatron (vocab_parallel_cross_entropy * loss_mask, fusion off = its
+  default), Liger (default), CCE (default filter "high" and exact), TRL (SFTTrainer's 3 outputs, and loss only), Unsloth
+  (default fused_linear_ce_v2 with torch_compile=True, as its trainer runs it). Same bf16 inputs for all; one process each.
+- Trainer runs: off / on / off on the same GPU per T, the same FINAL5 binary, same data / seed / schedule; on vs off
+  judged against off vs off. Not yet verified with nsys INSIDE the trainer that the on path runs gather_rows (the log
+  notice, the changed loss and memory say it does): part of the next profiling step.
+
+**Why the trainer did not show the gain — found (22:45, nsys of the trainer, 10 steps, off vs on, `long_t/trained/prof/`):**
+- GPU kernel time DOES drop with the switch on: 4k -92 ms over 10 steps (-9 ms / step), 128k -221 ms (-22 ms / step):
+  the lm_head GEMMs (bgemm 256x128 146.6 -> 75.2 ms, 128x256 402.6 -> 336.6, 256x128 81.8 -> 27.1) and the loss
+  backward (41.0 -> 20.5 ms). gather / scatter: 0.6-1.2 ms in 10 steps. The gather kernel runs inside the trainer (the
+  open item of the audit: closed).
+- But the step's wall time grows (under nsys 4k 462 -> 514 ms, 128k 1,160 -> 1,256 ms): the on run makes one extra
+  BLOCKING host-to-device `cudaMemcpy` per micro-step (128k: 10 calls, 1,556 ms of API time vs 17 ms off; sizes 1,328 /
+  1,552 / 4,352 / 2,576 / 5,440 bytes: a different size every step), and `cudaFree` time 7.9 -> 19.9 s (same count).
+- Cause: BluBLAS `sm90_tile_map_cached` (`BluBridge-BLAS/.../SM90/Bgemm_sm90_warpspecialized_template.cuh:1680-1725`; the
+  same pattern in the cluster persistent, swiglu fused, SM103 and FP16 templates): the Hilbert tile map is cached per
+  (grid_m, grid_n) in 16 slots; a new shape = cudaMalloc + a synchronous cudaMemcpy (waits for all GPU work: the CPU
+  stops queueing ahead) and, once the 16 slots are full, cudaFree of an old slot (a device-wide sync). Our trained-rows
+  M changes every micro-batch, so every micro-batch misses. With the switch off every shape repeats, so it never shows.
+  This is a BluBLAS issue for ANY GEMM whose shape changes between calls, not only this switch.
+- Fix options (to decide): (1) BluBLAS: build / upload the tile map without a device sync (async copy on the GEMM's
+  stream from a pinned host copy, device memory not freed inside the GEMM call), or compute the map inside the kernel;
+  (2) in the switch: round N_t to coarse buckets so shapes repeat (wastes rows; the 16-slot cache is shared by every GEMM
+  shape of the model, so it can still thrash). Expected after (1): the -9 to -22 ms / step of GPU time becomes step time.
+
+**The compiled rivals (22:37-22:52, the user: "you would have done the compiler mode too, right?" — it was missing):**
+hf_compile (= TrainingArguments torch_compile: lm_head + loss compiled), torchtitan_compile (its loss function compiled,
+`components/loss.py:299-301`; the output Linear stays eager), torchtune_compile (`training/_compile.py` compile_loss:
+only the upcast + cross-entropy of CEWithChunkedOutputLoss); inductor; two untimed calls first (compile time and
+compile memory not counted). Ours (full and trained) and the eager versions re-run on the SAME GPU per case
+(`long_t/lmh_compile/`). FB ms:
+| case | ours_full | ours_trained | hf | hf_compile | torchtitan | torchtitan_compile | torchtune | torchtune_compile |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 4k min | 18.41 | 12.00 | 53.43 | 22.15 | 53.36 | 22.12 | 54.87 | 22.72 |
+| 4k median | 19.19 | 15.37 | 53.69 | 22.51 | 53.66 | 22.66 | 55.10 | 23.25 |
+| 4k max | 20.02 | 17.84 | 53.86 | 22.89 | 53.86 | 22.92 | 55.28 | 23.56 |
+| 8k median | 19.13 | 14.72 | 53.64 | 22.52 | 53.64 | 22.45 | 55.14 | 23.08 |
+| 16k median | 36.37 | 23.64 | 106.96 | 44.59 | 106.96 | 44.53 | 108.52 | 44.82 |
+| 32k median | 35.93 | 22.93 | 107.06 | 44.13 | 107.04 | 44.07 | 108.35 | 44.75 |
+| 64k median | 35.71 | 20.60 | 107.01 | 44.44 | 107.07 | 44.19 | 108.36 | 44.63 |
+| 128k min | 29.55 | 0.73 | 105.80 | 40.06 | 105.99 | 40.10 | 107.45 | 41.00 |
+| 128k median | 35.02 | 20.11 | 106.85 | 43.79 | 106.93 | 44.02 | 108.37 | 44.56 |
+| 128k max | 39.89 | 38.89 | 108.68 | 46.60 | 108.84 | 46.41 | 109.64 | 46.90 |
+Compile makes them 2.3-2.6x faster than eager, but they still compute every row: our full path is 1.15-1.36x faster
+than the best compiled one, ours_trained 1.28-2.2x (128k min 55x). Peak memory at 128k median (MB): ours_full 12,552,
+ours_trained 6,275, hf_compile 12,496, torchtitan_compile 24,641, torchtune_compile 13,861 (eager hf 73,952). Precision
+unchanged by compile (dW rel 2.03e-3, torchtune 3.49e-3 both ways). So 45.130's result "we beat every library that
+computes every row" holds against their compiled modes too.
+
+**FUTURE TASK (the user, 23:10: "note it as future task, will see later"): the BluBLAS tile-map stall.**
+Where the stall is: neither in the GEMM math nor in our library's matmul wrapper. It is in BluBLAS's host-side launch
+code.
+- Launcher: the function that sets up and launches `bgemm_sm90_kernel` calls `sm90_tile_map_cached(grid_m, grid_n, ...)`
+  (`BluBridge-BLAS/src/level3/batched_gemm/BF16/SM90/Bgemm_sm90_warpspecialized_template.cuh:1860` and `2276`).
+- Kernel: it only reads the map (`tile_map[mn_tile]`, line 469) to know which output tile each block computes.
+- When the map is used: for square tile grids (grid_m == grid_n), where it gives a Hilbert order that helps the L2
+  cache, and for tall grids (grid_m > 4 x grid_n). Our dX GEMM [N_t x 512] is tall (grid_n = 2). In the tall case the
+  map is just plain row order, so a table is not even needed.
+- The problem: the cache function (16 slots, keyed by grid_m / grid_n). A shape it has not seen means cudaMalloc, a
+  blocking cudaMemcpy and, once the 16 slots are full, a cudaFree. Both the blocking copy and the free make the CPU wait
+  for the GPU.
+- The same function is copied in 4 other templates: FP16 warp-specialized (`Hgemm_sm90_warpspecialized_template.cuh`
+  ~2660, used at 2772 / 3148), BF16 cluster persistent (`Bgemm_sm90_cluster_nn_persistent_template.cuh` ~606), SwiGLU
+  fused (`Bgemm_sm90_swiglu_fused_template.cuh` ~3509), SM103 (`Bgemm_sm103_cluster_dual_template.cuh` ~895).
+- Where to change it (recommendation): only in that host-side cache function. Upload the map with an async copy on the
+  GEMM's stream, from pinned host memory. Never call cudaFree inside the GEMM call; free old slots later, or make the
+  cache bigger. The kernel itself stays unchanged (same SASS), and every caller whose GEMM shape changes benefits, not
+  just the trained-rows switch. Then re-run 45.131's trainer off / on (expected: the -9 ms / step at 4k and -22 ms / step
+  at 128k of GPU time become step time). Not started; the user will decide later.
+
+**NEXT IMMEDIATE FUTURE TASK (the user, 23:30: "interesting one to look into, next immediate future task"): 889
+`cudaFree` calls in the NORMAL path.** In the trainer's nsys run with the switch OFF (128k, 10 steps + validation,
+`long_t/trained/prof/trainer_T131072_sw0_cuda_api_sum.csv`): `cudaFree` 889 calls, 7.9 s of API time (on: 890 calls,
+19.9 s); also `cudaMallocAsync` 1,786 calls, 17.6 s, and `cudaHostAlloc` 838 calls, 4.8 s. `cudaFree` waits for the whole
+GPU, so if these happen inside the steps (not only at start-up / exit), every one stops the CPU from queueing ahead.
+Not looked at yet: when they happen (timeline: start-up, every step, validation, exit), who calls them (the caching
+allocator releasing blocks? BluBLAS? the RoPE / attention plan buffers? checkpoint I/O?), and what removing them would
+save per step. Plan: nsys with `--cudabacktrace` / the NVTX ranges of one off run, count the calls per step, then fix
+the caller.
+
+**Local test before the push (2026-11-01 ~00:20 IST, RTX 3060 sm_86, the push library built locally; the trainer cannot
+be built on the laptop: no MPI headers, and dist's BluCCL embedding_fused kernel needs sm_90).** Files:
+`~/Downloads/lc_local_build/test_trained_rows_local.cu`, `diag_logits.cu`. The lm_head + loss as the trainer calls it,
+2 real 4k rows of the 135M data (6,435 trained of 8,192), switch off vs on:
+- Off vs off: bit-identical (this GPU is deterministic here). 2-D view without gather, and gather of ALL rows in order:
+  bit-identical to off (the 2-D matmul path, gather_rows and its scatter are exact).
+- On (M = 6,656): loss 10.899639 vs 10.902991, dX rel 3.66: FAIL. With the trained count rounded to other sizes: M 6,464 /
+  6,528 / 6,656 fail the same way, 7,168 less, 8,192 exact.
+- Localised (`diag_logits.cu`): gather 0 wrong values; the loss kernel = an fp64 CPU loss from the same logits (6.4e-7);
+  the BluBLAS GEMM [M, 512] x [512, 49,280] on sm_86: 291 of 6,435 trained rows WRONG, all from row 6,144 (= 3 x 2,048)
+  on, max |d| 2.56; at M = 8,192 every row exact. So BluBLAS's sm_86 GEMM gives wrong rows in the last partial 2,048-row
+  block when M is not a multiple of 2,048. Old BluBLAS bug (not ours); our normal path never hits it (B x T is a multiple
+  of 4,096); the switch does on non-Hopper GPUs. On sm_90 the switch is correct (45.130-45.131: M = 36,608, 47,872, ...
+  not multiples of 2,048, errors vs fp64 identical to the full path).
+
+**DECISION (the user, 2026-11-01 ~00:30 IST): the trained-rows switch is DROPPED from this push -> NEXT FUTURE TASK.**
+"Anyway it's a problem then, we will see later, drop for now those code and all related, document everything, we will
+enable it or add it later." Done:
+- Saved (everything needed to add it back): `profiling_reports/long_context_kernels_2026_10_31/trained_rows_switch_SAVED/`
+  = the 5 TI files (RowGatherOps.h / .cpp, RowGatherBackward.h, RowGatherKernels.h / .cu, with the sign-compare cast
+  fix), the switch versions of bluscript_sft.cpp / SftDataLoader.h / run_sft.sh, `blutrain_with_switch_vs_334ecbb.diff`,
+  and the two local tests (test_trained_rows_local.cu, diag_logits.cu). Benchmarks / runners: `scripts/lmh`, `scripts/trained`.
+- Removed from the push tree: the 5 TI files deleted; bluscript_sft.cpp = the pushed HEAD (334ecbb) byte for byte;
+  SftDataLoader.h keeps only the seq_complete removal + the vocab_rows fix; run_sft.sh keeps only "T from meta.json";
+  sft/README.md + sft/docs: the switch is described only as a known limit / future item.
+- Checked after the removal: the loader test with the final header, built and run locally on the RTX 3060 on the 135M
+  data: 5 of 5 pass (incl. data of another model refused). The trainer source = HEAD; HEAD + this loader header was
+  syntax-checked on the H200 box at ~21:45 (exit 0). The library = FINAL4 (tested on the H200).
+- To add it back (future): (1) fix BluBLAS sm_90 `sm90_tile_map_cached` (no blocking copy / cudaFree per new shape),
+  re-run the trainer off / on; (2) fix BluBLAS sm_86 wrong rows for M not a multiple of 2,048, or refuse the switch below
+  compute capability 9.0 (guard in SftDataLoader::set_trained_rows); (3) re-apply the saved files, rebuild, re-run the
+  45.131 tests (lmh harness + trainer off / on / off) and the local sm_86 test.
+
+**PUSHED (2026-11-01 ~00:50 IST, by the user) and verified on the remote, file by file** (fresh fetch from GitHub):
+- Tensor-Implementations `dist_side_gautam_lottn` 6aac3bf -> **d067e89** ("long context 16k-128k fixes, fast math only for
+  the loss, fp32 dK/dV option (off)"): all 10 files remote md5 = local md5 (Makefile 86db500e, test_varlen_attention
+  cd02b34d, RoPEKernels 0ecee30a, RoPE_sm90 18fd155d, LossKernels 5ade878a, ContiguousKernel 3490e09b,
+  ContiguousKernel_sm90 27f061d3, EmbeddingKernels 292b0f19, SwiGLUKernels_sm120 b23f0be6, GQA_bwd_vj2_sm90 09466d3a);
+  each has its dated 2026-10-31 comments; 10 files in the commit; no RowGather file; message 8 sections.
+- BluTrain `dist_side_gautam_lottn` 334ecbb -> **91b6b54** ("sft: long chats dropped (split removed), T from the data,
+  vocab_rows check; TI long-context fixes"): the 9 modified sft files remote = local; test_long_chat_split.py gone;
+  submodule Tensor-Implementations = d067e89; dist/Context_Parallelism unchanged (cf1372d); the trainer not in the
+  commit (= 334ecbb); no format-study file; no TRAINED_ROWS / gather_rows text anywhere on the branch; message 5
+  sections, item 5 = d067e89. Author Goutham Kumar <goutham.kumar@blubridge.com> on both.
+
+**FUTURE TASK (the user, 2026-11-01 ~01:10 IST): `--seq-len` in prepare_sft_data.py.** Today (`:668`, `:697-698`):
+optional with default 4,096; must be a multiple of 256 (attention tiles) and <= 131,072 (the longest row tested).
+Wanted: (1) NO default: if `--seq-len` is not given, stop with an error asking for T; (2) NO fixed upper cap ("what if
+something new is invented"), the user gives T; (3) KEEP the multiple-of-256 check. Research deeply before changing:
+what else limits a longer T (kernel grid / 32-bit index limits beyond 131k, GPU memory: the 135M at 131k B 1 used
+~105-108 GB of 141 GB, so longer needs context parallelism or activation checkpointing), and whether the loader /
+run_sft.sh / trainer need the same treatment. Not started.
+
+### 45.132 2026-11-02: the chat-format study on the RTX 6000 Ada node with a PyTorch copy of the recipe (plan Q&A 193)
+
+Why: H200 nodes busy; BluTrain cannot be built for sm_89 (dist's BluCCL uses multimem.red, sm_90 only; the segmented
+embedding backward lives there too) and its sm_89 GEMM / attention / RMSNorm paths were never validated (45.131: the
+sm_86 BluBLAS GEMM gives wrong rows for M % 2048 != 0). The study compares chat templates, so any trainer that follows
+our recipe exactly may run it, as long as all 198 runs use the same one; the best versions get re-run in BluTrain on H200.
+- sft/fmt_torch_sft.py: every rule copied from the BluTrain code (file:line in its header). Checks: CPU fp32 gate
+  1.544920 vs numpy 1.544934 (25,172 tokens); GPU bf16 gates on 6 versions within 0.01-0.05%; flex == per-chat SDPA;
+  100-step parity with BluTrain's 10-31 H200 run (same 3,200 rows, init, LR 5e-5, 32 rows/step): train loss mean |diff|
+  2.3e-4 (H200 run-to-run 1.2e-4), val step 99 2.068356 vs 2.068620 / 2.068632; 10 smoke runs export READY.
+- Speed: 3.8 s/step eager -> 2.2 s with no host syncs, RoPE tables once per forward and torch.compile of the block (one
+  graph for all layers); plain compile drifted lower (val -1e-3 at steps 10-20) because inductor keeps fused
+  intermediates in fp32; torch._inductor.config.emulate_precision_casts = True (round like eager and like BluTrain's
+  kernels) restored parity (train |diff| 2.8e-4; val -1.6e-5 / -3.5e-4 / -9e-6 at 0/10/20) at the same speed. Micro-batch
+  8 rows was slower (2.4 s) than 4.
+- Hardware (published): H200 ~989 bf16 TFLOPS dense, 4.8 TB/s; RTX 6000 Ada ~364 bf16 dense (FP8 1,457 with sparsity),
+  960 GB/s: 2.7x compute, 5x memory; our compiled run is ~5x the H200 time.
+- Grid: sft/fmt_screen_torch.sh on GPUs 0-7 from 16:03 IST; ~23 min per run; folder /mnt/volgrp03/3rd_floor/gautam_fmt
+  (old gautam folders there deleted 11-02: two by us, two by the user with sudo; 4 git checkouts were clean and pushed).
+
+**FUTURE TASK, last stage of the chat-format study (the user, 2026-11-02; plan Q&A 194): do the marker NAMES matter?**
+After the winning strategy is chosen: train it with (a) the original names, (b) our own names (e.g. start / end, our own
+role names), (c) random strings, same seeds / mixes / measurements. Within seed noise -> adopt our own names. Check first
+how format_init.py initializes new special-id rows (if from the name's text pieces, the name changes the start weights),
+and remember plain-text markers are read as text. Also open if wanted: an exact DeepSeek V3/R1 replica as v23.
+
+### 45.133 2026-11-02: why the trained-rows lm_head gain does not show in the trainer — the BluBLAS tile-map cache, with proofs; the sm_86 wrong-rows cause; CUTLASS / cuBLAS / DeepGEMM / MoE (plan Q&A 196)
+
+The user's question (20:00 IST): standalone, the trained-rows lm_head (45.131) was 21-43% faster; in the trainer the step
+got slower (45.131 nsys, one run each: median step 462 -> 514 ms at 4k, 1160 -> 1256 ms at 128k). Is it because M (the
+trained rows) now changes every micro-batch? Is it memory caching or metadata caching? Will colleagues' MoE grouped GEMMs
+hit the same thing? What do CUTLASS and cuBLAS do? Does the fix also fix the sm_86 wrong rows? Proofs only. Allowed:
+P032 GPU 1 (or another free P032 / P022 GPU), only if needed, free check first. No fix yet ("first analyze, then fix").
+
+**1. The code (TI d067e89 = pushed; P032's 10-27 libblublas.so has the same template and dispatcher, md5 88250c81 /
+58dd6bad).** BluBLAS SM90 BF16 GEMM, host launcher `Bgemm_sm90_warpspecialized_template.cuh`:
+- The kernel visits its output tiles in an order. For "wide" grids it computes the order itself
+  (`sm90_decode_tile_supergrouped`, line 446). For square grids (grid_m == grid_n, Hilbert curve) and tall grids
+  (grid_m > 4 x grid_n, plain row order) it reads the order from a table in GPU memory: `tile_map[mn_tile]` (line 469).
+- The table is built on the CPU and kept in a 16-slot cache keyed by (grid_m, grid_n, hilbert): `sm90_tile_map_cached`,
+  lines 1681-1725, called at 1860 and 2276. On a miss: a std::vector is filled, `cudaMalloc`, then a plain
+  `cudaMemcpy` (line 1715); when all 16 slots are used, the next miss does `cudaFree` of the slot chosen round-robin.
+- For a tall grid the table is exactly row order: `hmap[hy*grid_n + hx] = (hy << 16) | hx`, i.e. tile i ->
+  (i / grid_n, i % grid_n). Nothing in it needs the CPU.
+- Stream: TI never calls `setCurrentStream` (DeviceCore.cpp:63, default 0 = the legacy default stream) and the matmul
+  backward is single-stream by default (MatmulBackward.cu:70). A plain `cudaMemcpy` from normal (pageable) host memory
+  on that stream waits until all GPU work queued before it has finished.
+
+**2. Which trainer GEMM misses.** dX of the lm_head: [M_t, 49280] x [49280, 512] with 128x256 tiles -> grid M_t/128 x 2
+-> tall -> key changes with M_t every micro-batch. The 10-31 profile's 1,328-byte copy = 332 ints = 166 x 2 tiles ->
+M_t = 21,248. The forward logits GEMM (grid_n 193 or 385: not tall, not square) and dW (M = 49280, fixed) do not miss.
+With the switch off, M = B x T is fixed: one miss at the start, then hits.
+
+**3. The trainer numbers (45.131 nsys csv, 10 steps, one run each)** match one miss per micro-batch exactly:
+
+| run | micro-batches | cudaMalloc | cudaMemcpy (blocking) | cudaFree | time inside those cudaMemcpy |
+| --- | --- | --- | --- | --- | --- |
+| 4k off -> on | 20 | 43 -> 62 (+19) | 58 -> 77 (+19) | 849 -> 858 (+9) | 10 -> 565 ms (max 97 ms) |
+| 128k off -> on | 10 | 43 -> 53 (+10) | 58 -> 68 (+10) | 889 -> 890 (+1) | 17 -> 1,556 ms (max 420 ms) |
+
+(+19 not +20 at 4k: one M_t value came twice. +9 / +1 cudaFree: the cache filled and started evicting.)
+
+**4. Controlled test on P032 GPU 1 (H200), 20:14-20:33 IST** (records:
+profiling_reports/long_context_kernels_2026_10_31/tilemap_stall_2026_11_02/: tilemap_stall_test.cu md5 937fd380,
+run_tilemap.sh, run_tilemap2.sh, gpu_idle.py, results.txt, results2.txt, 4 nsys reports). Same call as the trainer
+(`blublasBgemmStridedBatched`, row-major, stream 0); cuBLAS = `cublasGemmEx` BF16, fp32 accumulate, same stream.
+
+Test 1: the GPU is given 20 ms of queued work (one spin kernel), then ONE dX GEMM call; the time the call holds the CPU
+(20 calls each, median):
+
+| library | same M every call | new M every call, GPU busy 20 ms | new M, GPU idle |
+| --- | --- | --- | --- |
+| BluBLAS | 3.1 us | 20,014 us (all 20 calls) | 11.6 us |
+| cuBLAS | 9.5 us | 95 us; 7 of 20 calls ~20,000 us | 99.5 us; the same 7 calls 2.4-3.0 ms |
+
+- BluBLAS: the cost of a miss is the WAIT for the queued GPU work, not the CPU work (11.6 us when the GPU is idle).
+- The same 20 new M values twice (REPS=2): BluBLAS blocked 20 ms on all 40 calls (20 shapes cycling through 16 slots
+  round-robin: each is evicted before it comes back); cuBLAS blocked on 7 of the first 20 and on none of the second 20
+  (8-46 us).
+- cuBLAS's blocking calls (nsys of the varying-M loop): `cuKernelSetAttribute`, 14 calls, 158.7 ms, max 119 ms, 7 calls
+  over 1 ms; none in the fixed-M run. cuBLAS sets an attribute the first time it uses a kernel it has not used before;
+  with lazy module loading that loads the kernel and waits for the GPU. Once per new kernel, not once per new shape.
+  A new M otherwise costs cuBLAS ~65-100 us of CPU time (choosing the kernel), no allocation, no copy, no free.
+
+Test 2 (a training-like loop on one stream; per iteration: forward-like 37 layers x 4 GEMMs + a 0.2 ms spin + 40 small
+kernels, lm_head forward / dX / dW, backward-like 37 x 8 GEMMs + 0.57 ms spin + 50 small kernels, optimizer-like 1,000
+small GEMMs + 2,000 small kernels; 33 measured iterations; "vary" M_t = 8192 + 256k, k = 0..32 each once, mean 12,288 =
+the fixed value) and Test 3 (the same with a CPU-heavier backward: 10 us of CPU work before each of 60 small kernels per
+layer). Wall time per iteration, 3 repeats (4th under nsys):
+
+| loop | BluBLAS fixed | BluBLAS vary | cuBLAS fixed | cuBLAS vary |
+| --- | --- | --- | --- | --- |
+| test 2 | 63.50 / 62.77 / 63.61 (64.57) | 63.65 / 62.78 / 62.75 (64.98) | 61.29 / 61.34 / 60.75 (62.90) | 62.84 / 62.51 / 63.61 |
+| test 3 | 64.35 / 64.31 / 63.32 | 64.26 / 63.39 / 63.37 | 61.27 / 61.96 / 61.30 | 64.31 / 63.25 / 62.01 |
+
+- In both loops the lm_head calls held the CPU 9.5-9.7 ms per iteration with BluBLAS "vary" (0.01 ms "fixed"), yet the
+  wall time did not change: the GPU stayed the slower side, so the CPU caught up after waiting.
+- nsys of test 2 (window = the 33 measured iterations): BluBLAS fixed: no cudaMalloc / cudaMemcpy / cudaFree, GPU idle
+  6.47 ms/iter; BluBLAS vary: cudaMalloc 35x, cudaMemcpy 35x (311.9 ms, 33 of them over 1 ms), cudaFree 22x, GPU idle
+  6.86 ms/iter (+0.39). 35 misses for 33 new shapes: round-robin evicted 2 fixed shapes, which then missed again.
+  cuBLAS fixed: GPU idle 8.15 ms/iter; cuBLAS vary: 11.11 ms/iter (the first-use waits above), no malloc / copy / free.
+
+**5. What is proven and what is not.**
+- Proven: every micro-batch with a new M_t makes the BluBLAS dX GEMM wait for ALL GPU work queued before it (plus a
+  cudaMalloc, and a cudaFree once 16 shapes are in the cache); the cache thrashes (more than 16 shapes in use ->
+  every call misses, and fixed shapes get evicted too).
+- Proven: this wait costs wall time only when the work after it cannot let the CPU get ahead again. In both test loops
+  the cost was ~0 (+0.4 ms GPU idle per 63 ms iteration).
+- Not proven: how much of the trainer's slower step is this wait. The trainer at 4k fits "the wait is lost": CPU blocked
+  in these copies ~56 ms per step (565 ms / 10), step +52 ms, GPU idle per step (step - kernel time) +61 ms
+  ((514 - 378) - (462 - 387)), while the lm_head kernels saved only 9 ms per step (22 ms at 128k). But this is one
+  10-step run each, and the trainer's own allocator calls changed by seconds between the two runs: cudaFree 2.1 -> 5.6 s
+  (4k) and 7.9 -> 19.9 s (128k), cudaMallocAsync 3.2 -> 10.4 s (4k); one 128k step took 12.1 s in one run and 6.5 s in
+  the other. A 2% kernel gain cannot be seen under that noise. The proof needs the fix plus trainer runs off / on with
+  more steps, repeated (and the allocator stalls, NEXT IMMEDIATE task, understood first).
+
+**6. Memory caching or metadata caching?** Metadata: a cache of tile-order tables keyed by grid shape. Its miss path does
+memory work (cudaMalloc, a blocking cudaMemcpy, cudaFree when full), and that is what stops the CPU. The trainer's own
+memory caching (889 cudaFree / 1,786 cudaMallocAsync / 838 cudaHostAlloc per 10 steps at 128k, both off and on) is a
+separate problem (NEXT IMMEDIATE task).
+
+**7. More defects of the same pattern, from reading the code** (not measured):
+- The cache is per process, not per GPU: the key has no device id, so a process that drives two GPUs would get a table
+  made on GPU 0 for a GEMM on GPU 1. BluTrain runs one process per GPU, so it is not hit today.
+- No lock: two host threads calling GEMMs at once race on s_used / s_rr.
+- `Bgemm_sm90_cluster_nn_persistent_template.cuh:604-606` and every SM103 (B300) template
+  (`Bgemm_sm103_cluster_template.cuh:1990-2023`, addmm, dual, swap, FP16, FP8): ONE slot per kernel config, rebuilt
+  (cudaFree + cudaMalloc + blocking cudaMemcpy) whenever the grid differs from the previous call's, and there the table
+  is used for wide, tall and square grids. The 10-31 H200 profile shows only the warp-specialized kernels, so the trainer
+  did not use the cluster-NN one.
+- Split-K scratch (line 2060): grows only (cudaFree + cudaMalloc when a bigger one is needed), then stays.
+
+**8. What CUTLASS does** (local source, CUTLASS 4.5.1, commit 546c3efa):
+- `gemm/kernel/static_tile_scheduler.hpp:169-243` (used by the SM90 persistent scheduler): the tile for a work index is
+  computed on the GPU (`get_current_work_for_linear_idx` -> `get_work_idx_m_and_n`) with FastDivmod, raster order
+  (along M or N) and a swizzle size; the parameters are plain values passed at launch.
+- `sm90_tile_scheduler.hpp:136-149`: `get_workspace_size` returns 0 and `initialize_workspace` does nothing for the basic
+  scheduler. No cudaMalloc, cudaMemcpy, cudaFree or std::vector in any scheduler file (grep).
+- Grouped GEMM: `group_array_problem_shape.hpp:54-81`: the per-group shapes are an array in GPU memory
+  (`problem_shapes`); host shapes are optional. `sm90_tile_scheduler_group.hpp:283-284, 339, 382`: each warp lane loads
+  a group's shape on the GPU; lines 221-223: without host shapes the grid is just the number of SMs.
+
+**9. DeepGEMM (MoE)** (local, commit 88965b0): `deep_gemm/include/deep_gemm/common/scheduler.cuh:63, 138, 171, 193`: the
+kernel reads each expert's row count on the GPU (`__ldg(grouped_layout + group_idx)`); the host never needs the counts.
+
+**10. cuBLAS** (closed source): the shipped libcublasLt.so.13 contains the settings `CUBLASLT_HEURISTICS_CACHE_CAPACITY`
+and `CUBLAS_AUTOTUNING_CACHE_CAPACITY` (strings in the binary): a CPU-side cache of "which kernel for this shape". The
+measurement in 4 is the proof of its behaviour: a new shape costs CPU time only; a wait happens only the first time a
+kernel is used.
+
+**11. MoE with BluBLAS.** BluBLAS and TI have no grouped GEMM (grep: no grouped / moe). An MoE built on them would call
+the dense GEMM once per expert with that expert's row count, which changes every step: most calls would be tall-grid
+misses, and with more than 16 shapes in use every call would miss, with a cudaFree each time. The expert counts would
+also have to be copied to the CPU first, which is another wait. CUTLASS and DeepGEMM keep the counts on the GPU.
+
+**12. The sm_86 wrong rows (45.131, RTX 3060): cause found, and it is a different bug.** The sm_80/86/89 kernels
+(`BF16/SM89/`, all ten files) contain no tile map, cudaMalloc, cudaMemcpy or cudaFree (grep: 0 lines each). Their tile
+order is `Bgemm_core_template.cuh:76-79`: `sw = max(1, min(grid_y, 8)); bx = (block_id / sw) % grid_x;
+by = (block_id % sw) + (block_id / (grid_x * sw)) * sw; if (by*BM >= M || bx*BN >= N) return;`. This visits every tile
+once only when grid_y (tile rows) is a multiple of 8. Otherwise, in the last, partial group of tile rows, some blocks
+get a row past the end and return, and some real tiles are never computed. Enumerating that exact formula for the
+failing GEMM (logits [M, 512] x [512, 49280], NT 256x128 kernel: M >= 2048 and N >= 2048):
+
+| M | tile rows | rows % 8 | tiles never computed | first wrong row |
+| --- | --- | --- | --- | --- |
+| 6464 / 6528 / 6656 | 26 | 2 | 576 of 10,010 | 6144 |
+| 7168 | 28 | 4 | 768 of 10,780 | 6144 |
+| 4096 / 6144 / 8192 | 16 / 24 / 32 | 0 | 0 | none |
+
+This matches 11-01: M = 6464 / 6528 / 6656 wrong from row 6144 (6,435 trained rows -> 291 wrong = rows 6144-6434),
+8192 correct. Any GEMM on these GPUs whose tile-row count is not a multiple of 8 can have unwritten tiles, not only the
+trained-rows one. The tile-map fix does not touch this code. The known correct form (Triton's GROUP_M order; our own
+SM90 `sm90_decode_tile_supergrouped`, which handles `final_rows`) gives the last group size
+`min(grid_y - first_row, 8)`.
+
+**13. Fix options (NOT done; waiting for the user):**
+- (a) Tall grids: compute the row order in the kernel (tile i -> (i / grid_n, i % grid_n), with the fast divide the
+  kernel already has); no table, no cache, no host work. This is what CUTLASS does.
+- (b) Square grids (Hilbert): compute it on the GPU too, or keep a table per GPU that is never freed in the GEMM call and
+  is uploaded with cudaMemcpyAsync on the GEMM's stream.
+- (c) The same for the SM103 and cluster-NN templates.
+- (d) sm_86: the last-group fix in `Bgemm_core_template.cuh:77-79`.
+- Checks for each: outputs bit-identical (the visit order does not change any tile's math), before/after timing on the
+  GEMM shapes, then the trainer off / on with enough steps, repeated.
+
+### 45.134 2026-11-02 (21:30-22:30 IST): the tile-map fix built and tested — B2 rejected (slower), B3 accepted (kernel unchanged); the sm_80/86/89 last-group fix (plan Q&A 197)
+
+The user (21:30): won't computing the order in the kernel (the CUTLASS way) add GPU overhead? Is the problem only for
+changing shapes? Who else skips untrained tokens (Apple CCE, Unsloth) and which matmul do they use? Fix only changing
+tall shapes or all? Do the other fixes slow normal cases? "test, measure, analyze ... speed, performance, memory and
+precision on all cases"; if normal cases get slower we drop the logits optimization. B300 out of scope. GPUs: P032
+(GPU 1, then the free ones), the laptop RTX 3060 for sm_86. Records: profiling_reports/long_context_kernels_2026_10_31/
+tilemap_fix_2026_11_02/ (patches, harness abtest.cu, test86.cu, scripts, results).
+
+Research (sources read 11-02):
+- Apple Cut Cross-Entropy (github apple/ml-cross-entropy): computes logits only for non-ignored rows:
+  `valids = (targets != ignore_index).nonzero()` (utils.py `_build_flat_valids`), grid sized by `B = valids.numel()`,
+  the kernel loads row indices from Valids (cce_lse_forward.py); own Triton kernels (matmul fused with the loss), tile
+  order computed in the kernel with GROUP_B = 8 and `group_size_b = min(num_pid_b - first_pid_b, GROUP_B)`; autotune
+  off by default (`CCE_AUTOTUNE` "0"). `.nonzero()` on a GPU tensor makes the CPU wait once per loss call.
+- Unsloth: its fused loss calls CCE (unsloth_zoo/loss_utils.py `from cut_cross_entropy import linear_cross_entropy`).
+- Liger (local 19d92e7): does NOT skip ignored rows: fixed-size chunks of all rows, `torch.mm` (cuBLAS)
+  (fused_linear_cross_entropy.py:157-168, 187-198). Plain HF: cuBLAS on all rows.
+- Fixed-shape training does not hit the stall: the 10-31 off runs had the same cudaMalloc (43) / cudaMemcpy (58) at 4k
+  and 128k = start-up only; the 135M trainer uses 6-7 table shapes (< 16 slots). More than 16 table shapes in one
+  process (bigger models, MoE) would thrash even with fixed shapes.
+
+CPU proofs (enumeration): the tall table order = the kernel's own supergrouped decode with group 1 in all 10,785 tall
+grids checked; the sm_80/86/89 fixed formula covers every tile in all grids, and where the current formula works (532
+grids) it gives the same order tile for tile. Same bug found in 3 files: BF16 SM89 core (group 8), FP16 core (group 8),
+FP32 SM86 core (group 16): tiles lost exactly when tile columns > 1 and tile rows > G and tile rows % G != 0. Safe: the
+BF16/FP16 backward nt/tn files (swizzle only if rows % 8 == 0) and the FP32 SM89 core used on sm_89 / H200 (min() on the
+last strip; 0 of 1,390 grids broken). H200 training (SM90 BF16 + FP32 SM89) is not affected.
+
+Libraries (all built on P032 with the same command, CUDA 13.4, TMPDIR in our folder: the root disk /tmp is full):
+A = BluBLAS ea666ab (TI d067e89). B = tall order computed in the kernel (exact divmod with a double reciprocal) + square
+tables per GPU, async. B2 = B with a plain integer divide inside the branch (fewer registers). B3 = kernel UNCHANGED;
+host-only: a tall table depends only on grid_n (entry i = (i / grid_n, i % grid_n)), so one table per (GPU, grid_n)
+sized to the next power of two rows, replaced by a bigger one (>= 2x) only when a taller grid comes; square tables per
+(GPU, grid); pinned host copy + cudaMemcpyAsync on the GEMM's stream + an event (another stream waits on the GPU, not the
+CPU); never freed; 64 slots then no table (supergrouped order, same output); mutex. C = A + the last-group fix (sm_80/86/89).
+
+Results (P032 H200, A vs candidate in one process via dlopen, stream 0; 59 shapes: the 135M trainer's 4 linears x
+fwd/dX/dW at 16k and 128k rows, lm_head full and 5 trained-row counts, the 8 P1 shapes, square and wide):
+- ptxas (registers / spills of the trainer's 6 kernel configs): the 24/240 register-split configs identical in A/B/B2;
+  non-split 128x64 / 128x128: B +5 to +18 registers, B2 +0 to +3. B3: kernels not changed.
+- B2 speed (paired, 30 rounds, null = A vs A; three H200s: GPUs 1, 5, 6 agree): `down dX` +2.9-3.1% (16k) and
+  +3.9-4.0% (128k); the 128k tall fwd / dX shapes +0.3-0.8%; everything else within noise. => B2 rejected (rule:
+  normal matmuls must not get slower).
+- B3 device code: nvcc -cubin of all 7 sources that include the template, A vs B3: byte-identical (md5), 186 kernels.
+- B3 speed (GPU 5): all 59 shapes B3/A median 0.995-1.003, each 10-90% range inside the A-vs-A null (down dX 1.0005).
+- Precision: 56 of 59 shapes bit-identical A vs B2 and A vs B3 (C prefilled with NaN: 0 unwritten). The 3 others
+  (16k qkv dW, 16k o dW, 128k o dW: small output, huge K, split-K) differ in 1-11 elements -- and differ the same way A
+  vs A and B2 vs B2 (two loads of the same library): existing run-to-run non-determinism, not the fix. NEW finding,
+  FUTURE task: those split-K dW GEMMs are not bit-deterministic.
+- Stall (20 ms of GPU work queued, then one call with a new shape): tall lm_head dX A 20,059-20,074 us every call, B2 21-24
+  us, B3 22-29 us (only the very first call of the program ~20-100 ms: first kernel load, once per kernel, as cuBLAS);
+  square shapes: A waits 20 ms on 6-8 of 20 calls, B3 worst 345 us after the first (CPU table build, no wait). Same 20
+  shapes twice: B3 median 22 us (A: all 40 calls wait). Training-like loop: lm_head calls held the CPU 7.4-9.4 ms per
+  iteration with A, 0.02-0.06 ms with B2 / B3; nsys: A 35 cudaMalloc + 35 blocking cudaMemcpy (241 ms) + 22 cudaFree per
+  33 iterations, B2 0 / 0 / 0, B3 (22:30, GPU 6) cudaMalloc 1 (one table growth: 128 -> 256 rows), cudaMemcpy 0,
+  cudaFree 0.
+- Memory: the library itself 8.0 MiB with A, B2 and B3.
+- sm_86 (laptop RTX 3060, t86_A vs t86_C, 29 cases BF16 nn/nt/tn 256x128 / 128x256 / 128x128, FP16 nt/nn, FP32 nn,
+  two runs each): normal cases (rows % G == 0) bit-identical A vs C, time ratio 0.956-1.006 (laptop noise); broken cases:
+  A leaves 0.49M-25M elements unwritten (M 6656 NT: 18,874,368 = 576 tiles x 256 x 128, as enumerated), C writes all and
+  matches cuBLAS; C takes 5-16% longer there = the tiles A skipped (work ratio 1.05-1.17). Deterministic run to run.
+- P032 sharing: GPU-free check before every launch; a watcher checked our GPUs every 10 s; Madhu took GPUs 0-1 (22:13)
+  and Dhana GPU 3 (22:17) before our B3 jobs started there, so those jobs moved to GPUs 5-6; no GPU was ever shared.
+  Two watcher alerts on GPU 6 were our own test programs exiting.
+
+Next (user to decide): push B3 (BF16 SM90 template) + C (3 non-Hopper templates) through the usual flow; the same B3
+change for the FP16 SM90 and SwiGLU templates; then the last plan step: the real trainer with the trained-rows switch
+off / on, with A and with B3, several runs with more steps (needs the trainer built with the saved switch).
+
+### 45.135 2026-11-02 night / 11-03 morning: follow-ups — the 16 slots, only dX misses, the format-study pause (plan Q&A 198-199)
+
+**"16" = 16 tables in total, for all BluBLAS BF16 SM90 GEMMs of the process together** (not 16 GEMMs, not 16 tiles): one
+table per tile-grid size (tile rows x tile columns); two different GEMMs with the same grid size share one table. In the
+135M trainer 6-7 places hold the model's fixed shapes; with trained rows one new grid size arrives per micro-batch, so
+after a few micro-batches the 16 are full and round-robin throws out the oldest each time.
+
+**Only the lm_head backward dX misses every micro-batch** (trained rows M_t):
+
+| lm_head GEMM | output | tile grid | table? |
+| --- | --- | --- | --- |
+| forward (logits) | [M_t x 49280] | M_t/256 x 385 | no: not tall (rows never > 4 x columns), not square (only at M_t = 98,560: one table) |
+| backward dX | [M_t x 512] | M_t/128 x 2 | yes: tall, and the size changes with M_t every micro-batch |
+| backward dW | [49280 x 512] | 385 x 2 | tall but always the same size (M_t is the inner K): one table at start |
+
+Proof (11-02 precision run, current library, first call of each new trained count with 5 ms of GPU work queued, time
+the call held the CPU): forward 14-43 us, dW 19-50 us, dX 5,024-5,150 us (M_t 5,376 / 10,496 / 21,248 / 41,216 /
+90,112). The 10-31 trainer profile agrees: 1 extra copy per micro-batch (2 if the forward also missed), size 1,328 B =
+166 x 2 entries = the dX grid.
+
+**Format study (45.132) status.** 11-02 21:00 GPU 0 was given to a colleague (removed from logs/gpus.txt; the run on it,
+m2_tulu_v19_s2, was stopped and is redone later); 21:44 the user paused the study after the running round (gpus.txt
+emptied, nothing killed); 21:57 the round finished: 120 of 208 runs done, all exit 0, all exported (hf_fmt/<run>/READY,
+/mnt/volgrp03, 2.0 TB free). The grid loop stays alive and idle (it only re-reads the empty list). Resume = write the
+GPU list back into logs/gpus.txt; if the loop died: `cd /mnt/volgrp03/3rd_floor/gautam_fmt && GPUS_FILE=logs/gpus.txt
+bash code/fmt_screen_torch.sh grid logs/runs.txt` (skips READY runs, redoes unfinished ones). 11-03 11:07: all 8 Ada
+GPUs run Sukanya's 607M production training (since ~22:40 on 11-02), so the study waits for free GPUs and the user's word.
+Seed check so far (seed 2 vs seed 1 final val, m1 all 22 versions and m2 v1-v22 except v19): differences <= 0.0006;
+the ranking holds (m1: Tülu plain best, ChatML plain worst; m2: ChatML plain best).
+
+### 45.136 2026-11-03 (09:30-15:00 IST): the full fix "D" / "D2" — one tile-order helper for SM90, SwiGLU and SM103 (B300), deterministic BN=64 split-K, the sm_80/86/89 fix; library-level tests
+
+The user (morning): B3 is the right fix and C (sm_86) too; also fix B300 (no B300 GPU: check by the compiled binary and
+the code logic); look at the split-K atomicAdd non-determinism; FP16 is not used, leave it; check SwiGLU; "document
+everything in comments at that place itself"; then push (BluBLAS commit, then the TI bump); then the trainer's own
+memory calls. 11:50: *"without my permission don't run in any GPU ... just plan, then to run in GPU ask me"*. Later:
+*"after building and all CPU work done, only then tell me and ask for GPUs"*. Afternoon: *"leave split-K and all,
+first our problem, the logits matmul"*.
+
+What changed (D = the 12 BluBLAS files below; diff D_vs_A.diff, 12 files, +296 -275; every change carries a comment at
+the change site saying what, why and the date):
+- NEW `src/level3/batched_gemm/blublas_tile_order_tables.cuh`: one helper for every template that reads a tile-order
+  table. Key fact: a row-first table entry i = (i / grid_n, i % grid_n) does not depend on grid_m, a column-first entry
+  (i % grid_m, i / grid_m) does not depend on grid_n; only Hilbert needs the exact grid. So one row-first table per
+  (GPU, grid_n) serves every row count (grown to the next power of two, at least 2x, a few times per run), one
+  column-first table per (GPU, grid_m), Hilbert per exact grid. Limits 512 tables / 256 MB per GPU, rows <= 32,768,
+  columns <= 65,536; past them nullptr and the caller falls back (order only, never a result). Mutex; GPU in the key
+  (the old caches had neither); never freed (kernels already queued may read a replaced table).
+- `BF16/SM90/Bgemm_sm90_warpspecialized_template.cuh`: its 16-slot cache (cudaMalloc + blocking cudaMemcpy + cudaFree)
+  replaced by the helper (both call sites pass the GEMM's stream); kernels unchanged.
+- `BF16/SM90/Bgemm_sm90_cluster_nn_persistent_template.cuh`, `BF16/SM90/Bgemm_sm90_swiglu_fused_template.cuh` (its own
+  copy of the 16-slot cache): the same helper.
+- SM103 / B300: `Bgemm_sm103_cluster_template.cuh`, `_cluster_addmm_template`, `_cluster_dual_template`,
+  `_swap_template` (row-first only), `FP8/SM103/Bgemm_sm103_fp8_cluster_template.cuh`: they kept ONE table per kernel
+  type and rebuilt it (cudaFree + cudaMalloc + blocking copy) whenever the grid differed from the previous call's, i.e.
+  on B300 any two GEMMs of one kernel type with different shapes stalled. Now the helper; the row-first table as the
+  fallback (SM103 kernels always need a table); a clear error print if even that fails. Checked without a B300: the
+  SM103 kernels compile to identical code (cubin md5) and the host logic was traced by hand.
+- `BF16/SM90/Bgemm_sm90_tn_variants.cu` + a new config `Sm90Config_128x64x64_ws` in the SM90 template: the legacy BN=64
+  TN split-K entry used `Sm90Config_128x64x64` (SPLITK_WORKSPACE = false: every split atomicAdds fp32 into one buffer,
+  order differs run to run => the 16k qkv / o dW and 128k o dW outputs differed in 1-11 elements between two runs of the
+  SAME library, 45.134). Now, for even N, the workspace twin: each split writes its own fp32 slice and a reduce kernel
+  adds them in a fixed order (BN = 128/192/256 already did this since 2026-08-10). Odd N keeps the atomic path (FUTURE).
+- C (the last-group fix, 45.134) in `BF16/SM89/Bgemm_core_template.cuh` and `FP32/SM86/Sgemm_core_template.cuh`
+  (identical to the files tested on the 3060 on 11-02). `FP16/Hgemm_core_template.cuh` left as it is (the user: FP16
+  is not used).
+
+D2 = D with the tables WRITTEN ON THE GPU by a small fill kernel on the GEMM's stream (no host buffer, no copy). The
+first version (kept as fix1103/blublas_tile_order_tables.v1.cuh: pinned host buffer + cudaMemcpyAsync) still made the
+CPU wait: cudaMallocHost took 169-386 ms the first time, and a NEW table while 20 ms of GPU work was queued held the
+CPU 15.4 ms (tiletab_test check 2). D2: 13.3 ms there, the remaining wait being cudaMalloc itself (it can wait for the
+GPU); a fixed arena allocated once at start ("D3") would remove it: proposed, not built.
+
+CPU checks (laptop, all 22 compiled files that include a changed header): all compile; SM103: every kernel identical
+(cubin md5); SM90: 193 kernels identical + the 3 new `_ws` kernels; the sm_89/sm_86 core kernels changed (intended).
+
+Library-level tests (P032 H200, the BluBLAS standalone build of each library loaded with dlopen in one process; 59
+shapes as in 45.134; GPUs with a free check before every launch):
+- stall (20 ms of GPU work queued, then a GEMM with a new row count): lm_head dX 20,011-20,074 us with A, 3.7-5.2 us
+  with D / D2; training-like loop: the lm_head calls held the CPU 7.4-9.4 ms per iteration with A, 0.01-0.05 ms with
+  D / D2.
+- tables: identical to the old builders in all 257 cases checked (tiletab_test).
+- speed: the same on all 59 shapes, except the split-K dW shapes (the new deterministic path): 16k qkv / o / down dW
+  11 / 15 / 10% faster, 128k o dW 1.3% slower.
+- precision: 56 of 59 shapes bit-identical to A; the other 3 are the split-K shapes, which are random in A itself.
+- determinism (splitk_det.cu, 9 dW shapes x 20 runs): A 2-20 distinct outputs on the split-K shapes, D / D2 1 each.
+- memory: the library 8 MiB with A, 16 MiB with D / D2 (the split-K workspace).
+- P032 sharing: 14:25 Dhana's `dense_bwd_bench` ran ~15-20 s on GPU 3 while our track 3 ran there; 14:33:09-12
+  Surendra's `_jit_runner_` (~2.5 s) on GPU 4 during our nsys start gap. Both reported; the overlapped results were
+  discarded and redone on other GPUs; GPU 3 excluded from then on (Dhana's intermittent jobs).
+
+What these tests could NOT show (found in 45.137): they used the BluBLAS standalone build (libmyblas.so). The trainer
+loads Tensor-Implementations' build of libblublas.so, which links the same objects in a different order, and that
+changed which copy of the helper the linker kept.
+
+### 45.137 2026-11-03 (15:00-16:40 IST): the real trainer, trained-rows switch off / on, old vs new library — timing, then nsys; the D2 link-order bug and its fix (D2f); the trainer's own memory pool is the bigger lag
+
+The user: *"after fixing the smart cache, let's run that training run so we can compare whether we still have that lag
+problem"*; then *"did you check nsys to validate those timings, and that those savings are from those matmul hangs?
+copy and malloc calls and the synchronous API counts, old and new, ncu too if needed, analyse and research deeply"*.
+GPUs: P032 GPU 1 (*"GPU 1 is ours now"*), then GPU 0 too; 15:57 *"both GPU 1 and 0 are ours, kill others' processes and
+run ours ... don't allow anyone's process till we get completed"*.
+
+Setup (P032, /localstorage/gautam_k/tilemap_1102/trainer/):
+- tree: BluTrain 91b6b54 + TI d067e89 + BluBLAS ea666ab (the pushed state of 11-01) plus the 8 saved trained-rows switch
+  files (pure additions, not pushed); `make -j profiler tensor dist SM_ARCH=90`, sft/build_sft_trainer.sh; trainer
+  binary md5 3f903d79, the same binary for every run.
+- libraries, chosen per run by LD_LIBRARY_PATH (each log prints the library ldd resolved): A = TI's own build of
+  BluBLAS ea666ab (md5 4d0ef57b); D2 = a copy of TI with the 12 D2 files and TI's own `make blas` (309ff7a5).
+- data: the first 480 rows of the SFT set at 4,096 tokens (data_4k), 79.8% of the tokens trained.
+- settings = the 10-31 runs: 135M shape (N_LAYERS 37, D_MODEL 512, Q_HEADS 4, KV_HEADS 2, FFN 1408, VOCAB 49280), B 4,
+  ROWS 8 (2 micro-batches per optimizer step), 60 steps, Muon, LR 5e-5, warm-up 3%, cosine, no validation inside.
+  SFT_TRAINED_ROWS = 0 (switch off: logits for all rows) or 1 (switch on: logits only for trained rows).
+- measured: the step time `dt` of steps 10-59 (start-up and the first steps excluded); GPU-free check before every run.
+
+Timing (24 runs, no profiler: 6 rounds x 4 settings, rounds 1-3 on GPU 1, 4-6 on GPU 0, order varied per round),
+median dt of steps 10-59 per run, ms:
+
+| setting | r1 | r2 | r3 | r4 | r5 | r6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| A, switch off | 140.4 | 144.9 | 141.8 | 147.1 | 140.1 | 144.5 |
+| A, switch on | 149.2 | 139.2 | 140.0 | 142.3 | 145.3 | 139.0 |
+| D2, switch off | 156.9 | 158.4 | 153.5 | 164.4 | 146.2 | 153.2 |
+| D2, switch on | 151.5 | 149.5 | 144.8 | 146.7 | 155.1 | 146.6 |
+
+On - off per round: A median -3.3 ms (+8.8 to -5.7: noise of +-10 ms), D2 median -7.7 ms. Two things the timing could
+not explain: D2 with the switch OFF was ~10 ms per step slower than A (the tile tables are not involved there), and
+every switch-on run had ONE very slow step: step 15, 236-1,773 ms instead of ~145 (12 of 12 switch-on runs, 0 of 12
+switch-off runs). Hence nsys.
+
+nsys (one run per setting, `nsys profile --trace=cuda --sample=none --cpuctxsw=none`, same settings; A_sw0 / D2_sw0 on
+GPU 0, A_sw1 / D2_sw1 on GPU 1; nsys_win.py / nsys_cmp.py / nsys_long.py / nsys_clock.py). Measured window =
+training micro-batches 20-119 (= steps 10-59), from the start of the 21st training loss kernel
+(`sparse_ce_forward_kernel_vec_save_stats`) to the 120th. Under nsys every CUDA call costs more CPU time, so the GPU idle
+numbers are larger than without it; the counts are exact.
+
+| inside micro-batches 20-119 | A_sw0 | A_sw1 | D2_sw0 | D2_sw1 |
+| --- | --- | --- | --- | --- |
+| blocking cudaMemcpy of 64 B-1 MB (= tile-table uploads) | 0 | 21 (sizes 800-1,008 B; CPU held 192 ms in total, longest 21.7 ms) | 0 | 0 |
+| cudaMalloc / cudaFree | 0 / 0 | 21 / 15 | 66,033 / 66,033 | 66,033 / 66,033 |
+| cudaMallocAsync (the trainer's memory pool) | 0 | 2 calls, 4,255 ms | 0 | 2 calls, 4,132 ms |
+| cudaStreamSynchronize (the trainer) | 22,442 | 22,442 | 22,442 | 22,442 |
+| GPU kernel time per micro-batch | 74.34 ms | 72.84 ms | 73.32 ms | 71.78 ms |
+| GPU idle per micro-batch, gaps that end a cudaFree | 0.00 ms | 0.02 ms | 14.25 ms | 17.70 ms |
+| GPU idle per micro-batch, gaps that end a cudaMallocAsync | 0.00 ms | 42.85 ms | 0.00 ms | 41.74 ms |
+
+Findings:
+1. The old library's stall is real in the trainer: with the switch on, 21 blocking table uploads in 99 micro-batches
+   (one per new dX tile grid; the 800-1,008 B sizes = 100-126 tile rows x 2 tile columns x 4 B), each waiting for all
+   queued GPU work. With D2: 0. The tile-table part of the fix works in the trainer.
+2. D2 had a NEW bug, invisible to the library tests: 66,033 cudaMalloc + 66,033 cudaFree in the window = 667 per
+   micro-batch = one pair on every GEMM call. API order around each: cudaMalloc -> cudaLaunchKernel with NO kernel
+   record (the launch failed) -> cudaFree -> the GEMM launch. Cause: the helper was a plain `inline` function in a
+   header included by SM90 files (compiled for sm_90a only) and SM103 files (sm_100a / sm_103a only). The linker keeps
+   ONE copy of an inline function for the whole library: the copy from the first object in link order that defines it.
+   In TI's build that is `BF16/SM103/Bgemm_dual_variants.o` (checked: `nm` shows one weak symbol; the objects that
+   define it, in link order, start with 5 SM103 objects). That copy launches ITS file's `static` fill kernel, which has
+   no H200 code -> "no kernel image" -> the error path did cudaFree (which waits for the whole GPU) and returned nullptr
+   -> the GEMM used its fallback order (same results, so no output check could see it). That is the ~10 ms per step of
+   D2 with the switch off: 14-18 ms of GPU idle per micro-batch, partly hidden. The BluBLAS standalone build links an
+   SM90 object first, which is why every library-level test (45.136) passed.
+   FIX (D2f): the helper is `static inline` (each compiled file keeps its own copy, its own fill kernels and its own
+   small cache), and the error path prints once to stderr instead of falling back silently; both explained in the
+   header's comment. Rebuilt with TI's `make blas` (13 files recompiled; library md5 79d3aeeb): `nm` now shows 26 local
+   copies and no shared one. Lesson recorded: test the exact library the trainer loads, and check the API counts in the
+   real trainer after any host-side library change.
+3. The biggest switch-on lag is NOT BluBLAS: it is the trainer's own memory pool. With the switch on, a few
+   cudaMallocAsync calls take seconds (under nsys 2,553 ms after micro-batch 30 and 1,702 ms after micro-batch 117 for
+   A; 3,389 ms and 743 ms for D2), the GPU idle meanwhile. Without nsys the same shows as the slow step 15
+   (= micro-batches 30-31) in all 12 switch-on runs. With trained rows the logits buffers change size every micro-batch;
+   when a size is needed that the pool cannot serve from what it holds, it asks the driver for new memory, and that call
+   is very slow. Step 15 is not the first step with a new largest trained-token count (steps 22 and 34 are, without a
+   spike), so the exact trigger (per-micro-batch size, pool fragmentation, release threshold) is for the next task.
+4. Also in all 4 runs, before the window: cudaFree bursts at micro-batches 1 and 11 (10-30 s under nsys; steps 0, 1 and
+   6 are slow in every run, step 6 2-6 s even without nsys) and cudaHostAlloc bursts after training (checkpoint
+   staging). Whole run: ~890 cudaFree, ~2,010 cudaMallocAsync, 837 cudaHostAlloc. These are the trainer's own memory
+   calls = the next task (889 cudaFree / 1,786 cudaMallocAsync per 10 steps at 128k, noted 11-01).
+5. The switch's own gain is there and small for this data: GPU kernel time -1.5 ms per micro-batch (-3 ms per step,
+   ~2%), almost all in the BluBLAS GEMMs (bgemm_sm90_kernel 40.97 -> 40.15 ms per micro-batch), because 79.8% of the
+   rows are trained anyway. The A timing median (on - off -3.3 ms) agrees. The step-15 spike hides it in the mean.
+6. The split-K change is visible and cheaper: D2 replaces A's 18,315 `sm90_splitk_cast_kernel` + memset calls by 18,315
+   `sm90_splitk_reduce_kernel_v4t` calls; BluBLAS GEMM kernel time -0.79 ms per micro-batch, reduce +0.39 vs cast -0.33.
+
+P032 sharing during this test: Madhu's lighteval (`/localstorage/madhu/BluEval`) took GPU 1 at ~15:52 (after our timing
+runs) and again 15:57:30; the guard (`guard_g01.sh`: every 5 s, any process on GPU 0/1 not started from our folder is
+sent SIGTERM, SIGKILL after 10 s, logged in nsys_status; by the user's instruction) stopped it at 15:58:13. The A_sw1
+profile's measured window is 16:00:18-16:00:32 (nsys_clock.py): clean. The laptop watcher saw no other process on our
+GPUs until the end (16:08:38).
+
+D2f re-test (16:17-, GPUs 0 and 1, guard on by the user's word; scripts run_d2f.sh, guard_d2f.sh, status d2f_status):
+nsys of D2f with the switch off (GPU 0) and on (GPU 1), same window and scripts as above:
+
+| inside micro-batches 20-119 | A_sw0 | D2f_sw0 | A_sw1 | D2f_sw1 |
+| --- | --- | --- | --- | --- |
+| blocking tile-table copies | 0 | 0 | 21 (192 ms CPU) | 0 |
+| cudaMalloc / cudaFree | 0 / 0 | 0 / 0 | 21 / 15 | 1 / 0 (one table growth) |
+| cudaMallocAsync (trainer pool) | 0 | 0 | 2 calls, 4,255 ms | 2 calls, 1,568 ms |
+| GPU kernel time per micro-batch | 74.34 ms | 73.17 ms | 72.84 ms | 71.25 ms |
+| GPU idle per micro-batch (all gaps) | 27.92 ms | 41.09 ms | 75.24 ms | 53.36 ms |
+
+The link-order bug is gone (66,033 pairs -> 0), no blocking copy, kernel time equal or lower. The idle row is NOT a
+fair comparison, see the next paragraph.
+
+CPU-core finding (16:24): both of our trainer processes had Cpus_allowed_list 0,112, i.e. ONE physical core (core 0
+and its hyperthread). It is `mpirun` (Open MPI 4.1.6): for 1-2 ranks it binds each rank to a core by default, rank 0 ->
+core 0, separately for every mpirun, so every single-GPU run started by run_sft.sh lands on core 0. At that moment core
+0 also carried Surendra's single-rank job (test_cp_seq_len_sweep, Cpus_allowed_list 0,112) and 5 monitoring daemons
+pinned there (dcgm-exporter, otelcol, rdma_exporter, neysamon, journalctl). Under nsys every CUDA call costs extra CPU,
+the step becomes CPU-bound and the GPU idle depends on what else runs on core 0: the D2f profiles' windows
+(16:21:17-16:21:38) overlapped each other, the A profiles' windows did not. Call counts and kernel times are exact
+regardless. Without nsys the 135M step is mostly GPU time (~145 ms = 2 x ~73 ms of kernels), so the shared core shows
+as the +-10 ms noise of the timing test. Fix for measuring: `OMPI_MCA_hwloc_base_binding_policy=none` and the trainer
+started under `taskset -c` on its own free cores (GPUs 0-3 sit on NUMA node 0 = even cores; hyperthread = core + 112;
+GPU 0 run: 40,42,44,46 + 152,154,156,158; GPU 1 run: 48,50,52,54 + 160,162,164,166). Checked on the CPU: plain
+`mpirun -np 1` -> 0,112; `mpirun -np 1 taskset -c 40,42 ...` -> 40,42. Pinned nsys runs (run_pinned.sh, user's OK
+16:27): GPU 0 A then D2f with the switch on, GPU 1 A then D2f with the switch off, after the timing rounds.
+
+D2f timing rounds (16:23-16:43, no profiler, rounds 7-8 on GPU 0 and 9-10 on GPU 1 at the same time, unpinned = both
+runs on core 0 like rounds 1-6; median dt of steps 10-59, ms; in brackets the slow step 15):
+
+| round (GPU) | A off | A on | D2f off | D2f on |
+| --- | --- | --- | --- | --- |
+| r7 (0) | 177.1 | 155.1 (1,021) | 153.5 | 144.0 (1,336) |
+| r8 (0) | 152.3 | 145.3 (2,879) | 139.7 | 146.4 (681) |
+| r9 (1) | 151.4 | 184.3 (251) | 145.3 | 141.9 (1,148) |
+| r10 (1) | 144.9 | 149.2 (547) | 142.5 | 137.3 (421) |
+
+D2f is not slower than A: D2f - A per round, switch off -23.6 / -12.6 / -6.1 / -2.4 ms, switch on -11.1 / +1.1 / -42.4 /
+-11.9 ms. The spread of A alone (144.9-177.1 with the switch off; 140-147 in rounds 1-6) shows how much the shared
+core moves these numbers, so the size of the D2f advantage is not claimed from this table. The slow step 15 is still
+there with D2f (421-1,336 ms): it is the trainer's memory pool, not BluBLAS.
+
+Pinned nsys (16:43-16:53; run_pinned.sh: OMPI_MCA_hwloc_base_binding_policy=none + taskset; GPU 0 run on cores
+40,42,44,46 + 152,154,156,158, GPU 1 run on 48,50,52,54 + 160,162,164,166, checked in /proc while running; GPU 1 =
+switch off, GPU 0 = switch on, A then D2f on each). The guard stopped Ananya's `_jit_runner_` on GPU 0 at 16:50:51
+(it had started 16:50:17); the D2f profiles' measured windows were 16:51:50-16:52:16, after it. ms per micro-batch,
+micro-batches 20-119:
+
+| | A off | D2f off | A on | D2f on |
+| --- | --- | --- | --- | --- |
+| GPU busy | 72.57 | 72.43 | 72.89 | 72.69 |
+| GPU idle, all | 18.92 | 18.84 | 47.24 | 34.51 |
+| of it after the trainer's cudaMallocAsync | 0 | 0 | 28.17 | 16.21 |
+| idle without that | 18.92 | 18.84 | 19.07 | 18.30 |
+| blocking tile-table copies | 0 | 0 | 21 (280 ms of CPU wait) | 0 |
+| cudaStreamSynchronize (the trainer) | 22,442 | 22,442 | 22,442 | 22,442 |
+
+With the cores separated, switch off: A and D2f are the same (busy, idle and every call count; D2f only makes 18,300
+fewer cudaMemsetAsync calls: the split-K workspace path needs no zeroing). Switch on: D2f removes the 21 blocking copies
+and ~0.8 ms of GPU idle per micro-batch; the rest of the difference is the trainer's cudaMallocAsync, which varies from
+run to run (longest call 1,819 ms for A, 1,136 ms for D2f). Under nsys the step is CPU-bound for both (11 ms of idle in
+small launch gaps + 7.4 ms after the trainer's 227 cudaStreamSynchronize calls per micro-batch: a trainer item for the
+memory/sync task).
+
+The switch's own compute saving (the user, 16:51: "didn't you measure the matmul + loss timings, old and new?"),
+nsys_lmhead.py: the lm_head + loss kernels of every training micro-batch, identified by position around the loss kernel
+(weight transpose, row gather, forward GEMM, loss forward, loss sums, loss normalize, dX GEMM, dW GEMM, row scatter);
+trained rows per micro-batch = gridX of the loss kernel in the switch-on profile (one block per row): mean 13,201 of
+16,384 rows = 80.6% (min 9,728, max 14,592). Pinned profiles, ms per micro-batch:
+
+| kernel | A off | A on | on - off | D2f off | D2f on | on - off |
+| --- | --- | --- | --- | --- | --- | --- |
+| lm_head forward GEMM | 1.248 | 1.011 | -0.237 | 1.249 | 1.012 | -0.237 |
+| loss forward (CE + stats) | 0.371 | 0.396 | +0.026 | 0.372 | 0.397 | +0.025 |
+| loss normalize (writes the gradient) | 0.730 | 0.647 | -0.084 | 0.730 | 0.647 | -0.084 |
+| lm_head dX GEMM | 0.991 | 0.925 | -0.065 | 0.991 | 0.926 | -0.065 |
+| lm_head dW GEMM | 1.023 | 0.851 | -0.172 | 1.025 | 0.852 | -0.172 |
+| weight transpose + row gather / scatter + loss sums | 0.090 | 0.114 | +0.024 | 0.091 | 0.114 | +0.024 |
+| lm_head + loss, total | 4.453 | 3.944 | -0.509 (-11%) | 4.457 | 3.946 | -0.510 (-11%) |
+| rest of the model | 69.30 | 70.12 | +0.83 (noise) | 69.50 | 70.34 | +0.84 (noise) |
+
+- The switch saves ~0.51 ms per micro-batch = 0.7% of the GPU kernel time (~74 ms) in this setting. The earlier
+  "-1.5 ms per micro-batch" (unpinned, whole micro-batch) was mostly run-to-run variation of the rest of the model
+  (+-0.9 ms); the per-kernel split is the right measure.
+- Why small: the lm_head + loss is only ~6% of the GPU time of this 135M model (the 37 layers are the rest; the big
+  lm_head GEMMs run near 660 TFLOPS, the small layer GEMMs much lower), and only 19.4% of the rows are untrained.
+- The lm_head GEMMs take 85.5% of their switch-off time for 80.6% of the rows. dX shrinks least (93%): with a row count
+  that is not a multiple of the tile, the dispatcher picks another config (seen: 512 threads instead of 384). Possible
+  improvement: round the trained-row count up to a tile multiple (extra rows with zero gradient) -- to test.
+- The loss forward does not get cheaper: with the switch off it already skips untrained rows inside the kernel. The
+  normalize gets 11% cheaper: with the switch off it writes zero gradients for the untrained rows.
+- The loss kernels need no change for the switch: every row passed has a label, the ignore check never triggers.
+  Train loss off vs on (same data and seed): step 59 A 1.270407 / 1.270379, D2f 1.270655 / 1.270030; the same size of
+  difference as A off vs D2f off (1.270407 / 1.270655) = run-to-run non-determinism.
+- BluBLAS memory calls vs TI's caching allocator: BluBLAS is a separate library and calls CUDA itself (as cuBLAS does,
+  unless the caller hands it a workspace with cublasSetWorkspace). After D2f it makes 0 calls in the window with the
+  switch off and 1 cudaMalloc (one table growth) with it on, and never cudaFree. A hook through which TI hands BluBLAS
+  memory from its caching allocator would remove even that: proposed, not built. The big remaining calls are TI's own:
+  18 TI source files call cudaMallocAsync directly (e.g. TensorBoolEq.cu: 5 small shape/stride arrays per call), 16
+  cudaFreeAsync, 14 cudaMalloc, 11 cudaFree, 5 cudaHostAlloc, 2 cudaMallocHost, beside the caching allocator
+  (src/device/CudaCachingAllocator.cpp) -> the next task, with the step-15 spike and the 227 syncs per micro-batch.
+
+### 45.138 2026-11-03 (18:10-): accounting for EVERY CUDA memory / copy / sync call of the trainer, and who makes it
+
+The user (18:12): *"let's track all these alloc and memcpy and free calls ... we have nsys reports, old and new, so
+let's track each and every call of those CUDA APIs, first account for every call, then look into everything, then
+optimize if something is redundant"*; (18:20) *"if we don't have the reports or details, let's run those tests; if any
+GPU is needed ask my permission"*.
+
+Method. (a) The 4 pinned profiles of 45.137 (P_A_sw0/1, P_D2f_sw0/1), CPU-only scripts nsys_account.py and
+nsys_bursts.py: every call by phase on the CPU timeline (cut at the launch of each training loss kernel: PRE = before
+the first, interval k = loss launch of micro-batch k to that of k+1 = backward of k [+ optimizer step after odd k] +
+forward of k+1, END = after the last), copy direction and size (CUPTI memcpy records), and the kernels launched right
+before / after each call (= which operation made it). (b) The code that makes each burst, read in the trainer tree.
+(c) BT_D2f_sw1 (GPU 6, 18:31-18:35, user's OK): nsys with --cuda-memory-usage for the size of every allocation; the
+call stacks asked for with --cudabacktrace were NOT recorded: CUDA backtraces need nsys CPU sampling, which P032 does
+not allow for our user (kernel.perf_event_paranoid = 4, not root). (d) Therefore cudatrace.so (LD_PRELOAD, CPU-built
+and CPU-tested with no GPU visible): sits in front of cudaMalloc / cudaMallocAsync / cudaFree / cudaFreeAsync /
+cudaHostAlloc / cudaMallocHost / cudaFreeHost / cudaMemcpy / cudaMemcpyAsync / cudaMemcpy2DAsync / cudaMemset /
+cudaMemsetAsync / cudaStreamSynchronize / cudaDeviceSynchronize / cudaEventSynchronize, records the caller's stack for
+every call and passes it on unchanged; phases from the loss-kernel launches counted through cudaLaunchKernel; report by
+cudatrace_report.py (addr2line). Runs CT_D2f_sw0 / CT_D2f_sw1 on GPU 6 (user's "continue", 18:39).
+
+All calls come from ONE thread (the trainer's main thread). Old library, switch off, 60 steps (P_A_sw0), counts:
+
+| call | PRE | micro-batches 0-19 | steady 20-117 (per micro-batch) | END | total |
+| --- | --- | --- | --- | --- | --- |
+| cudaMallocAsync | 895 | 1,112 | 0 | 0 | 2,007 |
+| cudaFree | 5 | 865 | 0 | 21 | 891 |
+| cudaMalloc | 14 | 15 | 0 | 14 | 43 |
+| cudaHostAlloc | 10 | 5 | 0 | 822 | 837 |
+| cudaMemcpyAsync | 2,173 | 14,454 | 71,202 (726.6) | 2,263 | 90,092 |
+| cudaMemsetAsync | 315 | 12,265 | 59,243 (604.5) | 641 | 72,464 |
+| cudaStreamSynchronize | 70 | 5,445 | 22,442 (229.0) | 902 | 28,859 |
+| cudaMemcpy (blocking) | 7 | 32 | 147 (1.5) | 22 | 208 |
+| cudaDeviceSynchronize | 0 | 22 | 98 (1.0) | 3 | 123 |
+| cuMemCreate / cuMemMap / cuMemSetAccess | 195 / 194 / 194 | 0 | 0 | 0 | |
+| cudaGetDeviceProperties | 3,707 | 787 | 7,289 (74.4) | 0 | 11,783 |
+
+The allocator's own log agrees: allocs 462,426, cache hits 460,419, cache misses 2,007 = cudaMallocAsync 2,007.
+
+Steady state, per interval: even k (backward + forward, no optimizer) = 0 syncs, 4 cudaMemcpyAsync, 193 memsets; odd k
+(+ the optimizer step) = 458 cudaStreamSynchronize, 1,441 cudaMemcpyAsync, 1,014 memsets, 3 blocking cudaMemcpy, 2
+cudaDeviceSynchronize. Forward and backward make no syncs and no allocations; almost all syncs and copies are in the
+optimizer step.
+
+Who makes them (code):
+1. Optimizer, every step: 444 cudaStreamSynchronize + 444 tiny GPU->CPU copies = 2 per Muon matrix (37 layers x 6 =
+   222 matrices), both in dist/zero/src/ShardedMuon.cpp: line 1703 `muon_has_nonfinite_cuda` (MuonKernels.cu:466-482:
+   check kernel, 1 int copied to the CPU, cudaStreamSynchronize, then the CPU decides whether to apply) and lines
+   1731-1749, the `nsratio` diagnostic of the log line (one norm reduction, copy, cudaStreamSynchronize per matrix; the
+   code says "DIAGNOSTIC ONLY ... Nothing here feeds the update"). Plus 444 tiny CPU->GPU copies (per-matrix metadata
+   of multi_tensor_grad_norm), the global grad-norm copies and 2 cudaDeviceSynchronize. Options (to design and test):
+   the NaN guard decided on the GPU (muon_apply / the fused publish kernel read the device flag and skip themselves;
+   same decision), the diagnostic kept on the GPU and read once per step (or only on log steps, or behind a flag);
+   later batched Newton-Schulz for same-shape matrices. Under nsys these waits are 14.8 ms of GPU idle per step;
+   without nsys less (to measure).
+2. Steps 0 and 5: bluscript_sft.cpp:3831 `if (step == 0 || step == 5) CachingCUDAAllocator::instance().empty_cache();`
+   ("reclaim the extra allocator high-water mark from the first steps' one-time warm-up allocations"): every cached
+   block goes back to the driver (CudaCachingAllocator.cpp:549-550: cudaStreamSynchronize + cudaFree per block: 356 at
+   step 0, 509 at step 5), and the next forward allocates all activations again (~500 cudaMallocAsync, 11.5 GiB each
+   time). = the slow steps 0/1 and 6 of every run (2-6 s at step 6 without nsys). Same code in bluscript_zero_ckpt.cpp:3269.
+3. Before training: 895 cudaMallocAsync (16.9 GiB) = the model and the first forward's activations (cold cache), with
+   195 cuMemCreate / cuMemMap / cuMemSetAccess underneath (the driver mapping memory): once per run.
+4. Switch on only: the logits buffer. When a micro-batch has more trained rows than any cached block holds, the
+   allocator gets a new block (1,540 MiB for 16,384 rows, 1,372 MiB for 14,592 rows = rows x 49,280 x 2 B), right
+   after the lm_head weight transpose: micro-batches 15, 18, 30, 117 after the step-5 empty_cache; 0.5-1.9 s each under
+   nsys. = the slow step 15.
+5. Checkpoint save (END): 822 cudaHostAlloc, 1.35 GiB in total (largest 96 MiB = the fp32 embedding):
+   DistCheckpoint::stage_pinned stages every tensor into a NEW pinned host buffer (PinnedCPUAllocator -> cudaHostAlloc);
+   10.7 s under nsys; only 3 cudaFreeHost seen. Every checkpoint save pays it.
+6. Small: cudaGetDeviceProperties 74 per micro-batch right before the attention forward (cacheable);
+   cuTensorMapEncodeTiled 445 per micro-batch (attention TMA descriptors); cuTensorMapReplaceAddress 2,000-10,000 per
+   interval (BluBLAS descriptor updates); all ~0.1-0.2 us each.
+
+cudatrace results (CT_D2f_sw0 / CT_D2f_sw1, GPU 6, 18:41-18:46, NO nsys; every call with its call stack; file:line
+where the object has line info). The tracer's phase counter stayed at 0: CUDA 13 kernels are launched through the
+internal `__cudaLaunchKernel` (imported by libtensor.so), not `cudaLaunchKernel`, so the per-site totals below are for
+the whole run; phases are known from nsys (above). CPU ms = time the CPU spent inside the call (without nsys):
+
+| call | calls (off / on) | CPU ms (off / on) | made by |
+| --- | --- | --- | --- |
+| cudaMallocAsync | 2,007 / 2,013 | 29,030 / 36,068 | CachingCUDAAllocator::cuda_alloc <- allocate: cold start, the refills after the 2 empty_cache, (on) logits buffers |
+| cudaFree | 865 / 871 | 14,141 / 29,315 | CachingCUDAAllocator::empty_cache <- bluscript_sft.cpp:3832 (steps 0 and 5) |
+| cudaHostAlloc | 822 / 822 | 13,405 / 9,068 | PinnedCPUAllocator::allocate <- Storage::Storage: checkpoint staging, one new pinned buffer per tensor |
+| cudaMemcpyAsync D2H (1 int) | 13,320 / 13,320 | 683 / 673 | muon_has_nonfinite_cuda <- ShardedMuon::update_one (ShardedMuon.cpp:1703) |
+| cudaMemcpyAsync D2H (1 float) | 13,320 / 13,320 | 229 / 227 | ShardedMuon::update_one (ShardedMuon.cpp:1741), the nsratio diagnostic |
+| cudaStreamSynchronize | 13,320 + 13,320 | 25 + 25 | the same two places (1703 / 1743) |
+| cudaMemcpyAsync H2D | 26,640 | 58 | multi_tensor_grad_norm_cuda metadata <- ShardedMuon.cpp:1739 (the diagnostic) |
+| cudaMemcpyAsync D2H (Tensor::to) | 434 | 1,287 | model tensors to the CPU at the end (save / export) |
+| cudaMemcpyAsync D2D | 31,652 | 94 | device::copy_memory (527 per step) |
+| cudaMemsetAsync | 21,948 | 47 | TensorImpl::zero_grad (fill_cuda_launch) |
+| other syncs | 444 + 360 + 180 + 120 + 60 x 3 | ~50 | checkpoint shard reads (444), ShardedOptimizer::step / local_adam_step (AdamW part), Muon all-gather / clip / reduce, 1 each per step |
+
+The Muon waits sit in the copies, not in cudaStreamSynchronize: the 1-value D2H copy goes into pageable host memory
+(a stack variable), so cudaMemcpyAsync itself blocks until the stream is done (51 us and 17 us per call on average);
+together ~911 ms of CPU waiting in 60 steps = ~15 ms per step (~10% of a 142 ms step). How much of it is GPU idle (the
+GPU keeps working on the queued Newton-Schulz while the CPU waits) is to be measured by changing it.
+
+Step times of these runs (no nsys, ms): switch off: step 0 9,872, step 1 6,060, step 6 5,902, steady median 142.5;
+the 60 steps sum to 30.0 s, of which the 3 slow steps are 21.8 s. Switch on: step 0 13,865, step 1 7,061, step 6
+7,187, step 9 1,298, step 15 516, steady 141.7; sum 38.3 s. Whole process (start to end of run_sft.sh): 2 min 07 s /
+2 min 25 s, with model load before and the final checkpoint after. Steps 1 and 6 = refilling the cache after the
+step-0 / step-5 empty_cache (~5.8-7.2 s each); step 0 = cold start + the first empty_cache.
+
+### 45.139 2026-11-03 (14:15-18:50 IST): the chat-format screen finished — 208 of 208 runs, final tables over 3 seeds
+
+Resumed on all 8 Ada GPUs at 14:15 (the user: "run in all 8x Ada, our paused processes"); 18:38 the grid was limited to
+GPU 0 (the user: colleagues may use the others; only the redo of m2_tulu_v19_s2, stopped on 11-02, was left); 18:50
+"grid over logs/runs.txt finished: 0 runs not done". 208 runs, all exit 0, all exported (hf_fmt/<run>/READY), the grid
+loop ended by itself. Table script code/fmt_final.py (laptop copy ~/Downloads/lc_box/fmt_study/, output
+fmt_final_1103.txt).
+
+Measure (plan M1): answer-token val loss with end tokens excluded = the same tokens in every version, so versions
+compare fairly; mean of seeds 1-3, in brackets max - min over the seeds. (The train-loss column of the output is NOT
+comparable across versions: the trained tokens differ by format.) Versions: v1-v3 Tülu text markers (end token
+0 / S / X), v4-v6 Tülu with new role ids, v7-v9 ChatML text markers, v10-v14 ChatML with special ids (v11 = SmolLM2 /
+Qwen, v12 = OLMo 3, v13 / v14 the same with their start values), v15 no format, v16 Cohere, v17 Phi-3, v18 GLM-4,
+v19 Zephyr, v20 Llama 3, v21 Mistral (system merged into the user turn), v22 default system message, v23 DeepSeek V3.
+
+| ver | m1_smol | m2_tulu | m3_smol_math |
+| --- | --- | --- | --- |
+| v1 | 1.1017 (0.0005) | 1.1589 (0.0006) | 1.0156 (0.0003) |
+| v2 | 1.1015 (0.0003) | 1.1593 (0.0005) | 1.0154 (0.0002) |
+| v3 | 1.1016 (0.0004) | 1.1594 (0.0006) | 1.0155 (0.0002) |
+| v4 | 1.1029 (0.0005) | 1.1605 (0.0005) | 1.0161 (0.0002) |
+| v5 | 1.1026 (0.0004) | 1.1607 (0.0006) | 1.0159 (0.0002) |
+| v6 | 1.1027 (0.0005) | 1.1609 (0.0006) | 1.0160 (0.0002) |
+| v7 | 1.1044 (0.0003) | 1.1524 (0.0008) | 1.0154 (0.0004) |
+| v8 | 1.1041 (0.0001) | 1.1526 (0.0008) | 1.0152 (0.0001) |
+| v9 | 1.1042 (0.0002) | 1.1527 (0.0007) | 1.0152 (0.0002) |
+| v10 | 1.1029 (0.0002) | 1.1571 (0.0002) | 1.0160 (0.0001) |
+| v11 | 1.1027 (0.0000) | 1.1575 (0.0002) | 1.0158 (0.0003) |
+| v12 | 1.1028 (0.0001) | 1.1575 (0.0003) | 1.0158 (0.0003) |
+| v13 | 1.1030 (0.0000) | 1.1579 (0.0002) | 1.0161 (0.0001) |
+| v14 | 1.1030 (0.0001) | 1.1576 (0.0002) | 1.0160 (0.0002) |
+| v15 | 1.1033 (0.0002) | 1.1582 (0.0003) | 1.0191 (0.0006) |
+| v16 | 1.1025 (0.0006) | 1.1584 (0.0010) | 1.0168 (0.0002) |
+| v17 | 1.1022 (0.0003) | 1.1573 (0.0004) | 1.0161 (0.0003) |
+| v18 | 1.1025 (0.0006) | 1.1607 (0.0005) | 1.0160 (0.0004) |
+| v19 | 1.1021 (0.0001) | 1.1624 (0.0002) | 1.0169 (0.0002) |
+| v20 | 1.1036 (0.0004) | 1.1604 (0.0003) | 1.0176 (0.0002) |
+| v21 | 1.1034 (0.0001) | 1.1574 (0.0002) | 1.0167 (0.0004) |
+| v22 | 1.1033 (0.0003) | 1.1601 (0.0001) | 1.0162 (0.0002) |
+| v23 | 1.1033 (0.0003) | 1.1602 (0.0007) | 1.0166 (0.0002) |
+
+- Seeds agree: max spread 0.0006 (m1), 0.0010 (m2), 0.0006 (m3). Best - worst version: 0.0028, 0.0100, 0.0039 -> the
+  format matters beyond seed noise, most on the Tülu mix.
+- The end token (0 / S / X within v1-v3, v4-v6, v7-v9) does not matter: <= 0.0004 inside each family.
+- The layout matters, and differently per mix: Tülu text markers (v1-v3, today's arm A = v1) are best on m1 and tied
+  best on m3, but 0.0065 behind ChatML text markers (v7-v9) on m2; ChatML text markers are the worst on m1 (+0.0026).
+  New role ids (v4-v6) are slightly worse than the same layout with text markers on every mix. No format (v15) is the
+  worst on m3; Zephyr (v19) the worst on m2.
+- Next stage per the plan: the other measures (M2-M9: stop rate, history use, leakage, lm-eval through vLLM ...) on the
+  leading versions; the user decides when.
+
+### 45.140 2026-11-04: every CUDA call of the trainer, judged one by one (redundant or needed, cheaper way, risk)
+
+The user (11-04): goal 1 of the day = go through every CUDA API call type accounted in 45.138 and make anything
+redundant more efficient; goal 2 = context parallelism (wrappers + tests). No GPU today until the user's word (Ada
+reserved for the data team, the H200 nodes busy). Call sites from the cudatrace runs (CT_D2f_sw0/1, 60 steps), read in
+BluTrain 7184fe1 / TI d18f820.
+
+Per step:
+
+| # | what (code) | per step | needed? | cheaper way | risk |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Muon NaN guard (ShardedMuon.cpp:1703 -> MuonKernels.cu:466-482): check kernel, 1 int D2H into pageable memory (blocking), stream sync, CPU decides | 222 D2H + 222 syncs + 222 memsets | the guard yes, the CPU round trip no | decide on the GPU: the apply / fused-publish kernel reads the device flag and skips itself (same decision) | low |
+| 2 | Muon nsratio diagnostic (ShardedMuon.cpp:1731-1749; "DIAGNOSTIC ONLY ... nothing here feeds the update") | 222 D2H + 222 syncs + 444 H2D metadata + 222 memsets | only for the log | norms into a device array, max on the GPU, one read per step; or a flag | low |
+| 3 | per-parameter copy loops: ShardedMuon::scatter_bucket_into_params (ShardedMuon.cpp:59, from all_gather_params_sync:2074; 222 copies, 208 MB = the whole flat buffer), ShardedOptimizer::stage_grads_direct_fp32 (from reduce_grads_now:1135; 150), scatter_flat_into_params (from step:1368; 150) | ~520 launches, ~300 MB | the data yes, the launch count no | one multi-tensor copy per bucket; later params as views of the flat buffer (0 copies, as Megatron's contiguous buffers) | low / medium |
+| 4 | zero_grad per tensor (ShardedMuon::zero_grad:2434, ShardedOptimizer::zero_grad:1386 -> TensorImpl::zero_grad -> fill_cuda_launch) | 366 memsets | yes | one multi-tensor zero kernel | low |
+| 5 | AdamW-group syncs (sync_compute, ShardedOptimizer.cpp:56, called from ~11 places, e.g. 987 "ensure gather copies are visible before the collective"; local_adam_step) + blocking grad-norm reads (:1293) | ~8 syncs + 2 reads | they order the compute and communication streams | stream events (cudaStreamWaitEvent) instead of CPU waits; nothing at world size 1 | medium |
+| 6 | Muon grad norm + clip (ShardedMuon::compute_norm_and_clip:1559) | 1 sync + 1 read | yes (clip, ZeroNonFiniteGradError) | clip coefficient on the GPU, norm read one step late for the log | low gain |
+| 7 | cudaDeviceSynchronize at the step end (publish_sync from ShardedMuon::step:2379; bluscript_sft.cpp:3677, whose comment calls it redundant and kept for the dt timing) | 2 | the first for the publish | the existing overlap_param_refresh option (off by default): measure on / off | none (measurement) |
+| 8 | metadata H2D for multi-tensor kernels (multi_tensor_adam 15, grad_norm 4, scale 4) | ~23 | yes | cache while the tensor list is unchanged | tiny |
+| 9 | attention: cudaGetDeviceProperties (74 per micro-batch, before gqa_v62) and cuTensorMapEncodeTiled (445 per micro-batch) | ~1,000 | no (same answers) | cache once / per shape | tiny, trivial |
+
+Once per run or per save:
+
+| # | what | cost | cheaper way |
+| --- | --- | --- | --- |
+| 10 | empty_cache at steps 0 and 5 (bluscript_sft.cpp:3831) | ~12 s per run | a flag; measure the peak memory without it |
+| 11 | checkpoint staging: 822 new pinned buffers per save (DistCheckpoint::stage_pinned -> PinnedCPUAllocator) | 9-13 s per save | allocate once, reuse |
+| 12 | switch on: new logits block per new largest trained-row count | 0.4-1.3 s per new maximum | allocate once at full size |
+| 13 | load check: 372 parameters copied back to the CPU (bluscript_sft.cpp:1891) to verify bit-equality | 112 ms | fine; optional |
+| 14 | cold start: 895 cudaMallocAsync | once | inherent |
+
+Proposed order: batch A (1, 2, 4, 9), batch B (10, 11, 12), batch C (3, 5, 6, and the 7 measurement); each behind a
+flag, tested on / off. The flag defaults: the user decides after going through the list (11-04).
+
+### 45.141 2026-11-04: item 1 of 45.140 built (CPU): the Muon Newton-Schulz guard and nsratio on the GPU (BLU_MUON_GPU_GUARD=1)
+
+Who wrote the originals (git): the guard muon_has_nonfinite_cuda by kathir-23s (TI 927d0a9, 2026-08-13), wired into
+ShardedMuon by kiruthikkanna-m (c2eaffc, 2026-08-31); the nsratio diagnostic by kiruthikkanna-m (7e2264f, 2026-09-07).
+Ours (F1, 2026-09-26) is a different check: the total grad norm once per step before any update (item 6, unchanged).
+
+How others do it (source read 11-04): PyTorch fused Adam passes found_inf_ptr to the kernel and returns on the GPU
+(`if (found_inf_ptr && *found_inf_ptr == 1) { return; }`, fused_adam_utils.cuh; its comment: fused optimizers are
+built this way "in order to remove the device sync"); Apex sets a GPU noop flag in its norm kernels and never reads it
+on the host; Keller Jordan's Muon and torch.optim.Muon have no per-matrix check and read nothing back.
+
+Change (local working tree, patches in profiling_reports/muon_gpu_guard_2026_11_04/, not pushed):
+- TI MuonKernels.h/.cu: muon_flag_bad_cuda (the same muon_isnonfinite_kernel into a caller flag),
+  muon_apply_guarded_kernel/_cuda (muon_apply_kernel's body line for line after `if (*bad_flag) { count once; return; }`
+  -- no multiply for a rejected matrix, since w - u*0 turns an Inf in u into a NaN in w), muon_update_ratio_cuda
+  (deterministic two-pass sum: muon_sumsq_kernel + a one-block finalize with the old CPU formula, atomicMax on the bits
+  of a non-negative float, skipped for flagged matrices; no host list upload, so no shared pinned-buffer race).
+- BluTrain ShardedMuon.h/.cpp: BLU_MUON_GPU_GUARD (default 0 = the old code path); per-step memset of 222 flags + the
+  stats; update_one's GPU path when defer == nullptr; one async copy of the stats into pinned memory per step after
+  update_owned + an event; the log accessors fold it (the step already ends in a stream or device sync, so no wait).
+  The fused-publish path (BLU_FUSED_MUON_PUBLISH, off by default, multi-GPU BluCCL only) keeps the CPU check unchanged.
+- CPU checks: both files compile with the build's flags (laptop, nvcc 13.0, sm_90a); the new kernels are in the object;
+  both patches apply cleanly on the pushed 7184fe1 / d18f820.
+- Proof tests prepared (~/Downloads/lc_box/muon_guard_box/, RUNBOOK.md; the user runs them on the 2x H200 box
+  86.38.238.65): unit test old vs new path on the same data (10 poison cases x body/tail x 5 shapes; a 222-matrix step
+  with 3 poisoned; bitwise weights, decisions, counts, ratio within 1e-5, CPU time); trainer A/B (2 old + 2 new runs,
+  60 steps, EXPORT=1, compare loss / nsrej / nsratio per step and final weights bitwise, against the old-vs-old noise);
+  CUDA-call counts with cudatrace.so. Note: run_sft.sh unsets every BLU_* variable, so the flag is set in a BIN wrapper.
+
+### 45.142 2026-11-04: item 1 TESTED on the 2x H200 box: Muon guard + nsratio on the GPU (BLU_MUON_GPU_GUARD=1)
+
+Full write-up: `work_docs/muon_optimizer_synchronize_checks_removal_optimization.md` section 10.
+
+- Box 86.38.238.65 (2x H200), GPU 1 only (GPU 0: a colleague's `ncu`), upper half of the CPU cores, mpirun binding off.
+  Code 7184fe1 / d18f820 / 297f372 + the two patches; trainer md5 2dc5e28d. 135M model, data_4k, ckpt_A, 60 steps,
+  B 4, 8 rows/step, Muon lr 5e-5. Runs in the order old_a, new_a, new_b, old_b, then the two tracer runs.
+- Unit test ALL PASS: 90 single-matrix cases (5 shapes x 8 edge values x body/tail + clean + all zero) and a 222-matrix
+  step with 3 broken matrices: same decisions, same counts, weights bitwise equal, rejected matrices untouched, ratio
+  within 1e-5 (largest relative difference 1.1e-7, a different summation order). CPU time of guard + ratio + update for
+  222 matrices: old 10.26 ms, new 1.83 ms + 1.14 ms for the one read.
+- Trainer A/B: max train-loss difference old-old 0.000815, new-new 0.001014, old-new 0.000850 / 0.000939; nsrej equal on
+  every step (0/0: no rejections in healthy training); nsratio difference 0.001 (= print precision) in all pairs; final
+  weights differ in 298-299 of 372 tensors in EVERY pair including old-old (the trainer is not bit-reproducible run to
+  run), so the bitwise proof is the unit test.
+- Calls (60 steps): cudaStreamSynchronize 28,794 -> 2,154 (-26,640 = 222 x 2 x 60 exactly); cudaMemcpyAsync 90,402 ->
+  37,182 (-53,220 = 53,280 removed - 60 new per-step reads). Old CPU time inside the removed calls ~1.09 s = ~18 ms/step
+  (guard read 801.7 ms, ratio read 205.4 ms, uploads 45.9 ms, syncs 33.1 ms). New: one 3,072 B cudaMalloc per run.
+- Step time (steps 11-60): old 134.65 / 134.10 ms, new 127.99 / 127.06 ms -> **-6.85 ms, -5.1%** (same-code spread
+  0.55 / 0.93 ms). Smaller than the 18 ms of waiting because the GPU was mostly busy during the waits; the gain is the
+  GPU idle time after each wait.
+- Box fixes needed: `apt-get install -y libyaml-cpp-dev` (trainer build), `-lcuda` for the unit test link,
+  LD_LIBRARY_PATH from `make -s print_run_ld_path` to run it.
+- Open: default of BLU_MUON_GPU_GUARD (user), push (user), item 2 of 45.140 next.
+
+### 45.143 2026-11-04 (afternoon): Muon guard VERSION 2 (no flag, old CPU check removed everywhere), tested on 1 / 2 GPUs, pushed by the user
+
+Full write-up: `work_docs/muon_optimizer_synchronize_checks_removal_optimization.md` sections 9, 10.8-10.11, 11, 12.
+
+- The user (after 45.142): no flag, delete the old method. Version 2 removes the CPU-decided check from all three
+  places: ShardedMuon normal path, ShardedMuon fused-publish path (the BluCCL fused kernel now reads the device flag;
+  new `MuonPublishSeg::bad` field, static_assert-checked), TI `nn::Muon::step`; `muon_has_nonfinite_cuda` deleted.
+  Patches: TI `ti_muon_gpu_guard_v2.patch` (7b28f915), BluTrain `blutrain_muon_gpu_guard_v2.patch` (97fee8fc); both
+  apply on 7184fe1 / d18f820; every changed file compiled on the laptop with the real Makefile flags.
+- 2x box, GPU 1: unit test v2 (CPU reference of the old rule vs ShardedMuon's new sequence AND nn::Muon's function)
+  ALL PASS, 0 matrices with different weights; trainer old vs v2 within noise (loss 0.000972 / 0.000788 vs noise
+  0.000815 / 0.000676); step 134.38 -> 127.11 ms (-5.4%); calls as version 1 (syncs 2,154, copies 37,182).
+- P032 (bt_old = pushed, bt_new = v2, both built side by side): unit test ALL PASS; NCCL 2 GPUs (0, 2) old vs new 0.000822
+  (noise 0.000566); BluCCL 2 GPUs (4, 7) pipelined old vs new 0.000625, fused old vs new 0.000794, nsrej equal and 0 in
+  every run, fused path not refused. Step (median, 2 GPUs BluCCL pipelined) 72.4 -> 67.8 ms (-6.4%); fused 73.3 vs
+  75.2 ms with two bursts of 150-262 ms steps in the new run while other jobs ran at 100% (not repeated).
+- A first 4-GPU BluCCL attempt overlapped with Aparna's runner.fused / runner.batched (GPU 6), Mahesh's SFT run (GPU 5)
+  and _jit_runner_ jobs; the new run died at start-up (ZeroConsistencyError, parameter-count exchange) while GPU 6 was
+  shared; rerun on GPUs 4/7 with nobody else: fine. Final script checks the GPUs before every run; read-only watcher.
+- The 2,154 syncs / 37,182 copies left are items 3, 5-8, 10 and per-run calls of 45.140 (doc section 11).
+- Push files and messages: profiling_reports/muon_gpu_guard_2026_11_04/push_1104/ (TI 3 files, BluTrain 5 files + TI
+  pointer, branch dist_side_gautam_lottn).
+- **PUSHED** (user, 17:05-17:15 IST, after a GitHub incident made the first TI attempts fail): TI dist_side_gautam_lottn
+  d18f820..d98d6ee (3 files), BluTrain dist_side_gautam_lottn 7184fe1..37514ff (5 files + TI pointer d98d6ee). Verified
+  on GitHub: heads, author, file lists, pointer, all 8 files byte-identical to the tested local files; old function and
+  flag gone.
+
+### 45.144 2026-11-04 17:00-17:32: CLEAN rerun of every Muon-guard trainer test (P032 GPUs 4/5, one run at a time)
+
+The user: the first P032 attempt overlapped with other jobs; rerun everything cleanly on free GPUs. p032_clean.sh:
+16 runs (1 GPU, 2 GPUs NCCL, BluCCL pipelined, BluCCL fused; each old_a, new_a, new_b, old_b), wait-before-run guard,
+a recorder of all GPU processes every ~10 s (verified: saw our processes, never anyone else on GPU 4/5). All 60 steps,
+0 errors. Correctness: old vs new 0.000535-0.001027 vs same-code noise 0.000585-0.000995; nsrej equal everywhere.
+Step (median): 1 GPU 138.2 -> 128.4 ms (-7.1%); NCCL 72.5 -> 67.6 (-6.8%); BluCCL pipelined 73.3 -> 67.8 (-7.5%);
+fused 72.5 -> 67.6 (-6.8%); same-code spread 0.1-1.9 ms. The earlier fused 75.2 ms was node load. A sudo exclusive-mode
+GPU lock was refused by Claude Code's permission check (shared node setting) and not applied. Muon doc 10.12.
+
+### 45.145 2026-11-04 18:37-18:49: item 10 (empty_cache at steps 0 and 5) tested, and the nsys picture after the Muon fix
+
+User: colleague (who worked on the allocator) says empty_cache at step 0 is enough and step 5 is not needed; test it.
+History: the calls were at steps 0 and 1; bruce-yeager's "memory fix" (beda19d, 2026-09-08, bluscript_zero_ckpt.cpp)
+moved the second to step 5 together with AllocationTracker::shutdown() at step 5; the SFT trainer copied the block
+(10-27). The allocator itself trims its cache and retries on a hard OOM (CudaCachingAllocator.cpp:279-289), so no
+empty_cache can only cost memory headroom, not correctness. Test binaries (P032 bt_new, each one if-line different from
+the pushed source): bluscript_sft_bin_ec0 (step 0 only), bluscript_sft_bin_noec (none). Script ec_test2.sh / ec_master.sh;
+user's OK for 3 GPUs; part 1 on GPU 4, part 2 on GPU 6, part 3 on GPU 7 at the same time (they shared the node's CPU);
+nobody else on our GPUs (the 4 flagged recorder samples were our own processes exiting: one shows our noec binary path).
+No run had an error or an out-of-memory trim.
+
+B=4, 60 steps, GPU 6, order cur, ec0, none, none, ec0, cur:
+
+| variant | step 0 | step 1 | step 6 | all 60 steps | median step | reserved_peak | GPU max (nvidia-smi) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| cur (steps 0, 5) | 9.1 / 9.3 s | 5.96 / 6.22 s | 5.91 / 6.42 s | 28.4 / 29.4 s | 128.2 / 128.8 ms | 21,558 MiB | 22,871 MiB |
+| ec0 (step 0) | 9.5 / 9.2 s | 4.72 / 5.48 s | 0.13 s | 21.7 / 22.1 s | 128.6 / 128.6 ms | 21,558 MiB | 22,871 MiB |
+| none | 10.6 / 9.2 s | 0.13 s | 0.13 s | 18.2 / 16.8 s | 128.9 / 128.1 ms | 21,382 MiB | 22,551 MiB |
+
+Loss: same-variant pairs 0.00063-0.00099, cur vs ec0 0.0011, cur vs none 0.00073; nsrej equal everywhere.
+
+B=20 (memory near full), 24 steps, GPU 7, one run each: cur 92.2 s in total (refills: step 1 31.3 s, step 6 26.0 s),
+reserved_peak 71,158 MiB, steps 8-23 245-257 ms; ec0 70.2 s (step 1 27.1 s), 71,156 MiB, 245-261 ms; none 40.1 s,
+**74,538 MiB (+3.4 GB)**, allocator splits 40,305 vs 22,914 (+76%), and **slow steps 9-18 (275-386 ms)** before settling at
+246-251 ms (single run, CPU shared with part 2; cause not proven).
+
+Conclusions: (1) the step-5 call is pure cost: same memory (reserved_peak equal to the MiB), one refill step more
+(~6 s at B=4, ~26 s at B=20); remove it. (2) Step 0 buys headroom when memory is high: without it +3.4 GB reserved and
+more block splitting at B=20 (with slow steps in that one run); costs one refill (~5 s at B=4, ~27 s at B=20). Keep it
+(also the colleague's view). The same two lines are in the pretraining trainer (bluscript_zero_ckpt.cpp:3268).
+
+nsys of the pushed code (GPU 4, B=4, 60 steps; nsys_gaps.py, window micro-batches 20-119): GPU idle 8.41 ms per step
+(4.9%), was 14.72 ms on the 11-03 old code under nsys. Largest remaining: CPU late on GEMM launches 2.06 ms (Newton-Schulz,
+launch-bound), blocking cudaMemcpyAsync 2.40 ms (0.95 waiting + 1.46 right after; items 5/6), CPU late on transpose /
+convert_to_bf16 / cast kernels 2.35 ms, on the new check kernel 0.50 ms, memsets 0.16 ms. (CPU shared with parts 2/3.)
+- **Change made (user, 11-04 19:00: "edit all the training scripts, push to our branch"):** `if (step == 0 || step == 5)`
+  -> `if (step == 0)` + reason comment in the 7 trainers that had it: train/production_zero/bluscript_sft.cpp,
+  train/production_zero/bluscript_zero_ckpt.cpp, root bluscript_zero_ckpt.cpp, _bluccl, _bluccl_fused, _bluccl_multi,
+  _elastic (same loop as the tested SFT trainer; the SFT change = the tested ec0 binary). Compile check on P032 against
+  bt_new: 6 clean; _elastic fails before AND after with the same existing error (line 2797, DataLoaderLite has no
+  drain_prefetch), unrelated. NOT changed (different case, untested): bluscript_zero.cpp and bluscript_single.cpp
+  (step 0 and step 1), train/production/bluscript.cpp (step 0 and 1 behind cacheflush.enabled; its comment: the step-1
+  call reclaims the doubled DDP buckets after DDP's one-time rebuild, so it may do real work there).
+  Push files: profiling_reports/muon_gpu_guard_2026_11_04/push_1104b/ (commands.sh, msg_blutrain.txt, local_md5.txt).
+- Then (user): keep the old lines as comments instead of deleting: the old `if (step == 0 || step == 5)` block stays as
+  commented code above the new `if (step == 0)`; the AllocationTracker `if (step == 5) shutdown()` is commented out too
+  (the tracker is off: init commented out, so it was a no-op), with a note at the commented init line to uncomment both
+  together if the tracker is turned on. Active code changed in each of the 7 files: those two places only. Compile
+  check repeated: same result (6 clean, _elastic's existing error). md5s in push_1104b/local_md5.txt.
+- Final (user): the AllocationTracker shutdown at step 5 is NOT touched (reverted; it limits tracking to the first 5 steps if
+  the tracker is ever turned on). Only change: the empty_cache if-line, old block kept as a comment. Recompiled: same
+  result. md5s in push_1104b/local_md5.txt.
+- **PUSHED** (user, 2026-11-04 ~19:20 IST): BluTrain dist_side_gautam_lottn 37514ff..e9e310c, 7 files. Verified on GitHub:
+  branch head e9e310c, author Goutham Kumar, exactly the 7 trainer files, all 7 byte-identical to the local files
+  (md5 in push_1104b/local_md5.txt); in each: one active `if (step == 0)`, no active step-0-or-5 line, tracker shutdown
+  at step 5 present and unchanged.
+
+### 45.146 2026-11-04 evening: next item = the Muon phase (222 matrices x ~28 small kernels); how others batch Newton-Schulz
+
+Measured (nsys of the pushed code, e0_nsys_new, muon_phase.py, median of 49 steps, under nsys): the micro-batch with the
+optimizer step 94.2 ms wall / 72.0 ms GPU busy / 8,929 kernels; the Muon phase (first weight-decay kernel .. last apply)
+37.4 ms wall / 24.5 ms GPU busy / 12.9 ms GPU idle / 6,215 kernels. Per step ~220 launches each of: grad cast
+(cast_scaled_vec), weight decay, momentum, Frobenius norm (2) + scale, convert to bf16, transpose (tall matrices),
+check, ratio (2), convert to fp32, apply; plus 15 Newton-Schulz GEMMs per matrix (5 iterations x 3). Newton-Schulz work
+~1.0 TFLOP per step (per layer ~27 GFLOP: wq/wo 4.0 each, wk/wv 0.84 each, gate_up/down 8.7 each), i.e. ~1-2 ms at the
+H200's bf16 rate if the GPU were full; it takes ~24 ms of busy time = small GEMMs that cannot fill 132 SMs.
+
+Other projects (source read 2026-11-04 from GitHub, files in the session scratchpad muon_research/):
+| project | what it does |
+| --- | --- |
+| modded-nanogpt (Keller Jordan et al., track_1_short/optim/anvil.py, perf/kernels/polar_express.py) | weights stored as parameter **banks** (all same-shape matrices in one stacked tensor: qk_bank, vo_bank, mlp_bank); orthogonalization batched over a bank with Triton kernels that exploit symmetry (X X^T, b*A + c*A@A: compute the upper triangle only, "roughly halving the GEMM work"); optimizer step captured as CUDA graphs |
+| KellerJordan/Muon muon.py | zeropower_via_newtonschulz5 accepts batched input ("batched Muon implementation by @scottjmaddox"), but the optimizer loops per parameter |
+| PyTorch torch.optim.Muon (_muon.py) | per parameter (_single_tensor_muon); `foreach` raises "Foreach is not supported for Muon yet" |
+| Microsoft Dion (dion/muon.py) | "Mega-batched Muon: groups ALL same-shape parameters into a single task to minimize communication rounds and kernel launches" (groups by shape, sharding, dtype) |
+| NVIDIA NeMo Emerging-Optimizers (muon_utils.py) | newton_schulz takes 2-D or 3-D (batched) input; batched step via torch.baddbmm; note: baddbmm "may not select the same kernel for 2d input as torch.addmm, which may cause mismatches"; SYRK (symmetric) variants |
+| NVIDIA Megatron-LM (layer_sharded_muon.py) | `ns_batch_size`: max number of same-shape matrices fused into one batched Newton-Schulz; default 1 = "the bit-exact per-matrix path"; >1 uses baddbmm and "lose[s] bitwise parity" |
+| Optax (JAX, contrib/_muon.py) | orthogonalization via jax.vmap over batch axes |
+
+Our libraries: TI cuda_matmul / cuda_addmm already accept stacked 3-D tensors (batch = product of leading dims) and call
+BluBLAS blublasBgemmStridedBatched / blublasBgemmAddmm with batchCount; today's Newton-Schulz calls them with batch 1.
+The BluBLAS SM90 dispatcher chooses the tile size from tiles x batch vs SM count (Bgemm_sm90_bf16.cuh ~224-466) and has a
+split-K selection (~1315), so batch 37 may pick another kernel than batch 1: bit-identity is NOT guaranteed (as Megatron
+and NeMo document for torch); to test, then judge against run-to-run noise.
+
+### 45.147 2026-11-04 evening: deep read of the batched Newton-Schulz implementations (before designing ours)
+
+The user: read their implementations deeply first (memory caps, edge cases), so no problem comes later.
+
+| point | Megatron-LM (layer_sharded_muon.py) | NeMo Emerging-Optimizers (muon_utils.py) | Dion (muon.py, megabatch_base.py) | modded-nanogpt (anvil.py, polar_express.py) | torchtitan (flex_shard/dist_muon.py) |
+| --- | --- | --- | --- | --- | --- |
+| grouping | by exact shape | caller passes 2-D or 3-D | by (shape, sharding, dtype), ALL same-shape params in one task | the model stores each shape group as one permanent bank tensor | bucket plans of "matrix-batch compute views" |
+| memory cap | `ns_batch_size` (max matrices per batch) "to bound the transient stack memory"; chunks processed one at a time (`_iter_ns` yields per chunk, the caller holds one chunk) | - | stacks the whole group; pads with zero matrices to a multiple of world_size | none needed: no stacking copy (persistent banks) | buckets balanced by bytes / cost |
+| batch of 1 | stays 2-D: "the unbatched numerics are preserved exactly whenever nothing is actually batched" | 2-D path | - | - | - |
+| per-matrix norm | (NeMo's) | `normalize(x, p=2, dim=(-2,-1))`; opt-in float64 norm against fp32 underflow of tiny entries | - | Frobenius margin 1.05 x norm + 1e-6 | - |
+| tall matrices | (NeMo's) | transpose the whole stack (`x.mT`) | - | X^T X instead of transposing (no copy); split the baddbmm for banks > 1024 rows (faster) | - |
+| exactness | default 1 = bit-exact; batched "lose[s] bitwise parity" | separate batched step because baddbmm may pick another kernel than addmm | - | - | "bitwise equality across the two kernel schedules is not part of the contract" |
+| elementwise | two separate multiplies to match unbatched rounding; elementwise ops commute with unbind | - | foreach Adam/Lion for the rest | torch.compile + CUDA graphs for the whole optimizer | - |
+| 3-D params | experts batched under MoE ("hundreds of identically shaped expert weights") | 3-D = batch of matrices | flatten=False: "batch-of-spatial-matrices geometry" | - | - |
+(Optax: all axes other than the reduction/output axes are batch axes, orthogonalized independently via jax.vmap.)
+
+Lessons for ours: group by exact shape per GPU (and per publish bucket); cap each chunk by a MEMORY BUDGET (works for
+any model size, unlike a fixed count) and process chunk by chunk; a chunk of 1 keeps today's 2-D path (bit-exact);
+per-matrix norm; keep elementwise arithmetic identical; guard stays one flag per matrix; bitwise identity of the batched
+GEMMs to be tested (others say it is not guaranteed); 3-D Muon parameters (MoE experts) must be a batch of matrices,
+not flattened (today's newton_schulz_orthogonalize flattens to (d0, rest): wrong for experts; no such parameter in our
+models today). Later options: symmetric GEMMs (half the Gram work), CUDA-graph capture of the optimizer step.
+- 2x H200 box (86.38.238.65) results copied to the laptop 2026-11-04 evening (user: the instance may close): ~/Downloads/lc_box/muon_guard_box/box_2x_results_1104/ (49 files, 1.1 MB: runs/*/run.log, status.txt, gpu.csv, unit_test logs, report_old/new/v2.txt, trace_*.txt, wrappers). Not copied: final.safetensors (4.6 GB) and checkpoints (13 GB) of the 60-step test runs. Nothing deleted on the box.
+
+### 45.148 2026-11-04 evening: BluBLAS addmm gets a per-batch bias mode (FullBatched) — needed for the batched Newton-Schulz
+
+Found while designing the batched Newton-Schulz: BluBLAS's batched bf16 addmm supports only ONE bias shared by the whole
+batch. H200 epilogue (Bgemm_sm90_warpspecialized_template.cuh): bias_numel in {1, N, M, M*N}; the Full mode's bias tile
+load says "no batch term: a Full bias is ONE [M,N] matrix broadcast over every batch"; any other size runs the Runtime
+mode, which has no per-batch case -> the bias is silently not added. Fallback epilogue (bgemm_scale_template_kernel):
+the same four sizes. TI's separate bias-add kernel (broadcast_add_scaled_kernel, used when an input is transposed)
+already handles bias_numel == batch*M*N, so TI behaved differently by memory layout. Newton-Schulz needs a different
+bias per matrix (B_i = b*A_i + c*A_i@A_i, X_i = a*X_i + B_i@X_i): with stacked matrices the old addmm would have dropped
+the b*A and a*X terms without any error.
+Official convention: PyTorch torch.baddbmm "out_i = beta input_i + alpha (batch1_i @ batch2_i)", input broadcastable
+with (b x n x p); NVIDIA cuBLAS gemmStridedBatched "C[i] = alpha op(A[i]) op(B[i]) + beta C[i]"; cuBLASLt
+CUBLASLT_MATMUL_DESC_BIAS_BATCH_STRIDE ("stride to the next bias ... for strided batch operations", default 0 = shared).
+
+Change (BluBLAS, branch dist_side_gautam_lottn tree, not pushed):
+- SM90 template: enum Sm90BiasMode gets FullBatched (appended; the FP16 SM90 header has the same enum under the same
+  guard and gets the same line); BIAS_SMEM_PREFETCH includes FullBatched; the bias tile TMA load row is
+  batch*M + ... for FullBatched (the row the C store uses); the global-load fallback reads bias + batch*M*N; the addmm
+  launcher builds Bias_tmap as [batchCount*M, N] (like C_tmap) and launches the FullBatched kernel when
+  bias_numel == batchCount*M*N and batchCount > 1 (with batchCount 1 that size is M*N = the existing Full mode).
+- Fallback epilogue bgemm_scale_template_kernel: one more branch after the existing four (per-batch bias).
+- SM103 addmm: declines the per-batch case (its kernels have no such mode; no B300 to test) -> the generic path.
+Proof that it only adds: all 17 affected files compiled before/after (sm_90a; SM103 file sm_103a) and every kernel's
+SASS hashed (addresses stripped): 624 -> 628 kernels; 588 identical (every SM90 BF16 GEMM incl. the existing addmm
+modes, every FP16 SM90 kernel, every SM103 kernel, every SM89 GEMM); 36 changed = all copies of
+bgemm_scale_template_kernel (the intended new branch); 4 added = FullBatched for BN 64/128/192/256; 0 removed.
+Still to prove on a GPU: FullBatched == the same matrices one by one (bitwise); the fallback kernel's existing sizes
+unchanged. Separate open question found on the way: the fallback addmm computes alpha*A@B + beta*C_old + bias (two
+passes: bgemm_scale_template_kernel then a beta=1 GEMM), while the H200 path computes alpha*A@B + beta*bias: TI's
+addmm expects the latter, so on sm_8x (or H200 shapes the fused path declines) addmm with beta != 1 may be wrong; to
+test (BluTrain's Muon has not been run on sm_8x: the Ada study used the PyTorch trainer).
+
+### 45.149 2026-11-04 20:14-20:25: batched Newton-Schulz built and tested on P032 (user's GPU window until 20:30)
+
+Code (not pushed): BluBLAS per-batch bias (45.148) + TI batched kernels (MuonKernels.cu section 7) and
+newton_schulz_orthogonalize_batched (Optim.cpp) + ShardedMuon plan / update_slots / update_group (all three update
+loops). Patches: profiling_reports/muon_batched_ns_2026_11_04/{blublas_per_batch_bias (7e35d2aa), ti_batched_ns
+(2760368b), blutrain_batched_ns (c52c624e)}.patch; bases 297f372 / d98d6ee / 37514ff (+ e9e310c, trainers only).
+P032: bt_bns = bt_new + the three patches (affected objects deleted and rebuilt), trainer ba3824b6; old = bt_new.
+
+Unit test test_muon_batched_ns (GPU 2): ALL PASS.
+- A: batched Newton-Schulz vs per matrix: batch 37: 0 differing elements in all 6 shapes (512x512, 512x256, 256x512,
+  512x2816, 1408x512, 512x1408); batch 5: small differences in 4 shapes (max |diff| 0.000977 / 0.000488), 0 in the
+  two 256-dimension shapes (BluBLAS picks another tile configuration for batch 5).
+- B: batched Frobenius scale, flag, ratio, guarded apply == single kernels, bitwise; flags 011110000 both (NaN, Inf,
+  -Inf, 1000.5 rejected; exactly 1000 and 999.9 accepted); rejected 4/4; rejected matrices untouched.
+- C: a whole chunk of 37 (update_one's sequence vs update_group's, 2 of 37 poisoned): flags, rejected 2/2, max ratio,
+  momentum and WEIGHTS identical (0 differing elements) for 512x256 and 512x2816.
+- D: 222-matrix Newton-Schulz: per matrix 21.60 ms GPU / 16.29 ms CPU to queue; batched 4.75 ms / 0.41 ms.
+Unit test test_addmm_batched_bias (GPU 2): batched per-batch-bias addmm == one-by-one bitwise in 14 of 15 cases; k=512
+batch 5: 2 of 1,310,720 elements differ (rounding level, another tile config). It printed "FAILED: 5": the other 4
+are my threshold (relative error vs a double reference < 2e-2) being too tight for bf16 outputs: 2.1-2.8e-2 on small
+elements, and the one-by-one existing Full mode gives the same values (bitwise), so it is not the new mode.
+Part 3 (report) CONFIRMED the fallback addmm (K % 64 != 0 on H200; every addmm on sm_8x) computes
+alpha*A@B + beta*C_old + bias instead of alpha*A@B + beta*bias (all 9 cases, beta 0 / 1 / -4.775, 3 bias sizes):
+an EXISTING BluBLAS bug (not from this change); our Newton-Schulz shapes use the H200 fused path; to fix separately.
+
+Trainer A/B (60 steps, 135M, data_4k; run in parallel on separate GPUs: 1 GPU on GPU 4, 2 GPUs BluCCL on 6,7 and 0,1):
+| test | plan line | old median | new median | change | old vs new loss | noise |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 GPU (old, new, new, old) | 222 matrices in 6 batched chunks | 129.1 / 129.0 ms | 112.3 / 110.6 ms | **-17.6 ms, -13.6%** | 0.000845 / 0.000582 | 0.000743 / 0.000636 |
+| 2 GPUs BluCCL pipelined | per bucket 17-19 matrices in 4 chunks | 68.3 | 59.8 | **-12.4%** | 0.000534 | - |
+| 2 GPUs BluCCL fused | same | 67.5 | 59.9 | **-11.3%** | 0.000959 | - |
+nsrej equal on every step in every pair; nsratio difference 0.001-0.002 (print precision). All runs 60 steps, 0 errors.
+
+### 45.150 2026-11-04 20:30-21:25: the addmm bias fix (BluBLAS + TI), permanent, as PyTorch does it
+
+Question (user): the fallback addmm computes alpha*A@B + beta*C_old + bias (45.149 part 3) -- what is the permanent fix,
+what do others do, and should every path behave like the H200 fused path?
+What others do (read 2026-11-04):
+- PyTorch aten/src/ATen/native/cuda/Blas.cpp addmm_out_cuda_impl: beta != 0 -> copy self (broadcast) into result, then
+  ONE gemm with alpha and beta (result = alpha*m1@m2 + beta*result, one rounding in the GEMM epilogue); beta == 0 ->
+  self is ignored ("nans and infs in self should not propagate"); the cuBLASLt bias epilogue only when beta == 1.
+- cuBLAS: "if beta == 0 then C does not have to be a valid input".
+- The H200 fused path (ours) already computes alpha*acc + beta*bias in one rounding: every path must give that.
+Problems found in the same code (all old, none from today):
+| # | where | problem |
+| --- | --- | --- |
+| 1 | BluBLAS bf16/fp16 fallback (K % 64 != 0 on H200, every call on sm_8x, strideB = 0) | alpha*A@B + beta*C_old + bias (bgemm_scale_template_kernel then a beta=1 GEMM); with beta = 1 the bias was not added at all and the uninitialised output was |
+| 2 | every BluBLAS addmm path | a bias size outside {1, N, M, M*N} was dropped silently |
+| 3 | BluBLAS fp32 SM89 kernel | a full [M,N] bias was read at row (batch % M) for every row (wrong values); per-row [M] dropped |
+| 4 | BluBLAS fp32 SM86 kernel | per-row [M] bias dropped |
+| 5 | TI cuda_addmm (packed path) | passed input.numel() only: BluBLAS guessed the kind by size ([B,1,N] with B == M read as a full [M,N]; [M,1] with M == N read as [N]) |
+| 6 | TI cuda_addmm (transposed path) | added only sizes 1, N, batch*M*N (per-row and shared [M,N] dropped), in a second rounding, and added 0*NaN when beta == 0 |
+| 7 | TI cuda_addmm (other dtypes) | the last fallback ignored alpha |
+Change (not pushed; patches in profiling_reports/muon_batched_ns_2026_11_04/):
+- BluBLAS (blublas_all_v2.patch, dd94f023 = the per-batch bias of 45.148 + this fix): bf16 and fp16 entries: beta == 0 ->
+  plain GEMM (bias and C not read); unsupported size -> stderr "[BluBridge] blublasXgemmAddmm: bias of N elements does
+  not fit ... the bias is NOT added" and a GEMM without it; fallback = new bgemm/hgemm_addmm_bias_copy_kernel (bias
+  broadcast into C: 1, N, M, M*N, batch*M*N) then ONE GEMM with the real alpha and beta; no-bias calls unchanged.
+  fp16 skips its fused paths for a per-batch bias (no such mode there). fp32 entry: beta == 0 -> no bias; supported
+  sizes 1, N, M, M*N, else the stderr message; SM89 kernel reads the bias per output row (r0 and r8); SM86 kernel gets
+  the per-row case. The per-batch branch added to bgemm_scale_template_kernel in 45.148 was removed again (no caller
+  passes a bias to it any more).
+- TI GenMatmul.cu cuda_addmm (ti_addmm_fix.patch, c3922b3f), BluBLAS build only: the input is classified by its SHAPE
+  with torch's broadcast rule (scalar, [N], [M,1], [M,N], per batch, other; not broadcastable -> throws). Fused =
+  packed operands + a kind this dtype's BluBLAS reads (per-row only when M != N; per batch only bf16/fp16). Everything
+  else: copy the broadcast input into the output, then ONE strided-batched GEMM with alpha and beta (operands in their
+  row/column layout, else contiguous copies; fp64 always packed). beta == 0: plain GEMM. K == 0: beta*input.
+  Partial batch broadcast of mat1/mat2 now throws (it computed wrong batch strides before). The old cuBLAS build
+  branch (#else) has the same dropped shapes: NOT changed (not our build).
+- Kept unchanged on purpose: the bf16/fp16 BluBLAS entry points take alpha/beta in bf16/fp16, so Newton-Schulz uses
+  a 3.4375, b -4.78125, c 2.03125 instead of 3.4445, -4.7750, 2.0315 (old behaviour; PyTorch keeps them float);
+  changing it changes Muon's numbers -> needs its own loss check; the user decides.
+SASS proof (every TU the change can touch, sm_90a, cuobjdump -sass, md5 per kernel without addresses), 297f372 vs now:
+733 -> 739 kernels; 723 identical (every GEMM kernel, the existing SM90 fused addmm modes, bgemm_scale_template_kernel);
+10 changed = sgemm_addmm_sm89_kernel (8) + sgemm_addmm_kernel SM86 (2), the bias-row fix; 6 added =
+bgemm/hgemm_addmm_bias_copy_kernel + 4 SM90 FullBatched instances; 0 removed.
+
+### 45.151 2026-11-04 21:30-21:55: GPU tests of the addmm fix (P032, H200) and 4 OLD BluBLAS GEMM bugs
+
+Build (P032, CPU): bt_ec = bt_new + e9e310c; bt_all = bt_ec + blutrain_batched_ns_v2 (c52c624e) + ti_batched_ns_v2
+(2760368b) + ti_addmm_fix (c3922b3f) + blublas_all_v2 (dd94f023). The batched Newton-Schulz patches are byte-identical
+to the ones tested in 45.149. Test: test_addmm_fix.cu -- A: BluBLAS addmm direct (output pre-filled with NaN); B: TI
+addmm (layouts row, x@W.T, A.T@W, column slice ld = K+8, 4-D permuted batch; biases [1] [N] [1,N] [M,1] [M,N] [M,N]
+non-contiguous, per batch, [B,1,N] [B,M,1] [B,1,1], partial batch, and [N+1] which must throw; allocator handed a
+NaN block before every call); C: per-batch bias vs one by one. alpha/beta (1,1) (1,0 with an all-NaN bias) (1.5,0.5)
+(2.0315,-4.775). Bound: |out - ref| <= 4*S*(e_acc + u_out), S = |alpha|*sum|a*b| + |beta*bias| (componentwise GEMM
+bound; the first bound used |ref| instead of S and failed 3 of 98,304 fp16 elements at 1.04x / 1.29x in cancellation
+cases, because the fp16 epilogue rounds alpha*acc and beta*C).
+| test (bt_all) | cases | result |
+| --- | --- | --- |
+| test_muon_batched_ns | all parts | ALL PASS, same counts as 45.149 (batch 37 bit-identical; 22.10 -> 4.80 ms) |
+| A BluBLAS addmm bf16 / fp16 / fp32 | 172 / 152 / 136 | 0 failed (worst 0.25 / 0.21 / 0.03 of the bound); unsupported size: stderr message + no bias, as designed |
+| B TI addmm bf16 (row@row, row@W.T, A.T@row, slice, perm4d) | 1368 | 0 failed |
+| B TI addmm fp16 (same) | 1368 | 0 failed |
+| B TI addmm fp64 (all layouts) | 2472 | 0 failed; [N+1] threw 272/272 |
+| B TI addmm fp32, mat1 not transposed | 1048 | 0 failed |
+| C per-batch bias vs one by one (Newton-Schulz shapes, batch 5 and 37) | 10 | 0 elements differ, worst 0.24 of the bound |
+Set aside: only cases that the GEMM itself gets wrong, each proven with the 11-03 library (bt_old) too
+(test_gemm_odd_stride: plain strided-batched GEMM, beta 0, no bias; and test_addmm_fix linked to bt_old):
+| # | old BluBLAS GEMM bug | evidence (old = new) |
+| --- | --- | --- |
+| 1 | bf16/fp16 64x64x64 with batch >= 2: wrong numbers | batch 2: element 1 has 4093 of 4096 wrong; batch 37: many elements wrong; batch 1 fine; 512^3 batch 5 fine |
+| 2 | odd shapes 37x45x29: fp16/fp32 crash (misaligned address) at any batch; bf16 wrong at batch >= 2 | bf16 batch 3: element 0 right, 1-2 wrong, also with strides padded to 64; counts change run to run |
+| 3 | fp32 with mat1 transposed (A.T @ W): wrong numbers | TI fp32 A.T@row and A.T@W.T: 468 failed incl. beta 0; with bt_old libs the bias [1] beta 1 cases fail the same way |
+| 4 | bf16/fp16 with both operands transposed: crash (misaligned address) | same crash with bt_old libs |
+Our trainers do not hit them (shapes multiples of 64; A @ W and x @ W.T). To fix first thing 2026-11-05.
+Logs: profiling_reports/muon_batched_ns_2026_11_04/p032_results_2155/ (u3_* u4_* u5_* u6_*, odd_stride_*).
+
+### 45.152 2026-11-04 21:36-21:39: before/after of today's three changes (SFT trainer, P032)
+
+Builds: B0 = bt_old (11-03: BluTrain 7184fe1, TI d18f820, BluBLAS 297f372); B1 = bt_new (+ Muon GPU guard v2 = pushed
+TI d98d6ee / BluTrain 37514ff); B2 = bt_ec (+ empty_cache at step 0 only = pushed e9e310c); B3 = bt_all (+ batched
+Newton-Schulz + per-batch bias + the addmm fix, not pushed). Run: bluscript_sft via sft/run_sft.sh (the same launcher
+and settings as every A/B today: 135M, data_4k, ckpt_A, 1 GPU, B=4, ROWS=8, Muon, 60 steps; "[config] no YAML",
+embedding backward segmented), two rounds per GPU, each pair on the same GPU; GPU checked free before each run;
+"others seen" samples were our own trainers exiting (paths in our folder). Median dt over steps 11-59:
+| change | GPU | before (ms) | after (ms) | change |
+| --- | --- | --- | --- | --- |
+| all three, B0 -> B3 | 0 | 137.41 | 110.83 | -19.3% |
+| all three, B0 -> B3 | 1 | 137.01 | 109.79 | -19.9% |
+| Muon GPU guard, B0 -> B1 | 4 | 138.05 | 128.48 | -6.9% |
+| empty_cache step 0, B1 -> B2 | 2 | 128.15 | 128.69 | +0.4% (steady same) |
+| empty_cache step 0, B1 -> B2 | 3 | 129.59 | 129.14 | -0.3% (steady same) |
+| batched Newton-Schulz + addmm fix, B2 -> B3 | 5 | 128.87 | 110.02 | -14.6% |
+Mean B0 (GPUs 0, 1) 137.21 -> B3 110.31 ms = -19.6%. empty_cache: the step-5 call shows at step 6: B1 2357 / 3308 /
+2688 ms (GPUs 2 / 3 / 4) vs B2 128 / 127 ms -> 2.2-3.2 s saved once per run. Wall per run: B0 84-90 s, B3 81 s.
+Losses: max |train loss| old vs new 0.00068-0.00084 (5 pairs); same build on two GPUs 0.00077-0.00097 -> inside the
+noise; nsrej equal on every step in every pair. All 12 runs 60 steps, 0 errors.
+Not done: pretraining before/after (no pretraining data mix on P032: /data has only adhi_lc). Note: these SFT runs
+pass no YAML (consistent with today's A/B runs); the rule of 2026-10-30 says SFT runs get the production YAML.
+
+### 45.153 Plan for 2026-11-05 (user, 2026-11-04 22:00), in this order
+
+1. Fix the 4 old BluBLAS GEMM bugs of 45.151 (bf16/fp16 64^3 batch >= 2; odd shapes; fp32 A.T@W; bf16/fp16 both
+   transposed); re-run test_addmm_fix with nothing set aside + test_gemm_odd_stride on every type.
+2. Push (user) BluBLAS + TI + BluTrain: batched Newton-Schulz + per-batch bias + the addmm fix (+ the GEMM fixes);
+   verify every file on the remote.
+3. Pretraining before/after of today's three changes (B0-B3 as in 45.152), on a box with the pretraining data.
+4. The remaining CUDA-call items of 45.140 (3 copy loops, 4, 5-7, 8, 9, 11, 12).
+5. Goal 2: context-parallel wrappers (Adhitya's) around our kernels.
+Open decisions for the user: Newton-Schulz alpha/beta rounded to bf16 at the BluBLAS API (45.150); the cuBLAS-build TI
+addmm branch; the group message to colleagues after all pushes.
+
+### 45.154 2026-11-05 morning: the 4 old BluBLAS GEMM bugs of 45.151 -- root causes and permanent fixes
+
+All changes in ~/Downloads/BluTrain_push/Tensor-Implementations/BluBridge-BLAS (uncommitted, on top of 297f372 +
+blublas_all_v2 of 45.150). Remote heads checked first (git ls-remote): BluTrain e9e310c, TI d98d6ee, BluBLAS 297f372 =
+local (nothing new overnight).
+| # | bug (45.151) | root cause (in the code) | fix |
+| --- | --- | --- | --- |
+| 1 | bf16/fp16 64x64x64, batch >= 2 wrong | every SM90 kernel stored C through a 2-D TMA descriptor [batch*M, N]; a tile whose rows run past M (M not a multiple of the tile height) stored them into the NEXT batch element's first rows (inside the tensor, so TMA did not drop them). A and B were already 4-D with a batch axis. | C descriptor 3-D {N, M, batch} (init_3d_tma_C_swizzled_sm90) and a 3-D store (tma_3d_smem2gmem(col, row, batch)): rows >= M are out of bounds for every batch element and dropped. In every compiled template: bf16 warpspecialized (3 launchers, 2 stores), cluster_nn / _coopB / _v2 / _coopB_v2, swiglu_fused (3 launchers), fp16 warpspecialized (3 launchers). Same as CUTLASS (output M x N x L, L = batch). |
+| 2 | odd shapes: fp16/fp32 crash, bf16 wrong at batch >= 2 | the SM8x bf16/fp16 kernels always move 16-byte vectors (cp.async of 8 elements) with no unaligned path; fp32 SM89 kernel: alignment flag ignored batch strides, the small-shape launcher forced IsAligned = true, epilogue float2 at odd ldc | new blublas_gemm_generic.cuh: a simple strided-batched GEMM correct for every input (any op, ld, stride, alignment; fp32 accumulation; beta == 0 does not read C). Dispatchers: bf16/fp16 SM8x path only when sm8x_16bit_vector_ok (pointers 16 B, lda/ldb/ldc, batch strides and contiguous extents multiples of 8), else generic; fp32 on sm < 89 the same with 4; fp32 SM89 kernel checks alignment per batch element (vec_a/vec_b) and stores float2 only at 8-byte-aligned addresses. Same idea as CUTLASS can_implement (kErrorMisalignedOperand). |
+| 3 | fp32 A^T @ B wrong (K = 200) | fp32 SM89 kernel: a row past the matrix was not written to shared memory (stale data); in TN both A and B have K as the row, so stale A met stale B in the K tail | rows past the matrix are zero-filled (CUTLASS iterators zero-fill out-of-bound loads) |
+| 4 | both operands transposed: crash / wrong | bf16/fp16: no kernel; the fall-through bgemm_NN_kernel<T,T> loaded the transposed tiles along the wrong axis from misaligned addresses; fp32 entry sent TT to the NN kernel | TT (and K == 0, where the SM90 path never applied beta*C) go to the generic kernel |
+Also: the bf16/fp16 SM103 (B300) dispatch only for packed lda/ldb/ldc (its kernels take no ld and read every operand as
+packed; it used to receive strided views). B300 is not testable here; the change only narrows routing. Its kernels also
+store C stacked, but its dispatcher declines M % 128 != 0, so no ragged tile reaches them.
+SASS (cuobjdump, md5 per kernel, whitespace-normalised; 20 TUs), 11-04 state vs this: 403 -> 415 kernels; 66 identical
+(every helper, split-K reduce, tile order, SM103, fp32 addmm, bias copy); 337 changed = exactly bgemm_sm90_kernel (164),
+the 4 cluster kernels (12), hgemm_sm90_kernel (104), sgemm_sm89_kernel (57); 12 added = generic kernels; 0 removed.
+
+### 45.155 2026-11-05: GEMM test on the 2x H200 box (86.38.238.51): the 4 fixes proven; 6 more OLD bugs found
+
+Box: user connected it; copy (43 MB code, data_4k, ckpt_A relayed from P032, md5 equal), libyaml-cpp installed
+(user OK), bt_b3 (= 11-04 B3) and bt_fix (+ the 4 fixes) built (make exit 0, 9 min). test_gemm_all.cu (new): bf16 /
+fp16 / fp32 x NN NT TN TT x 8 shapes x 5 batch layouts x 3 leading-dimension pads (0, 8, 3 = unaligned) x beta 0
+(C pre-filled NaN) / 0.5 through the public entries, componentwise bound, padding-untouched check, a checksum per
+case; one process per (type, op, shape) group so a crash only loses its group. Ananya started a job on GPU 1 at
+05:54:40 (the last 30 s of the old-library run; correctness test, results stand).
+| | new (bt_fix) | old (bt_b3) |
+| --- | --- | --- |
+| cases run | 2,314 | 852 |
+| failed | 124 | 206 |
+| groups crashed | 3 of 96 | 68 of 96 |
+Every new failure also fails or crashes with the old library (0 regressions); 1,544 cases fixed; on 646 cases both
+pass, 598 bit-identical, 48 differ = fp32 512^3 run in split-K (atomicAdd order changes run to run).
+The remaining 124 failures = 6 OLD bugs (code paths no change of ours touched; old library fails them too):
+| # | case | root cause |
+| --- | --- | --- |
+| 5 | fp32 M < 32 or N < 32 (M = 1) | Sgemm_sm89_wrappers.cu: the small-shape fallback always launched the split-K kernel (atomicAdd onto C), beta applied only when splitK > 1 -> C_old + alpha*A@B |
+| 6 | fp32 NT 512^3 batch 1 | Sgemm_nt_256x128_sm89.cu: prologue committed min(ktcnt, 3) cp.async groups but waited as if 3 were committed; with 2 K tiles per split (split-K 16) the first tile was read before it landed |
+| 7 | fp32 NT large shapes, unaligned ld: crash | the same kernel always issues 16-byte cp.async, no unaligned path |
+| 8 | fp32 TN 37x45x29 | Sgemm_core_template_sm89.cuh: TN A-tile XOR swizzle (row & 7) << 3 reaches 56, but the 32x32 tile is 32 wide: rows with k % 8 >= 4 overwrote the next row |
+| 9 | fp16 M = 1, non-packed ld / batch strides | Hgemm_gemv.cu: threads with no output columns returned BEFORE loading their share of the A tile and before __syncthreads (N = 256 -> 32 of 256 threads loaded smA; the rest of A was garbage); the "unaligned fallback" launched the same aligned kernel |
+| 10 | fp16 TN M = 200 | Hgemm_sm90_dispatcher.cu: no M % 128 rule for TN (A is read M-major in 64-row chunks: rows 192-199 never loaded); bf16 pads to M % 128 |
+
+### 45.156 2026-11-05 afternoon: bugs 5-10 (+ an 11th found on the way) -- what others do, permanent fixes
+
+What others do (read in our CUTLASS 4.5.1 checkout, ~/Downloads/Neural_Networks_exp_1926/cutlass):
+- cp.async pipelines (bug 6): gemm/threadblock/mma_multistage.h prologue runs `for (stage < kStages-1)`; past the end of
+  K it only masks the loads (`clear_mask(gemm_k_iterations == 0)`, zero-fill copies) and still calls `cp_async_fence()`
+  every stage; the wait is `cp_async_wait<kStages-2>` ("#uncommitted = kStages-1-#committed"). Our template kernel
+  already does this; the hand-written NT 256x128 kernel did not.
+- split-K and beta (bug 5): reduction/kernel/reduce_split_k.h sums the partial results and applies the epilogue
+  (alpha, beta, source C only if needed) exactly once. Ours: pre-scale C by beta once, then atomicAdd -- also once, but
+  the fallback skipped the pre-scale when splitK == 1 while still running the atomicAdd epilogue.
+- gemv (bug 9): gemm/kernel/gemv.h has NO shared tile and NO __syncthreads: each thread/warp computes its outputs
+  with warp shuffles. CUDA allows __syncthreads in conditional code only when the condition is identical for the whole
+  block (otherwise undefined; since Volta barriers are per-thread and a skipped barrier can hang).
+- alignment (bug 7): gemm/kernel/gemm_universal.h can_implement() requires the CONTIGUOUS extent (K for row-major A, M
+  for column-major A, likewise for B) to be a multiple of the access width; otherwise kErrorMisalignedOperand.
+Scope audit (every place with the same pattern, not only the failing ones):
+- short prologue: only Sgemm_nt_256x128_sm89.cu.  split-K fallback: the 3 wrappers (NN, NT, TN).
+- per-thread return before a barrier: scanned all of BluBLAS, 52 returns before a barrier; 45 are block-uniform
+  (by*BM >= M, bx >= grid_x, block_row >= grid_m, kt_start >= kt_end, batch >= batchCount -- the whole block exits:
+  allowed); 3 more in fp32 SM86 gemv are also block-uniform (n_start = blockIdx.x*TILE_N etc.); exactly 4 are per-thread:
+  hgemv/bgemv nn_row_vec8 and tn_row_vec8 (bf16's gemv file is a copy of fp16's).
+- fp32 SM89 tile configs: all BK = 16 except the fallback's CfgL <256,128,32,2,256> -> bug 11 below.
+Fixes (each where its cause is):
+| # | file | fix |
+| --- | --- | --- |
+| 5 | FP32/SM89/Sgemm_sm89_wrappers.cu | fallback: split-K kernel only when splitK > 1 (C pre-scaled), else the plain kernel with beta |
+| 6 | FP32/SM89/Sgemm_nt_256x128_sm89.cu | prologue always commits STAGES-1 groups (load only while s < ktcnt), as CUTLASS |
+| 7 | FP32/SM89/Sgemm_sm89_wrappers.cu | NT >= 256x128: the hand-written kernel only when A/B 16-byte aligned, lda/ldb/strides % 4 == 0, K % 4 == 0; else the template NT 256x128 (same tile, checks alignment per batch element) |
+| 8 | FP32/SM89/Sgemm_core_template_sm89.cuh | TN A swizzle mask (BM >= 64 ? 7 : 3), the same mask where the tile is stored and read; static_assert BM >= 32 |
+| 9 | FP16/Hgemm_gemv.cu, BF16/SM89/Bgemv_gemv.cu | the two shared-tile kernels: every thread loads its share of the A tile (strided loop) and reaches every barrier; compute/store only for active threads. Launchers: each vector kernel only when its 16-byte loads are legal (pointers, ld, batch strides, N % 8 for row kernels; column kernel only with ldb == 1) and batch <= 65535; else the generic kernel (also for shapes the gemv kernels do not cover, which did nothing before) |
+| 10 | FP16/SM90/Hgemm_sm90_dispatcher.cu | TN declines M % 128 != 0 (no padding helper in fp16; SM8x / generic computes it) |
+| 11 | FP32/SM89/Sgemm_sm89_wrappers.cu + core template | found in the SASS list: the fallback's CfgL had BK = 32 but the kernel's K loop and fragment steps are written for 16 (half of each K slab never multiplied, loop past K; M < 32 with N > 1024). CfgL = <256,128,16,4,256> (the validated 256x128 variant) and static_assert(Cfg::BK == 16) so a mismatched config cannot compile again |
+SASS (8 TUs) vs the morning fixes: changed only bgemv/hgemv nn_row_vec8 and tn_row_vec8 (8), sgemm_nt_256x128_sm89_2_k
+(2), the 4 TN 32x32 sgemm_sm89_kernel instances; removed the 3 BK=32 CfgL instances; added the non-split fallback
+instances, the BK=16 CfgL ones and the generic kernels in the gemv files; 51 sgemm_sm89_kernel + the gemv nt/col kernels
++ the scale kernel identical.
+
+### 45.157 2026-11-05 06:37-06:56 UTC: final tests on the 2x box (bugs 1-12) -- everything passes; push package
+
+Bug 12 (found by the addmm test with nothing set aside): the fp32 fused addmm kernel (sgemm_addmm_sm89_kernel) has an
+IsAligned template flag that its launcher computes but the kernel never uses: every A/B load is a 16-byte cp.async and C
+is written in float2 pairs, so an odd K / N (packed lda = K = 29), an odd batch stride or an odd ldc faulted. Fix in
+blublasSgemmAddmm (FP32/Sgemm_dispatcher.cu): the fused kernel only when A/B are 16-byte aligned, lda/ldb and the A/B
+batch strides are multiples of 4 and C is 8-byte aligned with ldc/strideC even; otherwise torch.addmm's non-fused path
+(new sgemm_addmm_bias_copy_kernel, then one blublasSgemmStridedBatched with alpha and beta). SASS: that file had no
+kernel and now has exactly the copy kernel.
+GPU lock: user asked to lock both GPUs; EXCLUSIVE_PROCESS compute mode (root on the box) from 06:42, restored to DEFAULT
+by the queues' EXIT trap (06:49:29 and again 06:54:03 after queue 2). 0 foreign processes in every phase. The lock also
+refused one extra repeat run of mine started while the trainer held GPU 0 ("device busy", 0 results) -- that run is
+not counted; it was redone in queue 2.
+| test (new library = bt_fix2) | cases | result |
+| --- | --- | --- |
+| GEMM, public entries, bf16/fp16/fp32 x NN NT TN TT x 19 shapes x 5 batch layouts x 3 ld pads x beta 0 (NaN C) / 0.5 + direct gemv (bf16/fp16 nn/nt/tn, 7 shapes) | 6,644 | 0 failed, 0 of 270 groups crashed |
+| same test, old library (bt_b3 = 11-04) | 2,100 ran | 654 failed, 197 of 270 groups crashed |
+| addmm, BluBLAS direct (Part A) bf16 / fp16 / fp32 | 260 / 260 / 228 | 0 failed (fp32 odd shape at batch 3 included) |
+| addmm, TI (Part B) bf16 / fp16 / fp32 / fp64 | 3,136 each | 0 failed; non-broadcastable input threw 336/336 |
+| per-batch bias vs one by one (Part C) | 10 | all pass |
+| batched Newton-Schulz (test_muon_batched_ns) | all parts | pass; 222 matrices 4.79 ms |
+| SFT trainer 60 steps, median dt steps 11-59: GPU 0 old 108.34 -> new 109.13 ms; GPU 1 new 108.20 -> old 108.75 ms | 4 runs | 0 errors; sign flips by GPU = noise, no slowdown |
+Comparison old vs new on the 1,446 cases both pass: 1,382 bit-identical; 64 differ, all explained by tests: 60 are fp32
+split-K (the same library run twice gives different bits: 72 of 72 checksums differed between two runs, 0 failures --
+atomicAdd order); 3 are fp16 TN with M % 128 != 0, which bug 10's fix moves from the SM90 kernel to the SM8x kernel
+(two correct kernels, different rounding of beta*C); 1 is bf16 NN M=320 batch 3, where the OLD library is
+non-deterministic (11 of its checksums changed between two runs: the bug-1 spill races with the correct store) while
+the new library is identical run to run (100 of 100).
+Push package: profiling_reports/blublas_gemm_fixes_2026_11_05/push_1105/ (commands.sh, msg_*.txt, blublas_1_addmm.patch
+= blublas_all_v2 dd94f023, local_md5.txt with 28 files). BluBLAS: two commits (11-04 addmm via `git apply --cached`,
+then the 11-05 GEMM fixes), rehearsed on a clone with the exact commands: clean tree after, final tree = local tree.
+TI: two commits, the BluBLAS pointer with the first (batched Newton-Schulz needs the per-batch bias mode). BluTrain:
+one commit (ShardedMuon.h/.cpp + TI pointer), not dist/Context_Parallelism or sft/*.
+
+### 45.158 2026-11-05 12:20-13:00 IST: the GEMM test on the laptop RTX 3060 (sm_86) -- bf16/fp16 pass; the fp32 sm_80/86 kernels had a cp.async race (an old bug), fixed
+
+Why a second GPU: the H200 runs the SM90 bf16/fp16 kernels and the SM89 fp32 kernels. An A100 or RTX 30xx (sm_80/86)
+runs other code: the SM8x bf16/fp16 kernels (also used on Ada) and the SM86 fp32 kernels (used ONLY on sm_80/86; sm >= 89
+takes the SM89 path). The user approved the laptop RTX 3060 for this (not the Ada node).
+
+Setup: BluBLAS with all of today's fixes (bugs 1-12), built for sm_86 in a scratch copy (`make -j12 blas SM_ARCH=86`;
+the profiler library has to be built first, the link needs it). The same test as on the H200 (test_gemm_all.cu, public
+entries, one process per (type, op, shape) group so a crash only loses its group), runner run_local_sm86.sh.
+
+First run (270 groups, 12:32-12:35): 6,644 cases, 0 groups crashed. bf16 and fp16 (with the direct gemv calls) 0
+failed. fp32: 152 failed -- every one a BATCHED call (batch 3, 3 with shared B, 3 with padded strides, 37), never batch
+1, in NN / NT / TN, only on the shapes that reach the SM86 fp32 kernels (M >= 64, N >= 64, K >= 32), 2 to 68 times the
+error bound (the fp32 bound already allows TF32 inputs, 2^-9): wrong values, not rounding.
+
+Root cause (read in the code, then shown by test). The SM86 fp32 kernels load the next K tile into shared memory with
+cp.async while computing on the current one (3 stages). Each load is closed by `cp.async.commit_group` (one "group"),
+and before reading a tile the kernel runs `cp.async.wait_group 1`, which means "wait until every group except the
+NEWEST one has landed". That is only right if a group is committed for every stage, also when there is nothing left
+to load (an empty group) -- what our other SM86 kernels (Sgemm_strided_batched_SM86.cu, the split-K, addmm and
+core-template kernels) and CUTLASS (cp_async_fence() after every stage) do. In 5 kernels the commit sat INSIDE the
+`if (there is a tile to load) { load; commit; }`. At the last K tile no new group was committed, so the group of the
+tile about to be read WAS the newest one, the wait did not wait for it, and the kernel read that tile before its copy
+arrived (with a single K tile per split: the only tile, right after issuing it). When the GPU is lightly loaded the
+copy is usually in time; in batched calls (more blocks, more memory traffic) it is late often enough to show.
+The 5 kernels (files never touched by today's fixes: `git diff` empty for them before this change):
+- Sgemm_tile64_SM86.cu: sgemm_nn_tile64_kernel, sgemm_nt_tile64_kernel, sgemm_tn_tile64_kernel (64x64 tiles; used
+  when the 128x128 tile count is below the SM count -- on the 3060 (30 SMs) every test shape up to 512x512).
+- Sgemm_backward_nt_SM86.cu, Sgemm_backward_tn_SM86.cu: the 128x128 NT / TN kernels (128x128 tile count >= SM count).
+No test shape reached the 128x128 kernels on the 3060, so two shapes were added: 768x768x256 and 768x768x1024 (36 tiles
+of 128x128; with K >= 1024 the split-K versions). On the unfixed library they showed the race too: fp32 TN
+768x768x1024 (128x128 TN, split-K 4) batch 3: 40 values outside the bound (1 of 24 new groups; a race shows only
+sometimes).
+
+Audit of every cp.async commit in BluBLAS (160 commit lines: TMA bulk and wgmma commits are other mechanisms; every
+Ampere-style cp.async pipeline read by hand, its prologue and loop commits against its wait count):
+- live and correct: SM86 fp32 NN 128x128, split-K, addmm, core template; SM89 fp32 core template, NT 256x128 (its
+  prologue fixed this morning, bug 9), addmm; bf16/fp16 SM8x core templates, addmm, NN; gemm/{s,h,b}gemm_v2; TRMM.
+- live and wrong: the 5 kernels above -> fixed.
+- the same defect in DEAD code (no header declares it, nothing calls or launches it; not changed, listed so nobody wires
+  it up as is): BF16/SM89/Bgemm_backward_nt.cu + _tn.cu and FP16/Hgemm_backward_nt.cu + _tn.cu (only when K <= 32,
+  one tile), the old wmma kernels bgemm_async_strided_batched_kernel (BF16/bgemm_strided_batched.cu) and
+  hgemm_async_strided_batched_kernel (FP16/hgemm_strided_batched.cu) and blublasSgemm_TensorCore_Explicit
+  (gemm/sgemm_tensor_core.cu) (last tile); the never-called SM89 fp32 `_2` launchers (nn_256x128, nn_256x64, nn_64x64,
+  nt_128x128, nt_64x128, tn_128x128, tn_256x128, tn_256x64, tn_32x32, tn_64x64, nn_256x128_bypass, tn kahan) commit
+  only min(k_tiles, STAGES-1) groups in the prologue, the pattern of bug 9 (not checked further: dead).
+
+Fix (the 5 kernels): the commit moved out of the if, in the prologue and in the K loop -- an empty group when nothing is
+loaded; the loads and the pointer stepping unchanged; a dated note at each place.
+SASS (cuobjdump, one md5 per kernel, addresses stripped), the 3 files before vs after, compiled for sm_86 and for
+sm_90a: 49 kernels, 46 changed = exactly the instances of the 5 kernels (30 of the 64x64 kernels: 3 layouts x aligned
+or not x split-K 1/4/8/16/32; 8 NT and 8 TN of the 128x128: aligned or not x split-K 1/4/8/16); the 3 unchanged are the
+beta-scale helper kernels. Instruction counts equal (e.g. 64x64 NN: 992 instructions, 3 LDGDEPBAR = commits, 2 DEPBAR
+= waits, 12 LDGSTS, 16 HMMA before and after): the commit moved, nothing added.
+H200 / Ada: these kernels are compiled into every build but only dispatched on sm < 89, so the H200 results of 45.157
+stand.
+Tests on the RTX 3060 (runner run_local_sm86.sh, paired driver stress_sm86.sh; logs in
+profiling_reports/blublas_gemm_fixes_2026_11_05/local_sm86/):
+| test | library | cases | result |
+| --- | --- | --- | --- |
+| full GEMM test, 270 groups (12:32) | today's fixes, SM86 kernels unchanged | 6,644 | 152 failed (all fp32, all batched), 0 crashed |
+| the two new 768x768 shapes, 24 groups | same (unfixed) | 576 | 1 group failed: fp32 TN 768x768x1024 b3 (40 values) |
+| full GEMM test, 294 groups (with 768x768) | + the sm_86 fix | 7,220 | 0 failed, 0 crashed |
+| 5 paired rounds (unfixed then fixed, alternating) of the 36 fp32 NN/NT/TN groups that failed + 768x768 | unfixed / fixed | 882 per round each | unfixed 160 / 151 / 148 / 155 / 149 failed; fixed 0 / 0 / 0 / 0 / 0; 0 crashed |
+Over the 5 unfixed rounds every 64x64 shape failed somewhere in NN, NT and TN, and the 128x128 NT kernel twice (768x768x256
+and x1024, once each). Fixed vs the first run (compare_gemm_logs.py): 0 regressions; of the 6,492 cases both pass,
+6,490 bit-identical; the 2 others are fp32 512^3 NN and TN, which use the 64x64 split-K (atomicAdd onto C), different
+bits run to run by design (as fp32 split-K on the H200, 45.157).
+Push package updated: the 3 files join BluBLAS commit 2 (21 files; commands.sh expects 23 " M" + 1 "??" before),
+msg_blublas_2.txt has the bullet and the 3060 numbers, local_md5.txt has 31 files; rehearsed again on a clone of
+297f372 with the exact commands: commit 1 = 8 files, commit 2 = 21 files, tree clean after, every file byte-equal to the
+local one.
+
+### 45.159 2026-11-05 13:00-14:30 IST: pretraining before/after of the 3 changes (production trainer, 2x H200 box)
+
+The user (13:00): the 2x box is free, run the pretraining check meanwhile, with the local flux .bin shards; one train
+shard + the val shard is enough for a test (correct: see the token count below). Later: "if someone are running, run
+in one gpu itself".
+
+What is compared (the same builds as the SFT before/after of 45.152, now on the PRETRAINING trainer):
+- B0 = BluTrain 7184fe1 / TI d18f820 / BluBLAS 297f372 (11-03), built on the box from `git archive` of those three
+  commits (bt_b0, 38 MB; ShardedMuon.cpp == 7184fe1).
+- AFTER = /root/gautam_k/gemm_fix_1105/bt_fix2 = the 3 changes (Muon Newton-Schulz guard on the GPU, empty_cache at
+  step 0 only, batched Newton-Schulz + per-batch bias + addmm fix) + today's GEMM fixes (bugs 1-12; bug 13 is sm_80/86
+  only and never dispatched on H200). Key sources md5-equal to the local final code (11 files). Its log shows the
+  batched Newton-Schulz active ("same-shape matrices in chunks of <= 512 MiB"; at W=2: bucket 0 "8 matrices in 2
+  batched chunks, 4 one at a time", bucket 2 "6 in 2 chunks, 5 one at a time" -- the 1.6B matrices are large, so
+  fewer fit in one 512 MiB chunk than in the 135M SFT model).
+- Trainer = train/production_zero/bluscript_zero_ckpt.cpp, compiled in each tree like sft/build_sft_trainer.sh does
+  (make _ablation_compile MODE=production_zero, FUSED_RMS_ROPE=1 = the Makefile default): bz_b0 4bea9f34, bz_after
+  99a77866.
+
+Config = the production YAML (train/production_zero/bluscript_zero_ckpt_config.yaml + bluscript_zero_ckpt_parallelism
+.yaml, both byte-identical in B0 and AFTER): 1.6B (d 2304, 26 layers, 18/6 heads, ffn 6144, vocab 50304, T 4096), B 8,
+global batch 1,048,576 tokens per optimizer step, Muon + AdamW, ZeRO-1 v2 NCCL with symmetric memory (NVLS), global
+clip, grad views (bf16 accumulation), segmented embedding backward, bf16 logits, the real schedule (8000 steps, warmup
+200; BLU_MAX_STEPS never set -- it rewrites warmup/stable). Overrides, nothing else: BLU_MIX_ROOT = the fake mix,
+BLU_CKPT=0, BLU_MONITOR=0, CSV log into the run folder. Each run stopped after step 25 (SIGTERM to its exact mpirun PID).
+FINDING (pre-existing, both builds): the production YAML as committed does not load in this trainer:
+`[config] FATAL: ... unknown key 'monitoring.production'`. The key came with the Grafana commit dba5cf4 (2026-10-10);
+ConfigBridge.h's table was never given it (checked all 63 + 34 keys of the two YAMLs against ConfigBridge.h's table
+and field_keys(): this is the only unknown key). For the test both builds read one copy of the YAML without that line
+(make_cfg.sh; `diff` = exactly that line; it only labels dashboards, and monitoring is off). Fix to propose: add
+{"monitoring", "production", "BLU_PRODUCTION", Kind::Bool} to ConfigBridge.h (the Makefile already exports
+BLU_PRODUCTION from PRODUCTION=).
+
+Data: the flux shards are raw uint16 GPT-2 tokens, 100M per 200 MB file, no header -- exactly what DataLoader.h maps
+(it rejects odd sizes, reads no header); first tokens 3053 7124 11 290 ... ("’s" = 447 247 82). Copied
+flux_train_000001.bin + flux_val_000000.bin (md5 2f49e2a1 / 2eb39e08, equal on the box). The trainer wants
+<root>/{commoncrawl,edufineweb,code,math}/ with *train*.bin / *val*.bin (list_shards_for_domain: extension .bin and the
+split name in the file name); each folder holds links to the same two shards. 26 steps x 1M tokens = 27M tokens; the
+largest c2 slice (commoncrawl 58%) needs ~16M of its 100M -> one shard suffices. Speed does not depend on which tokens.
+
+Smoke (AFTER, 2 GPUs, stopped after step 2): starts in ~1.5 min; NCCL symmetric memory works on this box (NV18,
+NVSwitch fabric); step 0 / 1 / 2 dt 10,667 / 10,676 / 10,673 ms, 98.3k tok/s, MFU 54.6%, train loss 11.30 -> 11.25.
+Ananya's job (/root/Ananya/claude_1105/fused/BluTrain) started on GPU 1 during the smoke (13:10 IST) (the watcher recorded it), so
+the campaign chose ONE GPU (GPU 0) for every run, per the user: global batch unchanged (grad_accum 32 instead of 16).
+Campaign order B0, AFTER, AFTER, B0 on GPU 0 from 13:13:53 IST (all times here IST; the box clock is UTC); an env
+sampler logged CPU load and both GPUs every 30 s.
+
+Campaign 1 -- total step time (run_pz.sh, GPU 0 only, B0 / AFTER / AFTER / B0, 13:13-13:56 IST; parse_pz.py over
+steps 5-24, the same steps in every run):
+| run | build | median dt (ms) | mean | min | max | tok/s | MFU | GPU 1 neighbour |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | B0 | 21,335.1 | 21,355.3 | 21,300.0 | 21,427.1 | 49,148 | 54.64% | busy (Ananya's job) |
+| 2 | AFTER | 21,276.6 | 21,303.0 | 21,235.5 | 21,383.8 | 49,283 | 54.80% | busy, restarted ~13:31-13:33 |
+| 3 | AFTER | 21,289.4 | 21,299.4 | 21,266.9 | 21,369.4 | 49,253 | 54.76% | busy until 13:39, then idle |
+| 4 | B0 | 21,266.1 | 21,332.2 | 21,257.7 | 22,556.6 | 49,307 | 54.82% | idle |
+(B0 run 4's max = step 6: the refill after B0's step-5 empty_cache, +1.26 s.) The two B0 runs differ by 69 ms: the
+colleague's job on GPU 1 moved OUR step time (GPU 0 clock ~1,480-1,500 MHz with it, ~1,545 MHz without). Least squares
+over 78 steps (neighbor_fit.py: dt = baseline(step) + build + neighbour; per-step wall times from the CSV elapsed_min
+anchored at each logged stop, neighbour state from 30 s GPU-1 samples): build AFTER - B0 = -13.8 ms (+- 7.9 ms SE),
+neighbour ON - OFF = +66.2 ms (+- 11.1 ms). Total dt cannot resolve the change: it is ~0.07% of a 21.3 s step.
+Losses: step 0 identical in every run (11.301915: the forward is deterministic); the backward is not (step 0 grad norm
+19.8676 / 19.8673 / 19.8675 / ...), so the trajectories spread: max |train loss| over steps 0-25 AFTER vs AFTER
+0.00071, B0 vs B0 0.00040, B0 vs AFTER 0.00036-0.00122 -- the same size: no numerical change from the three changes
+beyond the existing run-to-run noise. Newton-Schulz rejections 0 in every run.
+
+Campaign 2 -- the optimizer phase itself (nsys_pz.sh / nsys_pz_g1.sh + nsys_gap.py): nsys CUDA trace of ~7 steps
+per run (delay 190 s, duration 150 s, then nsys ends the run). The embedding forward kernel starts once per
+micro-batch; consecutive starts inside a step are one micro-batch's forward + backward apart (median ~660 ms);
+across a step boundary the gap also holds the whole optimizer phase (grad norm/clip, Muon + AdamW update, publish,
+step-end syncs). Optimizer phase = boundary gap - median in-step gap; checks: boundaries exactly 32 micro-batches
+apart (yes in every run); GPU busy (kernels + copies + memsets, overlaps merged) and idle inside that window. The
+analysis was first checked on a synthetic trace with known answers (800 ms phase = 500 busy + 300 idle: exact).
+Runs 14:02-14:26 IST: GPU 0 B0, AFTER, AFTER, B0; GPU 1 (free since 13:39; user: "all gpus are free so use other one
+too") AFTER, B0 in parallel. Every run undisturbed, 12 steps logged, ~7 step boundaries captured, boundaries exactly 32
+micro-batches apart in every run (nsys_table.py):
+| GPU | run | build | optimizer phase, median of steady boundaries (ms) | min-max | GPU busy (ms) | GPU idle (ms) | one-time extra (ms) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | 1 | B0 | 200.79 | 198.93-202.58 | 189.10 | 11.62 | 2,760 |
+| 0 | 2 | AFTER | 184.22 | 183.57-186.28 | 180.96 | 3.72 | 0 |
+| 0 | 3 | AFTER | 184.57 | 183.43-186.03 | 180.96 | 3.80 | 0 |
+| 0 | 4 | B0 | 201.05 | 197.31-202.23 | 189.07 | 11.67 | 3,126 |
+| 1 | 1 | AFTER | 180.35 | 179.77-184.08 | 176.64 | 3.71 | 0 |
+| 1 | 2 | B0 | 199.55 | 197.31-200.42 | 188.44 | 10.93 | 288 |
+GPU 0: B0 200.92 -> AFTER 184.39 ms = -16.53 ms per optimizer step (-8.2% of the optimizer phase): GPU work -8.12 ms
+(the batched Newton-Schulz: 104 of the 156 matrices in 13 batched chunks), GPU idle -7.88 ms (the Newton-Schulz guard
+decided on the GPU: no CPU wait per matrix). GPU 1: 199.55 -> 180.35 ms = -19.20 ms (-9.6%): work -11.80, idle -7.22.
+Same build twice on GPU 0: B0 200.79 / 201.05, AFTER 184.22 / 184.57 -> the measurement repeats to < 0.4 ms; the
+saving is ~50x that. "One-time extra" = B0's empty_cache at step 5 (the trainer frees the cache, the next step refills
+it: 0.3-3.1 s once per run, seen in every B0 run, never in AFTER, whose only empty_cache is at step 0).
+Conclusion: in pretraining (1.6B, 1M tokens = 32 micro-batches per optimizer step, 1 GPU) the three changes cut the
+optimizer phase by 16.5-19.2 ms per step (~8-10% of it) and remove a 0.3-3.1 s stall once per run; against a 21.3 s
+step that is ~0.08% -- the optimizer is ~0.2 s of each 21 s step here, while in SFT (135M, 137 ms steps) the same
+changes were -19.6%. Training is unchanged (losses within the run-to-run spread, 0 Newton-Schulz rejections).
+Not changed by this test: ConfigBridge.h (the monitoring.production defect above is for the user to decide).
+Kit and logs: profiling_reports/pretrain_before_after_2026_11_05/ (box_runs/ = campaign 1, box_nsys/ = the 6 nsys
+traces, 32-33 MB each, sqlite exports left on the box).
+
+### 45.160 2026-11-05 14:45-14:51 IST: pushed (user) and verified on the remote
+
+The user ran push_1105/commands.sh (bash -e), branch dist_side_gautam_lottn in all three repos, author Goutham Kumar
+<goutham.kumar@blubridge.com>:
+| repo | commits | remote branch |
+| --- | --- | --- |
+| BluBridge-BLAS | 0b552f0 addmm: per-batch bias mode (SM90 FullBatched); every addmm path adds the bias like torch.addmm (8 files) / a6d4292 GEMM correctness: batched SM90 C store, misaligned / transposed shapes, fp32 split-K, K tails, gemv, sm_86 cp.async race (21 files, new blublas_gemm_generic.cuh) | 297f372 -> a6d4292 |
+| Tensor-Implementations | dbb4e5f Muon: batched Newton-Schulz + BluBLAS with the per-batch bias mode (5 files incl. the BluBLAS pointer) / df615ce cuda_addmm: route the input by its shape (torch broadcast rule), non-fused path as torch.addmm | d98d6ee -> df615ce |
+| BluTrain | 96f135c ShardedMuon: batched Newton-Schulz (same-shape matrices per chunk, memory-capped) + Tensor-Implementations pointer | e9e310c -> 96f135c |
+Verified ON THE REMOTE (push_1105/verify_remote.sh: fetch of each branch, token through a credential helper, never in
+a URL or output): every one of the 31 files equal to the local copy (md5 of `git show FETCH_HEAD:<path>`: BluBLAS 24/24,
+TI 5/5, BluTrain 2/2); TI's BluBridge-BLAS pointer = a6d4292, BluTrain's Tensor-Implementations pointer = df615ce;
+authors as above, no Co-Authored-By line. Local BluBLAS and TI working trees clean after the push; BluTrain keeps only
+the changes that were never part of this push (dist/Context_Parallelism pointer, sft/README.md, sft/docs, the
+untracked sft/fmt_* format-study scripts).
+Not pushed, for the user to decide later: the ConfigBridge.h line for monitoring.production (45.159); the dead-code
+copies of the sm_86 race (45.158).
+
+### 45.161 2026-11-05 14:55-15:15 IST: task 4 re-ranked by TIME -- SFT step profile of the pushed code (GPU 0)
+
+Why: the remaining 45.140 items were ranked by how often a CUDA call happens, not by what it costs. Pretraining
+(45.159) showed the GPU 99.8% busy inside micro-batches, so CPU-side calls cost it nothing there. Item 9 (attention:
+cudaGetDeviceProperties per forward) was coded first (KernelDispatch.h get_arch() hardened -- atomic ready flags, bounds
+check, two cudaDeviceGetAttribute calls; GQA_fwd_sm90.cu uses get_arch(); old lines kept as comments; local only):
+3 files compile, all 10 kernels' SASS byte-identical (sm_90a) -- then measured before building more.
+Run (nsys_sft.sh): the pushed code (bt_fix2 bluscript_sft_bin 37cda5fb), this morning's SFT settings (135M: 37 layers,
+d 512; data_4k, ckpt_A, B=4, ROWS=8 = 2 micro-batches per step, Muon, 60 steps), GPU 0 only, nsys CUDA trace (kernels
++ API), 14:58 IST. Trainer dt ~112 ms. Analysis sft_profile.py (checked on synthetic traces with known answers first):
+micro-batch ends = the embedding-backward kernels (2 per step; the embedding FORWARD runs ~5x per SFT step, so it
+cannot mark micro-batches), step boundaries = the larger gaps between ends (Otsu split, 3 outlier gaps -- start-up,
+validation, end -- left out, 56 of 57 boundaries exactly 2 micro-batches apart), 42 regular steps measured.
+| part of the SFT step | time per step |
+| --- | --- |
+| 2 micro-batches (forward + backward) | 96.72 ms, GPU idle inside them 4.59 ms |
+| optimizer window (last backward kernel -> next step's first forward) | 15.32 ms = GPU busy 9.96 + GPU idle 5.36 ms |
+| total GPU idle | ~9.95 ms of 112.04 (8.9%) = the ceiling for removing CPU overheads |
+CUDA API per step (calls / CPU ms; in the optimizer window): cudaLaunchKernel 4,356 / 43.2 (1,185 / 3.65);
+cudaLaunchKernelExC 1,428 / 17.4 (90 / 0.30); cudaMemcpyAsync 558 / 20.9 (553 / 2.33) -- of it ONE 4-byte D2H that
+blocks 18.6 ms (the CPU waiting for the GPU, i.e. the CPU is ahead in forward/backward) and 525 D2D copies of 420 MB
+(GPU 0.83 ms, CPU 2.2 ms = the per-parameter copy loops, item 3); cudaStreamSynchronize 14 / 5.26 (all 14 in the
+optimizer window = items 5-7); cudaMemsetAsync 395 / 1.47 (379 / 1.15 = zero_grad, item 4); cuTensorMapReplaceAddress
+4,189 / 0.45; cuTensorMapEncodeTiled 666 / 0.10; cudaGetDeviceProperties 74 / 0.012 (item 9: worth ~12 us per step);
+cudaMallocAsync only at start-up / validation, none per step.
+Re-ranking: item 9 has no measurable value (the code is kept local, not for a push on its own). The SFT target is the
+optimizer window (5.4 ms GPU idle): its 14 stream syncs (items 5, 6, 7) first, then the launch count there (item 4
+zero_grad 379 memsets -> one kernel; item 3 525 copies -> batched; item 8 metadata). Ceiling for all of them together:
+~5-10 ms per SFT step (~5-9%); in pretraining ~4 ms per 21 s step (nothing measurable).
+
+### 45.162 2026-11-05 15:30 IST: item 9 -- what the big libraries do (read in their source), decision
+
+Our call path: the attention dispatcher gqa_flash_attn_forward (GQA_fwd_generic.cu:310) picks the Hopper kernel with
+get_arch() == Hopper (cached once per GPU) + shape checks; the Hopper launcher gqa_v62_causal_launch_d128
+(GQA_fwd_sm90.cu:1311) then asked again with a FULL cudaGetDeviceProperties on every call (a safety net for direct
+calls) = 37 layers x 2 micro-batches = the 74 calls per SFT step measured in 45.161. Tensor maps: attention encodes
+3 (forward) + 6 (backward) cuTensorMapEncodeTiled per layer per micro-batch = 666 per SFT step; BluBLAS GEMMs keep a
+descriptor per shape and only swap the address (cuTensorMapReplaceAddress, 4,189 per step).
+Others (source files downloaded and read; NVIDIA blog):
+| who | GPU check before dispatch | how |
+| --- | --- | --- |
+| PyTorch at::cuda::getDeviceProperties (aten/src/ATen/cuda/CUDAContext.cpp) | any time | cudaGetDeviceProperties ONCE per GPU (c10::call_once per device), cached, device index checked against the GPU count |
+| FlashAttention-2 (csrc/flash_attn/flash_api.cpp, src/hardware_info.h) | every call | get_compute_capability(): two cudaDeviceGetAttribute calls (major, minor) |
+| FlashAttention-3 (hopper/flash_api.cpp) | every call | PyTorch's cached properties (getCurrentDeviceProperties) |
+| NVIDIA, "CUDA Pro Tip: The Fast Way to Query Device Properties" | -- | cudaGetDeviceProperties 0.86-1.15 ms per call vs cudaDeviceGetAttribute 30-80 ns (GH200); it caused a 20x slowdown in cuML; PyTorch AO PR 1092 fixed a 20x FP6-kernel slowdown the same way |
+| ours before | every Hopper attention call | a full cudaGetDeviceProperties (cheap on this stack, 0.16 us, the CUDA 13 runtime evidently caches it; up to ~1 ms on stacks that do not) |
+| ours now (local) | every call | get_arch(): cudaDeviceGetAttribute major/minor once per GPU, cached, thread-safe, bounds-checked = PyTorch + FA2 |
+Tensor maps: CUTLASS encodes the TMA descriptor on the CPU every time the kernel arguments are built (cute
+make_tma_copy_desc -> cuTensorMapEncodeTiled, copy_traits_sm90_tma.hpp:929/1047), which FlashAttention-3 uses; for
+grouped / array GEMMs CUTLASS keeps the descriptor and replaces the address on the GPU (tensormaps_replace_global_address
+-> tma_descriptor_replace_addr_in_shared_mem, sm90_mma_array_tma_gmma_ss_warpspecialized.hpp:656-724).
+Decision: keep the item-9 fix (permanent; kernels byte-identical, so no GPU-side effect; removes a call NVIDIA says
+can cost ~1 ms on other driver stacks); push it with the next item. Tensor-map caching in attention: not done -- our
+attention already does what CUTLASS and FlashAttention-3 do, and the most it could save is ~0.1 ms per SFT step.
+
+### 45.163 2026-11-05 15:20-15:36 IST: item 9 tested; push package
+
+- Build + code proof: all 15 TI files that include KernelDispatch.h compiled before / after for sm_90a: 15/15, 0 errors,
+  248 kernels each, SASS of every kernel identical; 12 kernels (GQA_bwd_generic.cu 8, GQA_fwd_generic.cu 4) only have a
+  new mangled name -- they sit in an anonymous namespace, whose nvcc name is a hash of the file's contents (the included
+  header changed); their SASS set is identical.
+- Unit test item9/test_get_arch.cu (old way = cudaGetDeviceProperties + arch_family_from_sm vs the new get_arch()):
+  RTX 3060 (laptop): sm_86 -> 86 / 86 SAME; H200 (2x box, GPU 0 only): sm_90 -> 90 / 90 SAME; 16 threads x 100,000
+  calls: 0 different answers on both; get_arch(9999) -> Generic, no crash. Per call: 3060 get_arch 16.3 ns,
+  cudaGetDeviceProperties 18.9 ns, cudaDeviceGetAttribute 11.7 ns; H200 (driver 580.178) 41.6 / 26.3 / 21.9 ns.
+  So on today's CUDA 13 stack the runtime caches cudaGetDeviceProperties: the old check (cudaGetDevice + the query,
+  ~46 ns) and the new one (~42 ns) cost the same; the change is a safety fix (stacks without that cache, the data race,
+  the 8-GPU limit), not a speed-up -- said so in the commit message.
+- Push package item9/push/ (commands.sh: TI 1 commit with the 2 files, BluTrain 1 commit with the TI pointer;
+  local_md5.txt; verify_remote.sh).
+- 15:45 IST, the user: never delete code -- keep the old code as comments and explain what / why in comments at the
+  place. Both files redone: KernelDispatch.h keeps the whole old get_arch() verbatim as a comment, with a block on what
+  get_arch() is, the three problems and their fixes, and a note on each new line; GQA_fwd_sm90.cu keeps the six old
+  lines verbatim as comments with a block on what the check is for, who calls it, how it was, how it is now. Comments
+  only: both files recompiled, all 10 kernels' SASS identical to the original code, unit test ALL PASS again; push
+  package md5 list and commit message updated.
+- Correction 15:55 IST: get_arch() has 45 real call sites in 14 TI files (44 before item 9, + the attention launcher), not 59 (that count included comment lines); fixed in the KernelDispatch.h comment, md5 list updated.
+
+### 45.164 2026-11-05 16:05-16:13 IST: item 9 pushed (user) and verified on the remote
+
+TI df615ce -> 963df8b "get_arch(): once per GPU via cudaDeviceGetAttribute, thread-safe, bounds-checked; SM90 attention
+check uses it" (KernelDispatch.h + GQA_fwd_sm90.cu); BluTrain 96f135c -> dfc3c9b (Tensor-Implementations pointer only).
+verify_remote.sh (item9/push): both files byte-equal on the remote, BluTrain -> TI pointer 963df8b, TI -> BluBLAS
+a6d4292 unchanged, author Goutham Kumar, no AI trailer; the kept old code ("Old code (kept, not deleted)", the commented
+old get_arch()) is in the remote files. Cost per check, for the record (unit test): a cached get_arch() call 41.6 ns on
+the H200 / 16-18 ns on the RTX 3060, almost all of it cudaGetDevice() (which GPU this thread uses: a lookup in the
+CUDA runtime, no GPU access); the one-time first question adds 2 x cudaDeviceGetAttribute (~22 ns each on the H200).
+- First call measured (item9/test_first_call.cu, 5 fresh programs each, timed after the CUDA context exists): get_arch()
+  first call 1.2-1.6 us (RTX 3060) / 2.2-3.8 us (H200) -- the 2 driver questions (~44 ns) plus one-time first-touch costs
+  (the stored-answer memory, the lock, cold code); single timings of a second (remembered) call 50-80 / 70-250 ns (clock
+  and cold-cache noise; the 1,000,000-call average is 17 / 42 ns). Old cudaGetDeviceProperties: first call in a program
+  0.23-0.26 / 0.61-0.77 us, second 35-62 / 50-130 ns. Over a 60-step SFT run (4,440 checks): old ~0.20 ms, new ~0.19 ms.
+
+### 45.165 2026-11-05 16:20 IST: the CUDA-call items ranked by the GPU idle each CALL SITE causes (correction)
+
+sft_sites.py on the backtrace trace (nsys_sft_bt.sh: pushed code, SFT 135M, GPU 0; --cudabacktrace=all:1, so CPU calls
+are slower: step 119.7 ms, GPU idle 18.28 ms per step, 13.62 of it in the optimizer window; absolute numbers inflated,
+the ranking holds). Every GPU-idle moment is charged to the API call the CPU was inside, or the last call before it;
+the charges sum to the measured idle (checked).
+| rank | call site | per step | GPU idle ms/step | item |
+| --- | --- | --- | --- | --- |
+| 1 | ShardedMuon per-matrix kernels: accumulate_owned_grad_norm (2 x 222 launches, from compute_norm_and_clip) + update_group (owned_grad_fp32, muon_momentum_kernel, muon_scale_inplace: 3 x 222) | 1,110 launches | 0.78+0.70+0.38+0.38+0.37 = 2.61 | NEW (13) |
+| 2 | copy loops: ShardedMuon::scatter_bucket_into_params 222, ShardedOptimizer::scatter_flat_into_params 150, stage_grads_direct_fp32 150 | 522 cudaMemcpyAsync | 1.00+0.69+0.68 = 2.37 | 3 |
+| 3 | zero_grad: TensorImpl::zero_grad -> fill_cuda_launch | 372 cudaMemsetAsync | 1.20 | 4 |
+| 4 | Tensor::to_cpu (the loss read, blocking 18.5 ms) | 1 | 1.00 (mostly in the micro-batch window) | -- |
+| 5 | syncs: ShardedOptimizer::step (8 stream syncs + 2 memsets + 2 blocking copies) 0.072; ShardedMuon::all_gather_params_sync 0.191; compute_norm_and_clip 0.024; ShardedMuon::step (device sync) 0.012 | ~14 | ~0.30 | 5, 6, 7 |
+| 6 | multi-tensor list uploads (adam 15, grad_norm 4, scale 4) | ~23 | ~0.07 | 8 |
+| -- | "(no stack)": cuKernelGetName / cudaLaunchKernel / cuTensorMapReplaceAddress recorded without a stack (cuKernelGetName = one per launch, most likely the tracer's own) | -- | 9.47 (6.85 in the optimizer window) | profiler + launch path |
+Correction of 45.161: the 14 syncs' 5.3 ms is CPU WAITING while the GPU is still busy, not GPU idle; they cause
+~0.3 ms of GPU idle. The optimizer window's idle comes from hundreds of tiny per-tensor launches and copies.
+New order: 4 (zero_grad -> TI's existing multi_tensor_zero_cuda) -> 3 (copy loops -> batched) -> 13 (Muon per-matrix
+kernels -> multi-tensor) -> 5-8 together (the multi-tensor staging buffer is shared and only the syncs make it safe:
+fix the buffer properly, then the syncs can go) -> 11 -> 12. Ceiling: ~3-5 ms per SFT step (~3-4%) without the profiler.
+
+### 45.166 2026-11-05 16:20-16:45 IST: item 4 (zero_grad batched) built and tested; item 3 set aside
+
+What: ZeroOptimizerBase.h zero_grads_batched() (TI multi_tensor_zero_cuda) used by the zero_grad() of ShardedMuon,
+ShardedOptimizer and SymmetricShardedOptimizer when gradients are not flat-buffer views (always at 1 GPU). Old loops kept
+as comments. Both trainers call these (bluscript_sft.cpp:3350, bluscript_zero_ckpt.cpp:2816); multi-GPU runs with grad
+views already did one memset over the flat buffer (unchanged). PyTorch: Optimizer.zero_grad default set_to_none (no
+zeroing at all), else torch._foreach_zero_ per device and dtype (torch/optim/optimizer.py:1170). TI's own Optimizer
+already used multi_tensor_zero_cuda; the ZeRO optimizers had their own per-tensor loop.
+TI multi-tensor inventory (asked by the user): zero / cast / copy pass the list by value (safe, every GPU); scale and
+Adam have a by-value "sm89" version used only on Ada while every other GPU (H200) gets the generic shared-staging-buffer
+version that needs a sync after each launch; grad norm has only the generic version; MultiTensorAdam_sm90.cu has no
+caller (dead). Next for items 8 + 5: route all GPUs to the by-value Adam / scale if bit-identical (to test).
+Split (user: one item at a time): the item 3 work (TI multi_tensor_copy + the three copy loops) saved in
+items_3_4/saved/ and removed from the trees, so item 4 is built, tested and pushed alone.
+Build (box tree pretrain_1105/bt_item4 = bt_fix2 + the local sources synced with rsync --checksum --no-times: exactly
+9 files differed = pushed item 9 + sm_86 fix + item 4): libraries 18 files recompiled, 0 errors; trainer 9a97877f.
+Test (test_item4.sh, GPU 0 only, 16:37-16:40 IST): profile memsets per step 395 -> 23, optimizer window 15.32 ->
+13.93 ms (GPU idle 5.36 -> 4.29); plain runs median dt old 109.12 / 109.21, new 108.74 / 108.18 ms (-0.70 ms, -0.6%);
+0 errors; step-0 loss identical (1.530339); max |train loss| new vs old 0.000735 / 0.000702, old vs old 0.000607, new vs
+new 0.000917 (the run-to-run spread of the non-deterministic backward); nsrej equal on every step.
+Push package items_3_4/push_item4/ (BluTrain 1 commit, 4 files).
+- 16:48 IST pushed by the user: BluTrain dfc3c9b -> 084114b "zero_grad: clear all gradients with one multi-tensor launch
+  instead of one fill per tensor" (4 files). verify_remote.sh (items_3_4/push_item4): 4 of 4 files equal on the remote,
+  BluTrain -> TI 963df8b, TI -> BluBLAS a6d4292 unchanged, author Goutham Kumar, the kept old code on the remote.
+
+### 45.167 2026-11-05 16:55-19:00 IST: item 3 (the copy loops batched) -- audit, fixes, checks, tests on P015 GPU 7
+
+User (before the test): "as we are writing a new kernel, be careful in all 360 degrees: how it is wired, how it behaves on
+different GPU architectures (one kernel for all, or separate ones for Hopper / Ada / RTX 3060?), dtype wiring, all other
+files; research, modify if needed, cross-verify several times independently". The 2x box closed ~17:05 (instance gone);
+the tests moved to P015 (ssh -p 2226, replaces P022), GPU 7 only (user).
+
+WIRING (call chain, all on the current stream = TI getCurrentStream(), where the old d2d ran):
+  ShardedMuon::scatter_bucket_into_params (per bucket) ----------------------------\
+  ShardedOptimizer / SymmetricShardedOptimizer::scatter_flat_into_params           |-> TI multi_tensor_copy_cuda
+     -> scatter_flat_batched (ZeroOptimizerBase.h) -------------------------------/      -> multi_tensor_copy_sm89_cuda
+  ShardedOptimizer / SymmetricShardedOptimizer::stage_grads_direct_fp32 (1 GPU)            (packs <= 48 tensors /
+     -> stage_grads_fp32_batched: fp32 grads -> multi_tensor_copy_cuda                      320 blocks of 128 KB into
+                                  other dtypes -> multi_tensor_cast_cuda (per dtype)        the launch arguments)
+                                  no grad -> multi_tensor_zero_cuda                      -> kernel, launch checked
+  Old: one d2d (device::copy_memory -> cudaMemcpyAsync on getCurrentStream(), current device) / convert / memset per tensor.
+ARCHITECTURES: one kernel for all GPUs. Plain 1/2/4/8/16-byte loads and stores only (no tensor cores, TMA, cp.async);
+the Makefile compiles MultiTensorKernels_sm89.cu for the machine's own SM_ARCH (no Blackwell / Hopper-only marker), so
+each GPU gets native code from the one source ("sm89" in the name is historical; zero / cast / copy run on every GPU).
+Only the memory speed differs. Separate kernels pay only for generation-specific hardware (GEMM / attention). PyTorch
+(multi_tensor_apply, foreach copy), Apex multi_tensor_scale (Megatron's _multi_tensor_copy_this_to_that) do the same.
+DTYPES: byte copy; every class enforces one dtype for all its parameters (ZeroConfigError), so flat buffer and
+parameters have the same element size, as the old d2d assumed. Real runs: BLU_ALL_BF16=1 (SFT via run_sft.sh, and the
+production YAML) -> bf16 parameters (scatter copies bf16 bytes), fp32 gradients (autograd keeps them fp32) -> staging
+takes the copy route; bf16 -> fp32 cast route covered by the unit test (bit-identical to the old convert).
+AUDIT FINDINGS -> CHANGES (old code kept as comments everywhere; removed lines all re-found as comments by a script):
+ 1. SymmetricShardedOptimizer (ZeRO v2 = the production pretraining trainer's AdamW groups) has the same two loops;
+    the saved item-3 code had missed them -> both changed (helpers shared with ShardedOptimizer).
+ 2. TI multi_tensor_zero kernel: 16-byte stores at OFFSETS rounded to 16, i.e. assumed a 16-byte aligned base. The flat
+    buffers pack tensors back to back (offset += numel), so item 3's staging would pass unaligned slices ->
+    "misaligned address". Fixed: align on the ADDRESS (head bytes, 16-byte body, tail); aligned bases: same stores.
+ 3. TI multi_tensor_cast fp32<->bf16 kernels: float4 / ushort4 at base + 4k elements, same assumption -> vector loop
+    only if both addresses allow it, else the scalar loop (same rounding). As convert_type_cuda_generic and PyTorch do.
+ 4. multi_tensor_cast fallback (pairs without a batched kernel, e.g. fp16 -> fp32): converted every tensor of a launch
+    pass, so a tensor longer than one pass (> 10.5M elements) was converted once per pass -> one convert per tensor.
+ 5. No launch check: the old per-tensor copy threw on a failed cudaMemcpyAsync; the kernel launches were unchecked ->
+    mt_check_launch (cudaGetLastError -> std::runtime_error with the kernel name) after every zero / copy / cast launch.
+ 6. Copy kernel: each thread loads 4 units before storing them (COPY_UNROLL): 12-19% less GPU time on the big lists.
+ 7. Measured and NOT adopted: big tensors (>= 64 / 16 / 4 / 1 MB) by cudaMemcpyAsync, the rest batched: 1.6B lists -9..-20%
+    GPU time, SFT lists +3..+23% (one 50 / 101 MB embedding: the split adds a launch); kernel only kept.
+CROSS-CHECKS (independent of each other):
+ a. compile for sm_86 / sm_89 / sm_90a / sm_100a / sm_103a / sm_120: 0 errors, 0 warnings, 0 spills, 24-40 registers;
+    SASS: the 4 LDG.E.128 issued before the 4 STG.E.128.
+ b. the real kernel + launcher code (extracted verbatim, launch syntax rewritten) run on the CPU thread by thread with
+    alignment-checked vector types: 12 / 12 pass, 0 misaligned, 0 wrong bytes (all 256 src/dst alignment pairs x sizes
+    0..300, chunk boundaries, 100 MB over several launches, 3000 random); old zero / cast on the same inputs: 40,230 /
+    1,105,890 / 2,383,704 misaligned accesses, aligned inputs (the old callers): 0; old fallback 4 converts for 3 tensors.
+ c. GPU unit test (H200): same cases, every byte right; bf16 -> fp32 bit-identical to convert_type_cuda_generic and
+    exact; fp32 -> bf16 misaligned == aligned; fp16 fallback identical; old library: "misaligned address" (zero and
+    cast), new: pass.
+ d. trainers: SFT (ShardedMuon + ShardedOptimizer) and pretraining (ShardedMuon + SymmetricShardedOptimizer) old vs new.
+P015 setup: /localstorage not writable -> ~/gautam_k/item3_1105; bt_old = git archive of the pushed commits (BluTrain
+084114b, TI 963df8b, BluBLAS a6d4292), bt_new = cp -a + the 7 files (md5-checked; 7 files differ; incremental build
+recompiled exactly the users of the changed files); P015 has no yaml-cpp -> the Ubuntu package unpacked into
+~/gautam_k/deps (no root). Trainers load only their own tree's libraries (ldd); libtensor multi_tensor_copy symbols old 0
+/ new 2; both new trainers call it.
+RESULTS (P015 GPU 7 / GPU 6, H200; laptop RTX 3060):
+ - unit tests: H200 every case PASS (copy all 256 alignment pairs x sizes, chunk boundaries, 2 x 100 MB over several
+   launches, 3000 random; zero any start; bf16 -> fp32 bit-identical to convert_type_cuda_generic and exact; fp32 -> bf16
+   misaligned == aligned; fp16 fallback identical); old library on the same misaligned zero / cast: "misaligned address".
+   RTX 3060 (sm_86, local build of the same tree, 4 min): all PASS. Speed, old loop (one cudaMemcpyAsync each) -> new,
+   GPU span, H200: SFT Muon scatter 222 tensors 1301 -> 278 us, SFT AdamW 150 tensors 1082 -> 81 us, 1.6B AdamW 106 tensors
+   770 -> 157 us, 1.6B Muon 156 tensors (2.9 GB) 1844 -> 1830 us, one 256 MB tensor 133 -> 174 us (cudaMemcpyAsync faster
+   alone; never alone in our lists); 3060: 3001 -> 2669, 838 -> 627, 1556 -> 1422 us, 1.6B Muon / 256 MB equal (+0.2 /
+   +1.9%). The first draft (one 16-byte load per step) was 12-19% slower on the H200 big lists, equal on the 3060.
+   Size split (>= 64 / 16 / 4 / 1 MB by cudaMemcpyAsync) measured: 1.6B lists -9..-20%, SFT lists +3..+23% -> not adopted.
+ - SFT 135M, 60 steps (old = pushed code, new = + item 3), nsys: cudaMemcpyAsync per step 558 -> 36, multi_tensor_copy 17
+   launches per step (0.24 ms GPU), DtoD copies per step 536 -> 14; step 110.82 -> 109.15 ms; optimizer window 14.48 ->
+   12.06 ms (GPU idle 4.85 -> 2.93 ms). Plain runs old new new old: median dt (11-59) 108.92 / 108.90 -> 107.59 / 107.80
+   ms (-1.21 ms, -1.1%); 0 errors; step-0 loss identical (1.530339); max |train loss| new vs old 0.00100 / 0.00063 /
+   0.00055 / 0.00092, old vs old 0.00074, new vs new 0.00083; Newton-Schulz rejections equal on every step.
+   sft_profile.py fix: outlier cap 3 x median -> 2 x median (one slow early step had pulled the Otsu split).
+ - pretraining (production YAML minus monitoring.production, 1 GPU, ZeRO v2): nsys new -- multi_tensor_copy 98 launches
+   per step, cudaMemcpyAsync D2D per step 369 -> 1, no errors (the nsys window only caught warm-up steps: no timing);
+   old new new old on GPU 6 stopped after step 8: step-0 loss identical (11.301915), max |train loss| new vs old 0.000085
+   - 0.000112 vs old vs old 0.000068 / new vs new 0.000122, Newton-Schulz rejections 0, median dt 21.72-21.75 s in all
+   (the first old run 21.754 s ran beside GPU 7's nsys; the gain of ~1 ms is below a 21.7 s step's noise).
+Push package items_3_4/push_item3/ (TI 1 commit, 3 files; BluTrain 1 commit, 4 files + TI pointer; token through a
+credential helper, never in the URL). ZeroOptimizerBase.h on the box differs from the pushed one only in two comment
+lines (comment-stripped md5 equal).
+
+### 45.168 2026-11-05 18:35-19:45 IST: item 13 (Muon per-matrix kernels batched) -- research, code, checks, tests
+
+What it is (45.165 rank 1, 2.61 ms of GPU idle per SFT step in the traced profile): per SFT step ShardedMuon launched
+1,110 small kernels for its 222 matrices -- the gradient norm (kernels::sumsq_accumulate: 2 launches per matrix = 444)
+and update_group's prep (cast_to_f32_scaled into one shared fp32 scratch, muon_scale_inplace for the weight decay,
+muon_momentum: 3 per matrix = 666). Each launch costs the CPU ~5 us for 1-2 us of GPU work on a 512x512 matrix, so the
+GPU waited. Newton-Schulz itself was already batched per chunk (11-04).
+Others (user asked): PyTorch torch.optim.Muon runs these steps per matrix ("Foreach is not supported for Muon yet",
+torch/optim/_muon.py); NVIDIA emerging_optimizers (Megatron Core) per parameter too (for p in group["params"]: weight decay,
+lerp_, orthogonalize, add_). PyTorch's mature optimizers default to batched foreach on CUDA "since it is usually
+significantly more performant" (torch/optim/optimizer.py), and clip_grad_norm_ = _foreach_norm per tensor + one combine.
+Megatron's matrices are huge (launch cost hidden behind ~100 us kernels); ours are small. Speed-focused Muon codes batch:
+Microsoft Dion3 ("megabatching" + CUDA graphs), optimuon (foreach momentum / weight decay, batched NS by shape).
+Multi-GPU (user asked): the same code at every W -- owned_grad_src() picks autograd's gradient (W == 1) or the wire
+buffer / flat_owned_grad_ (W > 1), as owned_grad_fp32() did; the norm keeps per-tensor sums in slot order, so RS/AG and
+reduce/broadcast still agree bit for bit; nothing new is communicated; update_group's position in the publish pipeline
+is unchanged.
+CODE (old code kept as comments; a script checked every old line is still present as code or comment):
+ - TI MuonKernels.cu/.h (new only): muon_momentum_batched_cuda (gradient fp32/bf16/fp16/none read directly, prescale with
+   cast_to_f32_scaled's mul.rn.ftz, then muon_momentum_kernel's exact arithmetic; no scratch round trip) and
+   muon_scale_inplace_batched_cuda (x *= s for a chunk's masters); lists by value, <= 64 per launch, launches checked.
+ - ZeroKernels.cu/.h: sumsq_accumulate_batched (each tensor its own grid / partials / fold, totals added in list order:
+   bit-identical); the loop of sumsq_partial_kernel moved unchanged into sumsq_thread_acc() (its machine code identical
+   before / after: 288 / 464 / 464 instructions); corrected the --use_fast_math note (TI dropped fast-math 10-31).
+ - ShardedMuon.cpp/.h: owned_grad_src(); accumulate_owned_grad_norm -> one batched call (flushed before any fallback
+   tensor, so the slot order holds); update_group step 1 -> 2 launches per chunk (old loop kept live for an unreadable
+   gradient dtype).
+CHECKS:
+ - compile sm_90a, 0 warnings / spills; SASS: momentum = the same FMUL + FFMA pattern as muon_momentum_kernel, prescale
+   FMUL.FTZ, decay plain FMUL.
+ - unit test (H200): momentum / decay bit for bit on 14 lists (fp32 / bf16 / fp16 / missing, prescale 1 / 0.125 / 1e-30,
+   Nesterov on / off, odd sizes, 70 matrices over 2 launches): 0 bits differ over millions of finite outputs; norm
+   per-tensor vs batched equal to the last bit on 6 lists with finite sums (10802.65, 171.94, ...), while the same
+   tensors in REVERSED order give different bits (5 of 6) -- the first run of this test fed random bit patterns, so both
+   sums were NaN and "equal" (vacuous); caught from the printed values and fixed. One SFT chunk: 368 -> 87 us.
+ - test_muon_rsag (RS/AG vs reduce/broadcast bit-exact): PASS at W = 1 and W = 2, old and new tree (GPUs 6 + 7 of P015);
+   its run script lacks -I dist/Distributed_Checkpointing/include (pre-existing; build_rsag.sh adds it).
+ - SFT, profile (P015 GPU 7, nsys, 30-step window): kernel launches per step 4,390 -> 3,303; optimizer window 12.08 ->
+   8.48 ms (GPU idle 2.96 -> 1.11 ms); median step (11-29) 108.73 -> 106.13 ms.
+ - SFT, plain runs (P032 GPUs 6 + 7 in parallel, builds swapped between the rounds): median step (11-29) old 108.15 /
+   107.89 ms, new 105.26 / 105.26 ms (-2.76 ms, -2.6%); 0 errors; max |train loss| new vs old 0.00041-0.00099 vs old
+   vs old 0.00071 / new vs new 0.00078; Newton-Schulz rejections equal on every step.
+ - PRETRAINING (P032, 1 GPU per run, production YAML minus monitoring.production, stopped after step 8): old / new on
+   GPUs 6 / 7 (clean) and new / old on GPUs 4 / 5 (a colleague's tqa_probe.py, /localstorage/adhi_l32, started on 4 and 5
+   mid-run: recorded, untouched): step-0 loss identical (11.301915), max |train loss| new vs old 0.000057-0.000093 vs old
+   vs old 0.000062 / new vs new 0.000077, Newton-Schulz rejections 0, no errors; median dt (2-8) clean pair 21.637 s old
+   vs 21.527 s new, the shared-GPU new run 21.847 s -- item 13's ~3 ms is far below the noise of a 21.6 s step.
+   (parse_pz3 marks every run DISTURBED: it tests that foreign.txt exists, and our watcher creates it even when empty.)
+Push package item13/push_item13/ (TI 1 commit: MuonKernels.h/.cu; BluTrain 1 commit: ZeroKernels.h/.cu, ShardedMuon.h/.cpp
++ TI pointer).
+Boxes: P015 (GPU 7, then 6 + 7) until a colleague's SFT job took GPUs 6 / 7 at 19:02 while our queue was stopped; the
+user: "don't kill anyone's process, let's use P032" -> P032 (/localstorage/gautam_k/item13_p032: bt_new = git archive of
+the pushed item-3 commits, bt_13 = + the 6 files). SFT checks now 30 steps (user), stopped after step 29 (the stop lands
+at step 39-60: mpirun forwards the log in blocks; the comparison window 11-29 is the same in every run).
+ - 19:39-19:45 clean rerun of the disturbed pretraining pair on P032 GPUs 6 / 7 (new on 6, old on 7; round 1 was old on 6,
+   new on 7): median dt (2-8) GPU 6 old 21.637 / new 21.629 s, GPU 7 new 21.527 / old 21.441 s -> mean +39 ms (+0.18%)
+   with a same-build spread of 100-195 ms: no measurable change (item 13's ~3 ms is invisible at 21.5 s per step).
+   Losses: max |train loss| new vs old 0.000056-0.000113, old vs old 0.000065, new vs new 0.000117; rejections 0; no errors.
+ - 19:48 IST pushed by the user: TI 05e1d6c -> e2af706 "Muon: batched momentum prep and weight decay (one launch per chunk
+   instead of three per matrix)" (2 files); BluTrain 07600db -> 1bec9af "ShardedMuon: per-matrix prep and gradient norm
+   batched (same bits, about 1,000 fewer launches per SFT step)" (4 files + TI pointer). verify_remote.sh: TI 2 of 2,
+   BluTrain 4 of 4 files equal on the remote; BluTrain -> TI e2af706, TI -> BluBLAS a6d4292; author Goutham Kumar.
+
+### 45.169 2026-11-05 19:20-20:05 IST: size split for the batched copy / zero (items 3 / 4) -- measured, kept as a FUTURE task
+
+Question (user, after the item-13 push): can the batched copy (item 3) or batched zero (item 4) ever be slower than the
+old way (one driver call per tensor: cudaMemcpyAsync / cudaMemsetAsync)? Should very big tensors go to the driver
+instead of our kernel, and from what size? Does PyTorch do anything like that?
+What a size limit means here: it is checked PER TENSOR (one entry of the list = one gradient or one parameter), not
+on the whole list and not on the flat buffer. Example: the 1.6B AdamW scatter list has 106 tensors: one embedding of
+232 MB and 105 tensors of 256 B to 4.6 KB. With a 32 MB limit only the embedding would get its own cudaMemcpyAsync and
+the 105 small tensors would stay in one batched launch. The SFT Muon scatter list (222 tensors, the largest 2.9 MB)
+would not change at all.
+Test A, test_split.cu (P032 GPU 6, H200, ONE tensor alone, GPU time between two events, median of 15 after 3 warm-ups):
+our copy kernel is slower than cudaMemcpyAsync at every size (+10% at 32 MB, +25..33% from 64 MB to 2 GB); our zero
+kernel is slower than cudaMemsetAsync at every size (+8% at 32 MB, +23..41% from 64 MB). One big tensor + the 105 small
+1.6B AdamW tensors: sending the big one to the driver loses below 32 MB (+14.5% at 16 MB, +2.5% at 32 MB) and wins
+from 64 MB (-10..-24%).
+Test B, test_split2.cu (P032 GPU 6, 19:49 IST, the REAL lists of our two models; GPU us between two events, median of
+15 after 3 warm-ups; "old" = one driver call per tensor as before items 3 / 4; "split T" = tensors >= T MB one driver
+call each, the rest batched; wall time to done is 8-9 us more than the GPU time in every column):
+
+| list | tensors, total | old | batched (pushed) | split 32 MB | split 64 MB | split 128 MB |
+| --- | --- | --- | --- | --- | --- | --- |
+| COPY SFT Muon scatter (bf16) | 222, 218 MB | 648.3 | 143.0 | 142.7 | 142.9 | 143.1 |
+| COPY SFT AdamW scatter (bf16, embedding 50 MB) | 150, 51 MB | 408.0 | 46.7 | 42.1 | 47.0 | 47.1 |
+| COPY SFT AdamW staging (fp32, embedding 101 MB) | 150, 101 MB | 406.3 | 76.2 | 65.8 | 65.8 | 76.4 |
+| COPY 1.6B Muon scatter (bf16, gate_up 57 MB) | 156, 2,944 MB | 1864.0 | 1836.2 | 1693.4 | 1836.2 | 1836.1 |
+| COPY 1.6B AdamW scatter (bf16, embedding 232 MB) | 106, 232 MB | 321.0 | 152.6 | 124.3 | 124.1 | 123.6 |
+| COPY 1.6B AdamW staging (fp32, embedding 464 MB) | 106, 464 MB | 431.1 | 300.6 | 234.7 | 234.9 | 234.8 |
+| ZERO SFT all gradients (fp32) | 372, 538 MB | 872.2 | 177.4 | 171.8 | 170.8 | 178.1 |
+| ZERO 1.6B all gradients (fp32) | 262, 6,353 MB | 1988.4 | 2009.9 | 1693.4 | 1758.6 | 1971.9 |
+
+Result:
+ 1. Batched (as pushed) beats the old loop in 7 of the 8 lists (SFT lists 4.5x to 8.7x faster; 1.6B copies 1.5% to
+    52% faster). The 8th, the 1.6B zero_grad at 1 GPU, is 21 us slower (2009.9 vs 1988.4 us, +1%): its gradients are
+    big (embedding 464 MB, gate_up 113 MB x 26, down 57 MB x 26) and the driver's memset writes big buffers faster than
+    our kernel. 21 us on a 21.6 s step = 0.0001%. With more than one GPU zero_grad is one memset over the flat
+    gradient buffer (grad views, production), so this list does not run there.
+ 2. A 32 MB per-tensor split was the best, or within 1 us of the best, in all 8 lists on P032: 1.6B zero 1693 us
+    (-15% vs old), 1.6B copies -8..-22% vs batched, the three SFT lists that hold the 50 / 101 MB embedding -3..-14%,
+    no change where no tensor reaches 32 MB.
+ 3. NOT settled: earlier today on P015 (another box and driver) sending the 50-101 MB tensors to the driver was 7-15 us
+    SLOWER than batching them, so the size where the driver starts to win depends on the box / driver. Both tests are
+    standalone timings, not the training step. The gain is small: the largest is 0.3 ms per step (1.6B at 1 GPU).
+ 4. Cost of the check itself: one size comparison per tensor on the CPU. Measured in the SFT Muon scatter list (no
+    tensor reaches 32 MB, so only the check runs): 142.7 us with it vs 143.0 us without; wall 150.8 vs 151.0 us --
+    nothing measurable. A big tensor sent to the driver is one call, while the batched path already needs one launch
+    per 40 MB of it (320 blocks x 128 KB per launch), so the number of CPU calls stays the same or goes down.
+PyTorch (source read 20:00 IST, branch main): `optimizer.zero_grad()` defaults to `set_to_none=True` (the gradients are
+freed, nothing is zeroed); with `set_to_none=False` and foreach it calls `torch._foreach_zero_` on every gradient
+(torch/optim/optimizer.py lines 1109 / 1170). `foreach_tensor_zero_cuda_` (ForeachUnaryOp.cu) and
+`foreach_tensor_copy_list_kernel_cuda_` (ForeachBinaryOpList.cu) send every tensor of ANY size through
+`multi_tensor_apply`: no size split and no driver-call path (MultiTensorApply.cuh: chunk of 65,536 elements, 110 tensors
+/ 320 blocks per launch; builds with CUDA 13+ use the 32 KB kernel-argument space: 770 tensors / 2,240 blocks per
+launch). So our pushed batched copy / zero does what PyTorch does.
+DECISION (user, 11-05 ~20:00 IST): keep the batched copy / zero exactly as pushed (TI 05e1d6c); the size split is a
+FUTURE task. When it is picked up:
+ (1) measure inside the real step (nsys, 1 GPU: 135M SFT and 1.6B pretraining), on at least two boxes / drivers
+     (P032 + P015, maybe the Ada node);
+ (2) choose the limit from those numbers (32 MB per tensor is the P032 candidate);
+ (3) implement it in TI multi_tensor_copy_sm89_cuda / multi_tensor_zero_sm89_cuda: an entry >= the limit gets its own
+     checked cudaMemcpyAsync / cudaMemsetAsync on the same stream, the rest stay batched; old lines kept as comments;
+ (4) also look at the 32 KB kernel-argument space (CUDA 12.1+ drivers; PyTorch turns it on for CUDA 13+ builds):
+     more tensors and blocks per launch, so fewer launches.
+Files: profiling_reports/pretrain_before_after_2026_11_05/item13/test_split.cu and test_split2.cu.
+
+### 45.170 2026-11-05 20:15-21:30 IST: items 5 + 8 (the waits after the multi-tensor norm / scale / Adam, and the list uploads) -- research, code, checks, tests
+
+What it was (45.140 items 5 + 8, 45.165 ranks 5 + 6): the ZeRO optimizers (ShardedOptimizer = v1, SymmetricShardedOptimizer
+= v2) called sync_compute() (wait for the whole GPU) after every multi-tensor norm, scale and Adam call. The reason was
+written next to them: TI's multi_tensor_grad_norm_cuda / multi_tensor_scale_cuda / multi_tensor_adam_cuda copied the
+(ptr, numel) list into ONE shared pinned host buffer and uploaded it with cudaMemcpyAsync; that upload reads the buffer
+only when the GPU reaches it, so a second call made earlier overwrote the first call's list. Every wait empties the GPU
+queue, and the GPU then idles until the CPU queues the next kernel. ~23 uploads per SFT step (item 8).
+User questions answered first: we use Muon, but only for the 2-D body matrices (bluscript_sft.cpp:1980, ndim >= 2 and
+not the embedding); the embedding and the 1-D scales are trained by AdamW every step (SFT 135M: 150 tensors, ~25M
+parameters = 19%; 1.6B: the embedding, ~116M = 7%). TI already had multi-tensor Adams: the upload-path one (H100 / H200),
+a by-value one (sm89 file, used only on Ada), and an sm90 one (08-21, called by nothing, also uploads). PyTorch's
+multi_tensor_apply passes the list inside the launch (no buffer, no waits) -- the model for this change.
+BIT TEST FIRST (test_58_bits, RTX 3060): the existing by-value Adam is NOT bit-identical to the H200 one -- 9.4% of m,
+7.6% of v and 0.4% of p differ in the last bits (it writes the m / v update with fmaf; the H200 kernel writes
+beta * m + (1 - beta) * g and the compiler fuses it differently). Scale x0.37 / x1.0 identical; x2.0: the by-value kernel
+changed 0 values (bug). So the H200 arithmetic was copied into the by-value kernel (the plan's fallback).
+RACE TEST (test_58_race: a spin kernel keeps the GPU busy, then two calls back to back without a wait; a warm-up call
+first, because the first call allocates the buffers and that allocation waits for the GPU -- caught in the first run,
+where the norm case looked right on the old library by accident): OLD library 3 of 3 pairs WRONG (norm: acc1 = 4000
+instead of 1000; scale: tensor 1 untouched, tensor 2 scaled twice; Adam: set 1 untouched, set 2 stepped twice), on the
+3060 and on the H200. NEW library 0 of 3 wrong. So the hazard was real; the waits were the only thing preventing it.
+CODE (old code kept as comments; a script checked that every old line is still present as code or comment):
+ - TI MultiTensorKernels.cu: multi_tensor_adam_cuda / multi_tensor_scale_cuda -> the by-value kernel on every GPU (old
+   Ada-only dispatch kept as comments); the upload paths kept unchanged as multi_tensor_adam_upload_cuda /
+   multi_tensor_scale_upload_cuda (for comparison tests); the shared buffers guarded by a GPU event (each upload-path
+   call waits for the previous one's event before writing the buffers: multi_tensor_grad_norm_cuda is safe without a
+   caller wait; the wait is short or nothing, and works across streams; as PyTorch's pinned allocator reuses a block
+   only after its event).
+ - TI MultiTensorKernels_sm89.cu: Adam: the H200 arithmetic exactly (head, float4 loop, tail; the fmaf lines kept as
+   comments); 16-byte loads only at 16-byte aligned addresses (vector loop only when p, g, m, v share the position in a
+   16-byte block -- the ZeRO shard case -- else scalar); scale: the same address rule, and only exactly 1.0 skipped
+   (was every factor >= 1); launches checked (mt_check_launch).
+ - TI MultiTensorKernels.h: notes + the two upload-path declarations.
+ - BluTrain ShardedOptimizer.cpp: 8 waits removed (after the norm in reduce_and_measure / step, the clip coefficient,
+   the scale in reduce_grads_now / step x2, the Adam in local_adam_step / adam_flat_range); the 2 norm reads ->
+   cudaMemcpyAsync on the compute stream + cudaStreamSynchronize (one wait, ordered whichever stream is current).
+   SymmetricShardedOptimizer.cpp: 5 waits removed (norm x2, scale x2, Adam), 2 norm reads the same way.
+   Kept: the waits before / after collectives, the wait after the parameter scatter; the staged pipelines already order
+   Adam before the broadcasts with param_sync_event_ (v1 adam_and_publish_staged, v2 the same), v2 all_gather_params
+   waits before its all-gathers.
+CHECKS:
+ - compile sm_86 and sm_90: 0 errors, 0 warnings in the 5 files.
+ - test_58_paths (new path vs the kept upload path, bit for bit; RTX 3060 AND H200): 0 differing values in 8 Adam cases
+   (aligned SFT / 1.6B embedding shards, slices 1, 2, 3 floats off a 16-byte address, different offsets per array, 149
+   and 100 tensors packed back to back) and 9 scale cases (x0.37 / x1.0 / x2.0 at offsets 0, 1, 3); "changed by the
+   step" > 0 everywhere; CONTROL (lr x (1 + 1e-6)) 392,139 differing values -> the comparison can see a difference.
+ - SFT 1 GPU, 30 steps (P032; old / new on 4 GPUs at once, next to 4 pretraining runs): 0 errors; max |train loss| old
+   vs new 0.00065-0.00077, old vs old 0.00072, new vs new 0.00070; Newton-Schulz rejections equal on every step; median
+   dt (11-29) old 105.63 / 105.53, new 106.61 / 105.48 ms. Repeat on GPUs 3 / 4 swapped: old 106.50 (a colleague's
+   process appeared on GPU 3) / 105.83, new 105.60 / 107.02 ms. Within noise both times.
+ - nsys (old / new at the same time): cudaStreamSynchronize 14 -> 7 per step; list uploads (H2D) 23 -> 4; blocking
+   cudaMemcpy 3 -> 1; cudaEventRecord / cudaEventSynchronize 1 -> 3 (the norm guard, 0.017 ms CPU per step); kernel
+   launches 3,303 -> 3,307 (+4: the by-value Adam / scale split the 25M-element embedding shard into 3 launches each);
+   optimizer window 8.61 -> 8.53 ms; GPU busy in it 7.46 -> 7.44 ms (the by-value Adam is not slower); GPU idle in it
+   1.15 -> 1.09 ms.
+ - SFT 2 GPUs (W = 2), ZeRO v1 and v2 (BLU_ZERO_V2=1). First one pair each, then a clean A/B on locked GPUs (5,0) / (3,4),
+   old and new at the same time, then swapped. 0 errors in every run; max |train loss| old vs new 0.00060-0.00097;
+   rejections equal. Median dt (ms): v1 old 57.24 / 56.87 / 57.07, new 57.02 / 56.95 / 57.24; v2 old 56.61 / 57.23 /
+   57.16, new 56.86 / 56.99 / 57.17 / 57.02 -- noise.
+ - The staged parameter refresh (BLU_OVERLAP_REFRESH=1; opt-in, off in the production YAML; the only path where removed
+   Adam waits sat next to comm-stream work): 2 GPUs, v1 and v2, old / new at once: 0 errors, max |train loss| 0.00065 /
+   0.00059, rejections equal.
+ - PRETRAINING trainer (production YAML minus monitoring.production; ShardedMuon + ZeRO v2), 1 GPU, 8 steps, old / new
+   swapped on 4 GPUs: step-0 loss 11.301915 in all four; max |loss| old vs new 1.0e-4 / 7.8e-5, old vs old 6.3e-5, new vs
+   new 9.5e-5; 0 errors; median dt (2-8) old 21.69 / 21.47 s, new 21.79 / 21.53 s (noise: 8 of our jobs on the box).
+ - Other GPUs: both changed TI files compile for sm_80, sm_89, sm_90a, sm_100a, sm_103a, sm_120 (0 errors, 0 warnings).
+ - Other callers (read): TI Optim.cpp (Adam; clip_grad_norm_ calls the norm, then the scale, in loops over 512-tensor
+   chunks with no wait in between -- on H100 / H200 the old upload path had the same hidden race there for models with
+   more than 512 tensors; now safe), DDP ZeRORedundancyOptimizer, FSDP, Tensor-Parallelism, the BluCCL tests: unchanged
+   calls, same bits. Checkpoint save: DistCheckpoint::save calls AsyncStager::sync_with_default_stream() (its copy
+   stream waits for stream 0) before it reads the optimizer state, so it never relied on the removed waits. No CUDA-graph
+   capture near the optimizers (only BluCCL tests).
+ - GPUs (P032): colleagues took free GPUs in the gaps between our runs (Bharath's RL job on GPU 1, Ram's tests on 2, 6,
+   7); never touched; our runs moved. From the clean A/B on, our GPUs were locked by holder processes (64 MB, no
+   compute) for the whole campaign (user 21:12). The DISTURBED marks in those runs are our own holders (the watcher
+   keys on the folder).
+ - 21:49 IST pushed by the user: TI e2af706 -> 66a32a7 "Multi-tensor Adam / scale: the tensor list inside the launch on
+   every GPU (no shared upload buffer); 2 old bugs of the by-value kernels fixed" (3 files); BluTrain 1bec9af -> 476808b
+   "ZeRO optimizers: no wait after each multi-tensor norm / scale / Adam (the shared buffer they protected is gone) +
+   Tensor-Implementations pointer" (2 files + TI pointer). verify_remote.sh: TI 3 of 3, BluTrain 2 of 2 equal on the
+   remote; BluTrain -> TI 66a32a7, TI -> BluBLAS a6d4292; author Goutham Kumar; no Co-Authored-By line.
+
+### 45.171 2026-11-05 21:15-21:55 IST: items 6 + 7 (Muon's norm wait, the 1-GPU end-of-step waits) -- code, tests on P015, pushed
+
+What it was (45.140 items 6 + 7, 45.165 rank 5):
+ - item 6: ShardedMuon::compute_norm_and_clip and ShardedMuon::reduce_and_measure waited for the whole GPU right after
+   the norm kernels (sync_compute), then again in the blocking cudaMemcpy that reads the norm.
+ - item 7 (1 GPU): ShardedMuon::all_gather_params_sync waited before its local copy (sync_compute) and after the scatter
+   (cudaDeviceSynchronize); publish_sync waited at W == 1; ShardedOptimizer / SymmetricShardedOptimizer waited after the
+   parameter scatter. All of that is on one stream, which keeps the order by itself.
+User questions answered first: what PyTorch and Megatron do. PyTorch's optimizers never wait inside step() (one stream);
+clip_grad_norm_ makes the clip coefficient on the GPU and reads the norm only when asked; DDP / FSDP order communication
+with stream events. Megatron reads the grad norm to the CPU once per step (NaN check, log) and overlaps the parameter
+all-gather with the next forward. Our result: one norm read per step, kept on purpose for the NaN stop before any
+update (like Megatron); no CPU wait between same-stream work (like both). Nothing copied: only waits our code had.
+CODE (BluTrain, old lines kept as comments, a script checked every old line is still present):
+ - ShardedMuon.cpp: no wait after the norm (2 places); norm read = cudaMemcpyAsync on the compute stream +
+   cudaStreamSynchronize (2 places); W == 1 publish: no sync_compute before the local copy, no cudaDeviceSynchronize after
+   the scatter, publish_sync returns at once.
+ - ShardedOptimizer.cpp / SymmetricShardedOptimizer.cpp: no wait after the parameter scatter.
+ - Kept: the trainer's end-of-step cudaDeviceSynchronize (dt timing), every wait around collectives. Checkpoint save
+   waits for stream 0 itself (AsyncStager::sync_with_default_stream). Checkpoint RESUME also re-publishes through
+   all_gather_params_sync / publish_sync: same single-stream order -- checked by reading, not run.
+TESTS (P015, H200; old = bt58 = pushed code + items 5 + 8, new = bt67 = + these 3 files; GPUs 0, 1, 6, 7 locked by
+holders; GPUs 2-5 a colleague's pt350m, untouched; the DISTURBED marks there were our own holder / trainers -- the
+watcher's folder prefix was P032's):
+ - SFT 1 GPU, 30 steps, old / new swapped: 0 errors; max |train loss| old vs new 0.00060 / 0.00072, old vs old 0.00056,
+   new vs new 0.00058; Newton-Schulz rejections equal; median dt same GPU 106.19 -> 106.29, 104.75 -> 104.37 ms.
+ - nsys: waits per SFT step 10 -> 5 (cudaStreamSynchronize 7 -> 4, cudaDeviceSynchronize 2 -> 1, blocking cudaMemcpy
+   1 -> 0); optimizer window 8.19 -> 8.28 ms, GPU idle in it 0.85 -> 0.89 ms -- no measurable time change. The 0.19 ms
+   of 45.165 was measured with --cudabacktrace (a slowed CPU); with a normal CPU the GPU was not idling at those waits.
+   Value: fewer CPU stalls (robust to a busy / slower CPU), cleaner code; speed neutral on H200 + this CPU.
+ - SFT 2 GPUs, ZeRO v1 / v2: 0 errors, max |train loss| 0.00060 / 0.00094, rejections equal; 57.13 -> 57.20 ms,
+   56.99 -> 56.98 ms.
+ - Pretraining (production YAML minus monitoring.production), 1 GPU, 8 steps: step-0 loss identical (11.301915), max
+   |loss| 0.000107, 0 errors.
+ - 21:55 IST pushed by the user: BluTrain 476808b -> accc6c8 "ZeRO optimizers + ShardedMuon: drop the CPU waits that
+   order nothing (Muon norm, 1-GPU publish, parameter scatter)" (3 files). verify_remote.sh: 3 of 3 equal on the remote;
+   BluTrain -> TI 66a32a7, TI -> BluBLAS a6d4292; author Goutham Kumar. (verify_remote.sh now sets GIT_PAGER=cat: git log
+   in a terminal had opened less and the 5 + 8 check looked stuck.)
+
+### 45.172 2026-11-05 21:36-21:58 IST: BLU_OVERLAP_REFRESH (staged parameter refresh) off vs on, pretraining, 4 GPUs (P032)
+
+What it is: zero1.overlap_refresh in the YAML / BLU_OVERLAP_REFRESH (Kiruthik added it to the pretraining trainer on
+10-01, commit 0d65161; the SFT trainer inherited it). OFF in the production YAML. Only at world_size > 1: after the update
+the new weights are sent in stages (embedding first) and the next forward starts while later stages are still on the
+way; the trainer then skips its end-of-step cudaDeviceSynchronize (dt = host time, equal to GPU time in steady state).
+User 21:33: "do it now itself" (planned for 11-06 morning first). 45.140 item 7's multi-GPU half.
+Setup: pretraining trainer of bt_58 (pushed code + items 5 + 8), production YAMLs minus monitoring.production; ON = the
+same with overlap_refresh: true (+ BLU_OVERLAP_REFRESH=1 exported). 4 GPUs (P032 GPUs 4-7; 8 = production, but GPU 1 was
+a colleague's), locked by holders. 8 steps per run, order off / on / on / off on the same GPUs.
+| run | mode | median dt steps 2-8 | errors |
+| a | off | 5425.2 ms | 0 |
+| b | on | 5407.0 ms | 0 |
+| c | on | 5410.4 ms | 0 |
+| d | off | 5436.8 ms | 0 |
+Result: ON 5408.7 ms mean vs OFF 5431.0 ms = -22 ms per step (-0.4%); both ON runs faster than both OFF runs. Losses: step-0
+11.303305 in all four; max |loss| off vs on 0.000111 / 0.000069, off vs off 0.000082, on vs on 0.000092 (noise).
+Also 11-05 (45.170): the 2-GPU SFT correctness check with it ON (old vs new code) passed; 2-GPU SFT steps ~53 ms ON vs ~57
+ms OFF (dt host time ON) -- the same direction.
+Next (user's GPU grant needed): the 8-GPU production pretraining off vs on (same window, swapped) before switching the
+production YAML to overlap_refresh: true.
+
+### 45.173 2026-11-05 ~22:10 IST: IMMEDIATE TASK for 11-06 (user) -- the full before/after grid
+The 11-04 / 11-05 tables compared two DIFFERENT models: SFT was measured on 135M only (137.2 -> 110.3 -> 105.3 ms,
+-23.3%), pretraining on 1.6B only (21,301 -> 21,283 ms at 1 GPU, -0.07%). User: measure 135M pretraining and 1.6B SFT
+too. 11-06: 4 cells {SFT, pretraining} x {135M, 1.6B}, each with the builds B0 (before 11-04: BluTrain 7184fe1 / TI
+d18f820 / BluBLAS 297f372), B1 (after 11-04: BluTrain 96f135c / TI df615ce / BluBLAS a6d4292), B2 (after 11-05: BluTrain
+accc6c8 / TI 66a32a7 / BluBLAS a6d4292); step time, tok/s, MFU, optimizer phase (nsys), losses; same GPU, same step
+window, swapped, GPUs locked. Plus 8 GPUs for 1.6B pretraining with overlap_refresh off / on (45.172). Needs: a 135M
+pretraining YAML; 1.6B SFT with random init (no 1.6B SFT start checkpoint; speed only). GPUs: to be granted (all 16 went
+to colleagues 11-05 21:56).
+Addendum (user ~22:15): every SFT A/B of 11-04 / 11-05 used B=4, ROWS=8 = 2 micro-batches per optimizer step -- the best
+case for optimizer-side gains. 11-06 also measures SFT at 5 (ROWS=20, run_sft.sh default) and 8 (ROWS=32) micro-batches.
+Estimates from today's parts (48.9 ms per micro-batch; optimizer ~39.4 ms before 11-04, ~8.5 ms after 11-05): 5 micro-
+batches ~284 -> ~253 ms (~-11%), 8 micro-batches ~431 -> ~400 ms (~-7%) -- to be replaced by measurements.
+
+### 45.174 2026-11-06 11:40-13:02 IST: the full before/after grid (45.173) on the 2x H200 box 95.133.254.108
+
+Setup: box shared (/root/mahesh, /root/ram); openmpi + libyaml-cpp installed with apt (user OK). Two builds from git
+archive: old = before 11-04 (BluTrain 7184fe1 / TI d18f820 / BluBLAS 297f372), new = after 11-05 (accc6c8 / 66a32a7 /
+a6d4292); both built with 0 errors. 36 cells = trainer {SFT, pretraining} x model {135M, 1.6B} x B {2, 4, 8} x
+micro-batches per optimizer step {2, 5, 8}; old and new of a cell AT THE SAME TIME (one per GPU, which GPU alternates per
+cell); 30 steps each, stopped exactly after step 29 by watching the trainer's own per-step CSV (flushed every step in
+both builds); median of steps 11-29. 135M SFT = ckpt_A, vocab 49280; 1.6B SFT = random init, 1.6B shape with vocab
+49280 (the SFT data's tokenizer: SftDataLoader refuses another vocab); 135M pretraining = 135M shape with vocab 50304
+(the flux shards' GPT-2 ids); 1.6B pretraining = production YAML minus monitoring.production, mini_batch / global_batch
+set per cell. GPUs locked by holder processes + a kill guard (user 12:30: kill any foreign process on our GPUs): 0 kills.
+Smoke gate (8 setups x 3 steps) first: it caught two script problems before the grid -- the stop check read
+run_sft.sh's gpu.csv (date column) instead of the trainer CSV, and the 1.6B SFT vocab -- both fixed, then 8 of 8 passed.
+A colleague's test (Ram, _jit_runner_) ran on GPU 0 during the smoke only. The swapped pass (each cell on both GPUs) was
+prepared and then skipped (user).
+Result (all 72 runs: 30 steps, 0 errors, losses within noise; new vs old step time):
+| B x micro-batches | SFT 135M | pretraining 135M | SFT 1.6B | pretraining 1.6B |
+| --- | --- | --- | --- | --- |
+| 2 x 2 | -31.8% | -29.6% | -5.7% | -2.0% |
+| 2 x 5 | -16.2% | -15.5% | -0.7% | -3.6% |
+| 2 x 8 | -11.9% | -10.3% | -3.0% | +0.3% |
+| 4 x 2 | -22.8% | -20.2% | -0.6% | -3.8% |
+| 4 x 5 | -11.5% | -7.5% | -2.5% | +0.6% |
+| 4 x 8 | -6.3% | -6.5% | +0.8% | -2.2% |
+| 8 x 2 | -13.6% | -9.6% | -2.9% | +0.1% |
+| 8 x 5 | -5.1% | -5.6% | +0.8% | -1.9% |
+| 8 x 8 | -4.2% | -1.1% | -1.7% | +1.1% |
+| average | -13.7% | -11.8% | -1.7% | -1.3% |
+Reading: 135M -- all 18 cells faster, up to -32% (fewer / smaller micro-batches = the optimizer is a larger share of the
+step). 1.6B -- ~-1.5% on average; single cells +-1.5% because GPU 1 runs ~1.5% faster than GPU 0 (cells with new on
+GPU 1 average -3.2% SFT / -2.9% pretraining, with new on GPU 0 +0.05% / +0.0%; the average over both placements is the
+GPU-free number). SFT and pretraining gain alike on the same model: the gain depends on model size and micro-batches per
+step, not on SFT vs pretraining (the 11-05 tables compared SFT 135M with pretraining 1.6B). Full per-cell tables (ms,
+tok/s, MFU, loss differences, GPUs): profiling_reports/grid_2026_11_06/results/grid_results.txt.
+Decisions the same morning (user): item 11 (checkpoint pinned buffers) DROPPED -- the pool already reuses the 822
+buffers after the first save, as PyTorch DCP / Megatron do; only the first save of a run pays ~9-13 s. Item 12
+(trained-rows logits re-allocation) DROPPED -- the switch is experimental and off; rounding the row count up would add
+back padding work the switch exists to remove.
+
+### 45.175 2026-11-06 afternoon: preproduction-135M vs our branch, 135M (P032 GPUs 2 + 3)
+
+The user's ask: one pretraining run and one SFT run on the 135M config of Navin's 900B base (the 10-28 production SFT),
+with preproduction-135M and with our branch, to show the team leads before our branch goes into preproduction-135M.
+Builds: preproduction-135M (BluTrain 60754ce / TI a9e37e6 / BluBLAS ea666ab) and ours (the merge trees + BluBLAS
+a6d4292). 30 steps each, median of steps 11-29, GPUs locked by holder processes. Package and results:
+profiling_reports/preprod_vs_ours_2026_11_06/.
+| run | preproduction-135M | ours | change |
+| --- | --- | --- | --- |
+| SFT (1 GPU, B 13 x 2 micro-batches, ckpt_A, m1_smol_A) | 348.7 ms | 309.1 ms | -11.4% |
+| pretraining, production trainer + production YAML (embedding backward segmented) | 3,667.8 ms | 3,678.1 ms | +0.3% (noise); run start 84.7 s -> 19.1 s |
+| pretraining, Navin's 135M trainer `bluscript_zero_ckpt_135m_eqab.cpp` (bf16 atomic embedding backward) | 3,930 ms | 5,693 ms | +44.9% |
+Why the eqab trainer is slower (nsys): the bf16 atomic embedding backward kernel went from 21 to 122 ms per call. TI
+d067e89 (10-31, long-context fix: tokens moved from grid y to grid x, so more than 524,280 tokens per call work) changed
+the order in which the blocks visit the tokens; on real text, repeated tokens then add into the same embedding rows at
+the same time (atomic contention): about 5.8x slower per call. The production trainer uses the segmented backward (YAML
+`embedding.backward: segmented`) and is not affected; the eqab trainer has no segmented switch. Options: S1 (restore the
+old block order) rejected by the user (it changes the optimized kernel and is not a permanent fix); S2 (a segmented
+switch in Navin's 135M trainer) declined (Navin's personal file). Decision: leave it, and tell Navin before the push that
+his trainer should use the segmented backward. The push into preproduction-135M waits for the user's word (colleagues
+test the speed first).
+
+### 45.176 2026-11-06 evening: P032 cleanup, /localstorage/gautam_k 364 -> 68 GiB
+
+Approved by the user ("that reproducible 255 GiB, and the 35 + 6.1 GiB checkpoints all delete, keep 70 GiB only").
+Deleted: muon_guard_p032, tilemap_1102, fw, rope (rivalenv), lossenv, item13_p032, sftb8k, pvo_1106, sftpush, old, libs,
+sft_data, sftb, tmp_g0-5, ckpt (blumodel_step_8000, a 6.1 GiB pretraining shard); sft135/{hfcache, partcache, tmp,
+BluTrain}; every sft135/runs/*/checkpoints (14 folders, 35 GiB); two of our own stale nvidia-smi monitors of the 10-28
+runs stopped. Kept: sft135/data (45 GiB), ckpt_A / ckpt_B, base_hf, tokenizers, sft135/hf + evals + evalenv, the 10 final
+stage-1 safetensors with their logs, benv (FA3 / FA4 builds), the flash-attention source, cp_1106 (the CP tree),
+rope_1024, small logs. Saved on the laptop first: profiling_reports/p032_cleanup_2026_11_06/box_records/ (logs, csv,
+configs and scripts of every deleted folder, the pip freezes of the deleted environments, the pvo_1106 results and nsys
+profiles, and the 1.6 GB of 8192-benchmark gpu-trace CSVs, the only copy).
+
+### 45.177 2026-11-06: context parallelism (CP) for SFT, first version, and its tests on P032
+
+Decisions (user): use Adhitya's Context_Parallelism submodule as it is (dist/Context_Parallelism at cf1372d; nothing
+copied), on our branch dist_side_gautam_lottn; no kernel changes.
+Design, per layer: q / k / v projections on the GPU's own token slice -> our fused QK-norm + RoPE (bf16, per-chat
+positions, the matching slice of the positions array) -> his `ulysses_combine` ([B, H, T/U, D] -> [B, H/U, T, D]) -> our
+packed attention (the chat plan built for the whole row with Nq/U heads) -> his `ulysses_partition` -> wO and the MLP on
+the slice. Backward: his `UlyssesCombineBackward` / `UlyssesPartitionBackward` nodes, hooked into the graph with his
+hybrid-path pattern (`combine_ag` / `partition_ag`).
+- CP group: `ncclCommSplit(world, rank / U, rank % U)` plus a blocking CUDA stream, like his DeviceMesh (his all-to-all
+  does not wait on the compute stream; a blocking stream is ordered after the legacy stream 0).
+- Loss: the slice's trained-token sum divided by the global count (summed over all GPUs, divided by U); seed = world
+  size; ZeRO averages, so every trained token has the same weight. Loader: dp_rank = rank / U, dp_world = world / U
+  (the U GPUs of a CP group read the same rows).
+- Checks: U must divide the GPU count, the q heads, the kv heads and T; the trained-rows switch is refused with CP.
+- Files (local, not pushed): bluscript_sft.cpp (`BLU_SFT_CP=U`, default 1 = off; every old line kept as a comment),
+  Makefile (the include path), run_sft.sh (`SFT_CP`).
+Tests (P032 GPUs 2 + 3; 135M ckpt_A, m1_smol_A, B 4, 4 rows per step; step 0):
+| run | val loss | grad norm |
+| --- | --- | --- |
+| A: CP off, 1 GPU | 1.424576 | 2.8002 |
+| C: 2 GPUs data-parallel, no CP | 1.424576 | 2.8003 |
+| B: CP=2 | 1.424576 | 2.5912 |
+| D: CP=2, BLU_NO_OVERLAP=1 | 1.424576 | 2.5917 |
+The forward is exact; the backward is wrong in a deterministic way (group norms G0 -7.8%, G1 -5.9%, G2 -36%). Ruled out:
+our attention kernel at 2 / 1 heads (test_varlen_attention with VARLEN_HEADS 2/1 and 4/2: 515 pass), the RoPE bf16
+backward on a mid-chat slice (test_rope_slice.cu: dq / dk bit-identical, gamma sums equal), the ZeRO overlap (run D),
+the engine's dependency counting (per edge, FIFO), the streams. His module read in full
+(profiling_reports/cp_2026_11_06/cp_module_analysis.md): his gamma AVG rule is for his fused path only (QK-norm after
+the all-to-all, so each GPU's gamma gradient covers only its heads); ours runs before the all-to-all on the GPU's own
+tokens and all heads, a normal partial sum with no extra reduce. Documents for Adhitya (work_docs):
+cp_ulysses_issues_for_adhitya.md / .docx (3 issues: `ulysses_gather_seq` copies the wrong size for bf16 and copies
+slice by slice with a sync; the KV-head repeat is built from H x r narrow views and a cat; for SFT the loss is weighted
+per GPU, not per token) and cp_sft_design.md / .docx (our design side by side with his, the loss math with numbers, the
+tests, 6 questions).
+
+### 45.178 2026-11-07 morning: the CP backward bug -- root cause in TI autograd::contiguous, fixed
+
+Cause: k_bf is output 1 of `fused_rms_rope_bf16` (q_bf is output 0) and is already contiguous. The CP code calls
+`cp_combine(autograd::contiguous(k_bf))`. `Tensor::contiguous()` returns the same object for a contiguous tensor (no
+copy, the same buffer: correct), but the autograd wrapper then went through `make_unary_op`, which stamped a new
+`ContiguousBackward` node onto that same object, i.e. onto k_bf itself, keeping its output number 1. The combine node's
+link became (ContiguousBackward, slot 1); the node has only slot 0, so `ContiguousBackward::apply` got an empty slot 0
+and returned nothing: dK and the k-norm gamma gradient were dropped in every layer. That is the pattern of 45.177 (G2
+holds the k gammas, G0 the K weights).
+Why Adhitya's CP runs never hit it: his q / k / v come from `autograd::transpose` (output 0, non-contiguous), so
+`autograd::contiguous` makes a real copy and a proper node.
+Fix (user OK): ReshapeOps.cpp: `if (input.is_contiguous() && input.storage_offset() == 0) return input;` -- the rule of
+`autograd::to_dtype` ("no-op preserves existing graph") and of PyTorch's `contiguous()`; the old body kept as a comment.
+Every other caller passes a transpose view (checked): unchanged.
+Laptop (RTX 3060; BluTrain accc6c8 + TI 66a32a7 + the fix): new regression test Tests/kernel_tests/test_contig_alias.cu
+(the real RoPE op; loss straight on q / k = A, through `autograd::contiguous` = B): without the fix B gives k 0 and
+k_gamma 0 (link ContiguousBackward, output_nr 1); with the fix A = B (q 238.746241, k 156.991745, q_gamma 502.862341,
+k_gamma 350.833604); TI autocheck 43/43.
+The user's question the same morning: can we fuse QK-norm + RoPE into the attention kernel like Adhitya, with our
+per-chat positions? Yes, it is possible (positions are one int32 per token, and every GPU already has the whole row's
+positions). The cost: QK-norm + RoPE inside our Hopper forward and Vj2 backward (dQ / dK back through RoPE and the norm,
+the gamma gradients produced in the kernel), and a gamma-gradient sum across the CP GPUs pre-divided by U (his rule).
+The gain: the RoPE kernels are 96.3 ms of 4,051 ms of kernel time per step (2.4%) in the 135M pretraining profile, and
+fusing removes only part of that. Decision: keep the current design; RoPE fused into attention = a separate optimization
+project, only if a measurement shows it is worth it.
+
+### 45.179 2026-11-07 11:38-11:43 IST: the 1-GPU tests on a 1x H200 box (86.38.238.69)
+
+Two trees from one source tarball: bt (TI with the fix) and bt_nofix (TI's original ReshapeOps.cpp). Script and records:
+profiling_reports/cp_2026_11_07_1x/ (pkg/tests_1x.sh; box_results/, all 55 files checked equal on the laptop before the
+user closed the box).
+T1, the fix on H200 (test_contig_alias.cu; columns = gradient norms):
+| TI | run | k | k_gamma |
+| --- | --- | --- | --- |
+| fixed | A (no contiguous) | 156.991745 | 350.833604 |
+| fixed | B (through autograd::contiguous) | 156.991745 | 350.833604 |
+| original | B | 0 | 0 |
+TI autocheck on the fixed tree: 43 passed, 0 failed.
+T2, does the fix change normal SFT (CP off; 135M ckpt_A, data_4k, B 4 x 2 micro-batches, 30 steps)? Original TI twice
+(the run-to-run difference), fixed TI once; columns = the largest difference over the 30 steps:
+| comparison | train loss | grad norm |
+| --- | --- | --- |
+| original vs original | 0.000630 | 0.0292 |
+| fixed vs original run 1 | 0.000598 | 0.0108 |
+| fixed vs original run 2 | 0.000604 | 0.0184 |
+Step-0 train loss 1.530339 and peak 22,857 MiB in all three; step 105.0 / 105.4 / 105.6 ms. No effect.
+T3, CP=1 reference numbers for the later CP=2 runs (135M ckpt_A, long-source mix data_long_T, B 1, 1 row per step, 30
+steps, fixed TI):
+| row length | step-0 val loss | step-0 train loss | step-0 grad norm | peak memory (nvidia-smi) |
+| --- | --- | --- | --- | --- |
+| 65,536 | 3.216672 | 7.105492 | 398.4949 | 60,913 MiB |
+| 131,072 | 3.216672 | 4.334521 | 34.7171 | 110,361 MiB |
+The 131,072 step-0 train loss equals the 10-31 gate exactly; memory equals 10-31 (the trainer's line then: 107,626 MiB
+allocated, 108,986 reserved; nvidia-smi adds the CUDA context).
+The loss spikes of T3 (loss 5-9, grad norm up to 1,117 on some steps): the loader uses rows in file order (SftDataLoader.h
+line 26), so step s = row s; the trained-token counts of the log equal the file's for 30 of 30 steps in both runs. Per
+row, the trained tokens at a position >= 4,096 inside their chat were counted (pkg/rows_vs_steps.py; output
+box_results/t3_rows_vs_steps.txt). ckpt_A's meta.json says context_length 4096. Steps with no trained token past 4,096:
+loss 1.63-2.43 (65,536) and 1.76-2.19 (131,072); steps with more than 20% past 4,096: loss 2.51-8.07 and 2.36-9.27.
+Fitted: loss about 1.70 before position 4,096 and about 6.9 after (correlation 0.95 / 0.92). The slow steps are the same
+long-chat rows (e.g. a row with a 77,724-token chat: 2,242 ms; rows of short chats: 371-443 ms at 131,072). Meaning: no
+problem for the CP=2 vs CP=1 comparison (same rows); for real long-chat SFT a long-context checkpoint is needed first.
+Open point: at 131,072, step 0 vs the 10-31 run (same weights, same row): train loss identical, grad norm 34.7171 vs
+34.8020 (-0.24%); two identical runs of one build differ by 0.004% at 4k (T2) and up to 0.06% at 16k (10-31 r1 / r2);
+no second 131k run, so noise or a change since 10-31 is not decided. A T3 repeat (about 1 minute) was offered; the
+user closed the box; it will run on the 2-GPU box next to the CP=2 runs.
+
+### 45.180 2026-11-07: Adhitya's reply, his repository, and the CP sizes our models allow
+
+His reply to our question 5: "Dividing kv heads is not available in Ulysses; U can use ring Ulysses hybrid for that",
+and "I implemented a few changes from this [the issues doc], few more ongoing".
+- His repository moved to BlubridgeAI/Context_Parallelism (the old adhityablubridge address redirects); one branch,
+  main @ 73b3bdd (2026-11-01, "After mixed window"), 0 pull requests, 0 forks: his changes are not pushed yet, so they
+  cannot be read; when he pushes: diff 73b3bdd..new. The 3 issues of the doc are in code our CP code does not call
+  (`ulysses_gather_seq`, `head_repeat_interleave`, his trainer's loss); we call only `ulysses_combine`,
+  `ulysses_partition` and their two backward nodes.
+- His code (cf1372d) does copy KV heads when there are fewer than U: `forward_ulysses_gqa`, ContextParallel.h:1713-1740
+  (DeepSpeed rule `nkv % P == 0 || P % nkv == 0`; `rep = P / nkv`; `head_repeat_interleave` before the all-to-all). A KV
+  head cannot be split across GPUs (his point), but copying is in his code. Follow-up question for him: is that path
+  fine for U > KV heads, or only the hybrid? (For SFT the hybrid's ring part needs per-chat positions: his ring has a
+  document mask but does not restart positions.)
+- CP sizes: our trainer requires U to divide the GPU count, the q heads, the kv heads and T (bluscript_sft.cpp:1516-1517).
+  135M (4 q / 2 kv heads): U = 1 or 2. 1.6B (18 q / 6 kv heads, bluscript_zero_ckpt_config.yaml:19-20): U = 1, 2, 3 or
+  6; on 8 GPUs only U = 2 (3 and 6 do not divide 8). CP=4 is impossible for both. The confirming run is CP=2 on 2 GPUs
+  (step-0 grad norm must be 2.8002, not 2.5912); on 8 GPUs, CP=2 x 4 data-parallel groups.
+- A 1-GPU option was offered, not done (box closed): force the CP code path at U=1 (his all-to-all is NCCL's
+  `ncclAlltoAll`, a copy with one rank); fixed TI should give 2.8002 and the original TI about 2.5912, which would show
+  that this one bug is the whole gap. It needs a small local test switch in the trainer.
+
+### 45.181 2026-11-07: the TI fix pushed (user) and verified on GitHub
+
+TI dist_side_gautam_lottn 66a32a7 -> d59740b ("autograd::contiguous: already-contiguous input returned as is (fixes
+dropped gradient of 2nd+ op outputs); add test_contig_alias.cu"; ReshapeOps.cpp +14, test_contig_alias.cu +66). BluTrain
+accc6c8 -> 8086e78 ("Tensor-Implementations -> d59740b: autograd::contiguous dropped-gradient fix"; the pointer only).
+Checked through the GitHub API: both branch heads equal the local commits; parents 66a32a7 / accc6c8; author Goutham
+Kumar <goutham.kumar@blubridge.com>, no AI trailer; the remote blobs equal the files tested on the H200 (ReshapeOps.cpp
+6440818cbb, test_contig_alias.cu 409b474a12); the fix line and the old body (as a comment) are on GitHub; the BluTrain
+pointer on GitHub = d59740b. Not pushed on purpose: the CP code (bluscript_sft.cpp, Makefile, run_sft.sh). The bug-fix
+table for the group got row 26 (rows 1-25 unchanged, except a rewording of row 5's note with the same facts).
+
+### 45.182 2026-11-07: the SFT package docs brought up to date
+
+sft/README.md was last updated with 91b6b54 (10-31) and still said the trained-rows lm_head was "NOT on this branch";
+11 BluTrain commits came after it. Updated (earlier text kept, outdated statements corrected in place):
+- header (what was added since 10-27, with sections); section 0 (TI files: RowGatherOps, the `autograd::contiguous` fix,
+  the optimizer kernels, BluBLAS; the loader and run_sft.sh rows); section 1 (the switch's two extra kernels);
+  section 4 (the loader's trained-token lists);
+- section 5: the settings the trainer reads that were missing (BLU_D_MODEL / Q_HEADS / KV_HEADS / FFN_HIDDEN / VOCAB /
+  EMBED_SCALE, BLU_INIT_FROM_RAW, BLU_SFT_T, BLU_SFT_SCHEDULE, BLU_SFT_DECAY_FRAC, BLU_SFT_TRAINED_ROWS, BLU_EXPORT) and
+  their code places; new 5.1, the speed changes of 11-03 to 11-05 with the measured numbers and the multi-tensor
+  shared-buffer bug;
+- new 6.5 (the `autograd::contiguous` fix); section 7 (5 rows: trained-rows switch, BluBLAS GEMM / addmm, the speed-ups
+  together, the contiguous fix, long rows on H200); section 8 (run_sft.sh knobs); section 9 (the trained-rows switch:
+  on the branch, off by default, with its open points; the split-K non-determinism fixed for even N; the backward still
+  not bit-identical; context parallelism in progress); section 11 (the long-row measurement of 45.179 and the 64k / 128k
+  memory).
+- sft/docs/sft_kernel_benchmarks.md (the trained-rows path: pushed, with the trainer numbers) and
+  sft/docs/kernel_diff_sft_pretraining.md (a dated 11-03 to 11-07 section); both copied to work_docs (all five sft/docs
+  files now md5-equal with work_docs; sft_kernel_benchmarks.md had no copy there before).
+- Every commit id in the docs was checked against git (subject and date); every table checked for column counts.
+
+### 45.183 2026-11-07 12:39-12:59 IST: the SFT context-parallel test on a 2x H200 box (86.38.238.112) -- CP=2 proven
+
+Setup: one source tarball (BluTrain accc6c8 + the local CP files, TI 66a32a7 + the contiguous fix = the pushed d59740b,
+BluBLAS a6d4292, Context_Parallelism cf1372d); yaml-cpp unpacked into our folder (apt-get download + dpkg -x, nothing
+installed on the shared box); two trees built: bt (with the fix) and bt_nofix (TI's original ReshapeOps.cpp, the
+control); the 64k / 128k data uploaded and checked byte for byte. Colleagues (Adwaid, Ram) were using the GPUs, so the
+runner waited until both GPUs had no process twice 20 s apart, then locked them with holder processes (64 MB each)
+at 12:55:08, ran a 3-step smoke (2 of 2 passed), the tests, and released the GPUs at 12:59:13. Every run: 30 steps,
+0 error lines. Records: profiling_reports/cp_2026_11_07_2x/ (pkg/tests_2x*.sh, lockrun.sh, compare_2x.py;
+box_results/results_2x.txt; all 116 result files checked equal on the laptop).
+4k (135M ckpt_A, data_4k = a 480-row train set with the m1_smol_A val rows, B 4, 4 rows per step, LR 1e-4; step 0):
+| run | grad norm | vs CP off | G0 / G1 / G2 | largest train-loss diff vs CP off (30+ steps) | step |
+| --- | --- | --- | --- | --- | --- |
+| A: CP off, GPU 0 | 3.0473 | -- | 2.7189 / 1.3753 / 0.0458 | -- | 55.9 ms |
+| A2: CP off, GPU 1 | 3.0473 | +0.000% | 2.7189 / 1.3753 / 0.0457 | 0.000813 | 55.7 ms |
+| C: 2 GPUs data-parallel | 3.0471 | -0.007% | 2.7188 / 1.3751 / 0.0458 | 0.001163 | 38.4 ms |
+| B: CP=2 with the fix | 3.0473 | +0.000% | 2.7191 / 1.3749 / 0.0458 | 0.000997 | 49.7 ms |
+| Bn: CP=2 without the fix | 2.8367 | -6.9% | 2.5148 / 1.3120 / 0.0317 | 0.026596 | 50.2 ms |
+The step-0 val loss is 1.424576 in all five. The control Bn shows the 11-06 bug on the same box (-6.9% here, -7.46% on
+11-06 with m1_smol_A's rows: 2.5912 vs 2.8002); with the fix CP=2 equals CP off. The reference here is 3.0473, not
+2.8002, because data_4k's first 4 training rows are other rows than m1_smol_A's.
+64k / 128k (135M, the long-source mix, B 1, 1 row per step, LR 5e-5 as T3 of 45.179):
+| T | run | step-0 grad norm (vs CP=1 run 1) | largest train-loss diff vs CP=1 run 1 | step (median 11-29) | peak per GPU |
+| --- | --- | --- | --- | --- | --- |
+| 65,536 | CP=1, GPU 0 | 387.05 | -- | 250.7 ms | 61.5 GB |
+| 65,536 | CP=1, GPU 1 | 389.22 (+0.56%) | 0.0165 | 247.9 ms | 61.5 GB |
+| 65,536 | CP=2 | 386.98 (-0.02%) | 0.0083 | 158.2 ms | 36.3 GB |
+| 131,072 | CP=1, GPU 0 | 34.6985 | -- | 492.9 ms | 111.0 GB |
+| 131,072 | CP=1, GPU 1 | 34.7813 (+0.24%) | 0.0655 | 489.3 ms | 111.0 GB |
+| 131,072 | CP=2 | 34.7619 (+0.18%) | 0.0467 | 297.9 ms | 62.2 GB |
+(Peaks are nvidia-smi and include the 591 MiB holder.) At both lengths CP=2 is as close to CP=1 as two CP=1 runs are to
+each other; the step-0 val loss is 3.216672 everywhere. CP=2 is 1.58x (64k) and 1.65x (128k) faster than CP=1 on one
+GPU and needs 56-59% of its memory per GPU (the 128k prediction of ~61 GB held). The open point of 45.179 is answered:
+two identical 128k runs differ by 0.24% at step 0, so the 0.24% between 10-31 and 11-07 was normal variation.
+Against the 1x box's T3 (another H200): 128k step 0 -0.05% / +0.13%; 64k -2.9% (on the 64k step-0 row 91% of the
+trained tokens sit past position 4,096, loss 7.1: huge, sensitive gradients; the forward is identical everywhere).
+
+### 45.184 2026-11-07 13:52-13:57 IST: the 1.6B shape with CP (2x H200, random init)
+
+The 11-06 grid's 1.6B SFT setup: 26 layers, d_model 2304, 18 q / 6 kv heads (CP=2: 9 / 3 per GPU), ffn 6144, vocab
+49,280, theta 10000, random init; GPUs locked by holders again (pkg/tests_2x_16b.sh).
+| run | result |
+| --- | --- |
+| 4k, CP off, 1 GPU | step-0 val 11.232169, train 11.240100, grad norm 41.0146 (G0 40.8023, G1 4.1668, G2 0.0338); 480.0 ms per step; peak 66.7 GB |
+| 4k, CP=2 | val 11.232170, train 11.240099, grad norm 41.0215 (+0.017%; G2 0.0338 equal); 30-step train-loss diff at most 0.000737; 274.5 ms per step (1.75x faster than CP off); 42.4 GB per GPU |
+| 64k, CP=2 | runs: step-0 val 11.233593, train 11.194443, norm 45.7685; 861 ms per step; 96.6 GB per GPU; 0 errors |
+| 64k, one GPU | out of memory at 143.1 GB ("[ALLOCATOR] cudaMallocAsync(size=100663296) failed: out of memory") |
+So CP gives the same training for the 1.6B too, and it is what makes 64k-token rows possible for the 1.6B on H200.
+
+### 45.185 2026-11-07 evening: state at the Diwali break
+
+EOD sent (the bug, the fix, the three test levels, the 2x results; the 1.6B paragraph added). Pushed: TI d59740b +
+BluTrain 8086e78 (45.181). Not pushed yet: the docs of 45.182 (commands given, the user ran nothing yet) and the CP code.
+Next on 11-11: docs + CP code push, CP together with data parallelism (4+ GPUs), the Adhitya follow-up (is his
+forward_ulysses_gqa KV copy fine for U > KV heads; diff 73b3bdd..new when he pushes).
+
+### 45.186 2026-11-11 morning: CPU work only (the user decides every GPU run)
+
+1) The CP push prepared (BluTrain, local): sft/README.md new section 5.2 (how one step works, the rules -- U divides
+   the GPU count, both head counts and T, not with trained rows --, the CP group's blocking stream, needs TI d59740b,
+   how to run, results, not tested: CP + data parallel), plus the settings table (BLU_SFT_CP), section 0
+   (dist/Context_Parallelism), the code-places table, section 7 (3 CP test rows), section 8 (SFT_CP and its ROWS rule),
+   section 9 (the CP item now "tested with CP=2"), section 11 (memory with CP), the header and section 6.5 updated;
+   bluscript_sft.cpp: the CP entry in the file's header list and a tested-on note in the SftCp block (comments only);
+   run_sft.sh: an SFT_CP line in the usage header (comment only). Tables and fences checked.
+2) The evaluation setup of the chat-format study on the 8x RTX 6000 Ada node (10.101.0.203; all 208 trained checkpoints
+   are exported as Hugging Face models, each READY; nothing evaluated yet):
+   - our own environment gautam_fmt/vllmenv (the shared ~/.local untouched), pinned to the node's working stack: vLLM
+     0.30.0, torch 2.13.0 (CUDA 13.0 build), transformers 5.20.2, triton 3.7.1, tokenizers 0.23.2, flashinfer
+     0.6.18.post1, plus lm-eval 0.4.12 with [ifeval] and [hf]; pip check: no broken requirements;
+   - scripts copied to gautam_fmt/code/sft (fmt_measure, fmt_lm_eval, fmt_parity, fmt_probes, fmt_analyze,
+     fmt_eval_data, fmt_evalq.sh, chat_formats, verify_format_study; md5-equal with the laptop);
+   - fmt_evalq.sh: T can be set (the scripts are not in a BluTrain tree on the node) and ONLY=<regex> selects the first
+     pass; old line kept as a comment;
+   - eval data copied (val chats of the 3 mixes, XSTest + its classifier, M8 prompts + MiniLM, probes): 14 of 14
+     files equal the sha256 in its manifest (the 364 MB download cache left out on purpose);
+   - checks, all with no GPU visible: the encoding self-test passes for all 23 versions; the val chats equal the
+     training data's val sets (2,000 / 2,000 / 2,800 chats); the dry run gives exactly 54 commands, 9 per version
+     (v1, v7, v10, v11, v12, v17 x 3 mixes x 3 seeds).
+   - Found and fixed before any GPU run: lm-eval 0.4.12's base install has no `accelerate`, so fmt_lm_eval.py's
+     make_class() stopped at lm-eval's Hugging Face backend -- every benchmark run would have crashed at start.
+     lm-eval[hf] added (accelerate 1.15.0, peft 0.21.2; torch / vLLM / transformers unchanged); make_class() now
+     registers vllm-fmt and hf-fmt.
+   Estimate: parity + timing on one checkpoint ~10-15 min on 1 GPU (gives the real time per checkpoint), then the 54
+   on 8 GPUs ~1.2-2.5 h.
+
+### 45.187 2026-11-11 10:20-10:45 IST: two more problems found in the Ada evaluation setup, before any GPU run
+
+1) IFEval scores with NLTK's punkt_tab. The files are in the node's shared /home/blubridge/nltk_data, but that folder is
+   drwxrwxrwx and NLTK 3.10 ignores a data folder others can write to: nltk.data.find('tokenizers/punkt_tab') -> NOT
+   FOUND, and lm-eval still printed "Downloaded punkt_tab on rank 0". Every checkpoint's IFEval scoring would have
+   failed. Fix in our folder only (the shared folder untouched): punkt_tab downloaded fresh into a private
+   gautam_fmt/nltk_data (go-w), and fmt_evalq.sh exports NLTK_DATA=$W/nltk_data. Checked: found there, sent_tokenize and
+   IFEval's count_sentences / count_words work.
+2) At 10:29 a colleague's dedup job (Sukanya, MinHash, 4 processes of 1.5 GB) started on GPUs 0-3 of the node. The
+   queue's free-GPU check (written for the H200 box) only refused GPUs running a BluTrain trainer and wanted >= 30 GB
+   free, so it would have started evaluations next to her processes. Now any compute process = busy (old line kept as a
+   comment); tested on the node: GPUs 0-3 busy, 4-7 free.
+Also: the 8 benchmark datasets pre-loaded on the CPU (no GPU visible) so the 8 parallel runs do not all download at
+once. The dry run again: 54 commands.

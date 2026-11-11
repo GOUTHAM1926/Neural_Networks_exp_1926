@@ -407,3 +407,18 @@ Our model has 26 layers (`n_layers = 26`, `bluscript_sft.cpp:160`). One 20-row s
 - **Not B.** It saves about 2 minutes and loses the bit-exact packed == alone check that all our packed tests rely on.
 - **C later, as a small follow-up.** Do it in a separate folder on the box, or after the run: rebuilding
   `libtensor.so` while a run is using it can crash the run.
+
+## 2026-10-31: long-context fixes
+
+The long-context fixes (RoPE tables, loss fallback backward, `contiguous()` past 2^32 elements, embedding and sm120
+SwiGLU grid limits) are in kernels both trainers share: pretraining at long T gets them too. README section 6.4.
+
+## 2026-11-03 to 11-07: the trained-rows switch, and fixes in code both trainers share
+
+- **The trained-rows switch (2026-11-03, off by default).** With `BLU_SFT_TRAINED_ROWS=1` the SFT trainer runs two
+  more kernels than pretraining: `gather_rows` before the lm_head (only the tokens that have a label) and, in the
+  backward, `scatter_rows`; the lm_head GEMMs and the loss then work on those rows only (TI d18f820, BluTrain 7184fe1).
+  With the switch off (the default) the difference stays exactly the three kernels above. README sections 5 and 9.
+- **Shared code, so pretraining got the same changes:** the BluBLAS GEMM fixes (297f372, 0b552f0, a6d4292), the
+  optimizer speed-ups and the multi-tensor fixes (README section 5.1), and the `autograd::contiguous` fix (TI d59740b,
+  README section 6.5: no change for either trainer today).
