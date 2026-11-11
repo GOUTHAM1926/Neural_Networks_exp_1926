@@ -5635,3 +5635,9 @@ two resumes).
 240. 2026-11-11 *"Proceed on the last 4 GPUs only."* Parity part (c) started on GPUs 4-7 at 11:42 (45.188).
 241. 2026-11-11 *"No need now; stop the chat-template tests, document them as future / pending tasks, I will say when."*
      Stopped (15 processes, GPUs 4-7 free); the setup stays on the node; future tasks 1-3 in 45.188.
+242. 2026-11-11 *"We ran the optimizer ablation (AdamW+AdamW, AdamW+Muon, Muon+AdamW, Muon+Muon) and Muon+Muon was best,
+     right? My colleague asks about it and the Moonlight reference; write a detailed md file."* The records (work doc
+     §37.4-37.7, research document §8.3-8.4, and the same question on 10-22) show our own test was the SFT optimizer only,
+     on a Muon-pretrained base; the four pairs are Moonlight's Table 6. Document written (45.189).
+243. 2026-11-11 *"Push it too, no docx; add it to the sft folder."* Master in BluTrain sft/docs, mirror in work_docs, README
+     links added; push commands given.

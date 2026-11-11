@@ -16435,3 +16435,14 @@ FUTURE / PENDING (the user will say when; everything is ready on the node: vllme
    inside each chat only); ~3-4 h.
 3. Questions for Sanjay: are im_start / im_end the reserved ids 1 / 2; do chats keep their own system turns; is
    outside text encoded with special tokens off at serving; does generation stop on ids 2 and 0.
+
+### 45.189 2026-11-11: the optimizer document for the colleagues (Muon vs AdamW for SFT)
+
+A colleague asked about our optimizer tests and the reference. Written: optimizer_choice_muon_vs_adamw_for_sft.md (master
+in BluTrain sft/docs, mirror in work_docs; linked from sft/README.md sections 0, 8 and 10). It separates what I tested from
+what Moonlight tested. I tested the SFT optimizer only (7 October, §37.5: AdamW 2e-5 vs Muon 2e-5 / 5e-5 / 1.2e-4 on
+the Muon-pretrained step-8000 base), not the four pretraining x SFT pairs: they need an AdamW-pretrained twin of the base,
+which we do not have. The four pairs are Moonlight's Table 6, now with all four columns from the paper (AdamW pretrain +
+Muon SFT: MMLU 55.3, HumanEval 53.7, MBPP 55.5, GSM8K 62.1), plus Table 7. Correction to §37.6 and the research document
+§8.4: Table 7 (Qwen2.5-7B, AdamW-pretrained) has Muon SFT a little LOWER on all four (71.4 / 79.3 / 71.9 / 89.8 AdamW vs
+70.8 / 77.4 / 71.6 / 85.8 Muon); the paper calls it "on par", and "≈" was too kind.
