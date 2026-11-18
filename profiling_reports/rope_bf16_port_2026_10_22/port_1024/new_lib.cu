@@ -24,6 +24,12 @@ using bf16 = __nv_bfloat16;
 #ifndef BF16_RED_STAGES
 #define BF16_RED_STAGES 3         // dgamma reduce: register buffers (STAGES - 1 of them loading while one is added)
 #endif
+#ifndef BF16_BWD_ASYNC
+#define BF16_BWD_ASYNC 1          // hd 128 backward: 1 = cp.async slots in shared memory (_ca_), 0 = register slots (_pp_)
+#endif
+#ifndef BF16_RED_ASYNC
+#define BF16_RED_ASYNC 1          // dgamma reduce: 1 = cp.async row buffers in shared memory, 0 = register buffers
+#endif
 
 template <int W> __device__ __forceinline__ void ld_bf16(const bf16* p, float (&v)[W]);
 template <> __device__ __forceinline__ void ld_bf16<2>(const bf16* p, float (&v)[2]) {
@@ -50,6 +56,22 @@ template <int W> __device__ __forceinline__ void ld_f32(const float* p, float (&
     if constexpr (W == 4) { const float4 f = *reinterpret_cast<const float4*>(p); v[0] = f.x; v[1] = f.y; v[2] = f.z; v[3] = f.w; }
     else                  { const float2 f = *reinterpret_cast<const float2*>(p); v[0] = f.x; v[1] = f.y; }
 }
+
+// cp.async (sm_80+): global -> shared copies that do not hold registers and are waited for by GROUP. A group is every
+// cp.async a thread issued since its previous commit; wait_group<N> returns when at most the N most recent groups are
+// still in flight, so a wait covers exactly the oldest groups (plain loads are waited for through scoreboard counters,
+// and ptxas put all of a kernel's loads on one counter: every wait drained every load, 2026-10-24). The copies of one
+// lane are visible to the other lanes of the warp after the wait and a __syncwarp().
+__device__ __forceinline__ void cp_async16(void* smem, const void* gmem) {
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n"
+                 :: "r"(static_cast<unsigned>(__cvta_generic_to_shared(smem))), "l"(gmem) : "memory");
+}
+__device__ __forceinline__ void cp_async4(void* smem, const void* gmem) {
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n"
+                 :: "r"(static_cast<unsigned>(__cvta_generic_to_shared(smem))), "l"(gmem) : "memory");
+}
+__device__ __forceinline__ void cp_async_commit() { asm volatile("cp.async.commit_group;\n" ::: "memory"); }
+template <int N> __device__ __forceinline__ void cp_async_wait() { asm volatile("cp.async.wait_group %0;\n" :: "n"(N) : "memory"); }
 
 // HAS_POS (packed SFT rows, added 2026-10-22, the same scheme as the fp32 kernels in norm/arch/): false = the original
 // kernel, position = t + pos_offset; true = per-token positions[b*T + t] (several chats per row, each restarting at 0).
@@ -446,6 +468,148 @@ __global__ void fused_qknorm_rope_bwd_pp_bf16_tm(
     }
 }
 
+// The same backward as fused_qknorm_rope_bwd_pp_bf16_tm above, with the token slots in SHARED memory filled by cp.async
+// (2026-10-24, BF16_BWD_ASYNC=1). Why: the register-slot kernel issues the next tokens' loads early, but ptxas tags every
+// global load of the kernel with the same scoreboard counter (SB5), and a wait on it drains ALL loads in flight, including
+// a refill issued a few instructions before. With positions it waited at every token (ncu, H200, B 1: 91.7 us vs 56.2 us
+// without positions for the same 68 MB; SASS control bits: all loads wb=5, first converts wait=[1,5]). cp.async copies
+// are waited for by group: before token j, cp.async.wait_group<DEPTH-1> leaves the DEPTH-1 younger tokens in flight, by
+// construction. One slot = the token's dz row, x row, cos|sin row, rstd, and the position of the token the slot holds
+// next (DEPTH tokens later, so a refill's cos/sin address never waits); the rows are copied in 16-byte pieces (dz by
+// lanes 0-15, x by lanes 16-31, cos|sin by all 32 lanes at hd 128). Every refill commits one group (an empty one past
+// the warp's last token) so the group count stays aligned with the tokens. The per-token math is the register kernel's
+// pinned code reading the same values from shared memory, with the same lane mapping and dgamma order: bit-identical.
+template <int HD>
+struct alignas(16) BwdSlotSmem {
+    bf16  dz[HD];
+    bf16  x[HD];
+    float cs[HD];
+    float rstd;
+    int   pos_next;
+    int   pad_[2];
+};
+
+template <bool IS_NEOX, int HD, bool HAS_POS, int DEPTH>
+__global__ void fused_qknorm_rope_bwd_ca_bf16_tm(
+    const bf16* __restrict__ dz_q, const bf16* __restrict__ dz_k,
+    const bf16* __restrict__ q_in, const bf16* __restrict__ k_in,
+    const float* __restrict__ q_gamma, const float* __restrict__ k_gamma,
+    const float* __restrict__ cos_sin,
+    const float* __restrict__ q_rstd, const float* __restrict__ k_rstd,
+    bf16* __restrict__ dq_in, bf16* __restrict__ dk_in,
+    float* __restrict__ dq_gpart, float* __restrict__ dk_gpart,
+    int Hq, int Hkv, int T, int pos_offset,
+    const int32_t* __restrict__ positions) {   // [B, T], read only when HAS_POS
+
+    constexpr int HALF  = HD / 2;
+    constexpr int PAIRS = HALF / 32;
+    constexpr int RCH   = HD / 8;                 // 16-byte pieces of a bf16 row
+    constexpr int CCH   = HD / 4;                 // 16-byte pieces of the fp32 cos|sin row
+    static_assert(HALF % 32 == 0 && RCH <= 16 && CCH <= 32, "hd 64 or 128");
+    using Slot = BwdSlotSmem<HD>;
+    __shared__ Slot sm[DEPTH];
+
+    const int lane = threadIdx.x & 31;
+    const int t0 = blockIdx.x, hh = blockIdx.y, b = blockIdx.z;
+    const bool is_q = (hh < Hq);
+    const int  h    = is_q ? hh : (hh - Hq);
+    const int  H    = is_q ? Hq : Hkv;
+    const bf16*  dz_base = is_q ? dz_q    : dz_k;
+    const bf16*  in_base = is_q ? q_in    : k_in;
+    const float* gamma   = is_q ? q_gamma : k_gamma;
+    const float* rstd_in = is_q ? q_rstd  : k_rstd;
+    bf16*        dx_base = is_q ? dq_in   : dk_in;
+
+    int ia_r[PAIRS], ib_r[PAIRS];
+    #pragma unroll
+    for (int p = 0; p < PAIRS; ++p) {
+        const int i = lane + p * 32;
+        ia_r[p] = IS_NEOX ? i : (2 * i);
+        ib_r[p] = IS_NEOX ? (i + HALF) : (2 * i + 1);
+    }
+    float dg_a[PAIRS] = {}, dg_b[PAIRS] = {};
+    float ga_r[PAIRS], gb_r[PAIRS];
+    #pragma unroll
+    for (int p = 0; p < PAIRS; ++p) { ga_r[p] = gamma[ia_r[p]]; gb_r[p] = gamma[ib_r[p]]; }
+
+    // token j of this warp is t = t0 + 32*j (BF16_BWD_T_CHUNKS blocks along t)
+    const int n_tok = (T - t0 + BF16_BWD_T_CHUNKS - 1) / BF16_BWD_T_CHUNKS;
+
+    auto issue = [&](int m, int pos_m, Slot& s) {  // token m into slot s; pos_m = its position (HAS_POS)
+        const int t = t0 + BF16_BWD_T_CHUNKS * m;
+        const bf16*  dz     = dz_base + (((long)b * H + h) * T + t) * HD;
+        const bf16*  x      = in_base + (((long)b * T + t) * H + h) * HD;
+        const float* cs_row = cos_sin + (long)(HAS_POS ? pos_m : (t + pos_offset)) * HD;
+        if (lane < RCH)                          cp_async16(&s.dz[lane * 8], dz + lane * 8);
+        else if (lane >= 16 && lane < 16 + RCH)  cp_async16(&s.x[(lane - 16) * 8], x + (lane - 16) * 8);
+        if (lane < CCH)                          cp_async16(&s.cs[lane * 4], cs_row + lane * 4);
+        if (lane == 31)                          cp_async4(&s.rstd, rstd_in + ((long)b * H + h) * T + t);
+        if constexpr (HAS_POS) {                 // the position of the token this slot holds next
+            if (lane == 30)
+                cp_async4(&s.pos_next, positions + (long)b * T + t0 + (long)BF16_BWD_T_CHUNKS * min(m + DEPTH, n_tok - 1));
+        }
+    };
+
+    auto compute = [&](int j, const Slot& s) {    // token j: dx, and its dgamma terms added in token order
+        const int t = t0 + BF16_BWD_T_CHUNKS * j;
+        bf16* dx = dx_base + (((long)b * T + t) * H + h) * HD;
+        const float rstd = s.rstd;
+        float xh_a[PAIRS], xh_b[PAIRS], dy_a[PAIRS], dy_b[PAIRS], g_a[PAIRS], g_b[PAIRS];
+        float partial = 0.f;
+        #pragma unroll
+        for (int p = 0; p < PAIRS; ++p) {
+            const int i = lane + p * 32;
+            const float cs = s.cs[i], sn = s.cs[i + HALF];
+            const float dza = __bfloat162float(s.dz[ia_r[p]]), dzb = __bfloat162float(s.dz[ib_r[p]]);
+            dy_a[p] = __fmaf_rn(dza, cs,  __fmul_rn(dzb, sn));                //  dza*cs + dzb*sn
+            dy_b[p] = __fmaf_rn(dzb, cs, -__fmul_rn(dza, sn));                // -dza*sn + dzb*cs
+            xh_a[p] = __fmul_rn(__bfloat162float(s.x[ia_r[p]]), rstd);
+            xh_b[p] = __fmul_rn(__bfloat162float(s.x[ib_r[p]]), rstd);
+            g_a[p]  = __fmul_rn(dy_a[p], ga_r[p]);
+            g_b[p]  = __fmul_rn(dy_b[p], gb_r[p]);
+            partial = __fadd_rn(partial, __fmaf_rn(g_a[p], xh_a[p], __fmul_rn(g_b[p], xh_b[p])));
+        }
+        #pragma unroll
+        for (int o = 16; o > 0; o >>= 1) partial = __fadd_rn(partial, __shfl_xor_sync(0xffffffff, partial, o));
+        const float S = __fmul_rn(partial, 1.f / (float)HD);              // = partial / HD exactly (power of two)
+        #pragma unroll
+        for (int p = 0; p < PAIRS; ++p) {
+            dx[ia_r[p]] = __float2bfloat16_rn(__fmul_rn(rstd, __fmaf_rn(-xh_a[p], S, g_a[p])));
+            dx[ib_r[p]] = __float2bfloat16_rn(__fmul_rn(rstd, __fmaf_rn(-xh_b[p], S, g_b[p])));
+            dg_a[p] = __fmaf_rn(dy_a[p], xh_a[p], dg_a[p]);
+            dg_b[p] = __fmaf_rn(dy_b[p], xh_b[p], dg_b[p]);
+        }
+    };
+
+    #pragma unroll
+    for (int d = 0; d < DEPTH; ++d) {
+        if (d < n_tok)
+            issue(d, HAS_POS ? positions[(long)b * T + t0 + (long)BF16_BWD_T_CHUNKS * d] : 0, sm[d]);
+        cp_async_commit();
+    }
+    for (int j0 = 0; j0 < n_tok; j0 += DEPTH) {
+        #pragma unroll
+        for (int d = 0; d < DEPTH; ++d) {
+            const int j = j0 + d;
+            cp_async_wait<DEPTH - 1>();           // token j's group is done; the DEPTH-1 younger ones stay in flight
+            __syncwarp();
+            if (j < n_tok) compute(j, sm[d]);
+            const int pos_next = HAS_POS ? sm[d].pos_next : 0;
+            __syncwarp();                         // every lane has read slot d before it is refilled
+            if (j + DEPTH < n_tok) issue(j + DEPTH, pos_next, sm[d]);
+            cp_async_commit();
+        }
+    }
+
+    const int row = ((b * H) + h) * BF16_BWD_T_CHUNKS + t0;
+    float* dst = (is_q ? dq_gpart : dk_gpart) + (long)row * HD;
+    #pragma unroll
+    for (int p = 0; p < PAIRS; ++p) {
+        dst[ia_r[p]] = dg_a[p];
+        dst[ib_r[p]] = dg_b[p];
+    }
+}
+
 // dgamma = the sum of the backward's partial rows, per column in row order (r = 0, 1, 2, ...): the same sequential sum
 // as the single-block reduce of the original, so dgamma is bit-identical. q and k in one launch (blockIdx.y), one warp
 // per 32 columns. The 2026-10-23 version loaded a batch of rows, waited for it, then added it, so each batch paid a full
@@ -488,6 +652,49 @@ __global__ __launch_bounds__(32) void reduce_dgamma_qk_bf16_tm(const float* __re
         }
     }
     (is_q ? dq_gamma : dk_gamma)[d] = acc;
+}
+
+// The same sum as reduce_dgamma_qk_bf16_tm above, with the row buffers in SHARED memory filled by cp.async (2026-10-24,
+// BF16_RED_ASYNC=1). The register version's loads all sat on one scoreboard counter, so its once-per-192-rows wait also
+// drained the two buffers it had just prefetched (ncu, H200: 32.7 us at B 4). Here buffer i is waited for with
+// cp.async.wait_group<STAGES-1>, which leaves the STAGES-1 younger buffers in flight. A buffer is U rows of the warp's
+// 32 columns (128 bytes per row), copied in 16-byte pieces, 4 rows per instruction; each lane then adds its own column
+// in row order, so dgamma is bit-identical. Rows past n_rows come from the zeroed padding rows and are not added.
+template <int HD, int U, int STAGES>
+__global__ __launch_bounds__(32) void reduce_dgamma_qk_async_bf16_tm(
+    const float* __restrict__ qpart, float* __restrict__ dq_gamma, int q_rows,
+    const float* __restrict__ kpart, float* __restrict__ dk_gamma, int k_rows) {
+    static_assert(HD % 32 == 0 && U % 4 == 0, "32 columns per warp, 4 rows per copy instruction");
+    __shared__ __align__(16) float buf[STAGES][U][32];
+    const int  lane   = threadIdx.x & 31;
+    const bool is_q   = (blockIdx.y == 0);
+    const int  n_rows = is_q ? q_rows : k_rows;
+    const float* cols = (is_q ? qpart : kpart) + blockIdx.x * 32;    // row r of this warp's 32 columns: cols[r * HD ..]
+    auto issue = [&](int r0, int stage) {
+        #pragma unroll
+        for (int k = 0; k < U / 4; ++k) {
+            const int row = 4 * k + (lane >> 3), piece = lane & 7;
+            cp_async16(&buf[stage][row][piece * 4], cols + (long)(r0 + row) * HD + piece * 4);
+        }
+    };
+    float acc = 0.f;
+    #pragma unroll
+    for (int s = 0; s < STAGES - 1; ++s) { issue(s * U, s); cp_async_commit(); }
+    for (int r = 0, i = 0; r < n_rows; r += U, ++i) {
+        issue(r + (STAGES - 1) * U, (i + STAGES - 1) % STAGES);   // into the buffer read in the previous round
+        cp_async_commit();
+        cp_async_wait<STAGES - 1>();                                // buffer i is done
+        __syncwarp();
+        const int s = i % STAGES;
+        if (r + U <= n_rows) {
+            #pragma unroll
+            for (int u = 0; u < U; ++u) acc += buf[s][u][lane];
+        } else {
+            for (int u = 0; r + u < n_rows; ++u) acc += buf[s][u][lane];
+        }
+        __syncwarp();                                               // every lane has read buffer s before it is refilled
+    }
+    (is_q ? dq_gamma : dk_gamma)[blockIdx.x * 32 + lane] = acc;
 }
 
 static float* d_bf16tm_qpart = nullptr; static size_t bf16tm_qpart_cap = 0;
@@ -568,8 +775,13 @@ void fused_qk_norm_rope_backward_bf16_tm(
     fused_qknorm_rope_bwd_bf16_tm<NEOX, HDV, HASP><<<grid, block, 0, stream>>>(              \
         dzq, dzk, qi, ki, q_gamma, k_gamma, cos_sin, q_rstd, k_rstd, dqi, dki,               \
         d_bf16tm_qpart, d_bf16tm_kpart, Hq, Hkv, T, pos_offset, positions)
+#if BF16_BWD_ASYNC
+#define BWD128 fused_qknorm_rope_bwd_ca_bf16_tm
+#else
+#define BWD128 fused_qknorm_rope_bwd_pp_bf16_tm
+#endif
 #define LAUNCH_PP(NEOX, HASP)                                                                 \
-    fused_qknorm_rope_bwd_pp_bf16_tm<NEOX, 128, HASP, BF16_BWD_DEPTH><<<grid, block, 0, stream>>>( \
+    BWD128<NEOX, 128, HASP, BF16_BWD_DEPTH><<<grid, block, 0, stream>>>(                     \
         dzq, dzk, qi, ki, q_gamma, k_gamma, cos_sin, q_rstd, k_rstd, dqi, dki,               \
         d_bf16tm_qpart, d_bf16tm_kpart, Hq, Hkv, T, pos_offset, positions)
     if (hd != 64 && hd != 128) {
@@ -584,14 +796,21 @@ void fused_qk_norm_rope_backward_bf16_tm(
         else              { if (hasp) LAUNCH_B(false, 64, true); else LAUNCH_B(false, 64, false); }
     }
 #undef LAUNCH_PP
+#undef BWD128
 #undef LAUNCH_B
 
     const int q_rows = B * Hq * BF16_BWD_T_CHUNKS, k_rows = B * Hkv * BF16_BWD_T_CHUNKS;
     const dim3 rgrid(hd / 32, 2);
-    if (hd == 128) reduce_dgamma_qk_bf16_tm<128, BF16_RED_U, BF16_RED_STAGES><<<rgrid, 32, 0, stream>>>(
+#if BF16_RED_ASYNC
+#define REDUCE reduce_dgamma_qk_async_bf16_tm
+#else
+#define REDUCE reduce_dgamma_qk_bf16_tm
+#endif
+    if (hd == 128) REDUCE<128, BF16_RED_U, BF16_RED_STAGES><<<rgrid, 32, 0, stream>>>(
                        d_bf16tm_qpart, dq_gamma, q_rows, d_bf16tm_kpart, dk_gamma, k_rows);
-    else           reduce_dgamma_qk_bf16_tm< 64, BF16_RED_U, BF16_RED_STAGES><<<rgrid, 32, 0, stream>>>(
+    else           REDUCE< 64, BF16_RED_U, BF16_RED_STAGES><<<rgrid, 32, 0, stream>>>(
                        d_bf16tm_qpart, dq_gamma, q_rows, d_bf16tm_kpart, dk_gamma, k_rows);
+#undef REDUCE
 }
 
 } // namespace cuda

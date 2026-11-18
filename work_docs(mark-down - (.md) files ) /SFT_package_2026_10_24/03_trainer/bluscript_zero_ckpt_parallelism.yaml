@@ -1,0 +1,68 @@
+# =============================================================================
+# bluscript_zero_ckpt_parallelism.yaml — parallelism for the production_zero trainer.
+# Read only when parallelism.enabled is true in bluscript_zero_ckpt_config.yaml.
+# An environment variable already set in the shell wins over this file.
+# =============================================================================
+
+type:    "zero1"     # must be zero1
+backend: "nccl"      # BLU_BACKEND: nccl | bluccl
+                     #   bluccl, one node: BluCCL picks each collective's algorithm for the machine at startup:
+                     #   NVLS/multicast on NVSwitch, P2P kernels on P2P-capable GPUs without multicast,
+                     #   host-memory kernels otherwise (BLUCCL_ALGO_REPORT=1 prints the plan).
+                     #   bluccl, several nodes (make run-train-mpi-multi): ZeRO's reduce-scatter and all-gather
+                     #   run on BluCCL over RDMA (internode RS + AG V2, see the multi-node keys below); all-reduce,
+                     #   broadcast and checkpoints stay on NCCL.
+                     #   Either way zero1.variant is forced to v2 and zero1.symmetric is ignored (BluCCL
+                     #   allocates its own symmetric buffers).
+
+zero1:
+  # --- set by the command ---
+  variant:     "v2"  # BLU_ZERO_V2: v1 reduce/broadcast | v2 reduce-scatter/all-gather
+  symmetric:   true  # BLU_SYMMETRIC: NCCL symmetric memory (NVLS); NCCL only
+  global_clip: true  # BLU_GLOBAL_CLIP: one clip coefficient across groups (Muon body exempt)
+  grad_view:   true  # BLU_GRAD_VIEW: accumulate grads in the wire buffer (bf16 accumulation on bf16 groups)
+
+  # --- not in the command: false = the command's behaviour ---
+  fp32_reduce:           false  # BLU_FP32_REDUCE: reduce grads in fp32 (more wire bytes and memory)
+  bf16_reduce:           false  # BLU_BF16_REDUCE: bf16 reduce even for fp32 groups (not with fp32_reduce)
+  no_overlap:            false  # BLU_NO_OVERLAP: turn off ALL comm/compute overlap
+  no_overlap_bwd:        false  # BLU_NO_OVERLAP_BWD: turn off the bucketed reduce-scatter during backward
+  overlap_refresh:       false  # BLU_OVERLAP_REFRESH: staged parameter refresh under the next forward
+                                #   (mutually exclusive with grad_view)
+  global_clip_strict:    false  # BLU_GLOBAL_CLIP_STRICT: clip coefficient from the full norm incl. the Muon body
+  no_inplace:            false  # BLU_ZERO_INPLACE=0 when true: separate RS/AG buffers instead of in place (NCCL)
+  muon_reduce_broadcast: false  # BLU_MUON_RB: Muon via reduce/broadcast instead of RS/AG (NCCL only)
+  no_muon_pipeline:      false  # BLU_MUON_PIPELINE=0 when true: all-gather Muon buckets only after all updates
+
+  # --- not in the command, not on/off: ~ = code default ---
+  bucket_mb:      ~  # BLU_COMM_BUCKET_MB: gradient bucket size (default 50); must match on resume
+  muon_buckets:   ~  # BLU_MUON_BUCKETS: Muon whole-tensor buckets (default 6)
+  muon_adjust_lr: ~  # BLU_MUON_ADJUST_LR: match_rms_adamw (default) | original
+  ckpt_align:     ~  # BLU_ZERO_CKPT_ALIGN: shard granule (default 3840); must match on resume
+
+bluccl:
+  fused_embedding_backward: false  # BLU_BLUCCL_FUSED_EMB: BluCCL's fused embedding backward (sorted segments, fp32
+                                   #   sums, deterministic). Only with backend: bluccl and more than one GPU; then it
+                                   #   overrides embedding.backward in the main config (same kernel as "segmented").
+  # The three below need backend: bluccl AND multicast (NVSwitch); otherwise they decline and the unfused path runs.
+  fused_adamw_allgather:    ~   # BLU_FUSED_ADAMW: AdamW + multicast all-gather in one kernel (fp32 groups only)
+  fused_clip_adamw:         ~   # BLU_FUSED_CLIP_ADAMW: fold the grad clip into it (needs fused_adamw_allgather)
+  fused_muon_publish:       ~   # BLU_FUSED_MUON_PUBLISH: Muon update + cast + multicast publish
+
+  # --- multi-node (backend bluccl over more than one node); ~ = code default ---
+  internode_reduce_scatter: ~   # BLU_IB_RS: BluCCL's internode reduce-scatter (default on across nodes)
+  rs_flat_order:            ~   # BLU_IB_RS_FLAT: flat shard order, rank r owns shard r (default on)
+  rs_tail:                  ~   # BLU_RS_TAIL: last N reduce-scatters per step on the standalone path, the rest on
+                                #   the overlap kernel beside backward (default 2)
+  rs_overlap_blocks:        ~   # BLU_IB_RS_OVL_BLOCKS: blocks of the overlap kernel (default 8)
+  ag_overlap:               ~   # BLU_IB_AG_OVERLAP: all-gather preset for running under compute (default on)
+  symmetric_ib:             ~   # BLU_SYMM_IB: RDMA-register symmetric buffers so the all-gather sends from them
+                                #   directly (default on)
+  reduce_scatter_via:       ~   # BLU_COMPOSITE_RS: bluccl (default) | nccl -- control arm; must match all_gather_via
+  all_gather_via:           ~   # BLU_COMPOSITE_AG: bluccl (default) | nccl -- control arm
+
+  # --- profiler + reduce-scatter schedule autotuner (backend bluccl) ---
+  comm_profile:             ~   # BLU_COMM_PROFILE: per-collective timing CSVs (issue, duration, exposed wait per step)
+  comm_profile_dir:         ~   # BLU_COMM_PROFILE_DIR: where they go (default <run folder>/commprof, else the cwd)
+  rs_schedule:              ~   # BLU_RS_SCHEDULE: file of "<call index> overlap|standalone" lines written by
+                                #   tools/rs_autotune.py; overrides rs_tail per call

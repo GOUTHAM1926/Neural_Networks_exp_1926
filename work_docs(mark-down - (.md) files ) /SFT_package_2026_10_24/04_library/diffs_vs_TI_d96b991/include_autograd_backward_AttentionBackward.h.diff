@@ -1,0 +1,36 @@
+diff --git a/include/autograd/backward/AttentionBackward.h b/include/autograd/backward/AttentionBackward.h
+index 1316d1e..e16ff94 100644
+--- a/include/autograd/backward/AttentionBackward.h
++++ b/include/autograd/backward/AttentionBackward.h
+@@ -2,6 +2,7 @@
+ 
+ #include "autograd/Node.h"
+ #include "core/Tensor.h"
++#include "ops/helpers/AttentionKernels.h"   // cuda::GqaChatPlanPtr (v2 packed rows)
+ 
+ namespace OwnTensor {
+ namespace autograd {
+@@ -143,13 +144,14 @@ private:
+     Tensor saved_lse_;
+     int64_t B_, Nq_heads_, Nkv_heads_, T_, hd_;
+     bool is_causal_;
++    cuda::GqaChatPlanPtr chats_;   // v2 packed rows (design A); null = dense. The SAME plan as the forward.
+ 
+ public:
+     GQAFlashAttentionQKVBackward(
+         const Tensor& query, const Tensor& key, const Tensor& value,
+         const Tensor& output, const Tensor& lse,
+         int64_t B, int64_t Nq_heads, int64_t Nkv_heads, int64_t T, int64_t hd,
+-        bool is_causal);
++        bool is_causal, cuda::GqaChatPlanPtr chats = nullptr);
+ 
+     const char* name() const override { return "GQAFlashAttentionQKVBackward"; }
+     std::vector<Tensor> apply(std::vector<Tensor>&& grads) override;
+@@ -159,6 +161,7 @@ public:
+         saved_value_  = Tensor();
+         saved_output_ = Tensor();
+         saved_lse_    = Tensor();
++        chats_.reset();
+     }
+ };
+ 

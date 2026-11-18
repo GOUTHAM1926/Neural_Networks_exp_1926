@@ -1,0 +1,229 @@
+diff --git a/src/UnaryOps/cpu/Normalizations.cpp b/src/UnaryOps/cpu/Normalizations.cpp
+index e4e21b6..fe6c17a 100644
+--- a/src/UnaryOps/cpu/Normalizations.cpp
++++ b/src/UnaryOps/cpu/Normalizations.cpp
+@@ -8,6 +8,7 @@
+ #include "core/TensorDataManip.h"
+ #include <cmath>
+ #include <omp.h>
++#include <string>      // std::to_string in fused_rms_rope_positions_ptr (v2 positions check)
+ #include <vector>
+ #include <algorithm>
+ #include "profiler/RecordFunction.h"
+@@ -992,6 +993,32 @@ RMSNormBackwardResult rms_norm_backward(
+     return {grad_input, grad_weight};
+ }
+ 
++// v2 packing (added 2026-10-10): validates the optional per-token positions tensor and
++// returns its device pointer, or nullptr when it is not given (= the original behaviour,
++// position = t + pos_offset). Rules: int32, CUDA, same device as q, contiguous [B, T], and
++// pos_offset == 0 (positions and an offset together would be ambiguous). Value range
++// (0 <= p < cache length) is NOT checked here: that would need a device->host copy every
++// call; the loader checks it once on the host (same split as torchtitan's async check,
++// models/common/rope.py:25-38).
++static const int32_t* fused_rms_rope_positions_ptr(const Tensor& positions, const Tensor& q,
++                                                   int B, int T, int64_t pos_offset,
++                                                   const char* who) {
++    if (!positions.is_valid()) return nullptr;
++    const std::string w(who);
++    if (!positions.device().is_cuda() || positions.device().index != q.device().index)
++        throw std::runtime_error(w + ": positions must be a CUDA tensor on q's device");
++    if (positions.dtype() != Dtype::Int32)
++        throw std::runtime_error(w + ": positions must be int32");
++    if (positions.ndim() != 2 || positions.shape().dims[0] != B || positions.shape().dims[1] != T)
++        throw std::runtime_error(w + ": positions must have shape [B, T] = [" +
++                                 std::to_string(B) + ", " + std::to_string(T) + "]");
++    if (!positions.is_contiguous())
++        throw std::runtime_error(w + ": positions must be contiguous");
++    if (pos_offset != 0)
++        throw std::runtime_error(w + ": pass either positions or a nonzero pos_offset, not both");
++    return positions.data<int32_t>();
++}
++
+ // =================================================================
+ // Public API — Fused RMSNorm + RoPE Forward
+ // =================================================================
+@@ -1003,7 +1030,8 @@ FusedRMSRoPEForwardResult fused_rms_rope_forward(
+     const Tensor& cos_sin_cache,
+     int64_t pos_offset,
+     float eps,
+-    bool interleaved)
++    bool interleaved,
++    const Tensor& positions)
+ {
+     PROFILER_SCOPE("fused_rms_rope_forward");
+     if (!q.device().is_cuda() || !k.device().is_cuda()) {
+@@ -1037,6 +1065,10 @@ FusedRMSRoPEForwardResult fused_rms_rope_forward(
+     Tensor q_rstd = Tensor::empty(Shape{{B, Hq, T}}, stat_opts);
+     Tensor k_rstd = Tensor::empty(Shape{{B, Hkv, T}}, stat_opts);
+ 
++    // v2: nullptr unless a positions tensor is given (then validated here).
++    const int32_t* pos_ptr =
++        fused_rms_rope_positions_ptr(positions, q, B, T, pos_offset, "fused_rms_rope_forward");
++
+     device::set_cuda_device(q.device().index);
+     cuda::fused_qk_norm_rope_forward(
+         q.data<float>(), k.data<float>(),
+@@ -1045,7 +1077,8 @@ FusedRMSRoPEForwardResult fused_rms_rope_forward(
+         cos_sin_cache.data<float>(),
+         q_rstd.data<float>(), k_rstd.data<float>(),
+         B, Hq, Hkv, T, hd,
+-        static_cast<int>(pos_offset), eps, interleaved);
++        static_cast<int>(pos_offset), eps, interleaved,
++        /*stream=*/0, pos_ptr);
+ 
+     return {q_out, k_out, q_rstd, k_rstd};
+ }
+@@ -1064,7 +1097,8 @@ FusedRMSRoPEBackwardResult fused_rms_rope_backward(
+     const Tensor& q_rstd,
+     const Tensor& k_rstd,
+     int64_t pos_offset,
+-    bool interleaved)
++    bool interleaved,
++    const Tensor& positions)
+ {
+     PROFILER_SCOPE("fused_rms_rope_backward");
+     int B   = static_cast<int>(q.shape().dims[0]);
+@@ -1073,6 +1107,10 @@ FusedRMSRoPEBackwardResult fused_rms_rope_backward(
+     int hd  = static_cast<int>(q.shape().dims[3]);
+     int Hkv = static_cast<int>(k.shape().dims[1]);
+ 
++    // v2: must be the same positions the forward used (FusedRMSRoPEBackward saves them).
++    const int32_t* pos_ptr =
++        fused_rms_rope_positions_ptr(positions, q, B, T, pos_offset, "fused_rms_rope_backward");
++
+     Tensor grad_q_in = Tensor::empty(q.shape(), q.opts());
+     Tensor grad_k_in = Tensor::empty(k.shape(), k.opts());
+ 
+@@ -1093,11 +1131,130 @@ FusedRMSRoPEBackwardResult fused_rms_rope_backward(
+         grad_q_in.data<float>(), grad_k_in.data<float>(),
+         grad_q_gamma.data<float>(), grad_k_gamma.data<float>(),
+         B, Hq, Hkv, T, hd,
+-        static_cast<int>(pos_offset), interleaved);
++        static_cast<int>(pos_offset), interleaved,
++        /*stream=*/0, pos_ptr);
+ 
+     return {grad_q_in, grad_k_in, grad_q_gamma, grad_k_gamma};
+ }
+ 
++FusedRMSRoPEForwardResult fused_rms_rope_forward_bf16_tm(
++    const Tensor& q_in,
++    const Tensor& k_in,
++    int64_t n_q_heads,
++    int64_t n_kv_heads,
++    const Tensor& q_gamma,
++    const Tensor& k_gamma,
++    const Tensor& cos_sin_cache,
++    int64_t pos_offset,
++    float eps,
++    bool interleaved,
++    const Tensor& positions)
++{
++    PROFILER_SCOPE("fused_rms_rope_forward_bf16_tm");
++    if (!q_in.device().is_cuda() || !k_in.device().is_cuda()) {
++        throw std::runtime_error("fused_rms_rope_forward_bf16_tm: q and k must be CUDA tensors");
++    }
++    if (q_in.dtype() != Dtype::Bfloat16 || k_in.dtype() != Dtype::Bfloat16) {
++        throw std::runtime_error("fused_rms_rope_forward_bf16_tm: q and k must be bfloat16");
++    }
++    if (q_in.ndim() != 3 || k_in.ndim() != 3) {
++        throw std::runtime_error("fused_rms_rope_forward_bf16_tm: q and k must be [B, T, heads*hd]");
++    }
++    Tensor q = q_in.contiguous();
++    Tensor k = k_in.contiguous();
++    const int B   = static_cast<int>(q.shape().dims[0]);
++    const int T   = static_cast<int>(q.shape().dims[1]);
++    const int Hq  = static_cast<int>(n_q_heads);
++    const int Hkv = static_cast<int>(n_kv_heads);
++    const int hd  = static_cast<int>(q.shape().dims[2] / Hq);
++    if (q.shape().dims[2] != (int64_t)Hq * hd || k.shape().dims[0] != B || k.shape().dims[1] != T ||
++        k.shape().dims[2] != (int64_t)Hkv * hd) {
++        throw std::runtime_error("fused_rms_rope_forward_bf16_tm: shape mismatch between q, k and head counts");
++    }
++    if (!q_gamma.is_valid() || q_gamma.shape().dims[0] != hd || !k_gamma.is_valid() || k_gamma.shape().dims[0] != hd ||
++        q_gamma.dtype() != Dtype::Float32 || k_gamma.dtype() != Dtype::Float32) {
++        throw std::runtime_error("fused_rms_rope_forward_bf16_tm: q_gamma and k_gamma must be float32 [hd]");
++    }
++
++    TensorOptions out_opts = TensorOptions().with_dtype(Dtype::Bfloat16).with_device(q.device());
++    Tensor q_out = Tensor::empty(Shape{{B, Hq,  T, hd}}, out_opts);
++    Tensor k_out = Tensor::empty(Shape{{B, Hkv, T, hd}}, out_opts);
++    TensorOptions stat_opts = TensorOptions().with_dtype(Dtype::Float32).with_device(q.device()).with_req_grad(false);
++    Tensor q_rstd = Tensor::empty(Shape{{B, Hq, T}}, stat_opts);
++    Tensor k_rstd = Tensor::empty(Shape{{B, Hkv, T}}, stat_opts);
++
++    // nullptr unless a positions tensor is given (then validated here, as for the fp32 path).
++    const int32_t* pos_ptr =
++        fused_rms_rope_positions_ptr(positions, q, B, T, pos_offset, "fused_rms_rope_forward_bf16_tm");
++
++    device::set_cuda_device(q.device().index);
++    cuda::fused_qk_norm_rope_forward_bf16_tm(
++        q.data<bfloat16_t>(), k.data<bfloat16_t>(),
++        q_out.data<bfloat16_t>(), k_out.data<bfloat16_t>(),
++        q_gamma.data<float>(), k_gamma.data<float>(),
++        cos_sin_cache.data<float>(),
++        q_rstd.data<float>(), k_rstd.data<float>(),
++        B, Hq, Hkv, T, hd,
++        static_cast<int>(pos_offset), eps, interleaved,
++        /*stream=*/0, pos_ptr);
++
++    return {q_out, k_out, q_rstd, k_rstd};
++}
++
++FusedRMSRoPEBackwardResult fused_rms_rope_backward_bf16_tm(
++    const Tensor& grad_q,
++    const Tensor& grad_k,
++    const Tensor& q_saved,
++    const Tensor& k_saved,
++    const Tensor& q_gamma,
++    const Tensor& k_gamma,
++    const Tensor& cos_sin_cache,
++    const Tensor& q_rstd,
++    const Tensor& k_rstd,
++    int64_t pos_offset,
++    bool interleaved,
++    const Tensor& positions)
++{
++    PROFILER_SCOPE("fused_rms_rope_backward_bf16_tm");
++    Tensor q = q_saved.contiguous();
++    Tensor k = k_saved.contiguous();
++    const int B   = static_cast<int>(q_rstd.shape().dims[0]);
++    const int Hq  = static_cast<int>(q_rstd.shape().dims[1]);
++    const int T   = static_cast<int>(q_rstd.shape().dims[2]);
++    const int Hkv = static_cast<int>(k_rstd.shape().dims[1]);
++    const int hd  = static_cast<int>(q.shape().dims[2] / Hq);
++
++    auto as_bf16 = [](const Tensor& g) {
++        Tensor c = g.contiguous();
++        return c.dtype() == Dtype::Bfloat16 ? c : c.as_type(Dtype::Bfloat16);
++    };
++    Tensor dz_q = as_bf16(grad_q);
++    Tensor dz_k = as_bf16(grad_k);
++
++    Tensor grad_q_in = Tensor::empty(q.shape(), q.opts());
++    Tensor grad_k_in = Tensor::empty(k.shape(), k.opts());
++    TensorOptions weight_opts = TensorOptions().with_dtype(Dtype::Float32).with_device(q.device());
++    Tensor grad_q_gamma = Tensor::empty(q_gamma.shape(), weight_opts);
++    Tensor grad_k_gamma = Tensor::empty(k_gamma.shape(), weight_opts);
++
++    const int32_t* pos_ptr =
++        fused_rms_rope_positions_ptr(positions, q, B, T, pos_offset, "fused_rms_rope_backward_bf16_tm");
++
++    device::set_cuda_device(q.device().index);
++    cuda::fused_qk_norm_rope_backward_bf16_tm(
++        dz_q.data<bfloat16_t>(), dz_k.data<bfloat16_t>(),
++        q.data<bfloat16_t>(), k.data<bfloat16_t>(),
++        q_gamma.data<float>(), k_gamma.data<float>(),
++        cos_sin_cache.data<float>(),
++        q_rstd.data<float>(), k_rstd.data<float>(),
++        grad_q_in.data<bfloat16_t>(), grad_k_in.data<bfloat16_t>(),
++        grad_q_gamma.data<float>(), grad_k_gamma.data<float>(),
++        B, Hq, Hkv, T, hd,
++        static_cast<int>(pos_offset), interleaved,
++        /*stream=*/0, pos_ptr);
++
++    return {grad_q_in, grad_k_in, grad_q_gamma, grad_k_gamma};
++}
+ 
+ } // namespace OwnTensor
+ 

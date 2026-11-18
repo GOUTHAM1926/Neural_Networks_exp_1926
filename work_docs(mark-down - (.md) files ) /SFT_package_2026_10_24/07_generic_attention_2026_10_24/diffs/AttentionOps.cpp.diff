@@ -1,0 +1,12 @@
+--- orig/AttentionOps.cpp
++++ new/AttentionOps.cpp
+@@ -402,7 +402,8 @@
+     Tensor v_c = value.contiguous();
+ 
+     // v2 packed rows (design A, 2026-10-15): the kernels check the plan's shape (B, T, Nq_heads) and refuse a plan
+-    // they cannot honour (non-Hopper, hd 64, T % 256 != 0 in the forward, Vj1 / v44 in the backward).
++    // they cannot honour (B300, Vj1 / v44 in the backward). Hopper v62 / Vj2 / Vj1d and, since 2026-10-24, the
++    // generic causal kernels (every other GPU) honour it.
+     if (chats && !is_causal)
+         throw std::runtime_error("sdpa_flash_attention_qkv (GQA): a packed-rows plan needs is_causal = true");
+ 

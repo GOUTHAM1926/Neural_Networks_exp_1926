@@ -1081,7 +1081,7 @@ This is the data loss.**
 | TRL packing `wrapped` | the whole group is one stream cut every `max_length` tokens (section 8.1) | `trl/data_utils.py:829-843` |
 | torchtitan | option 1, drop, "avoiding training on truncated responses"; a TODO notes cutting as a possible change | `torchtitan/hf_datasets/text_datasets.py:145-147, 210-217` |
 | Megatron-LM SFT | option 2: when a packed row overflows, cuts the end | `megatron/training/datasets/sft_dataset.py:163-172` |
-| **ours** | **option 1, drop** | `sft/prepare_sft_data.py:167` |
+| **ours** | **option 1, drop**, the only method (a split was built on 2026-10-30 and removed on 2026-10-31, section 7.8) | `sft/prepare_sft_data.py` (`_examine`: `reason = "too_long"`) |
 
 ### 7.5 Why we drop
 
@@ -1105,11 +1105,175 @@ and agentic data (long tool traces) could lose a large share under the drop rule
 the `too_long` count in `meta.json`. If it is more than a few percent, choose between option 6 (cut whole later turns) and
 option 5 (a long-context stage first, then a bigger T).
 
+**Update 2026-10-30 / 10-31:** measured on the 10-28 mixes (23,253 chats over 4,096 tokens) and decided: drop, and a
+longer row as the fix (section 7.8).
+
 ---
+
+### 7.8 Long chats: what we built, tested, researched and decided (2026-10-14 to 2026-10-31)
+
+**Final decision (the user, 2026-10-31): a chat longer than the row is dropped. That is the only method in the code.**
+There is no option and no second algorithm. The split code pushed on 2026-10-30 (`--long-chats split_trl | split_turns`,
+`--ctx-frac`, `seq_complete.bin`, `sft/test_long_chat_split.py`) was removed again on 2026-10-31. The data files are
+byte-identical to the pushed drop mode (section 7.8.7).
+
+#### 7.8.1 Why we drop (the user's reasoning)
+
+- **What SFT must teach.** The model must learn to answer a question fully and to stop at the right place: the end
+  token is a training target at the end of every answer (section 7.5). So every training example must be a whole,
+  correct chat. More tokens or more chats do not help when the examples are broken. SFT uses little compute, so saving
+  compute by cutting chats into pieces is not the goal.
+- **A long answer cut into pieces confuses the model.** The first piece ends in the middle of the answer, without an
+  end token. The next piece starts in the middle of the answer. If the question is repeated in front of it (our
+  `split_turns`), the model sees the same question followed by an answer that starts halfway. If the question is not
+  repeated (TRL's `bfd_split`), the piece has no question at all, and the model learns to write text without the
+  question it answers.
+- **A multi-turn chat cannot be cut into single turns.** Every turn depends on the turns before it:
+
+  ```
+  <|user|> What is 2+2?  <|assistant|> 4<end>   <|user|> Times 3?  <|assistant|> 12<end>
+  ```
+
+  "Times 3?" means nothing without turn 1. Real examples from WildChat: "yes please I need further sections to be
+  translated", "yes please continue and translate further sections", "满意" ("satisfied"). Cutting such a chat into
+  separate single turns gives pieces without their context.
+- **So we drop, as torchtitan does** ("avoiding training on truncated responses", section 7.4). Megatron-LM does not
+  drop; it cuts the end of a row that overflows, which removes the end token (the worst option for SFT).
+- **The permanent fix is a longer row**, after a long-context checkpoint (section 7.6; `sft/README.md` section 11).
+  Dropping keeps that need visible instead of hiding it behind broken pieces.
+
+#### 7.8.2 The only split we would consider later
+
+Only if needed: **exactly TRL's `bfd_split`** (section 8.3: the chat's tokens are cut into blocks of T + 1 tokens,
+nothing is added at a cut, every block is packed as a chat of its own), **with one simple rule added: if ANY prompt of
+the chat (the system message + the question of ANY turn, first or later) is as long as a whole row or longer, the whole
+chat is dropped**, single-turn and multi-turn alike. Every other chat is split by `bfd_split` as it is. Nothing else.
+
+Examples (T = 4,096, so a row holds 4,097 tokens; counts rounded, the role markers counted with the question):
+
+| case | the chat | result |
+| --- | --- | --- |
+| single turn, long question | a 10,000-token question (a long document + "summarise it"), a 500-token answer | the prompt is longer than a row: **whole chat dropped** |
+| multi-turn, long FIRST question | turn 1: a 6,000-token pasted document + "what does it say?", a 300-token answer; turn 2: 100 + 400 | turn 1's prompt is longer than a row: **whole chat dropped**, turn 2 too |
+| multi-turn, long LATER question | turn 1: 300 + 700; turn 2: a 9,000-token pasted log + "what is wrong?", a 400-token answer | turn 2's prompt is longer than a row: **whole chat dropped**, turn 1 too |
+| multi-turn, long answer | turn 1: 200-token question + 6,000-token answer; turn 2: 300 + 500 | no prompt is a whole row: **bfd_split as it is** (block 1: the question + about 3,900 answer tokens, no end token; block 2: the other ~2,100 answer tokens, no question, + turn 2) |
+
+The `split_trl` function of commit 334ecbb (`git show 334ecbb:sft/prepare_sft_data.py`) is `bfd_split` without this
+rule (it dropped only the blocks with no trained token and kept the rest of such a chat). Even with the rule, a long
+answer is still cut (a block that ends with no end token, a block without its question), which is why nothing is split
+now. Our own `split_turns` and the 2026-10-31 variants below are not to be used.
+
+#### 7.8.3 Timeline
+
+1. **2026-10-14 / 10-15: research, keep dropping.** Sections 7.1-7.7 and 8 were written from the code of TRL,
+   torchtitan and Megatron-LM. The user wanted TRL's `bfd_split` later; the open points were written down (SFT work doc
+   §45.4): where to cut, the missing end token in every piece but the last, targets in a piece that starts inside an
+   answer, the context lost between pieces, an ablation drop vs split.
+2. **2026-10-30: measured, built, tested, pushed.**
+   - Re-checked: TRL `bfd_split` = "splits overflow sequences ... may break conversation structure in SFT datasets";
+     Megatron-LM cuts (it does not split); torchtitan drops.
+   - Measured every chat over 4,096 tokens in the 10-28 mixes (section 7.8.4).
+   - Built `split_trl` (TRL's `bfd_split`, prompt-only pieces left out) and `split_turns` (ours): cut between turns;
+     a turn longer than a row cut inside its answer, with the question and the last answer tokens repeated, untrained,
+     in front of the rest; a turn whose question does not fit half a row left out with every later turn.
+   - Tests: hand-made chats and 5,000 random chats per template, every piece checked (each answer token trained once,
+     after its true previous token; end tokens only at real ends). A bug found by the real data: `--num` counted pieces,
+     not chats, so the val set took 124,638 chats instead of 80; fixed before the push.
+   - GPU gates (P022 H200): the trainer's step-0 val loss on split data equalled the numpy reference (1.780719 vs
+     1.779986; on rows holding every case 1.717223 vs 1.716187).
+   - Pushed in BluTrain 334ecbb (default still `drop`).
+3. **2026-10-31 morning: case 4 judged too strict, about 40 variants studied (CPU only).** 11,734 of the 23,253 long
+   chats have a turn whose question is longer than half a row (2,072 where the question still fits one row, 9,662
+   where it does not). We studied every way we could think of to keep them, on all 23,253 chats, scored by **hidden
+   copies**: an answer phrase of 8 tokens that appears earlier in the chat (in the question or an earlier turn) but is
+   not in the answer's own piece. Each one trains the model to write text it cannot see. The best variant kept the
+   question's first 64 and last 192 tokens plus the 256-token chunks the answer uses most, chose the earlier-turn
+   context the same way, and left out a turn with more than 100 hidden copies per 1,000 trained tokens. It was built and
+   tested, not pushed.
+4. **2026-10-31: the user rejected it as too complex and confusing**, and proposed a simpler split: drop only when the
+   prompt fills the whole row, cut between turns, otherwise `bfd_split`. Measured (section 7.8.5): the turns that start
+   a new piece after a cut between turns lose their context badly when nothing is put in front of them.
+5. **2026-10-31: decision: drop, nothing else** (section 7.8.1). The split code was removed from the branch; the
+   2026-10-31 code is kept outside the repository as a patch (work records).
+
+#### 7.8.4 The long chats, and what dropping costs
+
+The 10-28 mixes have 23,253 chats longer than 4,096 tokens (the length of the template text): WildChat 18,653
+(median 8,012 tokens, max 215,158; 14,713 multi-turn), LongAlign 3,559 (a long document then a question; median
+10,448), smol-summarize-5k 522, evol_codealpaca 337, flan_v2 111, others 71.
+
+What would fit whole with a longer row (no split needed):
+
+| row length T | chats that fit whole (of 23,253) |
+| --- | --- |
+| 4,096 | 0 |
+| 8,192 | 10,915 |
+| 16,384 | 19,538 |
+| 32,768 | 22,043 (every LongAlign chat) |
+| 65,536 | 22,998 |
+
+On the 10-28 long-source mix (LongAlign, smol-summarize, openhermes, WildChat; T 4,096): drop keeps 132,316 chats with
+90.7 M answer tokens and drops 22,744 chats holding about 102 M answer tokens.
+
+#### 7.8.5 Everything we measured (all 23,253 long chats, T 4,096)
+
+"Hidden copies per 1,000" = per 1,000 trained answer tokens (section 7.8.3, item 3). Lower is better. "Tokens per
+trained token" = all tokens in the pieces / trained answer tokens (the compute cost).
+
+| method | chats used | answer tokens trained | tokens per trained token | hidden copies per 1,000 |
+| --- | --- | --- | --- | --- |
+| drop (what we do) | 0 | 0 | - | - |
+| TRL `bfd_split` (prompt-only pieces left out) | 23,253 | 103.4 M | 1.65 | 45.3 (up to 103.6 for long questions) |
+| `split_turns` as pushed 2026-10-30 | 12,847 | 79.0 M | 1.85 | 25.7 |
+| the 2026-10-31 best variant (with its rule) | nearly all (train mix: 22,630 of 22,738) | 97.1 M | 2.06 (train mix) | 11.6 (every kind at or below 20.4) |
+| the user's simple split, nothing in front of a new piece | 14,702 | 87.7 M | 1.43 | 41.3 |
+| the user's simple split, earlier whole turns in front | 14,702 | 87.7 M | 1.89 | 31.6 |
+
+Other 2026-10-31 findings:
+- Long questions: LongAlign puts the instruction at the end of the document; WildChat at the start or the end. Keeping
+  only the end of the question lost the instruction in WildChat chats; chunks chosen by the answer alone kept the
+  question's start in only 22% of pieces.
+- Repeating the whole question in every piece gave the fewest hidden copies (5.3) but 5.4 tokens per trained token,
+  and is impossible when the question is longer than a row.
+- Turns that start a new piece after a cut between turns (24,168; 4,572 with a question of 20 tokens or less): 91.9
+  hidden copies per 1,000 with nothing in front, 55.0 with the earlier whole turns in front.
+- No end token is ever added at a cut (it would teach the model to stop halfway). In every split method the end token
+  is trained once, in the last piece. Truncation (keeping only the start) loses it completely.
+- None of these numbers says which broken piece hurts the model least; only an evaluation could. The decision does not
+  depend on that: SFT data should be whole chats.
+
+#### 7.8.6 Facts checked along the way
+
+- The system message is never trained; a chat whose system message alone is longer than half a row: 0 of the 23,253.
+- A piece with no trained token gives exactly zero learning: the loss is only on trained tokens, and in a packed row
+  each chat attends only to itself, so nothing reads that piece. TRL keeps such pieces (39% of the tokens of its split
+  of our long chats); they only cost compute.
+- The row length: `prepare_sft_data.py --seq-len` writes `T` into `meta.json`, the trainer takes `BLU_SFT_T`, and the
+  data loader stops if they differ. Until 2026-10-31 the script refused T > 4,096 (a hard-coded limit; the 8,192 kernel
+  benchmarks of 10-28 used rows repacked from 4,096 data because of it). Now it accepts multiples of 256 up to 131,072,
+  its length histogram reaches T, and `run_sft.sh` takes T from the data's `meta.json` (one place to set it).
+
+#### 7.8.7 The removal (2026-10-31)
+
+Removed from `sft/prepare_sft_data.py`: `--long-chats`, `--ctx-frac`, `split_trl`, `split_turns`, the message spans,
+`seq_complete.bin` and the `long_chats` part of `meta.json`. Removed from `sft/SftDataLoader.h`: the optional
+`seq_complete.bin` (every chat must again end with its end token). Removed: the `seq_complete.bin` copy in
+`sft/ref_val_loss.py` and `sft/test_long_chat_split.py`. Kept: the 135M tokenizer and templates, `--mix`,
+`--part-cache`, `--workers`. Proof (CPU, 2026-10-31): the pushed script (drop mode) and the new script on the same data
+write byte-identical `inputs.bin`, `labels.bin`, `valid_counts.bin`, `seq_lengths.bin` and `seq_offsets.bin` (train and
+val): the long-source mix (132,316 + 80 chats) and a 6,000 + 80 chat mix in tulu-plain-v1 and chatml-v1; 1 worker and 8
+workers give the same files; `meta.json` differs only in the two removed fields (`long_chats`,
+`packing.seq_complete`); `--self-test` passes for GPT-2 and the three 135M templates.
+
+Records: SFT work doc §45.4, §45.108 parts 15-18, §45.109-45.112; plan file Q&A 137-148; the scripts and logs in
+`profiling_reports/long_chat_split_2026_10_30/` and `profiling_reports/long_prompt_variants_2026_10_31/` (work records
+repository).
 
 ## 8. TRL's three packing strategies in detail
 
-**Future task (2026-10-15):** the user wants TRL's `bfd_split` behaviour later: cut a chat longer than the row into pieces of at most T tokens and pack each piece as its own segment (own start, positions from 0, own end), instead of dropping it. For now we keep dropping. Open points (where to cut, the missing end token in every piece but the last, targets in a piece that starts inside an answer, the context lost between pieces, an ablation drop vs split): SFT work doc §45.4.
+**Long chats (section 7.8):** we drop. TRL's `bfd_split` behaviour and our own `split_turns` were built, tested and
+pushed on 2026-10-30 and removed again on 2026-10-31. If a split is ever needed, it is exactly `bfd_split`, with a
+chat dropped whole when any of its prompts is as long as a row (section 7.8.2).
 
 ### 8.1 `wrapped` - exactly how it works
 
@@ -1401,7 +1565,7 @@ row 2: A A A B B B B C C C                 A's tokens 11-13, all of B, all of C
 | | `bfd` | `bfd_split` | `wrapped` | ours (v2 plan) |
 | --- | --- | --- | --- | --- |
 | **algorithm** | sort by length, pack with Best-Fit | split long chats into chunks, then sort + Best-Fit | join all, cut into fixed rows | sort by length, pack with First-Fit |
-| **long chats** | cut (data lost) | split into chunks (data kept, context lost between chunks) | cut at row ends (data kept, context lost across rows) | dropped before packing |
+| **long chats** | cut (data lost) | split into chunks (data kept, context lost between chunks) | cut at row ends (data kept, context lost across rows) | dropped before packing (section 7.8) |
 | **other chats** | always whole in one row | always whole in one row | any chat can be cut at a row end | always whole in one row |
 | **what a row holds** | several complete chats | several chunks and chats | parts of several chats | several complete chats |
 | **boundaries kept (8.4)** | per chat | per chunk | none | per chat |

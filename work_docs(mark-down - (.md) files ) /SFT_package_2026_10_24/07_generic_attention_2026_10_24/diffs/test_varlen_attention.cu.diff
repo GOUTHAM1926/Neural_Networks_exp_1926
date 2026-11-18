@@ -1,0 +1,346 @@
+--- orig/test_varlen_attention.cu
++++ new/test_varlen_attention.cu
+@@ -160,6 +160,10 @@
+ // false in USE_FLASH=1 runs: Vj1 sums the heads' dK/dV with bf16 atomics, so they differ run to run by
+ // one bf16 step (GQA_bwd_generic.cu header). Bitwise dK/dV checks then use FA's atol on dK/dV instead.
+ static bool g_kv_deterministic = true;
++// 2026-10-24: the generic causal kernels (any GPU but a B300, and Hopper calls v62/Vj2 cannot take) are under
++// test instead of v62/Vj2. VARLEN_HD=64 runs the correctness groups at head_dim 64 (the generic path serves it).
++static bool g_generic = false;
++static int g_hd = 128;
+ 
+ // ---------------------------------------------------------------------------
+ // Exact arithmetic helpers.
+@@ -562,7 +566,10 @@
+   DBuf<T> Q, K, Ks, V, dO, S, dP, O, LSE, rs, dQ, dKh, dVh, dK, dV;
+   void ensure(const Problem& p, int L) {
+     const size_t qd = (size_t)p.Hq * L * p.hd, kd = (size_t)p.Hkv * L * p.hd;
+-    const size_t ll = (size_t)p.Hq * L * L, ql = (size_t)p.Hq * L;
++    // S / dP hold ONE kv-head group (G query heads) at a time since 2026-10-24: all Hq heads at L = 4096 need
++    // 4.8 GB (fp64) + 2.4 GB (fp32), more than a 12 GB RTX 3060 has. Every output element is still computed by
++    // the same code in the same order, so the references are unchanged.
++    const size_t ll = (size_t)p.G() * L * L, ql = (size_t)p.Hq * L;
+     Q.ensure(qd); K.ensure(kd); Ks.ensure(kd); V.ensure(kd); dO.ensure(qd);
+     S.ensure(ll); dP.ensure(ll); O.ensure(qd); LSE.ensure(ql); rs.ensure(ql);
+     dQ.ensure(qd); dKh.ensure(qd); dVh.ensure(qd); dK.ensure(kd); dV.ensure(kd);
+@@ -590,7 +597,7 @@
+   const Problem& p = in.p;
+   const int L = sg.L, hd = p.hd, Hq = p.Hq, Hkv = p.Hkv, G = p.G();
+   s.ensure(p, L);
+-  const size_t qd = (size_t)Hq * L * hd, kd = (size_t)Hkv * L * hd, ll = (size_t)Hq * L * L, ql = (size_t)Hq * L;
++  const size_t qd = (size_t)Hq * L * hd, kd = (size_t)Hkv * L * hd, ql = (size_t)Hq * L;
+   k_gather<T><<<grid_for(qd), 256>>>(in.q.p, Hq, p.T, hd, sg.b, sg.t0, L, s.Q.p);
+   k_gather<T><<<grid_for(kd), 256>>>(in.k.p, Hkv, p.T, hd, sg.b, sg.t0, L, s.K.p);
+   k_gather<T><<<grid_for(kd), 256>>>(in.v.p, Hkv, p.T, hd, sg.b, sg.t0, L, s.V.p);
+@@ -603,23 +610,28 @@
+     Ku = s.Ks.p;
+   }
+   const long long Ld = (long long)L * hd, LL = (long long)L * L;
+-  // S = alpha * Q Ku^T                 [Hq, L, L]
+-  gemm<T, R>(s.Q.p, Ld, hd, 1, Ku, Ld, hd, 1, G, s.S.p, LL, L, L, L, hd, alpha_qk, Hq);
+-  k_softmax<T, R><<<dim3(L, Hq), 256>>>(s.S.p, s.LSE.p, L);
+-  KERNEL_CHECK();
+-  // O = P V          A(i,j) = P[h][i][j], B(d,j) = V[hkv][j][d]
+-  gemm<T, R>(s.S.p, LL, L, 1, s.V.p, Ld, 1, hd, G, s.O.p, Ld, hd, L, hd, L, T(1), Hq);
+-  // dP = dO V^T      A(i,d) = dO[h][i][d], B(j,d) = V[hkv][j][d]
+-  gemm<T, R>(s.dO.p, Ld, hd, 1, s.V.p, Ld, hd, 1, G, s.dP.p, LL, L, L, L, hd, T(1), Hq);
+-  // dVh = P^T dO     A(j,i) = P[h][i][j], B(d,i) = dO[h][i][d]
+-  gemm<T, R>(s.S.p, LL, 1, L, s.dO.p, Ld, 1, hd, 1, s.dVh.p, Ld, hd, L, hd, L, T(1), Hq);
+-  k_rowsum<T><<<grid_for(ql), 256>>>(s.S.p, s.dP.p, s.rs.p, ql, L);
+-  k_ds<T, R><<<grid_for(ll), 256>>>(s.S.p, s.dP.p, s.rs.p, ll, L);
+-  KERNEL_CHECK();
+-  // dQ = alpha * dS Ku     A(i,j) = dS[h][i][j], B(d,j) = Ku[hkv][j][d]
+-  gemm<T, R>(s.dP.p, LL, L, 1, Ku, Ld, 1, hd, G, s.dQ.p, Ld, hd, L, hd, L, alpha_qk, Hq);
+-  // dKh = alpha * dS^T Q   A(j,i) = dS[h][i][j], B(d,i) = Q[h][i][d]
+-  gemm<T, R>(s.dP.p, LL, 1, L, s.Q.p, Ld, 1, hd, 1, s.dKh.p, Ld, hd, L, hd, L, alpha_qk, Hq);
++  // One kv head (its G query heads) at a time; S / dP are [G, L, L] (see RefScratch).
++  const size_t gl = (size_t)G * L, gll = (size_t)G * L * L;
++  for (int j = 0; j < Hkv; ++j) {
++    const size_t qo = (size_t)j * G * Ld, ko = (size_t)j * Ld, lo = (size_t)j * G * L;
++    // S = alpha * Q Ku^T                 [G, L, L]
++    gemm<T, R>(s.Q.p + qo, Ld, hd, 1, Ku + ko, Ld, hd, 1, G, s.S.p, LL, L, L, L, hd, alpha_qk, G);
++    k_softmax<T, R><<<dim3(L, G), 256>>>(s.S.p, s.LSE.p + lo, L);
++    KERNEL_CHECK();
++    // O = P V          A(i,j) = P[h][i][j], B(d,j) = V[hkv][j][d]
++    gemm<T, R>(s.S.p, LL, L, 1, s.V.p + ko, Ld, 1, hd, G, s.O.p + qo, Ld, hd, L, hd, L, T(1), G);
++    // dP = dO V^T      A(i,d) = dO[h][i][d], B(j,d) = V[hkv][j][d]
++    gemm<T, R>(s.dO.p + qo, Ld, hd, 1, s.V.p + ko, Ld, hd, 1, G, s.dP.p, LL, L, L, L, hd, T(1), G);
++    // dVh = P^T dO     A(j,i) = P[h][i][j], B(d,i) = dO[h][i][d]
++    gemm<T, R>(s.S.p, LL, 1, L, s.dO.p + qo, Ld, 1, hd, 1, s.dVh.p + qo, Ld, hd, L, hd, L, T(1), G);
++    k_rowsum<T><<<grid_for(gl), 256>>>(s.S.p, s.dP.p, s.rs.p + lo, gl, L);
++    k_ds<T, R><<<grid_for(gll), 256>>>(s.S.p, s.dP.p, s.rs.p + lo, gll, L);
++    KERNEL_CHECK();
++    // dQ = alpha * dS Ku     A(i,j) = dS[h][i][j], B(d,j) = Ku[hkv][j][d]
++    gemm<T, R>(s.dP.p, LL, L, 1, Ku + ko, Ld, 1, hd, G, s.dQ.p + qo, Ld, hd, L, hd, L, alpha_qk, G);
++    // dKh = alpha * dS^T Q   A(j,i) = dS[h][i][j], B(d,i) = Q[h][i][d]
++    gemm<T, R>(s.dP.p, LL, 1, L, s.Q.p + qo, Ld, 1, hd, 1, s.dKh.p + qo, Ld, hd, L, hd, L, alpha_qk, G);
++  }
+   if constexpr (R) {
+     k_scale_round<<<grid_for(qd), 256>>>(s.dKh.p, qd, scale_f);
+     KERNEL_CHECK();
+@@ -1371,7 +1383,7 @@
+   for (int T : Ts)
+     for (const Heads& h : hs)
+       for (int B : Bs) {
+-        const Problem p{B, T, h.Hq, h.Hkv, 128};
++        const Problem p{B, T, h.Hq, h.Hkv, g_hd};
+         const auto t0 = std::chrono::steady_clock::now();
+         Inputs in;
+         make_inputs(in, p, 1000003ull * T + 1009ull * h.Hq + 17ull * h.Hkv + B);
+@@ -1446,7 +1458,7 @@
+   for (int r0 = 0; r0 < nrows; r0 += 8) {
+     Layout lo{"v1", T, {}};
+     for (int r = r0; r < r0 + 8; ++r) lo.rows.push_back({Lreal[r]});
+-    const Problem p{8, T, 18, 6, 128};
++    const Problem p{8, T, 18, 6, g_hd};
+     Inputs in;
+     make_inputs(in, p, 77 + r0);
+     const std::vector<Segment> pk = packed_segments(lo);
+@@ -1476,6 +1488,9 @@
+ // Mirrors gqa_bwd_mode() in GQA_bwd_generic.cu. Since 2026-10-15 Vj2 is the default and USE_VJ2=0 selects Vj1d
+ // (before that, Vj1d was the default and USE_VJ2=1 selected Vj2).
+ static std::string bwd_mode_name() {
++  // 2026-10-24: off Hopper (or with BLUTRAIN_NO_SM90[_GQA]) the generic causal kernels run and USE_* is not read.
++  // They have no atomics (one writer per output), so G4 checks them bitwise like Vj1d / Vj2.
++  if (g_generic) return "generic causal WMMA (gqa_backward_dQ / gqa_backward_dKdV)";
+   auto is = [](const char* n, char c) { const char* e = std::getenv(n); return e && e[0] == c; };
+   const bool f = is("USE_FLASH", '1'), d = is("USE_DETERMINISTIC_DQ", '1');
+   const bool v = is("USE_VJ2", '1'), v0 = is("USE_VJ2", '0');
+@@ -1489,10 +1504,10 @@
+   std::printf("\n===== G4 repeat (race) test: O, LSE, dK, dV bitwise; dQ within FA's atol =====\n");
+   // dK/dV are checked bitwise when the kernel is meant to give them bit-identical every run: Vj1d and Vj2 (both use
+   // one-writer per-head partials + the fixed-order head sum). Before Vj2 this was Vj1d only.
+-  const bool vj1d = bwd_mode_name().rfind("Vj1d", 0) == 0 || bwd_mode_name().rfind("Vj2", 0) == 0;
++  const bool vj1d = bwd_mode_name().rfind("Vj1d", 0) == 0 || bwd_mode_name().rfind("Vj2", 0) == 0 || g_generic;
+   struct RC { Problem p; int reps; };
+   const int r1 = env_int("VARLEN_REPEATS", g_quick ? 50 : 1000), r2 = env_int("VARLEN_REPEATS", g_quick ? 20 : 250);
+-  const std::vector<RC> cs = {{{8, 4096, 18, 6, 128}, r1}, {{60, 1024, 18, 6, 128}, r2}};
++  const std::vector<RC> cs = {{{8, 4096, 18, 6, g_hd}, r1}, {{60, 1024, 18, 6, g_hd}, r2}};
+   for (const RC& c : cs) {
+     const Problem& p = c.p;
+     const auto t0 = std::chrono::steady_clock::now();
+@@ -1543,7 +1558,7 @@
+   std::printf("\n===== G5 large inputs: q*5, k*3, v*3 (grads gated 5x + 1e-3 as in FA2; 2x printed too) =====\n");
+   for (int T : {256, 512})
+     for (const Heads& h : std::vector<Heads>{{18, 6}, {8, 1}}) {
+-      const Problem p{2, T, h.Hq, h.Hkv, 128};
++      const Problem p{2, T, h.Hq, h.Hkv, g_hd};
+       Inputs in;
+       make_inputs(in, p, 5150 + T + h.Hq, 5.f, 3.f, 3.f);
+       const std::vector<Segment> segs = dense_segments(2, T);
+@@ -1826,7 +1841,7 @@
+   for (size_t r0 = 0; r0 < lo.rows.size(); r0 += 8) {
+     Layout sub{lo.name, T, {}};
+     for (size_t r = r0; r < std::min(lo.rows.size(), r0 + 8); ++r) sub.rows.push_back(lo.rows[r]);
+-    const Problem p{(int)sub.rows.size(), T, h.Hq, h.Hkv, 128};
++    const Problem p{(int)sub.rows.size(), T, h.Hq, h.Hkv, g_hd};
+     Inputs in;
+     make_inputs(in, p, seed + r0);
+     const std::vector<Segment> segs = packed_segments(sub);
+@@ -1842,16 +1857,16 @@
+       for (size_t c0 = 0; c0 < chats.size(); c0 += 8) {
+         const int nb = (int)std::min<size_t>(8, chats.size() - c0);
+         auto run_alone = [&](int Tal, uint64_t fseed, Inputs& ai, KOut& ko) -> bool {
+-          const Problem ap{nb, Tal, h.Hq, h.Hkv, 128};
++          const Problem ap{nb, Tal, h.Hq, h.Hkv, g_hd};
+           make_inputs(ai, ap, fseed);   // random filler everywhere first
+           for (int r = 0; r < nb; ++r) {
+             const Segment& s = chats[c0 + r];
+-            k_copy_tokens<<<grid_for((size_t)h.Hq * s.L * 128), 256>>>(in.q.p, T, s.b, s.t0, ai.q.p, Tal, r, 0, h.Hq, s.L, 128);
+-            k_copy_tokens<<<grid_for((size_t)h.Hkv * s.L * 128), 256>>>(in.k.p, T, s.b, s.t0, ai.k.p, Tal, r, 0, h.Hkv, s.L, 128);
+-            k_copy_tokens<<<grid_for((size_t)h.Hkv * s.L * 128), 256>>>(in.v.p, T, s.b, s.t0, ai.v.p, Tal, r, 0, h.Hkv, s.L, 128);
+-            k_copy_tokens<<<grid_for((size_t)h.Hq * s.L * 128), 256>>>(in.dO.p, T, s.b, s.t0, ai.dO.p, Tal, r, 0, h.Hq, s.L, 128);
++            k_copy_tokens<<<grid_for((size_t)h.Hq * s.L * g_hd), 256>>>(in.q.p, T, s.b, s.t0, ai.q.p, Tal, r, 0, h.Hq, s.L, g_hd);
++            k_copy_tokens<<<grid_for((size_t)h.Hkv * s.L * g_hd), 256>>>(in.k.p, T, s.b, s.t0, ai.k.p, Tal, r, 0, h.Hkv, s.L, g_hd);
++            k_copy_tokens<<<grid_for((size_t)h.Hkv * s.L * g_hd), 256>>>(in.v.p, T, s.b, s.t0, ai.v.p, Tal, r, 0, h.Hkv, s.L, g_hd);
++            k_copy_tokens<<<grid_for((size_t)h.Hq * s.L * g_hd), 256>>>(in.dO.p, T, s.b, s.t0, ai.dO.p, Tal, r, 0, h.Hq, s.L, g_hd);
+             KERNEL_CHECK();
+-            zero_tokens(ai.dO, h.Hq, Tal, 128, r, s.L, Tal);   // filler gets dO = 0
++            zero_tokens(ai.dO, h.Hq, Tal, g_hd, r, s.L, Tal);   // filler gets dO = 0
+           }
+           return run_today(ai, ko, err);
+         };
+@@ -1878,21 +1893,21 @@
+           if (!run_alone(4096, seed * 37 + 4096 + c0, aw, kw)) { threw = true; break; }
+           for (int r = 0; r < nb && bit_done < bitwise_chats; ++r, ++bit_done) {
+             const int L = chats[c0 + r].L;
+-            bmis += bitdiff(ko.O.p, r, Ta, 0, kw.O.p, r, 4096, 0, h.Hq, L, 128).mism;
++            bmis += bitdiff(ko.O.p, r, Ta, 0, kw.O.p, r, 4096, 0, h.Hq, L, g_hd).mism;
+             bmis += bitdiff(ko.LSE.p, r, Ta, 0, kw.LSE.p, r, 4096, 0, h.Hq, L, 1).mism;
+             if (g_kv_deterministic) {
+-              bmis += bitdiff(ko.dK.p, r, Ta, 0, kw.dK.p, r, 4096, 0, h.Hkv, L, 128).mism;
+-              bmis += bitdiff(ko.dV.p, r, Ta, 0, kw.dV.p, r, 4096, 0, h.Hkv, L, 128).mism;
++              bmis += bitdiff(ko.dK.p, r, Ta, 0, kw.dK.p, r, 4096, 0, h.Hkv, L, g_hd).mism;
++              bmis += bitdiff(ko.dV.p, r, Ta, 0, kw.dV.p, r, 4096, 0, h.Hkv, L, g_hd).mism;
+             } else {   // Vj1: one bf16 step of atomic-order noise is expected
+               for (const DBuf<bf16>* x : {&ko.dK, &ko.dV}) {
+                 const DBuf<bf16>* y = (x == &ko.dK) ? &kw.dK : &kw.dV;
+-                const double atk = dq_atol(x->p, r, Ta, 0, h.Hkv, L, 128);
+-                const BitDiff dd = bitdiff(x->p, r, Ta, 0, y->p, r, 4096, 0, h.Hkv, L, 128);
++                const double atk = dq_atol(x->p, r, Ta, 0, h.Hkv, L, g_hd);
++                const BitDiff dd = bitdiff(x->p, r, Ta, 0, y->p, r, 4096, 0, h.Hkv, L, g_hd);
+                 if (dd.maxabs > atk) ++bmis;   // counted as a mismatch only beyond the atol
+               }
+             }
+-            const double at = dq_atol(ko.dQ.p, r, Ta, 0, h.Hq, L, 128);
+-            const BitDiff dq = bitdiff(ko.dQ.p, r, Ta, 0, kw.dQ.p, r, 4096, 0, h.Hq, L, 128);
++            const double at = dq_atol(ko.dQ.p, r, Ta, 0, h.Hq, L, g_hd);
++            const BitDiff dq = bitdiff(ko.dQ.p, r, Ta, 0, kw.dQ.p, r, 4096, 0, h.Hq, L, g_hd);
+             bq = std::max(bq, dq.maxabs);
+             bq_atol_min = std::min(bq_atol_min, at);
+             if (dq.maxabs > at) bq_ok = false;
+@@ -2089,7 +2104,7 @@
+   for (size_t r0 = 0; r0 < lo.rows.size() && !threw; r0 += 8) {
+     Layout sub{lo.name, T, {}};
+     for (size_t r = r0; r < std::min(lo.rows.size(), r0 + 8); ++r) sub.rows.push_back(lo.rows[r]);
+-    const Problem p{(int)sub.rows.size(), T, h.Hq, h.Hkv, 128};
++    const Problem p{(int)sub.rows.size(), T, h.Hq, h.Hkv, g_hd};
+     Inputs in;
+     make_inputs(in, p, seed + r0);
+     const std::vector<Segment> segs = packed_segments(sub);
+@@ -2224,25 +2239,21 @@
+   g10_refuse(sum, "builder: overlap in a row", "gap or overlap", [&] { build({0, 0}, {0, 100}, {120, 156}, 1, 256); });
+   g10_refuse(sum, "builder: segment past the row end", "outside its row", [&] { build({0}, {0}, {300}, 1, 256); });
+   g10_refuse(sum, "builder: row 1 not covered", "is covered up to", [&] { build({0}, {0}, {256}, 2, 256); });
+-  if (!kernels_ok) {
++  if (!kernels_ok) {   // B300: no path knows the plan
+     PlanHolder pl;
+     plan_for(1, 256, 2, pl.p);
+-    g10_refuse(sum, "this GPU / BLUTRAIN_NO_SM90[_GQA]", "chats", [&] { fwd(1, 2, 1, 256, 128, true, &pl.p); });
++    g10_refuse(sum, "this GPU (B300)", "chats", [&] { fwd(1, 2, 1, 256, 128, true, &pl.p); });
+     return;
+   }
++  // head_dim 64 and T % 256 != 0 were refused here until 2026-10-24; the generic causal kernel takes them now
++  // (also on Hopper, where v62 cannot), so they are no longer refusals.
+   {
+     PlanHolder pl;
+     plan_for(1, 256, 2, pl.p);
+     g10_refuse(sum, "is_causal = false", "chats", [&] { fwd(1, 2, 1, 256, 128, false, &pl.p); });
+-    g10_refuse(sum, "head_dim 64", "chats", [&] { fwd(1, 2, 1, 256, 64, true, &pl.p); });
+     g10_refuse(sum, "plan for B=1 used with B=2", "another shape", [&] { fwd(2, 2, 1, 256, 128, true, &pl.p); });
+     g10_refuse(sum, "plan for 2 heads used with 4", "another shape", [&] { fwd(1, 4, 1, 256, 128, true, &pl.p); });
+   }
+-  {
+-    PlanHolder pl;
+-    plan_for(1, 320, 2, pl.p);
+-    g10_refuse(sum, "T = 320 (not a multiple of 256)", "chats", [&] { fwd(1, 2, 1, 320, 128, true, &pl.p); });
+-  }
+ }
+ 
+ // e) forward time: dense vs A on the same 8 rows (free clocks; reported, not gated)
+@@ -2385,7 +2396,7 @@
+   for (size_t r0 = 0; r0 < lo.rows.size() && !threw; r0 += g_rows_per_call) {
+     Layout sub{lo.name, T, {}};
+     for (size_t r = r0; r < std::min(lo.rows.size(), r0 + g_rows_per_call); ++r) sub.rows.push_back(lo.rows[r]);
+-    const Problem p{(int)sub.rows.size(), T, h.Hq, h.Hkv, 128};
++    const Problem p{(int)sub.rows.size(), T, h.Hq, h.Hkv, g_hd};
+     Inputs in;
+     make_inputs(in, p, seed + r0);   // G9's inputs for this batch
+     const std::vector<Segment> segs = packed_segments(sub);
+@@ -2576,15 +2587,15 @@
+                                        mb(o.dV.p), B, Hq, 1, T, hd, causal, &pl.p);
+     });
+   };
+-  if (!kernels_ok) { refuse("this GPU / BLUTRAIN_NO_SM90[_GQA]", "chats", 1, 2, 256, 128, true, 1); return; }
++  if (!kernels_ok) { refuse("this GPU (B300)", "chats", 1, 2, 256, 128, true, 1); return; }
+   // Vj2 (default since 2026-10-15) and Vj1d (USE_VJ2=0) both run design A; the dense "alone" runs that G11 compares
+-  // bit for bit use the same kernel, so the comparison holds in both modes.
++  // bit for bit use the same kernel, so the comparison holds in both modes. The generic causal path (2026-10-24)
++  // does not read the backward mode.
+   const std::string mode = bwd_mode_name();
+   std::printf("  backward mode: %s\n", mode.c_str());
+-  if (mode.rfind("Vj2", 0) != 0 && mode.rfind("Vj1d", 0) != 0) { refuse(mode.c_str(), "chats", 1, 2, 256, 128, true, 1); return; }
++  if (!g_generic && mode.rfind("Vj2", 0) != 0 && mode.rfind("Vj1d", 0) != 0) { refuse(mode.c_str(), "chats", 1, 2, 256, 128, true, 1); return; }
++  // head_dim 64 and T % 64 != 0 were refused here until 2026-10-24; the generic causal kernels take them now.
+   refuse("is_causal = false", "chats", 1, 2, 256, 128, false, 1);
+-  refuse("head_dim 64", "chats", 1, 2, 256, 64, true, 1);
+-  refuse("T = 288 (not a multiple of 64)", "chats", 1, 2, 288, 128, true, 1);
+   refuse("plan for B=1 used with B=2", "another shape", 2, 2, 256, 128, true, 1);
+   std::vector<Layout> los = {
+       {"D2 2048+2048", 4096, {{2048, 2048}}},
+@@ -2901,7 +2912,6 @@
+   g_diag_rep = env_int("VARLEN_DIAG_REPEAT", 50);
+   if (const char* e = std::getenv("VARLEN_CASE")) g_case = e;
+   const char* only_env = std::getenv("VARLEN_ONLY");
+-  g_kv_deterministic = bwd_mode_name().rfind("Vj1 (", 0) != 0;   // only Vj1 (USE_FLASH=1) is non-deterministic
+   const std::string only = only_env ? only_env : "";   // "D10": run only G6 D10 (diagnostics)
+   int dev = 0;
+   CUDA_CHECK(cudaGetDevice(&dev));
+@@ -2909,12 +2919,24 @@
+   CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
+   const bool hopper = otc::get_arch() == otc::ArchFamily::Hopper;
+   const bool sm90_on = !otc::disable_sm90_gqa();
+-  const bool kernels_ok = hopper && sm90_on;
++  const bool b300 = otc::get_arch() == otc::ArchFamily::Blackwell_B300;
++  // Hopper with SM90 on: v62 + Vj2/Vj1d. Any other GPU but a B300 (and Hopper with BLUTRAIN_NO_SM90[_GQA]): the
++  // generic causal kernels (2026-10-24). B300: no causal hd-128 path, so only the refusals run.
++  g_generic = !b300 && !(hopper && sm90_on);
++  const bool kernels_ok = !b300;
++  g_kv_deterministic = bwd_mode_name().rfind("Vj1 (", 0) != 0;   // only Vj1 (USE_FLASH=1) is non-deterministic
++  g_hd = env_int("VARLEN_HD", 128);
++  if (g_hd != 64 && g_hd != 128) { std::printf("VARLEN_HD must be 64 or 128\n"); return 1; }
++  if (g_hd == 64 && !g_generic) { std::printf("VARLEN_HD=64 needs the generic causal path (not Hopper v62/Vj2)\n"); return 1; }
+   std::printf("===== test_varlen_attention (v2 Step 2 harness) =====\n");
+   std::printf("GPU %d: %s  sm_%d%d  %d SMs  |  arch family Hopper: %s  |  BLUTRAIN_NO_SM90[_GQA]: %s\n", dev,
+               prop.name, prop.major, prop.minor, prop.multiProcessorCount, hopper ? "yes" : "no",
+               sm90_on ? "off" : "ON");
+-  std::printf("backward mode: %s  |  quick: %s\n", bwd_mode_name().c_str(), g_quick ? "yes" : "no");
++  std::printf("kernels under test: %s  |  head_dim (correctness groups): %d\n",
++              b300 ? "none (B300)" : g_generic ? "generic causal WMMA (gqa_v2<causal> + gqa_backward_dQ/dKdV<causal>)"
++                                             : "Hopper v62 + Vj2/Vj1d", g_hd);
++  std::printf("backward mode: %s  |  quick: %s\n", bwd_mode_name().c_str(),
++              g_quick ? "yes" : "no");
+ 
+   Summary sum;
+   const auto t_all = std::chrono::steady_clock::now();
+@@ -2928,11 +2950,11 @@
+   if (only == "D10") {
+     std::printf("\n===== VARLEN_ONLY=D10 (diagnostic run: G6 D10 only) =====\n");
+     if (kernels_ok) g6_d10(have_real ? &Lreal : nullptr, sum);
+-    else sum.skip_("G6 D10: kernels under test are Hopper-only");
++    else sum.skip_("G6 D10: no causal hd-128 path on a B300");
+   } else if (only == "G7") {   // timing only: one pass is seconds, so an A/B can alternate libraries
+     std::printf("\n===== VARLEN_ONLY=G7 (timing only) =====\n");
+     if (kernels_ok) g7_timing(sum);
+-    else sum.skip_("G7: kernels under test are Hopper-only");
++    else sum.skip_("G7: no causal hd-128 path on a B300");
+   } else if (only == "CLASSIC") {   // G1-G7 only (the Step 2 groups), for running groups as parallel processes
+     std::printf("\n===== VARLEN_ONLY=CLASSIC (G1-G7) =====\n");
+     g1_selftest(sum);
+@@ -2946,21 +2968,21 @@
+       g6_d10(have_real ? &Lreal : nullptr, sum);
+       g7_timing(sum);
+     } else {
+-      sum.skip_("G2-G7: kernels under test are Hopper-only");
++      sum.skip_("G2-G7: no causal hd-128 path on a B300");
+     }
+   } else if (only == "G13") {
+     if (kernels_ok) g13_more(have_real ? &Lreal : nullptr, sum);
+-    else sum.skip_("G13: kernels under test are Hopper-only");
++    else sum.skip_("G13: no causal hd-128 path on a B300");
+   } else if (only == "G12") {
+     std::printf("\n===== VARLEN_ONLY=G12 (Step 6: edge cases) =====\n");
+     if (kernels_ok) g12_edges(sum);
+-    else sum.skip_("G12: kernels under test are Hopper-only");
++    else sum.skip_("G12: no causal hd-128 path on a B300");
+   } else if (only == "BENCHDENSE") {
+     if (kernels_ok) bench_dense_mode(sum);
+-    else sum.skip_("BENCHDENSE: kernels under test are Hopper-only");
++    else sum.skip_("BENCHDENSE: no causal hd-128 path on a B300");
+   } else if (only == "BENCH") {
+     if (kernels_ok) bench_mode(have_real ? &Lreal : nullptr, sum);
+-    else sum.skip_("BENCH: kernels under test are Hopper-only");
++    else sum.skip_("BENCH: no causal hd-128 path on a B300");
+   } else if (only == "G11") {
+     std::printf("\n===== VARLEN_ONLY=G11 (Step 5: design A backward) =====\n");
+     g11_chats_backward(have_real ? &Lreal : nullptr, sum, kernels_ok);
+@@ -2970,8 +2992,7 @@
+   } else if (!only.empty()) {
+     sum.record(false, "unknown VARLEN_ONLY=" + only + " (supported: CLASSIC, D10, G7, G10, G11, G12, G13, BENCH, BENCHDENSE)");
+   } else if (!kernels_ok) {
+-    const std::string r = !hopper ? std::string("kernels under test are Hopper-only (v62/Vj1d); this GPU is ") + prop.name
+-                                  : "BLUTRAIN_NO_SM90[_GQA] is set";
++    const std::string r = std::string("no causal hd-128 path on a B300; this GPU is ") + prop.name;
+     for (const char* g : {"G2", "G3", "G4", "G5", "G6", "G7"}) sum.skip_(std::string(g) + ": " + r);
+     g10_chats_forward(nullptr, sum, /*kernels_ok=*/false);   // only the refusals; they must hold here too
+     g11_chats_backward(nullptr, sum, /*kernels_ok=*/false);

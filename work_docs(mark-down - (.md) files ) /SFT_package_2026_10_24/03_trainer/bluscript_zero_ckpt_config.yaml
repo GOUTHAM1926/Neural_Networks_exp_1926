@@ -1,0 +1,111 @@
+# =============================================================================
+# bluscript_zero_ckpt_config.yaml — production_zero trainer config.
+# Selected by:  make run-train-mpi MODE=production_zero [NP=4]
+#
+# Same layout as train/production/bluscript_config.yaml. Reproduces:
+#   BLU_SIZE_CLASS=exact BLU_OPTIMIZER=muon BLU_GLOBAL_CLIP=1 BLU_MIX_PRESET=c2
+#   BLU_ZERO_V2=1 BLU_SYMMETRIC=1 BLU_ALL_BF16=1 BLU_BF16_LOGITS=1 BLU_GRAD_VIEW=1
+#   make run-mpi FILE=bluscript_zero_ckpt.cpp
+#
+# An environment variable already set in the shell wins over this file.
+# Unknown keys stop the run. Dry run: ./_train_runner --config=<file> --print-config
+# =============================================================================
+
+hyper-parameters:
+  context:                  4096      # sequence length T (== RoPE cache length, multiple of 32)
+  vocab:                    50304     # 50257 tiktoken padded for GPU efficiency
+  n_embd:                   2304      # d_model
+  n_layers:                 26
+  n_heads:                  18        # q_heads
+  kv_heads:                 6         # grouped-query: G = q/kv = 3
+  head_dim:                 128       # must be 128: the only head size with causal attention kernels on H100/H200
+  ffn_hidden:               6144      # SwiGLU inner dim
+  rope_theta:               10000
+  qk_eps:                   1e-6
+  rms_eps:                  1e-5
+  rope_interleaved:         false     # false = NeoX half-split (Llama style)
+  weight_tying:             true
+  global_batch:             1048576   # tokens per optimizer step (all ranks)
+  mini_batch:               8         # micro-batch per rank (B)
+  seed:                     1234
+
+training:
+  total_steps:       8000
+  warmup_steps:      200
+  stable_steps:      6200   # WSD: held at max_lr after warmup, then cosine decay to total_steps
+  validation_freq:   250
+  val_loss_steps:    20     # batches per domain per validation pass
+  grad_clip:         1.0
+  step_watchdog:     false  # BLU_STEP_WATCHDOG: true = stop the job (exit 98) if any phase (data, forward/backward,
+                            #   all-reduce, optimizer, validation, checkpoint) makes no progress for step_timeout_s
+  step_timeout_s:    600    # BLU_STEP_TIMEOUT_S: the deadline in seconds; used only when step_watchdog is true
+
+data:
+  data_dir:   "/data"       # BLU_MIX_ROOT: commoncrawl/ code/ math/ edufineweb/
+  mix_preset: "c2"          # BLU_MIX_PRESET: c0 | c1 | c2 (stable -> anneal)
+
+optimizer:
+  type:              "muon"   # BLU_OPTIMIZER: muon | adamW
+  max_lr:            1.2e-3
+  min_lr:            1.2e-4
+  beta1:             0.9
+  beta2:             0.95
+  eps:               1e-8
+  weight_decay:      0.1
+  muon_lr:           1.2e-3
+  muon_min_lr:       1.2e-4
+  muon_momentum:     0.95
+  muon_weight_decay: 0.1
+  muon_ns_steps:     5
+
+checkpointing:
+  enabled:   true                          # BLU_CKPT
+  freq:      1600                          # BLU_CKPT_FREQ
+  ckpt_keep: 4                             # BLU_CKPT_KEEP
+  load:      false                         # BLU_CKPT_LOAD: true = resume the latest run in dir (error if none,
+                                           #   or if it already reached total_steps; appends to the CSV);
+                                           #   false = fresh run in dir, or dir_001, dir_002, ... if dir
+                                           #   already holds checkpoints (never loads or prunes another run)
+  dir:       "checkpoints_bluscript_muon"  # BLU_CKPT_DIR: base name of the run folders
+  prefix:    "blumodel"
+
+logs:
+  enabled:   true                # BLU_LOG_ENABLED
+  log_dir:   ~                   # BLU_LOG_DIR (default: working directory)
+  log_file:  "mix_ratio_1.csv"   # BLU_LOG_CSV
+  overwrite: false               # BLU_LOG_OVERWRITE: replace an existing CSV
+  append:    false               # BLU_LOG_APPEND: append to an existing CSV (implied by checkpointing.load: true)
+                                 # With monitoring.enabled the CSV goes to the run folder instead (see below).
+
+run:
+  name: ~                        # BLU_RUN_NAME / `make ... RUN_NAME=<name>`: REQUIRED when monitoring is on.
+                                 #   Letters, digits, '_' and '-', at most 64. Never invented for you.
+
+monitoring:                      # training metrics only; GPU/host metrics come from the RMS stack (one per cluster)
+  enabled:     true              # BLU_MONITOR: each launch gets <launch dir>/<logs_root>/<run.name>_<mpirun|blurun>_<id>/
+                                 #   (console.log, metrics.csv, run.json) and a live line on the global Grafana
+  logs_root:   "training_logs"   # BLU_LOGS_ROOT: folder under the launch directory that holds the run folders
+  port_range:  "9600-9799"       # BLU_MONITOR_PORTS: each run's metrics exporter takes the first free port here
+  targets_dir: ~                 # BLU_MONITOR_TARGETS_DIR: where runs announce themselves (~ = the machine's shared home)
+  grafana_url: "http://localhost:3000"   # BLU_GRAFANA_URL: the machine's shared Grafana, as seen on the node itself
+  production:  false             # BLU_PRODUCTION (or make PRODUCTION=true): label this launch's runs production="1"
+
+sizeclass:
+  mode: "exact"                  # BLU_SIZE_CLASS: default | exact
+
+parallelism:
+  enabled: true                                        # false = single GPU only (NP=1)
+  config:  "bluscript_zero_ckpt_parallelism.yaml"      # read only when enabled; relative to this file
+
+embedding:
+  backward: "segmented"   # BLU_EMB_BWD: how the token-embedding gradient is summed per vocabulary row
+                          #   segmented   : sort tokens, sum each row in fp32, one write (deterministic, fastest)
+                          #   cooperative : atomic-free shared-memory sums, fp32 accumulation (deterministic)
+                          #   atomic      : one atomicAdd per token in the gradient dtype (bf16: ~15-93% error
+                          #                 on frequent tokens, non-deterministic; audit M1)
+                          #   segmented runs on the local GPU, so it works with backend nccl or bluccl.
+
+mixed_precision:
+  enabled:     true    # BLU_ALL_BF16
+  precision:   bf16    # must be bf16
+  bf16_logits: true    # BLU_BF16_LOGITS (needs Tensor-Implementations >= b975be5)

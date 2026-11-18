@@ -1,0 +1,196 @@
+diff --git a/src/Kernels/cuda/embedding/EmbeddingKernels.cu b/src/Kernels/cuda/embedding/EmbeddingKernels.cu
+index 1d61b0d..4b9547b 100644
+--- a/src/Kernels/cuda/embedding/EmbeddingKernels.cu
++++ b/src/Kernels/cuda/embedding/EmbeddingKernels.cu
+@@ -1,3 +1,4 @@
++#include <cstring>
+ #include "ops/helpers/EmbeddingKernels.h"
+ #include "dtype/CudaTraits.h"
+ #include <cuda_runtime.h>
+@@ -32,9 +33,12 @@ __global__ void __launch_bounds__(256) embedding_forward_kernel_optimized(
+     int64_t weight_stride_row,  // stride between rows (tokens) in weight
+     int64_t weight_stride_col   // stride between cols (embed dims) in weight
+ ) {
+-    // 2D thread indexing: x = embedding element, y = index position
+-    int64_t c = blockIdx.x * blockDim.x + threadIdx.x;  // embedding dimension
+-    int64_t n = blockIdx.y * blockDim.y + threadIdx.y;  // index position
++    // 2D thread indexing: x = index position, y = embedding element
++    // 2026-10-31: tokens were in grid y, which holds at most 65,535 blocks (x 8 tokens = 524,280 tokens per call);
++    // above that the launch failed. Now tokens are in grid x (2^31 - 1 blocks). Chosen by test over a grid-y loop and
++    // a flat 1-D loop: exact in every case and the fastest at our sizes (SFT work doc 45.123 / 45.124).
++    int64_t c = (int64_t)blockIdx.y * blockDim.x + threadIdx.x;  // embedding dimension
++    int64_t n = (int64_t)blockIdx.x * blockDim.y + threadIdx.y;  // index position
+ 
+     if (n >= N || c >= C) return;
+ 
+@@ -70,8 +74,12 @@ __global__ void __launch_bounds__(256) embedding_forward_kernel_vectorized(
+     // Coalescing: Threads 0-31 handle contiguous memory.
+     
+     // Stride for the block: blockDim.x * ILP = 32 * 4 = 128 elements per block-row
+-    int64_t c_vec_start = blockIdx.x * (blockDim.x * 4) + threadIdx.x;
+-    int64_t n = blockIdx.y * blockDim.y + threadIdx.y; // Batch index
++    // 2026-10-31: tokens were in grid y, which holds at most 65,535 blocks (x 8 tokens = 524,280 tokens per call);
++    // above that the launch failed. Now tokens are in grid x (2^31 - 1 blocks). Chosen by test over a grid-y loop and
++    // a flat 1-D loop: exact in every case and the fastest at our sizes (SFT work doc 45.123 / 45.124).
++    // A warp still shares one token (threadIdx.y), so the broadcast below stays warp-uniform.
++    int64_t c_vec_start = (int64_t)blockIdx.y * (blockDim.x * 4) + threadIdx.x;
++    int64_t n = (int64_t)blockIdx.x * blockDim.y + threadIdx.y; // Batch index
+     
+     int64_t C_vec = C / 4;
+     
+@@ -135,9 +143,12 @@ __global__ void __launch_bounds__(256) embedding_backward_kernel_optimized(
+     int64_t grad_weight_stride_row,
+     int64_t grad_weight_stride_col
+ ) {
+-    // 2D thread indexing
+-    int64_t c = blockIdx.x * blockDim.x + threadIdx.x;
+-    int64_t n = blockIdx.y * blockDim.y + threadIdx.y;
++    // 2D thread indexing: x = index position, y = embedding element
++    // 2026-10-31: tokens were in grid y, which holds at most 65,535 blocks (x 8 tokens = 524,280 tokens per call);
++    // above that the launch failed. Now tokens are in grid x (2^31 - 1 blocks). Chosen by test over a grid-y loop and
++    // a flat 1-D loop: exact in every case and the fastest at our sizes (SFT work doc 45.123 / 45.124).
++    int64_t c = (int64_t)blockIdx.y * blockDim.x + threadIdx.x;
++    int64_t n = (int64_t)blockIdx.x * blockDim.y + threadIdx.y;
+ 
+     if (n >= N || c >= C) return;
+ 
+@@ -186,9 +197,13 @@ __global__ void __launch_bounds__(256) embedding_backward_kernel_optimized(
+ 
+ static constexpr int BLOCKDIMY = 32;
+ 
++__device__ __forceinline__ float emb_grad_to_float(float v) { return v; }
++__device__ __forceinline__ float emb_grad_to_float(__nv_bfloat16 v) { return __bfloat162float(v); }
++
++template <typename TIn>
+ __global__ void __launch_bounds__(1024) embedding_backward_kernel_cooperative(
+     const uint16_t* __restrict__ indices,
+-    const float*    __restrict__ grad_output,
++    const TIn*      __restrict__ grad_output,
+     float*          __restrict__ grad_weight,
+     int64_t N,      // total number of indices
+     int64_t C,      // embedding dimension (== stride)
+@@ -245,7 +260,7 @@ __global__ void __launch_bounds__(1024) embedding_backward_kernel_cooperative(
+                 int feature_dim = f + ii * 32;  // 32 = warp size
+                 if (src_row < static_cast<int>(N) && feature_dim < s
+                     && dst_row != padding_idx && dst_row >= 0 && dst_row < static_cast<int>(V)) {
+-                    my_s[threadIdx.x] = grad_output[src_row * C + feature_dim];
++                    my_s[threadIdx.x] = emb_grad_to_float(grad_output[src_row * C + feature_dim]);
+                 } else {
+                     my_s[threadIdx.x] = 0.0f;
+                 }
+@@ -303,9 +318,9 @@ static void launch_embedding_forward(
+     CUDA_KERNEL_SCOPE("launch_embedding_forward");
+     PROFILER_SCOPE("launch_embedding_forward");
+     dim3 block(32, 8);
+-    dim3 grid(
+-        (C + block.x - 1) / block.x,
+-        (N + block.y - 1) / block.y
++    dim3 grid(   // 2026-10-31: tokens in grid x (grid y holds at most 65,535 blocks: 524,280 tokens)
++        (unsigned)((N + block.y - 1) / block.y),
++        (unsigned)((C + block.x - 1) / block.x)
+     );
+     embedding_forward_kernel_optimized<T><<<grid, block>>>(
+         indices, weight, output, N, C, V, padding_idx,
+@@ -335,9 +350,9 @@ void embedding_forward_cuda(
+         int64_t C_vec = C / 4;
+         const int ILP = 4;
+         dim3 block(32, 8);
+-        dim3 grid(
+-            (C_vec + (block.x * ILP) - 1) / (block.x * ILP),
+-            (N + block.y - 1) / block.y
++        dim3 grid(   // 2026-10-31: tokens in grid x (grid y holds at most 65,535 blocks: 524,280 tokens)
++            (unsigned)((N + block.y - 1) / block.y),
++            (unsigned)((C_vec + (block.x * ILP) - 1) / (block.x * ILP))
+         );
+         embedding_forward_kernel_vectorized<<<grid, block>>>(
+             indices, weight, output, N, C, V, padding_idx
+@@ -388,12 +403,45 @@ void embedding_forward_cuda(
+ // atomicAdd kernel that was actually running before this change.
+ static bool embedding_bwd_use_cooperative() {
+     static const bool v = []{
++        const char* m = std::getenv("BLUTRAIN_EMB_BWD");
++        if (m && std::strcmp(m, "atomic") == 0) return false;
+         const char* e = std::getenv("BLUTRAIN_EMB_BWD_COOPERATIVE");
+         return !(e && e[0] == '0');
+     }();
+     return v;
+ }
+ 
++bool embedding_bwd_bf16_cooperative() {
++    static const bool v = []{
++        const char* m = std::getenv("BLUTRAIN_EMB_BWD");
++        return m && std::strcmp(m, "cooperative") == 0;
++    }();
++    return v;
++}
++
++static void launch_embedding_backward_cooperative(
++    const uint16_t* indices, const void* grad_output, bool bf16_input, float* grad_weight,
++    int64_t N, int64_t C, int64_t V, int padding_idx) {
++    constexpr int SZ = 4;   // must match embedding_backward_kernel_cooperative's SZ
++    dim3 block(32, BLOCKDIMY);
++    dim3 grid((C + (32 * SZ) - 1) / (32 * SZ), 1);
++    const size_t smem = sizeof(float) * 32 * BLOCKDIMY + sizeof(int) * 32 * BLOCKDIMY;
++    if (bf16_input)
++        embedding_backward_kernel_cooperative<__nv_bfloat16><<<grid, block, smem>>>(
++            indices, static_cast<const __nv_bfloat16*>(grad_output), grad_weight, N, C, V, padding_idx);
++    else
++        embedding_backward_kernel_cooperative<float><<<grid, block, smem>>>(
++            indices, static_cast<const float*>(grad_output), grad_weight, N, C, V, padding_idx);
++}
++
++void embedding_backward_cuda_cooperative_f32acc(
++    const uint16_t* indices, const bfloat16_t* grad_output, float* grad_weight,
++    int64_t N, int64_t C, int64_t V, int padding_idx) {
++    PROFILER_SCOPE("embedding_backward_cuda_cooperative_f32acc");
++    launch_embedding_backward_cooperative(indices, grad_output, /*bf16_input=*/true, grad_weight,
++                                          N, C, V, padding_idx);
++}
++
+ // Helper to launch the templated backward kernel
+ template<typename T>
+ static void launch_embedding_backward(
+@@ -415,13 +463,8 @@ static void launch_embedding_backward(
+     if constexpr (std::is_same_v<T, float>) {
+         const bool contiguous = (grad_weight_stride_col == 1) && (grad_weight_stride_row == C);
+         if (contiguous && embedding_bwd_use_cooperative()) {
+-            constexpr int SZ = 4;   // must match embedding_backward_kernel_cooperative's SZ
+-            dim3 block(32, BLOCKDIMY);
+-            dim3 grid((C + (32 * SZ) - 1) / (32 * SZ), 1);
+-            const size_t smem = sizeof(float) * 32 * BLOCKDIMY + sizeof(int) * 32 * BLOCKDIMY;
+-            embedding_backward_kernel_cooperative<<<grid, block, smem>>>(
+-                indices, grad_output, grad_weight, N, C, V, padding_idx
+-            );
++            launch_embedding_backward_cooperative(indices, grad_output, /*bf16_input=*/false,
++                                                  grad_weight, N, C, V, padding_idx);
+             return;
+         }
+         static bool warned = false;
+@@ -435,9 +478,9 @@ static void launch_embedding_backward(
+     }
+ 
+     dim3 block(32, 8);
+-    dim3 grid(
+-        (C + block.x - 1) / block.x,
+-        (N + block.y - 1) / block.y
++    dim3 grid(   // 2026-10-31: tokens in grid x (grid y holds at most 65,535 blocks: 524,280 tokens)
++        (unsigned)((N + block.y - 1) / block.y),
++        (unsigned)((C + block.x - 1) / block.x)
+     );
+     embedding_backward_kernel_optimized<T><<<grid, block>>>(
+         indices, grad_output, grad_weight, N, C, V, padding_idx,
+@@ -501,4 +544,12 @@ void embedding_backward_cuda(
+ }
+ 
+ } // namespace cuda
+-} // namespace OwnTensor
+\ No newline at end of file
++} // namespace OwnTensor
++
++namespace OwnTensor {
++namespace {
++EmbeddingBackwardHook g_embedding_bwd_hook = nullptr;
++}
++void set_embedding_backward_hook(EmbeddingBackwardHook h) { g_embedding_bwd_hook = h; }
++EmbeddingBackwardHook get_embedding_backward_hook() { return g_embedding_bwd_hook; }
++}  // namespace OwnTensor

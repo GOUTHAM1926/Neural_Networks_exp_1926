@@ -1,0 +1,100 @@
+diff --git a/Makefile b/Makefile
+index 2144c94..3a464ce 100644
+--- a/Makefile
++++ b/Makefile
+@@ -33,7 +33,9 @@ ifeq ($(origin SM_ARCH),undefined)
+   SM_ARCH := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+ endif
+ ifeq ($(strip $(SM_ARCH)),)
+-  SM_ARCH := 86
++  ifeq ($(filter clean% help print_sm,$(MAKECMDGOALS)),)
++    $(error Could not detect the GPU architecture (nvidia-smi failed or found no GPU). Pass it explicitly, e.g. SM_ARCH=90 for H100/H200 or SM_ARCH=120 for RTX 50xx)
++  endif
+ endif
+ 
+ # Datacenter Blackwell (B100/B200/GB200/B300/GB300, compute_cap 10.0/10.3) only
+@@ -108,14 +110,14 @@ ifeq ($(NVTX_LIB),)
+ endif
+ 
+ # =============================================================================
+-# BLAS Backend Selection  (default: cublas | WITH_BLUBLAS=1 -> blublas)
++# BLAS Backend Selection  (default: blublas | WITH_CUBLAS=1 -> cublas)
+ # =============================================================================
+ BLAS_STAMP := $(OBJDIR)/.blas_backend
+ 
+-ifeq ($(WITH_BLUBLAS),1)
+-  BLAS_BACKEND := blublas
+-else
++ifeq ($(WITH_CUBLAS),1)
+   BLAS_BACKEND := cublas
++else
++  BLAS_BACKEND := blublas
+ endif
+ 
+ LAST_BLAS := $(shell cat $(BLAS_STAMP) 2>/dev/null)
+@@ -139,8 +141,19 @@ DEPFLAGS         := -MMD -MP
+ TENSOR_CXXFLAGS  := -std=c++2a -fPIC -Wall -Wextra -O3 -fopenmp -mavx2 -mfma -mf16c $(FTIME_FLAG) $(DEPFLAGS)
+ ## Arch is applied per-recipe (GENCODE_FOR / ARCH_NVCC_FLAGS), NOT baked in here,
+ ## so Blackwell and non-Blackwell sources can target different archs.
++## No --use_fast_math (removed 2026-10-31). It implied --ftz=true --prec-div=false --prec-sqrt=false and turned
++## sinf / cosf / expf / logf / powf into the fast intrinsics for EVERY kernel: the RoPE table (2x Hugging Face's
++## error), the loss's exp / log, the norms' and optimizers' sqrt / division. Kernels that want a fast exp or reciprocal
++## call it explicitly (attention: ex2.approx / rcp.approx PTX; SwiGLU: __expf), as PyTorch, TransformerEngine (a
++## per-file list) and vLLM (per file) do. SFT work doc 45.114.
+ TENSOR_NVCCFLAGS := -std=c++17 -Xcompiler="-fPIC" \
+-                    --use_fast_math -O3 --expt-relaxed-constexpr $(DEPFLAGS)
++                    -O3 --expt-relaxed-constexpr $(DEPFLAGS)
++## The one exception (2026-10-31, measured): the loss kernels keep --use_fast_math, per file as TransformerEngine does.
++## Without it the loss forward's per-logit expf is the exact (slow) one: forward 0.81 -> 1.13 ms (+37%) on the 4k SFT batch
++## with no precision gain for bf16 logits (the training path; errors equal to +-1%). With it: the old speed (fwd + bwd
++## 2.239 vs 2.237 ms) and the old precision (fp32 forward <= 1.1e-7 relative). An explicit __expf in the forward alone
++## recovered only half (2.410 ms). SFT work doc 45.121.
++$(OBJDIR)/src/Kernels/cuda/loss/LossKernels.o: TENSOR_NVCCFLAGS += --use_fast_math
+ 
+ TENSOR_RPATH   := -Xlinker -rpath -Xlinker '$$ORIGIN/lib' \
+                    -Xlinker -rpath -Xlinker '$$ORIGIN/../../Profiler/lib'
+@@ -172,7 +185,7 @@ BLAS_CPPFLAGS  := -I$(BLAS_DIR)/include \
+                   -DWITH_CUDA
+ BLAS_CXXFLAGS  := -std=c++17 -fPIC -Wall -O3 -DNDEBUG $(DEPFLAGS)
+ BLAS_NVCCFLAGS := -std=c++17 -Xcompiler="-fPIC" \
+-                  -O3 -DNDEBUG -Xptxas -O3 --use_fast_math \
++                  -O3 -DNDEBUG -Xptxas -O3 \
+                   --expt-relaxed-constexpr \
+                   -I$(BLAS_DIR)/external/cutlass/include \
+                   -I$(BLAS_CCCL_INC) \
+@@ -509,7 +522,7 @@ check-all: tensor-api-test autocheck-run modules-test memcheck-run
+ # run-cuda -- compile a single CUDA test (.cu) against libtensor, run it, then
+ # delete the executable. For the standalone kernel tests in Tests/kernel_tests/
+ # that call the public kernel API (rope_*, swiglu_*, rms_norm_*) directly.
+-# Usage: make run-cuda FILE=Tests/kernel_tests/test_RoPE_fwd.cu [WITH_BLUBLAS=1]
++# Usage: make run-cuda FILE=Tests/kernel_tests/test_RoPE_fwd.cu [WITH_CUBLAS=1]
+ # =============================================================================
+ RUN_CUDA_BIN := run_cuda_runner
+ 
+@@ -538,7 +551,7 @@ run-cuda: $(TARGET_SO)
+ run-snippet: $(TARGET_SO)
+ 	@if [ -z "$(FILE)" ]; then \
+ 		echo "ERROR: Please specify a file to run."; \
+-		echo "Usage: make run-snippet FILE=path/to/file.cpp [PROFILER=1] [WITH_BLUBLAS=1]"; \
++		echo "Usage: make run-snippet FILE=path/to/file.cpp [PROFILER=1] [WITH_CUBLAS=1]"; \
+ 		exit 1; \
+ 	fi
+ 	@echo "--- BLAS backend : $(BLAS_BACKEND) ---"
+@@ -556,7 +569,7 @@ endif
+ run-folder: $(TARGET_SO)
+ 	@if [ -z "$(FOLDER)" ]; then \
+ 		echo "ERROR: Please specify a folder."; \
+-		echo "Usage: make run-folder FOLDER=Tests/path/to/folder [WITH_BLUBLAS=1]"; \
++		echo "Usage: make run-folder FOLDER=Tests/path/to/folder [WITH_CUBLAS=1]"; \
+ 		exit 1; \
+ 	fi
+ 	@echo "--- BLAS backend : $(BLAS_BACKEND) ---"
+@@ -640,7 +653,7 @@ help:
+ 	@echo "  make print_sm                 Print detected GPU compute capability"
+ 	@echo ""
+ 	@echo "Flags:"
+-	@echo "  WITH_BLUBLAS=1                Link libtensor against libblublas (default: cublas)"
++	@echo "  WITH_CUBLAS=1                 Link libtensor against cuBLAS (default: blublas)"
+ 	@echo "  PROFILER=1                    Enable autograd profiler"
+ 	@echo "  SM_ARCH=<nn>                  Override GPU SM arch (default: auto-detected)"
+ 	@echo ""

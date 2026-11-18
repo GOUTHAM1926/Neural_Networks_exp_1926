@@ -1,0 +1,673 @@
+--- a/src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.cu
+@@ -51,6 +51,8 @@
+ 
+ namespace OwnTensor {
+ namespace cuda {
++// 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): the plan's per-KV-head Vj2 block list (place, count, group size), kept outside GqaChatPlan.
++bool gqa_vj2_hsum_list(const int32_t* vj2_blocks, const int32_t** list, int* n, int* G);
+ namespace gqa_bwd_vj2 {
+ 
+ using bf16 = __nv_bfloat16;
+@@ -403,11 +405,13 @@
+     const long warp0         = (long)blockIdx.x * warpsPerBlock + (threadIdx.x >> 5);
+     const long stride        = (long)gridDim.x * warpsPerBlock;
+     for (long row = warp0; row < nRowsP; row += stride) {
+-        *reinterpret_cast<float4*>(d_dqa + row * 128 + lane * 4) = make_float4(0.f, 0.f, 0.f, 0.f);
++        // 2026-11-14 EXPERIMENT direct dQ: the zeroing moved below the tile lookup and skips direct tiles. Old line (kept):
++        // *reinterpret_cast<float4*>(d_dqa + row * 128 + lane * 4) = make_float4(0.f, 0.f, 0.f, 0.f);
+         const long tp = row >> 6;                         // padded tile over all heads: hq * nT + T
+         const int  r  = (int)(row & 63);
+         const int  hq = (int)(tp / nT);
+-        const int4 dt = dq_tiles[tp - (long)hq * nT];     // {b, row0, nrows, 0}
++        const int4 dt = dq_tiles[tp - (long)hq * nT];     // {b, row0, nrows, direct}
++        if (dt.w == 0) *reinterpret_cast<float4*>(d_dqa + row * 128 + lane * 4) = make_float4(0.f, 0.f, 0.f, 0.f);
+         if (r < dt.z) {                                    // one row per warp: the same in every lane
+             const long src  = ((long)dt.x * Hq + hq) * S + dt.y + r;
+             const long base = src * 128 + lane * 4;
+@@ -453,7 +457,9 @@
+ // CHATS = false is the dense kernel, unchanged (SASS checked identical to the first Vj2). The three A-only parameters
+ // are the LAST ones so the older ones keep their offsets.
+ // F32P (2026-10-31): fp32 dK / dV partials (dVp / dKp then point to fp32 data; BLU_VJ2_DKDV_F32=1).
+-template<bool CHATS, bool F32P = false>
++// 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): HSUM = one block per (key tile, KV head), all G query heads inside it (see the launcher).
++// Old line (kept): template<bool CHATS, bool F32P = false>
++template<bool CHATS, bool F32P = false, bool HSUM = false>
+ __global__ void __launch_bounds__(NTHREADS, 1)
+ gqa_bwd_vj2_kernel(
+     const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
+@@ -462,19 +468,27 @@
+     float* __restrict__ dQacc,                          // fp32, 64 x 128 tiles in fragment order
+     const float* __restrict__ Lse2, const float* __restrict__ Drow,
+     int B, int Hq, int Hkv, int G, int S, float scale, int sw,
+-    const int4* __restrict__ blocks, bf16* __restrict__ dVp, bf16* __restrict__ dKp) {   // A only
++    const int4* __restrict__ blocks, bf16* __restrict__ dVp, bf16* __restrict__ dKp,   // A only
++    bf16* __restrict__ dQout) {   // 2026-11-14 EXPERIMENT direct dQ: the dQ output (bf16 [rows][128]), A only
+     int kt, hq, b;
+     int t0 = 0, L = 0, dqt0 = 0;                        // A only (dense: 0)
++    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): with HSUM, hq = the FIRST query head of the KV head's group, and hst = the padded-slot
++    // stride from one query head to the next (A: the plan's n_dq_tiles, in the list's 7th int).
++    int hst = 0;
+     if constexpr (CHATS) {
+         const int4 w0 = blocks[2 * blockIdx.x], w1 = blocks[2 * blockIdx.x + 1];
+         b = w0.x; t0 = w0.y; L = w0.z; kt = w0.w; hq = w1.x; dqt0 = w1.y;
++        if constexpr (HSUM) hst = w1.z;
+     } else {
+-        const int nkt = S / BN, HB = B * Hq;
++        // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): with HSUM the grid's pairs are (batch, KV head). Old line (kept):
++        //     const int nkt = S / BN, HB = B * Hq;
++        const int nkt = S / BN, HB = B * (HSUM ? Hkv : Hq);
+         const int sec = blockIdx.x / (sw * nkt), in = blockIdx.x % (sw * nkt);
+         const int n = (sec < HB / sw) ? sw : HB % sw;       // pairs in this section (the last one may be short)
+         kt = in / n;
+         const int hb = sec * sw + in % n;
+-        b = hb / Hq; hq = hb % Hq;
++        // Old line (kept): b = hb / Hq; hq = hb % Hq;
++        if constexpr (HSUM) { b = hb / Hkv; hq = (hb % Hkv) * G; } else { b = hb / Hq; hq = hb % Hq; }
+     }
+     const int hkv = hq / G;
+     const int tid = threadIdx.x, wg = tid / WGT;
+@@ -484,6 +498,17 @@
+     const int q_first = 2 * kt;
+     int nIter = S / BM - q_first;                       // >= 1: k0 < S and S % 64 == 0
+     if constexpr (CHATS) nIter = (L + BM - 1) / BM - q_first;   // A: >= 1 because k0 < L
++    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): NT = every step of the block: G heads x nIter steps with HSUM, else nIter. The loader, the
++    // dQ writer and the compute groups count i over all NT steps (stages, barrier phases and hand-offs continue
++    // across the head boundary); the step inside the current head is ii, the head is hq + g.
++    const int NT = HSUM ? G * nIter : nIter;
++    // ---- 2026-11-14 EXPERIMENT direct dQ (work log 45.197, the backward study) ----
++    // Query tiles 0 and 1 of a chat get dQ from key block 0 only (key block kt starts at query tile 2 kt). The
++    // first nDirect steps of key block 0 therefore store their dQ straight to the output as bf16 (see the step
++    // loop); the prep kernel does not zero those accumulator tiles and the conversion kernel skips them
++    // (dq_tiles[..].w == 1, set by gqa_chat_plan_build). Dense rows: nDirect = 0, nothing changes.
++    int nDirect = 0;
++    if constexpr (CHATS) nDirect = (kt == 0) ? (nIter < 2 ? nIter : 2) : 0;
+ 
+     extern __shared__ __align__(1024) char smem_raw[];
+     // Round the base up to 1024 B by pointer arithmetic on smem_raw, so the compiler still knows every pointer below
+@@ -521,10 +546,14 @@
+                 tma_load_2d(sK + KV_HALF, &tma_K, 64, kvRow, kv_full);
+                 tma_load_2d(sV,           &tma_V, 0,  kvRow, kv_full);
+                 tma_load_2d(sV + KV_HALF, &tma_V, 64, kvRow, kv_full);
+-                for (int i = 0; i < nIter; i++) {
++                // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2). Old lines (kept): for (int i = 0; i < nIter; i++) { ... const int qRow =
++                //     (b * Hq + hq) * S + t0 + (q_first + i) * BM;
++                int hstep = 0, hg = 0;                  // HSUM: step inside the head, head offset
++                for (int i = 0; i < NT; i++) {
+                     const int s = i & 1;
+                     if (i >= 2) mbar_wait(&q_empty[s], ((i >> 1) - 1) & 1);   // both groups done with step i-2
+-                    const int qRow = (b * Hq + hq) * S + t0 + (q_first + i) * BM;   // t0: A only (else 0)
++                    const int ii = HSUM ? hstep : i, g = HSUM ? hg : 0;
++                    const int qRow = (b * Hq + hq + g) * S + t0 + (q_first + ii) * BM;   // t0: A only (else 0)
+                     bf16* q_s  = sQ  + s * Q_TILE;
+                     bf16* do_s = sdO + s * Q_TILE;
+                     mbar_arrive_expect_tx(&q_full[s], QSTEP_TX);
+@@ -533,20 +562,29 @@
+                     tma_load_2d(do_s,          &tma_dO, 0,  qRow, &q_full[s]);
+                     tma_load_2d(do_s + Q_HALF, &tma_dO, 64, qRow, &q_full[s]);
+                     if constexpr (CHATS) {   // A: the step's padded slot (64-row aligned, see bwd_prep_vj2_chats)
+-                        bulk_load_1d(sLSE + s * BM, Lse2 + (long)(dqt0 + i) * BM, BM * 4, &q_full[s]);
+-                        bulk_load_1d(sD   + s * BM, Drow + (long)(dqt0 + i) * BM, BM * 4, &q_full[s]);
++                        // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): head hq + g's slot. Old: Lse2 / Drow + (long)(dqt0 + i) * BM
++                        bulk_load_1d(sLSE + s * BM, Lse2 + (long)(dqt0 + g * hst + ii) * BM, BM * 4, &q_full[s]);
++                        bulk_load_1d(sD   + s * BM, Drow + (long)(dqt0 + g * hst + ii) * BM, BM * 4, &q_full[s]);
+                     } else {
+                         bulk_load_1d(sLSE + s * BM, Lse2 + qRow, BM * 4, &q_full[s]);
+                         bulk_load_1d(sD   + s * BM, Drow + qRow, BM * 4, &q_full[s]);
+                     }
++                    if constexpr (HSUM) { if (++hstep == nIter) { hstep = 0; ++hg; } }
+                 }
+             }
+         } else if (warp == 1) {
+             // dQ writer: for every step, group 0's then group 1's fp32 dQ (16 KB, fragment order) goes to its
+             // slot of the tile with one 1-D bulk reduce-add; the buffer is handed back once the copy has read it.
+-            for (int i = 0; i < nIter; i++) {
+-                float* tile = dQacc + ((long)(b * Hq + hq) * (S / BM) + (q_first + i)) * (BM * D);
+-                if constexpr (CHATS) tile = dQacc + (long)(dqt0 + i) * (BM * D);   // A: the step's padded slot
++            // 2026-11-14 EXPERIMENT direct dQ: the direct steps hand nothing to the writer. Old line (kept): for (int i = 0; i < nIter; i++) {
++            // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): with HSUM the writer walks all G x nIter steps and skips each head's direct steps.
++            // Old lines (kept): for (int i = nDirect; i < nIter; i++) { float* tile = dQacc + ((long)(b * Hq + hq) *
++            //     (S / BM) + (q_first + i)) * (BM * D); (A: dQacc + (long)(dqt0 + i) * (BM * D))
++            int hstep = 0, hg = 0;                      // HSUM: step inside the head, head offset
++            for (int i = (HSUM ? 0 : nDirect); i < NT; i++) {
++                const int ii = HSUM ? hstep : i, g = HSUM ? hg : 0;
++                if constexpr (HSUM) { if (++hstep == nIter) { hstep = 0; ++hg; } if (ii < nDirect) continue; }
++                float* tile = dQacc + ((long)(b * Hq + hq + g) * (S / BM) + (q_first + ii)) * (BM * D);
++                if constexpr (CHATS) tile = dQacc + (long)(dqt0 + g * hst + ii) * (BM * D);   // A: the step's padded slot
+ #pragma unroll
+                 for (int c = 0; c < 2; c++) {
+                     bar_sync(BAR_DQ_FULL + c, WGT + 32);
+@@ -556,7 +594,8 @@
+                         bulk_wait_read();
+                     }
+                     __syncwarp();
+-                    if (i + 1 < nIter) bar_arrive(BAR_DQ_EMPTY + c, WGT + 32);
++                    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2). Old line (kept): if (i + 1 < nIter) bar_arrive(BAR_DQ_EMPTY + c, WGT + 32);
++                    if (i + 1 < NT) bar_arrive(BAR_DQ_EMPTY + c, WGT + 32);
+                 }
+             }
+             if (lane == 0) bulk_wait_all();   // the last reduce-adds have landed before the block exits
+@@ -591,14 +630,124 @@
+     zero_f<64>(dv); zero_f<64>(dk);
+     mbar_wait(kv_full, 0);
+ 
+-    for (int i = 0; i < nIter; i++) {
++    // ---- 2026-11-14 EXPERIMENT "skip the masked group" (work log 45.197, the backward study) ----
++    // WHAT: group 1 owns keys k0+64 .. k0+127; the first step of a block holds queries k0 .. k0+63. Every key of
++    // group 1 comes after every query of that step, so the causal mask sets its whole P to 0 there (in the last block
++    // of a chat with an odd tile count those keys are past the chat's end as well). Before this change group 1 still
++    // ran that step in full: the S^T and dP^T GEMMs, 2,048 exps, the dV and dK GEMMs, all for exact zeros.
++    // NOW: group 1 does only what the step needs from it: it writes zeros into its 64 rows of dS^T (both groups' dQ
++    // GEMMs read all 128 rows), runs its dQ GEMM (head cols 64-127, fed by group 0's dS rows) and hands that dQ to
++    // the writer. Its dV / dK get nothing in this step (before: + exact zeros). The barrier protocol is unchanged: it
++    // still waits for the step's loads, meets group 0 on BAR_PDS, arrives on BAR_DQ_FULL and on q_empty[0].
++    // RESULTS: the same values (only additions of zero are removed).
++    // The loop below then starts at step 1 for group 1 (i0). Old loop header (kept, not deleted):
++    //     for (int i = 0; i < nIter; i++) {
++    int i0 = 0;
++    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): with HSUM this step runs inside the loop at the first step of EVERY head (below).
++    // Old line (kept): if (c == 1) {
++    if (!HSUM && c == 1) {
++        mbar_wait(&q_full[0], 0);
++        {
++            const int row0 = 64 * c + 16 * warp + ph, row1 = row0 + 8;
++            const uint32_t a0 = (uint32_t)__cvta_generic_to_shared(&sdS[row0 * 64 + (((mm    ) ^ ph) << 3)]);
++            const uint32_t a1 = (uint32_t)__cvta_generic_to_shared(&sdS[row0 * 64 + (((mm + 4) ^ ph) << 3)]);
++            const uint32_t a2 = (uint32_t)__cvta_generic_to_shared(&sdS[row1 * 64 + (((mm    ) ^ ph) << 3)]);
++            const uint32_t a3 = (uint32_t)__cvta_generic_to_shared(&sdS[row1 * 64 + (((mm + 4) ^ ph) << 3)]);
++            stmatrix_x4(a0, 0u, 0u, 0u, 0u);
++            stmatrix_x4(a1, 0u, 0u, 0u, 0u);
++            stmatrix_x4(a2, 0u, 0u, 0u, 0u);
++            stmatrix_x4(a3, 0u, 0u, 0u, 0u);
++        }
++        fence_proxy_async_shared();
++        bar_sync(BAR_PDS, 2 * WGT);               // group 0's dS rows of step 0 are in sdS[0]
++        float dq0[32];
++        zero_f<32>(dq0);
++        gemm_dq_issue(dq0, dS_base, dK_halfc);    // dQ head cols 64-127 of step 0
++        wgmma_wait0();
++        fence_f<32>(dq0);
++        // 2026-11-14 EXPERIMENTS 1 + 2 together: in key block 0 this step is a direct-dQ step (nDirect >= 1): the
++        // group stores its half of the tile itself, as in the step loop; elsewhere it hands it to the writer.
++        if (nDirect > 0) {
++            bf16* stq = reinterpret_cast<bf16*>(dq_stage);
++            stage_acc_bf16_sw128(dq0, stq, tw, scale);
++            bar_sync(BAR_EPI + c, WGT);
++            const int  nrq  = L - q_first * BM;   // rows of this query tile inside the chat (>= 1)
++            const long qRow = (long)(b * Hq + hq) * S + t0 + q_first * BM;
++            for (int e = tw; e < 64 * 8; e += WGT) {
++                const int r = e >> 3, kk = e & 7;
++                if (r >= nrq) continue;
++                const bf16* src = stq + r * 64 + ((kk ^ (r & 7)) << 3);
++                *reinterpret_cast<uint4*>(dQout + (qRow + r) * D + c * 64 + kk * 8) = *reinterpret_cast<const uint4*>(src);
++            }
++        } else {
++        store_acc_frag_f32(dq0, dq_stage, tw);
++        fence_proxy_async_shared();
++        bar_arrive(BAR_DQ_FULL + c, WGT + 32);
++        }
++        if (tw == 0) mbar_arrive(&q_empty[0]);
++        i0 = 1;
++    }
++    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2). Old lines (kept): for (int i = i0; i < nIter; i++) { ... const int q0 = (q_first + i) * BM;
++    int hstep = 0, hg = 0;                        // HSUM: the step inside the current head, the head offset
++    bool pend = false;                            // HSUM: a dQ hand-off whose staging the writer may still read
++    for (int i = i0; i < NT; i++) {
+         const int s = i & 1;
+-        const int q0 = (q_first + i) * BM;
++        const int ii = HSUM ? hstep : i;
++        const int q0 = (q_first + ii) * BM;           // the diagonal steps = the first two steps of each head
+         bf16* ds_s = sdS + s * DS_TILE;
+         const uint64_t dq_s  = desc_add(dQ_base, s * Q_TILE);
+         const uint64_t ddo_s = desc_add(dO_base, s * Q_TILE);
+         const uint64_t dds_s = desc_add(dS_base, s * DS_TILE);
+         mbar_wait(&q_full[s], (i >> 1) & 1);
++        if constexpr (HSUM) {
++            // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): idea 1 at the first step of EVERY head. Group 1's keys all come after this step's
++            // queries: it zeroes its 64 dS rows, runs its dQ GEMM (fed by group 0's dS rows) and gives that dQ
++            // away: straight to the output on a direct step (idea 2), else to the writer. Same barriers as the
++            // full step (q_full, BAR_PDS, BAR_DQ_FULL, q_empty), as in the peeled step of 1 + 2.
++            if (c == 1 && ii == 0) {
++                {
++                    const int row0 = 64 * c + 16 * warp + ph, row1 = row0 + 8;
++                    const uint32_t a0 = (uint32_t)__cvta_generic_to_shared(&ds_s[row0 * 64 + (((mm    ) ^ ph) << 3)]);
++                    const uint32_t a1 = (uint32_t)__cvta_generic_to_shared(&ds_s[row0 * 64 + (((mm + 4) ^ ph) << 3)]);
++                    const uint32_t a2 = (uint32_t)__cvta_generic_to_shared(&ds_s[row1 * 64 + (((mm    ) ^ ph) << 3)]);
++                    const uint32_t a3 = (uint32_t)__cvta_generic_to_shared(&ds_s[row1 * 64 + (((mm + 4) ^ ph) << 3)]);
++                    stmatrix_x4(a0, 0u, 0u, 0u, 0u);
++                    stmatrix_x4(a1, 0u, 0u, 0u, 0u);
++                    stmatrix_x4(a2, 0u, 0u, 0u, 0u);
++                    stmatrix_x4(a3, 0u, 0u, 0u, 0u);
++                }
++                fence_proxy_async_shared();
++                bar_sync(BAR_PDS, 2 * WGT);           // group 0's dS rows of this step are in sdS[s]
++                float dq0[32];
++                zero_f<32>(dq0);
++                gemm_dq_issue(dq0, dds_s, dK_halfc);  // dQ head cols 64-127 of this step
++                wgmma_wait0();
++                fence_f<32>(dq0);
++                if (ii < nDirect) {                   // idea 2: this tile has no other contributor
++                    if (pend) { bar_sync(BAR_DQ_EMPTY + c, WGT + 32); pend = false; }   // the writer read the buffer
++                    bf16* stq = reinterpret_cast<bf16*>(dq_stage);
++                    stage_acc_bf16_sw128(dq0, stq, tw, scale);
++                    bar_sync(BAR_EPI + c, WGT);
++                    const int  nrq  = L - q0;         // rows of this query tile inside the chat (>= 1)
++                    const long qRow = (long)(b * Hq + hq + hg) * S + t0 + q0;
++                    for (int e = tw; e < 64 * 8; e += WGT) {
++                        const int r = e >> 3, kk = e & 7;
++                        if (r >= nrq) continue;
++                        const bf16* src = stq + r * 64 + ((kk ^ (r & 7)) << 3);
++                        *reinterpret_cast<uint4*>(dQout + (qRow + r) * D + c * 64 + kk * 8) = *reinterpret_cast<const uint4*>(src);
++                    }
++                } else {
++                    if (pend) bar_sync(BAR_DQ_EMPTY + c, WGT + 32);   // the writer has read the previous dQ
++                    store_acc_frag_f32(dq0, dq_stage, tw);
++                    fence_proxy_async_shared();
++                    bar_arrive(BAR_DQ_FULL + c, WGT + 32);
++                    pend = true;
++                }
++                if (tw == 0) mbar_arrive(&q_empty[s]);
++                if (++hstep == nIter) { hstep = 0; ++hg; }
++                continue;
++            }
++        }
+ 
+         // LSE * log2e of this thread's 16 query columns, read BEFORE the score GEMMs are issued (G3, 2026-10-13).
+         // The wgmma instructions wait in the same issue queue as these loads, so a load placed after them only
+@@ -711,16 +860,44 @@
+         wgmma_commit();                           // group 3: dK
+         wgmma_wait1();                            // dQ done, dK still running
+         fence_f<32>(dq);
+-        if (i > 0) bar_sync(BAR_DQ_EMPTY + c, WGT + 32);   // the writer has read the previous dQ
++        // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): per head (ii). With HSUM a direct step can follow hand-offs of the previous head, so it first
++        // waits until the writer has read the staging buffer. Old line (kept): if (i < nDirect) {
++        if (ii < nDirect) {
++            if (HSUM && pend) { bar_sync(BAR_DQ_EMPTY + c, WGT + 32); pend = false; }
++            // 2026-11-14 EXPERIMENT direct dQ: this tile has no other contributor. Stage the group's [64 queries][64 head cols] as
++            // bf16 (scale applied here, the rounding of convert_dq_frag_vj2), then every thread stores 16-B row
++            // chunks of the rows that belong to the chat (the dK / dV epilogue's plain-store form).
++            bf16* stq = reinterpret_cast<bf16*>(dq_stage);
++            stage_acc_bf16_sw128(dq, stq, tw, scale);
++            bar_sync(BAR_EPI + c, WGT);           // the whole group has staged (a chunk holds 4 threads' values)
++            const int  nrq  = L - q0;             // rows of this query tile inside the chat (>= 1)
++            const long qRow = (long)(b * Hq + hq + (HSUM ? hg : 0)) * S + t0 + q0;   // IDEA 4: head hq + g (old: hq)
++            for (int e = tw; e < 64 * 8; e += WGT) {
++                const int r = e >> 3, kk = e & 7;
++                if (r >= nrq) continue;
++                const bf16* src = stq + r * 64 + ((kk ^ (r & 7)) << 3);
++                *reinterpret_cast<uint4*>(dQout + (qRow + r) * D + c * 64 + kk * 8) = *reinterpret_cast<const uint4*>(src);
++            }
++        } else {
++        // Old line (kept): if (i > 0) bar_sync(BAR_DQ_EMPTY + c, WGT + 32);   // the writer has read the previous dQ
++        // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): with HSUM the wait depends on an earlier hand-off still being read (any head). Old line (kept):
++        //     if (i > nDirect) bar_sync(BAR_DQ_EMPTY + c, WGT + 32);   // the writer has read the previous dQ
++        if (HSUM ? pend : (i > nDirect)) bar_sync(BAR_DQ_EMPTY + c, WGT + 32);   // the writer has read the previous dQ
+         store_acc_frag_f32(dq, dq_stage, tw);     // unscaled; convert_dq_frag_vj2 applies the scale
+         fence_proxy_async_shared();
+         bar_arrive(BAR_DQ_FULL + c, WGT + 32);    // hand this step's dQ to the writer, do not wait
++        if constexpr (HSUM) pend = true;
++        }
+         wgmma_wait0();                            // dK done: nothing of this step reads sQ/sdO/sdS any more
+         fence_f<64>(dk); fence_u<16>(aP); fence_u<16>(aS);
+         if (tw == 0) mbar_arrive(&q_empty[s]);
++        if constexpr (HSUM) { if (++hstep == nIter) { hstep = 0; ++hg; } }   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2)
+     }
+ 
+     // ---- epilogue: dV, dK of this group's 64 keys -> bf16 partial of this query head ----------------------
++    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): with HSUM, dv / dk hold the sum over all G query heads, so the block writes the FINAL dV, dK
++    // rows of KV head hkv (tma_dV_st / tma_dK_st and dVp / dKp then point to d_dV / d_dK, see the launcher).
++    static_assert(!(F32P && HSUM), "HSUM has no partials: the fp32-partials option is the old path only");
+     // Both groups must be done with every GEMM that reads sQ/sdO before either reuses them as staging.
+     bar_sync(BAR_PDS, 2 * WGT);
+     if constexpr (!F32P) {
+@@ -734,7 +911,7 @@
+     if constexpr (CHATS) {
+         // A: this group's keys are rows kbase .. kbase+63 of the segment; only the rows < L are the segment's.
+         const int nrow = L - kbase;
+-        const int hqRow = (b * Hq + hq) * S + t0 + kbase;
++        const int hqRow = (HSUM ? (b * Hkv + hkv) : (b * Hq + hq)) * S + t0 + kbase;   // IDEA 4 (old: (b * Hq + hq))
+         if (nrow >= 64) {
+             if (tw == 0) {
+                 tma_store_2d(&tma_dV_st, stg,              0,  hqRow);
+@@ -757,7 +934,7 @@
+         }
+     } else {
+     if (tw == 0 && kbase < S) {                   // S % 128 == 64: group 1 of the last block has no keys
+-        const int hqRow = (b * Hq + hq) * S + kbase;
++        const int hqRow = (HSUM ? (b * Hkv + hkv) : (b * Hq + hq)) * S + kbase;   // IDEA 4 (old: (b * Hq + hq))
+         tma_store_2d(&tma_dV_st, stg,              0,  hqRow);
+         tma_store_2d(&tma_dV_st, stg + Q_HALF,     64, hqRow);
+         tma_store_2d(&tma_dK_st, stg + 2 * Q_HALF, 0,  hqRow);
+@@ -778,7 +955,7 @@
+         bar_sync(BAR_EPI + c, WGT);
+         if constexpr (CHATS) {
+             const int nrow = L - kbase;
+-            const int hqRow = (b * Hq + hq) * S + t0 + kbase;
++            const int hqRow = (HSUM ? (b * Hkv + hkv) : (b * Hq + hq)) * S + t0 + kbase;   // IDEA 4 (old: (b * Hq + hq))
+             if (nrow >= 64) {
+                 if (tw == 0) {
+ #pragma unroll
+@@ -798,7 +975,7 @@
+             }
+         } else {
+             if (tw == 0 && kbase < S) {
+-                const int hqRow = (b * Hq + hq) * S + kbase;
++                const int hqRow = (HSUM ? (b * Hkv + hkv) : (b * Hq + hq)) * S + kbase;   // IDEA 4 (old: (b * Hq + hq))
+ #pragma unroll
+                 for (int bx = 0; bx < 4; bx++) tma_store_2d(tmap, stg + bx * 2048, bx * 32, hqRow);
+                 bulk_commit();
+@@ -856,6 +1033,10 @@
+                     const int4* __restrict__ dq_tiles, int nT, int Hq, int S) {   // the last four: A only
+     __shared__ __align__(16) bf16 st[BM * CVT_LD];
+     const long tile = blockIdx.x;
++    if constexpr (CHATS) {   // 2026-11-14 EXPERIMENT direct dQ: the main kernel stored this tile itself
++        const int hq0 = (int)(tile / nT);
++        if (dq_tiles[tile - (long)hq0 * nT].w != 0) return;
++    }
+     const float4* src = in + tile * (BM * D / 4);
+ #pragma unroll
+     for (int m = 0; m < (BM * D / 4) / CVT_THREADS; m++) {
+@@ -892,7 +1073,7 @@
+                                    const float* __restrict__ d_LSE, float* __restrict__ d_Drow,
+                                    float* __restrict__ d_Lse2, float* __restrict__ d_dqa,
+                                    const int4* __restrict__ dq_tiles, int nT, int Hq, int S, long nRowsP) {}
+-template<bool CHATS, bool F32P = false>
++template<bool CHATS, bool F32P = false, bool HSUM = false>   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2) (old: no HSUM)
+ __global__ void gqa_bwd_vj2_kernel(
+     const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
+     const __grid_constant__ CUtensorMap tma_Q,  const __grid_constant__ CUtensorMap tma_dO,
+@@ -900,7 +1081,7 @@
+     float* __restrict__ dQacc,
+     const float* __restrict__ Lse2, const float* __restrict__ Drow,
+     int B, int Hq, int Hkv, int G, int S, float scale, int sw,
+-    const int4* __restrict__ blocks, bf16* __restrict__ dVp, bf16* __restrict__ dKp) {}
++    const int4* __restrict__ blocks, bf16* __restrict__ dVp, bf16* __restrict__ dKp, bf16* __restrict__ dQout) {}
+ template<typename PT>
+ __global__ void gqa_dkdv_greduce_vj2(const PT* __restrict__ partial, bf16* __restrict__ out,
+                                      int Hq, int Hkv, int G, int S) {}
+@@ -974,10 +1155,55 @@
+         if (on) fprintf(stderr, "[vj2] fp32 dK/dV partials (BLU_VJ2_DKDV_F32=1)\n");
+         return on;
+     }();
++    // ---- 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2) ----
++    // ON (default in this experiment tree): one block per (key tile, KV head) adds the G query heads in its fp32
++    // registers and writes the final dK / dV: no partial buffers, no head-sum launches. BLU_VJ2_HSUM=0 = the path
++    // of before. Packed rows with G >= 2 need the plan's per-KV-head list (built when the plan got Hkv > 0);
++    // without it, or with BLU_VJ2_DKDV_F32=1, the call takes the path of before.
++    static const int hsum_env = [] {
++        const char* e = getenv("BLU_VJ2_HSUM");
++        const int v = (e != nullptr) ? atoi(e) : 1;
++        // 2026-11-18 (user decision 2026-11-17): no line while idea 4 runs; a line only when it is off, with the reason.
++        // Old line (kept): fprintf(stderr, "[vj2] head sums inside the block (+ ideas 1, 2): %s (BLU_VJ2_HSUM=%d)\n", v ? "ON" : "off", v);
++        if (!v) fprintf(stderr, "[vj2] idea 4 (head sums inside the block) OFF: BLU_VJ2_HSUM=0 -> per-query-head path (ideas 1 + 2)\n");
++        return v;
++    }();
++    const int32_t* d_hblocks = d_blocks; int n_hblocks = n_blocks;
++    bool hsum = hsum_env != 0 && !f32p;
++    // 2026-11-18: each reason for idea 4 being off is printed once per process (see the BLU_VJ2_HSUM line above).
++    static bool said_f32 = false, said_list = false, said_minkv = false;
++    if (hsum_env != 0 && f32p && !said_f32) {
++        said_f32 = true;
++        fprintf(stderr, "[vj2] idea 4 (head sums inside the block) OFF: BLU_VJ2_DKDV_F32=1 (fp32 partials exist only on the per-query-head path)\n");
++    }
++    if (hsum && chats && G >= 2) {
++        int gl = 0;
++        hsum = gqa_vj2_hsum_list(d_blocks, &d_hblocks, &n_hblocks, &gl) && gl == G && n_hblocks > 0;
++        if (!hsum && !said_list) {
++            said_list = true;
++            fprintf(stderr, "[vj2] idea 4 (head sums inside the block) OFF for packed rows: the plan has no per-KV-head list "
++                            "(built without the KV-head count) -> per-query-head path (ideas 1 + 2)\n");
++        }
++    }
++    // 2026-11-17 FINAL RULE 2b: idea 4 only if the call has at least BLU_VJ2_HSUM_MINKV (default 2) KV heads; else the
++    // per-query-head path (ideas 1 + 2). Decided by the SHAPE only, never by the batch contents: a chat must take the
++    // same path packed or alone (idea 4 rounds dK / dV once, the other path twice: not bit-identical). A first version
++    // chose by block count and broke the suite's G6c / G11 bit-identity checks (P035, 2026-11-17 18:58).
++    static const int hsum_minkv = [] { const char* e = getenv("BLU_VJ2_HSUM_MINKV"); return e ? atoi(e) : 2; }();
++    // Old line (kept): if (hsum && G >= 2 && Hkv < hsum_minkv) hsum = false;
++    if (hsum && G >= 2 && Hkv < hsum_minkv) {
++        hsum = false;
++        if (!said_minkv) {
++            said_minkv = true;
++            fprintf(stderr, "[vj2] idea 4 (head sums inside the block) OFF: %d KV head(s) < BLU_VJ2_HSUM_MINKV=%d "
++                            "(small grid, e.g. CP with 1 KV head per GPU) -> per-query-head path (ideas 1 + 2)\n", Hkv, hsum_minkv);
++        }
++    }
+     const long pES = f32p ? (long)sizeof(float) : (long)sizeof(bf16);
+     const long partN = (long)B * Hq * S * D;
+     static bf16 *d_dKp = nullptr, *d_dVp = nullptr; static long pcap = 0;   // pcap in bytes
+-    if (partN * pES > pcap) {
++    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): no partials with HSUM. Old line (kept): if (partN * pES > pcap) {
++    if (!hsum && partN * pES > pcap) {
+         if (d_dKp) alloc.deallocate(d_dKp);
+         if (d_dVp) alloc.deallocate(d_dVp);
+         d_dKp = static_cast<bf16*>(alloc.allocate(partN * pES));
+@@ -1007,6 +1233,10 @@
+         dqc = dqN;
+     }
+     // dQ accumulator: zeroed by bwd_prep_vj2(_chats) below (B-1), no separate cudaMemset (dqN == rowsP * 128).
++    if (hsum) {   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): the blocks store the FINAL dV / dK rows (b, KV head)
++        encode(&tdV, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, d_dV, D, Rkv, D * 2, 64, 64, CU_TENSOR_MAP_SWIZZLE_128B, "dV out (hsum)");
++        encode(&tdK, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, d_dK, D, Rkv, D * 2, 64, 64, CU_TENSOR_MAP_SWIZZLE_128B, "dK out (hsum)");
++    } else
+     if (f32p) {   // fp32 partials: box {32, 64} (a 128-B swizzled box row holds 32 fp32)
+         encode(&tdV, CU_TENSOR_MAP_DATA_TYPE_FLOAT32, d_dVp, D, Rq, D * 4, 32, 64, CU_TENSOR_MAP_SWIZZLE_128B, "dV out f32");
+         encode(&tdK, CU_TENSOR_MAP_DATA_TYPE_FLOAT32, d_dKp, D, Rq, D * 4, 32, 64, CU_TENSOR_MAP_SWIZZLE_128B, "dK out f32");
+@@ -1041,23 +1271,52 @@
+         attr_set_chats = true;
+     }
+     const int sw = section_pairs(S);
++    if (hsum) {   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2)
++        static bool attr_h = false, attr_hc = false;
++        if (chats && !attr_hc) {
++            GQA_BWD_VJ2_CUDA_CHECK(cudaFuncSetAttribute(gqa_bwd_vj2_kernel<true, false, true>,
++                                   cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM_BYTES));
++            attr_hc = true;
++        }
++        if (!chats && !attr_h) {
++            GQA_BWD_VJ2_CUDA_CHECK(cudaFuncSetAttribute(gqa_bwd_vj2_kernel<false, false, true>,
++                                   cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM_BYTES));
++            attr_h = true;
++        }
++        if (chats) {   // the plan's per-KV-head list (G == 1: the per-head list itself), dVp / dKp = the outputs
++            gqa_bwd_vj2_kernel<true, false, true><<<(unsigned)n_hblocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK,
++                d_dqa, d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_hblocks), d_dV, d_dK, d_dQ);
++        } else {       // sections of sw / G (batch, KV head) pairs (switch BLU_VJ2_HSUM_SECT, see the plan builder)
++            static const int hs = [] { const char* e = getenv("BLU_VJ2_HSUM_SECT"); return e ? atoi(e) : 0; }();
++            // 2026-11-17 FINAL RULE 1 (as in the plan builder). Old line (kept):
++            //     const int swh = hs > 0 ? hs : (hs < 0 ? B * Hkv : ((sw / G > 0) ? sw / G : 1));
++            const long pair_bytes = (long)G * S * 1024;
++            long rows_fit = (80L << 20) / ((long)Hkv * pair_bytes); if (rows_fit < 1) rows_fit = 1;
++            int rows2 = 1; while (2L * rows2 <= rows_fit) rows2 *= 2;
++            const int swh = hs > 0 ? hs : (hs < 0 ? B * Hkv : rows2 * Hkv);
++            const unsigned nBlocksH = (unsigned)((S / BN) * B * Hkv);
++            gqa_bwd_vj2_kernel<false, false, true><<<nBlocksH, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa,
++                d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, swh, nullptr, nullptr, nullptr, nullptr);
++        }
++    } else
+     if (chats) {   // design A: one block per plan entry, in the plan's order (LPT inside sections of sw pairs)
+         if (f32p)
+         gqa_bwd_vj2_kernel<true, true><<<(unsigned)n_blocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa,
+-                                    d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp);
++                                    d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp, d_dQ);
+         else
+         gqa_bwd_vj2_kernel<true><<<(unsigned)n_blocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa, d_Lse2,
+-                                    d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp);
++                                    d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp, d_dQ);
+     } else {
+         const unsigned nBlocks = (unsigned)((S / BN) * B * Hq);  // S % 128 == 0 here (the router's condition)
+         if (f32p)
+         gqa_bwd_vj2_kernel<false, true><<<nBlocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa, d_Lse2, d_Drow,
+-                                                                          B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr);
++                                                                          B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr, nullptr);
+         else
+         gqa_bwd_vj2_kernel<false><<<nBlocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa, d_Lse2, d_Drow,
+-                                                                    B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr);
++                                                                    B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr, nullptr);
+     }
+     dim3 grGrid(S / 8, Hkv, B);
++    if (!hsum) {   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): the head sums are done inside the blocks
+     if (f32p) {
+         gqa_dkdv_greduce_vj2<float><<<grGrid, 128>>>(reinterpret_cast<const float*>(d_dVp), d_dV, Hq, Hkv, G, S);
+         gqa_dkdv_greduce_vj2<float><<<grGrid, 128>>>(reinterpret_cast<const float*>(d_dKp), d_dK, Hq, Hkv, G, S);
+@@ -1065,6 +1324,7 @@
+     gqa_dkdv_greduce_vj2<bf16><<<grGrid, 128>>>(d_dVp, d_dV, Hq, Hkv, G, S);
+     gqa_dkdv_greduce_vj2<bf16><<<grGrid, 128>>>(d_dKp, d_dK, Hq, Hkv, G, S);
+     }
++    }   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): end of if (!hsum)
+     if (chats) {
+         const long nTiles = (long)Hq * n_dqt;               // every padded tile of every head
+         convert_dq_frag_vj2<true><<<(unsigned)nTiles, CVT_THREADS>>>(reinterpret_cast<const float4*>(d_dqa), d_dQ,
+--- a/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu
+@@ -29,6 +29,9 @@
+ #include <cstdlib>   // getenv: BLU_GQA_MX (2026-11-13, mixed units)
+ #include <string>
+ #include <vector>
++#include <cstdio>          // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): the order switch notice
++#include <mutex>           // the side table
++#include <unordered_map>
+ using namespace nvcuda;
+ 
+ namespace OwnTensor {
+@@ -518,6 +521,37 @@
+ // ---------------------------------------------------------------------------
+ int gqa_vj2_section_pairs(int S);   // GQA_bwd_vj2_sm90.cu
+ 
++// ---- 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2) (backward experiment) ----
++// The per-KV-head Vj2 list goes up in the plan's ONE allocation, AFTER the generic list (every other list keeps
++// its place). Its place, count and group size are kept HERE, keyed by the plan's vj2_blocks pointer, not in
++// GqaChatPlan: the test program holds GqaChatPlan by value, so a new field would change the struct that already
++// built programs know. gqa_chat_plan_build sets the entry, gqa_chat_plan_free removes it.
++namespace {
++struct Vj2HsumEntry { const int32_t* list; int n; int G; };
++std::mutex& vj2_hsum_mu() { static std::mutex m; return m; }
++std::unordered_map<const int32_t*, Vj2HsumEntry>& vj2_hsum_map() {
++    static std::unordered_map<const int32_t*, Vj2HsumEntry> m;
++    return m;
++}
++void vj2_hsum_set(const int32_t* key, const int32_t* list, int n, int G) {
++    std::lock_guard<std::mutex> lk(vj2_hsum_mu());
++    if (key != nullptr && n > 0) vj2_hsum_map()[key] = Vj2HsumEntry{list, n, G};
++    else vj2_hsum_map().erase(key);
++}
++int vj2_hsum_sect() {   // block-order switch BLU_VJ2_HSUM_SECT (experiment): 0 = sw / G pairs, N, -1 = one section
++    static const int v = [] { const char* e = getenv("BLU_VJ2_HSUM_SECT"); const int x = e ? atoi(e) : 0;
++        if (x) fprintf(stderr, "[vj2] head-sum block order: BLU_VJ2_HSUM_SECT=%d\n", x); return x; }();
++    return v;
++}
++}  // namespace
++bool gqa_vj2_hsum_list(const int32_t* vj2_blocks, const int32_t** list, int* n, int* G) {
++    std::lock_guard<std::mutex> lk(vj2_hsum_mu());
++    auto it = vj2_hsum_map().find(vj2_blocks);
++    if (it == vj2_hsum_map().end()) return false;
++    *list = it->second.list; *n = it->second.n; *G = it->second.G;
++    return true;
++}
++
+ // 2026-11-13: one more argument, Hkv (the KV-head count; 0 = the plan of before). See the forward-unit loop below.
+ // Old signature (kept, not deleted):
+ // void gqa_chat_plan_build(GqaChatPlan& plan, const int32_t* seg_b, const int32_t* seg_t0,
+@@ -629,7 +663,9 @@
+         const Seg& g = byrow[j];
+         slot0[j] = nd;
+         for (int q = 0; 64 * q < g.L; ++q) {
+-            dq.push_back(g.b); dq.push_back(g.t0 + 64 * q); dq.push_back(std::min(64, g.L - 64 * q)); dq.push_back(0);
++            dq.push_back(g.b); dq.push_back(g.t0 + 64 * q); dq.push_back(std::min(64, g.L - 64 * q));
++            // 2026-11-14 EXPERIMENT direct dQ: 1 = this tile gets dQ from one block only (the chat's first two tiles). Old: dq.push_back(0);
++            dq.push_back(q < 2 ? 1 : 0);
+             ++nd;
+         }
+         rowfirst[(size_t)g.b + 1] = (int)j + 1;
+@@ -654,6 +690,35 @@
+         std::stable_sort(sec.begin(), sec.end(), [](const VB& a, const VB& c) { return a.work > c.work; });
+         for (const VB& v : sec) for (int x : {v.b, v.t0, v.L, v.kt, v.hq, v.dqt0, 0, 0}) vb.push_back(x);
+     }
++    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): the same blocks per (128-key tile, KV HEAD) when the plan knows Hkv and G >= 2:
++    // {b, t0, L, kt, hq0 = the group's first query head, dqt0 of hq0, n_dq_tiles (slot stride per head), G},
++    // sections of sw / G (batch, KV head) pairs by default (switch BLU_VJ2_HSUM_SECT), LPT inside a section.
++    std::vector<int32_t> vh;
++    int vh_G = 0;
++    if (Hkv > 0 && Hq / Hkv >= 2) {
++        const int Gh = Hq / Hkv, HBk = B * Hkv, hs = vj2_hsum_sect();
++        // 2026-11-17 FINAL RULE 1: whole rows per section, as many as fit ~80 MB (G x S x 1 KB per pair), power of 2, >= 1.
++        // Old line (kept): const int swh = hs > 0 ? hs : (hs < 0 ? HBk : std::max(1, sw / Gh));
++        const long pair_bytes = (long)Gh * S * 1024;
++        const long rows_fit = std::max(1L, (80L << 20) / ((long)Hkv * pair_bytes));
++        int rows2 = 1; while (2L * rows2 <= rows_fit) rows2 *= 2;
++        const int swh = hs > 0 ? hs : (hs < 0 ? HBk : rows2 * Hkv);
++        vh_G = Gh;
++        for (int h0 = 0; h0 < HBk; h0 += swh) {
++            sec.clear();
++            for (int hb = h0; hb < std::min(HBk, h0 + swh); ++hb) {
++                const int b = hb / Hkv, hq0 = (hb % Hkv) * Gh;
++                for (int j = rowfirst[b]; j < rowfirst[(size_t)b + 1]; ++j) {
++                    const Seg& g = byrow[j];
++                    const int nq = (g.L + 63) / 64;
++                    for (int kt = 0; 128 * kt < g.L; ++kt)
++                        sec.push_back({g.b, g.t0, g.L, kt, hq0, hq0 * nd + slot0[j] + 2 * kt, nq - 2 * kt});
++                }
++            }
++            std::stable_sort(sec.begin(), sec.end(), [](const VB& a, const VB& c) { return a.work > c.work; });
++            for (const VB& v : sec) for (int x : {v.b, v.t0, v.L, v.kt, v.hq, v.dqt0, nd, Gh}) vh.push_back(x);
++        }
++    }
+ 
+     // Generic causal kernels: one entry per segment, (row, start) order.
+     std::vector<int32_t> gs;
+@@ -664,8 +729,11 @@
+     }
+ 
+     std::vector<int32_t> all;   // every list is a multiple of 4 ints, so each one starts 16-B aligned (int4 loads)
+-    all.reserve(fu.size() + bt.size() + vb.size() + dq.size() + gs.size());
+-    for (const std::vector<int32_t>* v : {&fu, &bt, &vb, &dq, &gs}) all.insert(all.end(), v->begin(), v->end());
++    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): + the per-KV-head list, LAST. Old lines (kept):
++    //     all.reserve(fu.size() + bt.size() + vb.size() + dq.size() + gs.size());
++    //     for (const std::vector<int32_t>* v : {&fu, &bt, &vb, &dq, &gs}) all.insert(all.end(), v->begin(), v->end());
++    all.reserve(fu.size() + bt.size() + vb.size() + dq.size() + gs.size() + vh.size());
++    for (const std::vector<int32_t>* v : {&fu, &bt, &vb, &dq, &gs, &vh}) all.insert(all.end(), v->begin(), v->end());
+     gqa_chat_plan_free(plan);
+     auto& alloc = CachingCUDAAllocator::instance();
+     int32_t* buf = static_cast<int32_t*>(alloc.allocate(all.size() * sizeof(int32_t)));
+@@ -688,11 +756,13 @@
+     plan.n_gen_segs   = (int)(gs.size() / 4);
+     plan.gen_max_len  = gmax;
+     plan.B = B; plan.S = S; plan.Hq = Hq;
++    vj2_hsum_set(plan.vj2_blocks, plan.gen_segs + gs.size(), (int)(vh.size() / 8), vh_G);   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2)
+     plan.mx_hkv = (n_mixed > 0) ? Hkv : 0;   // 2026-11-13: 0 = no mixed unit in the list -> the forward kernel of before
+ }
+ 
+ void gqa_chat_plan_free(GqaChatPlan& plan)
+ {
++    vj2_hsum_set(plan.vj2_blocks, nullptr, 0, 0);   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): forget this plan's list
+     if (plan.storage) CachingCUDAAllocator::instance().deallocate(plan.storage);
+     plan = GqaChatPlan{};
+ }
+--- a/Tests/kernel_tests/test_varlen_attention.cu
++++ b/Tests/kernel_tests/test_varlen_attention.cu
+@@ -1231,6 +1231,9 @@
+      "Vj1d bf16-P dS (same as the G6 D10 entry). Found by G9 full (G9_full_h200_gpu7_1010_1939.log); DIAG (G9_diag7_D10_h200_gpu7_1010_1955.log): the SAME segment alone through today's dense kernels gives the same ratio (not packing); for chat 791 the bf16-P model reproduces the kernel's dQ row exactly and fp32 P gives 0.92x the floor."},
+     {"G9 D10", "18/6", "dQ", "chat row 1102 @3537 L=559", 1.096 * 1.01,
+      "Vj1d bf16-P dS (same as the G6 D10 entry). Found by G9 full (G9_full_h200_gpu7_1010_1939.log); DIAG (G9_diag7_D10_h200_gpu7_1010_1955.log): the SAME segment alone through today's dense kernels gives the same ratio (not packing); for chat 791 the bf16-P model reproduces the kernel's dQ row exactly and fp32 P gives 0.92x the floor."},
++    // (2026-11-18) The 4 dV entries below come from the per-head bf16 partials + head-sum kernel. With idea 4 on (the
++    // default since 2026-11-18: the G query heads summed inside the Vj2 block in fp32, rounded once) they no longer
++    // occur (G11 D10 dV worst 0.711); they are kept because BLU_VJ2_HSUM=0 brings that path back.
+     {"G9 D10", "18/6", "dV", "pad row 455 @4057 L=39", 1.031 * 1.01,
+      "Vj1d rounds each query head's dV partial to bf16 before the fixed-order head sum (one-writer partials + gqa_dkdv_greduce, the price of bit-identical dK/dV); FA3 sums heads in fp32 and rounds once. Found by G9 full (G9_full_h200_gpu7_1010_1939.log); DIAG (G9_diag7_D10_h200_gpu7_1010_1955.log): the SAME segment alone through today's dense kernels gives the same ratio (not packing); the Vj1d arithmetic model reproduces the kernel's worst dV element exactly; an fp32 head sum brings the error to the floor's."},
+     {"G9 D10", "18/6", "dV", "chat row 1140 @2283 L=1141", 1.171 * 1.01,
+@@ -1239,6 +1242,15 @@
+      "Vj1d rounds each query head's dV partial to bf16 before the fixed-order head sum (one-writer partials + gqa_dkdv_greduce, the price of bit-identical dK/dV); FA3 sums heads in fp32 and rounds once. Found by G9 full (G9_full_h200_gpu7_1010_1939.log); DIAG (G9_diag7_D10_h200_gpu7_1010_1955.log): the SAME segment alone through today's dense kernels gives the same ratio (not packing); the Vj1d arithmetic model reproduces the kernel's worst dV element exactly; an fp32 head sum brings the error to the floor's."},
+     {"G9 D10", "18/6", "dV", "chat row 1359 @1714 L=857", 1.014 * 1.01,
+      "Vj1d rounds each query head's dV partial to bf16 before the fixed-order head sum (one-writer partials + gqa_dkdv_greduce, the price of bit-identical dK/dV); FA3 sums heads in fp32 and rounds once. Found by G9 full (G9_full_h200_gpu7_1010_1939.log); DIAG (G9_diag7_D10_h200_gpu7_1010_1955.log): the SAME segment alone through today's dense kernels gives the same ratio (not packing); the Vj1d arithmetic model reproduces the kernel's worst dV element exactly; an fp32 head sum brings the error to the floor's."},
++    // 2026-11-18: the final backward (ideas 1 + 2 + 4) on G11 D10's 2-token pad tail, kept by the user's decision
++    // (2026-11-18). With BLU_VJ2_HSUM=0 this piece gives 0.919 and the 4 dV entries above come back instead.
++    {"G9 D10", "18/6", "dK", "pad row 1444 @4094 L=2", 1.136 * 1.01,
++     "Idea 4 sums the G query heads in fp32 inside the Vj2 block and rounds once (FA3's way). On this 2-token pad tail "
++     "dK comes only from token 2's dS = P (dP - D), D = rowsum(dO * O_bf16) (FlashAttention's formula), where dP and D "
++     "nearly cancel. DIAG 2026-11-18 (crosslib_dk18.py on the exported bytes of this piece, P035): FA3 (5 runs), FA3 "
++     "deterministic and FA4 give a dK bit-identical to ours (1536 of 1536 values, ratio 1.136); FA2 in PyTorch and the "
++     "per-head-rounding path (BLU_VJ2_HSUM=0) 0.919, cuDNN 0.931. Training never sees it: pad tails get dO = 0 "
++     "(zero_pad_grads), so dK there is exactly 0."},
+ };
+ static const KnownIssue* match_known(const std::string& tag0, const std::string& tensor, const std::string& at,
+                                      double ratio, unsigned long long nan) {

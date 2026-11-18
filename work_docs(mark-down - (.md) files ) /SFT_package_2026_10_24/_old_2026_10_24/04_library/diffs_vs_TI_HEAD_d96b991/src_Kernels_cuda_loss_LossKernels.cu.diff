@@ -1,0 +1,324 @@
+diff --git a/src/Kernels/cuda/loss/LossKernels.cu b/src/Kernels/cuda/loss/LossKernels.cu
+index 82d9a8d..dd6aea6 100644
+--- a/src/Kernels/cuda/loss/LossKernels.cu
++++ b/src/Kernels/cuda/loss/LossKernels.cu
+@@ -80,6 +80,89 @@ static_assert(sizeof(LossVec<float16_t>) == 16 && LossVec<float16_t>::WIDTH == 8
+ static_assert(sizeof(LossVec<bfloat16_t>) == 16 && LossVec<bfloat16_t>::WIDTH == 8, "");
+ static_assert(alignof(LossVec<bfloat16_t>) == 16, "16-B vector loads need 16-B alignment");
+ 
++// 2026-10-17: one 16-byte global load / store of a LossVec<T>, through uint4.
++// bfloat16_t and float16_t have a user-written copy constructor, so LossVec<T>
++// is not trivially copyable for them, and `vec_t in = logits_v[v]` compiled to
++// EIGHT 2-byte loads (LDG.E.U16) and the store to eight 2-byte stores
++// (STG.E.U16): the SASS of sparseCENormalize_from_stats<bfloat16_t, uint16_t>.
++// The float instantiation was one LDG.E.128 / STG.E.128. Here the 16 bytes move
++// as one uint4 and memcpy only moves registers. Same bits in, same bits out.
++template <typename T>
++__device__ __forceinline__ LossVec<T> loss_ld16(const LossVec<T> *p) {
++  const uint4 raw = *reinterpret_cast<const uint4 *>(p);
++  LossVec<T> r;
++  ::std::memcpy(&r, &raw, sizeof(raw));
++  return r;
++}
++template <typename T>
++__device__ __forceinline__ void loss_st16(LossVec<T> *p, const LossVec<T> &r) {
++  uint4 raw;
++  ::std::memcpy(&raw, &r, sizeof(raw));
++  *reinterpret_cast<uint4 *>(p) = raw;
++}
++
++// 2026-10-17: how many 16-byte logit vectors each thread of the stats backward
++// (sparseCENormalize_from_stats) loads back to back before using the first.
++// 1 = the old one-load-in-flight loop. Override with -DLOSS_BWD_UNROLL=n.
++#ifndef LOSS_BWD_UNROLL
++#define LOSS_BWD_UNROLL 4
++#endif
++static_assert(LOSS_BWD_UNROLL >= 1 && LOSS_BWD_UNROLL <= 16, "LOSS_BWD_UNROLL out of range");
++
++// 2026-10-21: the two sparse-CE FORWARDS, same idea. Both used to stage each 16-byte vector in shared memory with
++// cp.async, wait for that single copy (cp.async.wait_group 0 right after it), and read it back as VEC two-byte shared
++// loads: one load in flight per thread. loss_fwd_row_vec loads the vectors straight into registers with loss_ld16,
++// LOSS_FWD_UNROLL of them back to back, and runs the SAME online max / sum update in the SAME order as before
++// (vectors tid, tid + bdim, ... ; elements k = 0 .. VEC-1), so saved_max, saved_sum and the losses are bit-identical.
++// 0 = the old cp.async path. Override with -DLOSS_FWD_UNROLL=n.
++#ifndef LOSS_FWD_UNROLL
++#define LOSS_FWD_UNROLL 4
++#endif
++static_assert(LOSS_FWD_UNROLL >= 0 && LOSS_FWD_UNROLL <= 16, "LOSS_FWD_UNROLL out of range");
++#if LOSS_FWD_UNROLL > 0
++template <typename T>
++__device__ __forceinline__ void loss_fwd_row_vec(const T *row_logits, int64_t vec_count, int tid, int bdim,
++                                                 float &local_max, float &local_sum) {
++  using vec_t = LossVec<T>;
++  constexpr int VEC = vec_t::WIDTH;
++  constexpr int U = LOSS_FWD_UNROLL;
++  const vec_t *logits_v = reinterpret_cast<const vec_t *>(row_logits);
++  int64_t v = tid;
++  for (; v + (U - 1) * static_cast<int64_t>(bdim) < vec_count; v += U * static_cast<int64_t>(bdim)) {
++    vec_t in[U];
++#pragma unroll
++    for (int u = 0; u < U; ++u)
++      in[u] = loss_ld16(&logits_v[v + u * bdim]);
++#pragma unroll
++    for (int u = 0; u < U; ++u) {
++#pragma unroll
++      for (int k = 0; k < VEC; ++k) {
++        float val = static_cast<float>(in[u].v[k]);
++        if (val > local_max) {
++          local_sum = local_sum * expf(local_max - val) + 1.0f;
++          local_max = val;
++        } else {
++          local_sum += expf(val - local_max);
++        }
++      }
++    }
++  }
++  for (; v < vec_count; v += bdim) {   // the vectors left over after the unrolled part
++    const vec_t in = loss_ld16(&logits_v[v]);
++#pragma unroll
++    for (int k = 0; k < VEC; ++k) {
++      float val = static_cast<float>(in.v[k]);
++      if (val > local_max) {
++        local_sum = local_sum * expf(local_max - val) + 1.0f;
++        local_max = val;
++      } else {
++        local_sum += expf(val - local_max);
++      }
++    }
++  }
++}
++#endif
++
+ // ============================================================================
+ // SFT denominator: count the targets that are NOT ignore_index.
+ //
+@@ -235,6 +318,10 @@ __global__ void sparse_ce_forward_kernel_vec(
+   //* address is row_base + v*16, so checking the row base is sufficient for
+   //* every dtype (it was NOT, back when the element count was hardcoded to 4).
+   if ((reinterpret_cast<uintptr_t>(row_logits) & 0xF) == 0) {
++#if LOSS_FWD_UNROLL > 0
++    (void)s_stage;                         // 2026-10-21: no shared staging (loss_fwd_row_vec)
++    loss_fwd_row_vec(row_logits, vec_count, tid, bdim, local_max, local_sum);
++#else
+     //* v indexes FULL vectors only, so nothing is read past the row end and the
+     //* tail loop below owns the remainder exactly once -- no double counting.
+     for (int64_t v = tid; v < vec_count; v += bdim) {
+@@ -256,6 +343,7 @@ __global__ void sparse_ce_forward_kernel_vec(
+         }
+       }
+     }
++#endif
+   } else {
+     //* Fallback to scalar for unaligned rows
+     for (int64_t j = threadIdx.x; j < vec_count * VEC; j += blockDim.x) {
+@@ -370,6 +458,10 @@ __global__ void sparse_ce_forward_kernel_vec_save_stats(
+   //* Row-base check is sufficient once VEC comes from sizeof(T): the per-thread
+   //* address is row_base + v*16 for every dtype.
+   if ((reinterpret_cast<uintptr_t>(row_logits) & 0xF) == 0) {
++#if LOSS_FWD_UNROLL > 0
++    (void)s_stage;                         // 2026-10-21: no shared staging (loss_fwd_row_vec)
++    loss_fwd_row_vec(row_logits, vec_count, tid, bdim, local_max, local_sum);
++#else
+     //* FULL vectors only -- the tail loop owns the remainder exactly once.
+     for (int64_t v = tid; v < vec_count; v += bdim) {
+       cp_async_16(&s_stage[tid * VEC], &row_logits[v * VEC]);
+@@ -386,6 +478,7 @@ __global__ void sparse_ce_forward_kernel_vec_save_stats(
+         }
+       }
+     }
++#endif
+   } else {
+     for (int64_t j = threadIdx.x; j < vec_count * VEC; j += blockDim.x) {
+       float val = static_cast<float>(row_logits[j]);
+@@ -667,31 +760,42 @@ __global__ void sparseCEReduce_kernel_optimized(
+   }
+ }
+ 
++// 2026-10-17: the row computation of the stats backward, shared by the two
++// kernels below. No __restrict__ here: sparseCENormalize_from_stats_inplace
++// passes the SAME pointer as logits and grad. Every element is read once and
++// then written once, by the same thread, so the computation is correct either
++// way; the restrict-qualified wrapper keeps the out-of-place code as it was.
+ template <typename T, typename T_idx>
+-__global__ void sparseCENormalize_from_stats(
+-    const T *__restrict__ logits, const T_idx *__restrict__ targets,
+-    T *__restrict__ grad, const float *__restrict__ saved_max,
+-    const float *__restrict__ saved_sum, int64_t batch_size, int64_t vocab_size,
++__device__ __forceinline__ void normalize_from_stats_row(
++    const T *logits, const T_idx *targets, T *grad, const float *saved_max,
++    const float *saved_sum, int64_t batch_size, int64_t vocab_size,
+     const float *grad_output,
+     // DEVICE pointer to the loss denominator -- see note on
+     // count_valid_targets_kernel. Forward divided by *denom; so must backward.
+-    const float *__restrict__ denom,
+-    int64_t ignore_index = -1 // SFT : target value meaning "skip this row "
++    const float *denom,
++    int64_t ignore_index // SFT : target value meaning "skip this row "
+ ) {
+   const int tid = threadIdx.x;
+   const int bdim = blockDim.x;
+   const int row = blockIdx.x;
+   if (row >= batch_size)
+     return;
++  constexpr int VEC = LossVec<T>::WIDTH;
++  using vec_t = LossVec<T>;
+   // SFT label masking: an ignored row must receive a ZERO gradient. This is a
+   // CORRECTNESS requirement, not an optimisation — without it the model trains
+   // on prompt tokens.
+-  // Zero with a plain T loop, NOT the float4 path below: that path assumes
+-  // sizeof(T)==4, and this kernel is also instantiated for float16/bfloat16
+-  // where a float4 write would run 2x past the end of the row.
++  // 2026-10-17: zeroed with 16-byte stores (one uint4 of zero bits = VEC
++  // elements of +0 for every T) plus a scalar tail; until then one 2-byte store
++  // per element for bf16.
+   if (static_cast<int64_t>(targets[row]) == ignore_index) {
+     T *row_grad_z = grad + row * vocab_size;
+-    for (int64_t c = tid; c < vocab_size; c += bdim)
++    const int64_t zcount =
++        ((reinterpret_cast<uintptr_t>(row_grad_z) & 0xF) == 0) ? (vocab_size / VEC) : 0;
++    uint4 *row_grad_zu = reinterpret_cast<uint4 *>(row_grad_z);
++    for (int64_t v = tid; v < zcount; v += bdim)
++      row_grad_zu[v] = make_uint4(0u, 0u, 0u, 0u);
++    for (int64_t c = zcount * VEC + tid; c < vocab_size; c += bdim)
+       row_grad_z[c] = static_cast<T>(0);
+     return;
+   }
+@@ -712,8 +816,6 @@ __global__ void sparseCENormalize_from_stats(
+   // is LossVec<T>, so 16 bytes always hold VEC elements OF T. The old code cast
+   // row_logits/row_grad to float4* unconditionally, which for a 2-byte T both
+   // reinterpreted 8 bf16 values as 4 floats and ran 2x past the end of the row.
+-  constexpr int VEC = LossVec<T>::WIDTH;
+-  using vec_t = LossVec<T>;
+   // Load and store are both 16 B, so both rows must be 16-B aligned; otherwise
+   // vec_count is 0 and the scalar tail below covers the whole row. The old code
+   // checked neither, and had no tail at all -- for vocab_size % 4 != 0 the
+@@ -725,9 +827,37 @@ __global__ void sparseCENormalize_from_stats(
+   const vec_t *logits_v = reinterpret_cast<const vec_t *>(row_logits);
+   vec_t *grad_v = reinterpret_cast<vec_t *>(row_grad);
+ 
+-  for (int64_t v = tid; v < vec_count; v += bdim) {
+-    // Single coalesced 16-byte load per thread
+-    vec_t in = logits_v[v];
++  // 2026-10-17: real 16-byte accesses (loss_ld16 / loss_st16: for bf16 these
++  // were eight 2-byte loads and eight 2-byte stores per vector) and UNROLLED
++  // independent loads (until then each thread loaded one vector, computed,
++  // stored, and only then loaded the next). The no-mask bf16 backward ran at
++  // 1.5 TB/s (31% of HBM peak; torch.compile's backward does the same reads and
++  // writes at 3.3 TB/s; profiling_reports/sft_loss_vs_rivals_2026_10_17, work
++  // doc 45.33). The arithmetic of every element is unchanged (same expression,
++  // same order), so the gradient is bit-identical.
++  constexpr int U = LOSS_BWD_UNROLL;
++  int64_t v = tid;
++  for (; v + (U - 1) * static_cast<int64_t>(bdim) < vec_count; v += U * static_cast<int64_t>(bdim)) {
++    vec_t in[U];
++#pragma unroll
++    for (int u = 0; u < U; ++u)
++      in[u] = loss_ld16(&logits_v[v + u * bdim]);
++#pragma unroll
++    for (int u = 0; u < U; ++u) {
++      const int64_t col_base = (v + u * bdim) * VEC;
++      vec_t out_grad;
++#pragma unroll
++      for (int k = 0; k < VEC; ++k) {
++        float val = static_cast<float>(in[u].v[k]);
++        float prob = expf(val - final_max) * inv_sum;
++        float indicator = ((col_base + k) == target_idx) ? 1.0f : 0.0f;
++        out_grad.v[k] = static_cast<T>((prob - indicator) * f_scale);
++      }
++      loss_st16(&grad_v[v + u * bdim], out_grad);
++    }
++  }
++  for (; v < vec_count; v += bdim) {   // the vectors left over after the unrolled part
++    vec_t in = loss_ld16(&logits_v[v]);
+     const int64_t col_base = v * VEC;
+ 
+     vec_t out_grad;
+@@ -739,7 +869,7 @@ __global__ void sparseCENormalize_from_stats(
+       out_grad.v[k] = static_cast<T>((prob - indicator) * f_scale);
+     }
+ 
+-    grad_v[v] = out_grad;
++    loss_st16(&grad_v[v], out_grad);
+   }
+ 
+   // Scalar tail: the vocab_size % VEC trailing columns, and the whole row when
+@@ -751,6 +881,34 @@ __global__ void sparseCENormalize_from_stats(
+     row_grad[j] = static_cast<T>((prob - indicator) * f_scale);
+   }
+ }
++
++template <typename T, typename T_idx>
++__global__ void sparseCENormalize_from_stats(
++    const T *__restrict__ logits, const T_idx *__restrict__ targets,
++    T *__restrict__ grad, const float *__restrict__ saved_max,
++    const float *__restrict__ saved_sum, int64_t batch_size, int64_t vocab_size,
++    const float *grad_output, const float *__restrict__ denom,
++    int64_t ignore_index = -1) {
++  normalize_from_stats_row<T, T_idx>(logits, targets, grad, saved_max, saved_sum,
++                                     batch_size, vocab_size, grad_output, denom,
++                                     ignore_index);
++}
++
++// 2026-10-17: the same backward with the gradient written OVER the logits
++// (SparseCrossEntropyLossBackward's only CUDA training path since 2026-10-21): no second
++// [rows x vocab] buffer, -3.1 GiB at the SFT micro-batch (8 x 4096 x 50,304
++// bf16). Same arithmetic, so the gradient is bit-identical to the
++// out-of-place kernel's.
++template <typename T, typename T_idx>
++__global__ void sparseCENormalize_from_stats_inplace(
++    T *logits_grad, const T_idx *__restrict__ targets,
++    const float *__restrict__ saved_max, const float *__restrict__ saved_sum,
++    int64_t batch_size, int64_t vocab_size, const float *grad_output,
++    const float *__restrict__ denom, int64_t ignore_index) {
++  normalize_from_stats_row<T, T_idx>(logits_grad, targets, logits_grad, saved_max,
++                                     saved_sum, batch_size, vocab_size,
++                                     grad_output, denom, ignore_index);
++}
+ template <typename T, typename T_idx>
+ __global__ void sparseCENormalize_kernel_optimized(
+     const T *__restrict__ logits, const T_idx *__restrict__ targets,
+@@ -990,6 +1148,23 @@ void sparse_ce_backward_cuda_vec_with_stats(
+       logits, targets, grad_logits, saved_max, saved_sum, batch_size,
+       vocab_size, grad_output, denom, ignore_index);
+ }
++
++// 2026-10-17: the in-place variant -- the gradient overwrites the logits.
++template <typename T, typename Tidx>
++void sparse_ce_backward_cuda_vec_with_stats_inplace(
++    T *logits_grad, const Tidx *targets, const float *saved_max,
++    const float *saved_sum, int64_t batch_size, int64_t vocab_size,
++    const float *grad_output, const float *denom, cudaStream_t stream,
++    int64_t ignore_index) {
++  CUDA_KERNEL_SCOPE("sparse_ce_backward_cuda_vec_with_stats_inplace", stream);
++  if (batch_size == 0)
++    return;
++  dim3 block{256};
++  dim3 grid_norm{(unsigned)batch_size};
++  sparseCENormalize_from_stats_inplace<<<grid_norm, block, 0, stream>>>(
++      logits_grad, targets, saved_max, saved_sum, batch_size, vocab_size,
++      grad_output, denom, ignore_index);
++}
+ /*
+  * ###################################################################################################################################
+  * ###################################################################################################################################
+@@ -1111,6 +1286,20 @@ INSTANTIATE_BWD_WITH_STATS(float)
+ INSTANTIATE_BWD_WITH_STATS(float16_t)
+ INSTANTIATE_BWD_WITH_STATS(bfloat16_t)
+ 
++#define INSTANTIATE_BWD_WITH_STATS_INPLACE(T)                                  \
++  template void sparse_ce_backward_cuda_vec_with_stats_inplace<T, uint16_t>(   \
++      T *, const uint16_t *, const float *, const float *, int64_t, int64_t,   \
++      const float *, const float *, cudaStream_t, int64_t);                    \
++  template void sparse_ce_backward_cuda_vec_with_stats_inplace<T, int32_t>(    \
++      T *, const int32_t *, const float *, const float *, int64_t, int64_t,    \
++      const float *, const float *, cudaStream_t, int64_t);                    \
++  template void sparse_ce_backward_cuda_vec_with_stats_inplace<T, int64_t>(    \
++      T *, const int64_t *, const float *, const float *, int64_t, int64_t,    \
++      const float *, const float *, cudaStream_t, int64_t);
++INSTANTIATE_BWD_WITH_STATS_INPLACE(float)
++INSTANTIATE_BWD_WITH_STATS_INPLACE(float16_t)
++INSTANTIATE_BWD_WITH_STATS_INPLACE(bfloat16_t)
++
+ // Explicit instantiations for supported types
+ #define INSTANTIATE_GIVEN_T(T)                                                \
+   template void sparse_cross_entropy_backward_cuda<T, uint8_t>(               \

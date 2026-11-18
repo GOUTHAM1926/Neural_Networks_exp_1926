@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: d36b6b0d-fbee-47c9-8b10-a9773d29d8dc
-  modified: 2026-10-23T10:04:06.099Z
+  modified: 2026-10-28T16:01:47.981Z
 ---
 
 Write every response in simple, plain English. Short sentences. Plain words.
@@ -33,6 +33,12 @@ Pairs with [[feedback_proactive_status_reports]] (stats + status every time) and
 symbol (k, k+1, n, x) or a term (micro-batch, step k) that has not been defined from zero in the same answer. Build up
 from the raw objects (rows -> micro-batches -> steps), write out real numbers row by row (step 0 = micro-batches
 0,1,2,3,4, ...) BEFORE any general rule, and only then state the rule. Great depth, simple words, no analogies.
+
+**2026-10-28 (user angry, "I can't even understand what you meant"):** (1) never put a string that contains `|`
+(e.g. `<|im_start|>`) inside a markdown table: the bars split the cell and the user saw only `<` and `>`; use lists,
+or name it without bars in the table. (2) never write "ids 1/2" (read as 0.5); write "id 1 and id 2". (3) every
+claim about another team (Tülu, OLMo, Qwen...) needs its proof: the exact file / paper line, and say plainly when a
+paper says nothing. (4) explain who a name is (ChatML, Hermes, Nous) before using it.
 
 **2026-10-05 — do ONLY the change named in the latest message.** I had proposed a 4-step plan (copy, cleanup,
 all remaining edits, verify); the user said "ok modify in this md file" meaning ONLY the AlpacaEval fix they were

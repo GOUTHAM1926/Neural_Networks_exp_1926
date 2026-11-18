@@ -1,0 +1,99 @@
+diff --git a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.cu b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.cu
+index d066fbf..447dfcf 100644
+--- a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.cu
++++ b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90.cu
+@@ -19,9 +19,13 @@ void fused_qk_norm_rope_backward_sm90(
+     float*       dq_gamma, float* dk_gamma,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, bool interleaved,
+-    cudaStream_t stream);
++    cudaStream_t stream,
++    const int32_t* positions);   // v2: per-token positions [B, T] or nullptr
+ 
+-template <bool IS_NEOX>
++// HAS_POS (v2 packing, added 2026-10-10): false = original kernel (cache row t + pos_offset),
++// true = cache row positions[b*T + t], matching the forward. Template flag so the false
++// instantiation is unchanged; positions is appended last.
++template <bool IS_NEOX, bool HAS_POS>
+ __global__ void fused_qknorm_rope_backward(
+     const float* __restrict__ dz_q,      // [B, Hq,  T, hd]  upstream grad for Q
+     const float* __restrict__ dz_k,      // [B, Hkv, T, hd]  upstream grad for K
+@@ -37,7 +41,8 @@ __global__ void fused_qknorm_rope_backward(
+     float*       __restrict__ dq_gamma,   // [hd]  accumulated (zero before launch)
+     float*       __restrict__ dk_gamma,   // [hd]  accumulated (zero before launch)
+     int Hq, int Hkv, int T, int hd,
+-    int pos_offset)
++    int pos_offset,
++    const int32_t* __restrict__ positions)   // [B, T], read only when HAS_POS
+ {
+     const int t    = blockIdx.x;
+     const int hh   = blockIdx.y;
+@@ -62,7 +67,10 @@ __global__ void fused_qknorm_rope_backward(
+     const float  rstd = rstd_in[((long)b * H + h) * T + t];  // saved by the forward
+ 
+     const int  half      = hd / 2;
+-    const long cache_row = (long)(t + pos_offset) * hd;
++    // v2: same cache row as the forward used for this token (was always t + pos_offset;
++    // HAS_POS=false keeps exactly that).
++    const long cache_row = HAS_POS ? (long)positions[(long)b * T + t] * hd
++                                   : (long)(t + pos_offset) * hd;
+ 
+     // ---- Pass A: dy = rope_inverse(dz); S = (1/hd) sum_j g[j]*xhat[j] ----
+     float partial = 0.f;
+@@ -122,7 +130,8 @@ void fused_qk_norm_rope_backward(
+     float*       dq_gamma, float* dk_gamma,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, bool interleaved,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    const int32_t* positions)
+ {
+     // Hopper dispatch gate; the kernel below is the fallback for all other archs.
+     // The Hopper path writes dq_gamma/dk_gamma outright, so it must be taken
+@@ -135,7 +144,7 @@ void fused_qk_norm_rope_backward(
+         fused_qk_norm_rope_backward_sm90(
+             dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
+             q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
+-            B, Hq, Hkv, T, hd, pos_offset, interleaved, stream);
++            B, Hq, Hkv, T, hd, pos_offset, interleaved, stream, positions);
+         return;
+     }
+ 
+@@ -146,16 +155,29 @@ void fused_qk_norm_rope_backward(
+     dim3 block(32);
+     dim3 grid(T, Hq + Hkv, B);
+ 
++    // v2: positions == nullptr launches the original <.., false> instantiation.
+     if (!interleaved) {   // NeoX (bluscript default)
+-        fused_qknorm_rope_backward<true><<<grid, block, 0, stream>>>(
+-            dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
+-            q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
+-            Hq, Hkv, T, hd, pos_offset);
++        if (positions == nullptr)
++            fused_qknorm_rope_backward<true, false><<<grid, block, 0, stream>>>(
++                dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
++                Hq, Hkv, T, hd, pos_offset, positions);
++        else
++            fused_qknorm_rope_backward<true, true><<<grid, block, 0, stream>>>(
++                dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
++                Hq, Hkv, T, hd, pos_offset, positions);
+     } else {              // GPT-J interleaved
+-        fused_qknorm_rope_backward<false><<<grid, block, 0, stream>>>(
+-            dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
+-            q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
+-            Hq, Hkv, T, hd, pos_offset);
++        if (positions == nullptr)
++            fused_qknorm_rope_backward<false, false><<<grid, block, 0, stream>>>(
++                dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
++                Hq, Hkv, T, hd, pos_offset, positions);
++        else
++            fused_qknorm_rope_backward<false, true><<<grid, block, 0, stream>>>(
++                dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,
++                q_rstd, k_rstd, dq_in, dk_in, dq_gamma, dk_gamma,
++                Hq, Hkv, T, hd, pos_offset, positions);
+     }
+ }
+ 

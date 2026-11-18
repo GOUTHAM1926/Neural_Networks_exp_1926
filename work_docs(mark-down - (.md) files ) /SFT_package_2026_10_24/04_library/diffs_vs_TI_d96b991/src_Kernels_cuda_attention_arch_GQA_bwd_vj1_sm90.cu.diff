@@ -1,0 +1,28 @@
+diff --git a/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.cu b/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.cu
+index 706d0d7..a5d972f 100644
+--- a/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_bwd_vj1_sm90.cu
+@@ -481,6 +481,15 @@ gqa_bwd_vj1(
+     };
+     uint32_t qopar = 0;
+     issue(0);                                          // prologue: load tile 0
++    // Tile 0's sLSE/sD are written by threads 0..63 in issue(0) and read by all 4 warps in
++    // fused_p_stsm before any other __syncthreads. mbar_qo does not order those writes: only thread 0 arrives
++    // on it, and it arrives before its own sLSE store. Tiles >= 1 are published by the store barrier after
++    // issue(it + 1) (the NOTE in the loop); tile 0 had nothing. Before 2026-10-10 there was no barrier here:
++    // a race on the first tile, correct only because the 256-B LSE load lands before the 32-KB Q/dO TMA and
++    // the S GEMM finish (SASS of the old kernel: sLSE STS at 0x1010, first LDS at 0x1ee0, no BAR between;
++    // v44 orders the same data with producer_sync + the d_ready mbarrier, GQA_bwd_sm90.cu:594-596,622).
++    // Cost: one barrier per CTA, not per tile. SASS change: +1 BAR.SYNC, nothing else in the arithmetic.
++    __syncthreads();
+ 
+     for (int it = 0; it < nIter; it++) {
+         const int q = kt + it;
+@@ -488,6 +497,7 @@ gqa_bwd_vj1(
+         mbar_wait_v4(&mbar_qo, qopar); qopar ^= 1;
+         // NOTE: no post-load barrier — sQ visibility is guaranteed by mbar_wait (TMA completion), and
+         // sLSE/sD were written+published by the PREVIOUS tile's store-barrier (prefetch). One barrier saved.
++        // (Tile 0 has no previous tile: it is published by the __syncthreads() right after issue(0).)
+ 
+         // S = Q@Kᵀ and dP = dO@Vᵀ ISSUED TOGETHER (overlap on the tensor pipe), waited once — instead of
+         // S(wait)→fused_p→dP(wait) which serialized the two GEMMs. Attacks wait 1.28 + 44%-idle pipe.

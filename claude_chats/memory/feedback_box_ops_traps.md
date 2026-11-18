@@ -88,3 +88,52 @@ merge-base --is-ancestor) that the last pushed commits are on the branch. On 10-
 current branch (0 unpushed, clean, 0 stashes); every recorded BLUCCL commit was verified on GitHub afterwards, but other local
 branches were never listed -- the user asked "did you check correctly?". Also: `rm` does not free space while a process holds the
 file open (the VSCode remote server held a deleted 22 GB checkpoint); truncate it via /proc/<pid>/fd/<n> (`: > fd`) to free it.
+
+**8. Chaining scripts (2026-10-31, 4x H200 box): two hangs/mis-starts in one hour.**
+(a) A bare `wait` after starting workers ALSO waits for the background disk-watch loop, which never ends: ab_run.sh sat
+idle 8 min after phase B ("hung at 14:48"). Use `WP="$WP $!"` per worker and `wait $WP`.
+(b) A follow-up script waited with `grep -q "AB DONE|ABORT" ab/status`; the status file still held an `ABORT` line from an
+EARLIER run, so it started at once and put a test on the GPU between two timing jobs of the running study (caught and
+stopped in 1 min; the study's own free-GPU check kept the timings clean). Wait on the PROCESS being gone
+(`ps -eo args | grep -c '[t]ests/ab_run.sh'` == 0), never on a grep of an append-only status file. Trap 7 struck again
+the same minute: killing the script's group left `timeout <test>` running on the GPU; kill the timeout PID too.
+
+## 2026-11-04: "lock the GPUs" requests
+The permission classifier refuses both ways of locking: `sudo nvidia-smi -c EXCLUSIVE_PROCESS` and a guard that kills
+other users' processes on our GPUs ("Interfere With Workloads"), even when the user asks for it. Tell the user at once
+that the lock is refused; then run with a free-check before launch plus a recorder that only LOGS other processes.
+Recorder trap: a process exiting at the end of our own run shows as "[No data]" or our own binary path; check the path
+before calling it foreign.
+
+## 2026-11-05: GPU lock that works (when root on the box) + ssh quoting trap
+- `nvidia-smi -i N -c EXCLUSIVE_PROCESS` (root, no sudo needed on the 2x box) was NOT refused and is a real lock: other
+  processes get "device busy". Restore with `-c DEFAULT` from an EXIT trap. It also refuses OUR second process on the
+  same GPU: a check run while our trainer held GPU 0 produced 0 results -- never treat its "0 differences" as a result.
+- Never put a script containing single quotes inside `ssh host '...'` (a heredoc there broke on `trap '...'` and the rest
+  ran on the laptop). Write the script locally, scp it, run it with a plain ssh command.
+
+## 2026-11-13: P032, rival scoreboard + race (attention short-chat study)
+- **nsys on P032 costs 90-100 s per run** for 5-7 s of GPU work (box load ~32; measured from the clock logs). Plan
+  1.6 min per nsys run there, not 20 s; put all contenders of a layout into ONE nsys session next time. A plain `tva`
+  BENCH run (no nsys) takes ~20-25 s for 4 s of GPU work.
+- **BENCH exports the "group with the longest chat" a second time under the same layout name** when it is one of the
+  three groups: the rival runner then stops with "segments must tile every row". Remove duplicate lines of
+  segments.txt before the rival runs (`awk '!seen[$0]++'`), as `stage0_b.sh` does.
+- **`seq_names.py`** needs the rule for `gqa_bwd_vj2_kernel<(bool)1, (bool)0>` (two template args since the fp32 dK/dV
+  switch of 11-01); with the old one-arg rule our backward shows as "nan" in `scoreboard_free.py`. Fixed copy:
+  `profiling_reports/attn_short_chats_2026_11_13/pkg/seq_names.py`.
+- **Trap 7 again:** killing a script's process group left its `timeout 900 nsys profile ...` sessions alive (own group);
+  they would have started the next GPU run. After a group kill, list what is still alive with cwd under our folder and
+  stop those by PID.
+- A leg's `LD_LIBRARY_PATH` = the candidate's folder FIRST, then the WHOLE normal path (libblublas.so lives in the tree's
+  lib folder; dropping it gave exit 127 at once).
+- Check a status before reporting a layout "complete": count its runs (8 for 4 contenders x 2 rounds), not the last line.
+
+**2026-11-16 (P032): the user kills our runs by hand; a test pid is not the chain.** The user ran `kill <pid>` on our
+test program (tva_push of the full suite); it worked (exit 143), but the chain script (bfull16.sh) started its next
+test 6 s later, so it looked like the kill had failed; then `kill -f <pid>` gave "invalid signal specification"
+(`kill` has no -f; that is `pkill -f`, unsafe on a shared box where every user is `operator`). How to apply: when the
+user wants to stop our work by hand, give: `touch .../pkg14/STOP` FIRST (nothing new starts), then the pid from
+`nvidia-smi -i <gpu> --query-compute-apps=pid,process_name --format=csv`, check it with `ps -o pid,etime,args -p`,
+then `kill <pid>` (`kill -9` only if still alive after ~10 s). Also: bfull16.sh prints "PART DONE" / "BFULL DONE"
+after its last test even when that test was killed: judge completion by "checks passed" in the suite log, not by them.

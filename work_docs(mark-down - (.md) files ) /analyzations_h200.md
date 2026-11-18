@@ -35791,3 +35791,55 @@ it. It added two exact points:
 | `Neural_Networks_exp_1926/work_docs(mark-down - (.md) files ) /pingpong_crosscheck_for_nova_2026_10_26.md` | my question document to her Claude (870 lines; its first reply is in Appendix A) |
 | `Neural_Networks_exp_1926/pingpong_crosscheck_answer_2026-10-26.md` | her Claude's full answer (534 lines) |
 | `Neural_Networks_exp_1926/reports_harshini_ping_pong/` | the 8 kernel files (mlir, ptx, cubin, sass × ping-pong / cooperative) |
+
+### §H236  TILE-ORDER TABLE STALL (host cache) + sm_80/86/89 TILE-SKIP BUG, 2026-11-02 -- analyzed, fixed, tested (not pushed)
+
+Full record: SFT work doc §45.133-45.134 (Neural_Networks_exp_1926/work_docs), plan Q&A 196-198; files, patches,
+harnesses and results: `profiling_reports/long_context_kernels_2026_10_31/tilemap_fix_2026_11_02/` and
+`tilemap_stall_2026_11_02/`. BluBLAS ea666ab (under TI d067e89).
+
+**1. The stall.** `Bgemm_sm90_warpspecialized_template.cuh` (BF16 SM90): square grids (Hilbert) and tall grids
+(grid_m > 4 x grid_n, plain row order) read their tile order from `tile_map[mn_tile]` (line 469). The table was built
+on the host by `sm90_tile_map_cached` (lines 1681-1725): 16 slots IN TOTAL for all GEMMs, keyed (grid_m, grid_n,
+hilbert), round-robin; a miss = std::vector + `cudaMalloc` + a plain `cudaMemcpy` (waits for all queued work on the
+legacy stream 0, which TI always uses) + `cudaFree` of a slot once full; no GPU in the key, no lock.
+- Trigger: the SFT trained-rows lm_head. Only its backward dX ([M_t x 512], grid M_t/128 x 2, tall) changes grid every
+  micro-batch; the forward ([M_t x 49280], grid M_t/256 x 385) is not tall and only square at M_t = 98,560; dW
+  ([49280 x 512]) never changes. 135M trainer, 10-31 nsys: +1 cudaMalloc and +1 blocking cudaMemcpy per micro-batch
+  (+19/20 at 4k, +10/10 at 128k; 565 / 1,556 ms of CPU waiting); fixed-shape runs: start-up only (6-7 table shapes).
+- Measured (P032 H200, same call as the trainer): one dX call with 20 ms of GPU work queued: same M 3 us, new M
+  20,014 us. 20 shapes through 16 slots: every call misses (and fixed shapes get evicted: 35 builds for 33 new shapes).
+  cuBLAS: new shape ~65-100 us of CPU, no malloc/copy/free; waits only on the first use of a new kernel
+  (`cuKernelSetAttribute`, lazy load), never again. CUTLASS 4.5.1 `static_tile_scheduler.hpp:169-243`: tile order
+  computed on the device (FastDivmod + raster + swizzle), workspace 0; grouped GEMM keeps per-group shapes in device
+  memory (`group_array_problem_shape.hpp`, `sm90_tile_scheduler_group.hpp:283`); DeepGEMM `scheduler.cuh`:
+  `__ldg(grouped_layout + group_idx)`. Same single-slot pattern (worse) in `Bgemm_sm90_cluster_nn_persistent_template.cuh`
+  :604 and every SM103 template (B300; out of scope).
+- Fix options built and measured (same command, CUDA 13.4, 59 shapes: 135M linears fwd/dX/dW at 16k/128k rows, lm_head
+  full + 5 trained counts, the 8 P1 shapes, square, wide; A/B in one process via dlopen, 30 paired rounds + A-vs-A null):
+  - B / B2 (tall order computed in the kernel, exact divmod / plain divide; square tables async): bit-identical, but
+    `down dX` +2.9-3.1% (16k) and +3.9-4.0% (128k), 128k tall shapes +0.3-0.8% on 3 H200s; ptxas: non-split 128x64 /
+    128x128 configs +2 to +18 registers (B), +0 to +3 (B2). REJECTED.
+  - B3 (ACCEPTED): kernel unchanged (nvcc -cubin md5 identical for all 7 sources that include the template, 186
+    kernels); host only: a tall table's entry i = (i / grid_n, i % grid_n) for ANY grid_m, so one table per (GPU,
+    grid_n) sized to the next power of two rows, replaced by one >= 2x only for a taller grid; square tables per (GPU,
+    grid); pinned host + `cudaMemcpyAsync` on the GEMM stream + an event (`cudaStreamWaitEvent` for other streams);
+    never freed; 64 slots then nullptr (supergrouped order); mutex. Results: speed B3/A 0.995-1.003 on all 59 shapes
+    (inside the null); bit-identical on 56/59; library memory 8.0 MiB both; new-M call 20,059 us -> 22-29 us; per 33
+    training-like iterations: 35 cudaMalloc + 35 blocking cudaMemcpy + 22 cudaFree -> 1 cudaMalloc, 0, 0.
+- To do (2026-11-03): push; the same change for `Hgemm_sm90_warpspecialized_template.cuh` (FP16) and
+  `Bgemm_sm90_swiglu_fused_template.cuh` (own copies of the cache); trainer off/on measurement.
+
+**2. The sm_80/86/89 tile-skip bug** (wrong rows on the RTX 3060, 2026-11-01). `BF16/SM89/Bgemm_core_template.cuh:78-79`
+and `FP16/Hgemm_core_template.cuh:78-79` (group 8), `FP32/SM86/Sgemm_core_template.cuh:567-569` (group 16):
+`sw = max(1, min(grid_y, G)); bx = (block_id / sw) % grid_x; by = (block_id % sw) + (block_id / (grid_x * sw)) * sw`
+treats the last group of tile rows as G rows: tiles are lost exactly when grid_x > 1, grid_y > G and grid_y % G != 0
+(enumeration). Safe: BF16/FP16 backward nt/tn (swizzle only if rows % 8 == 0) and the FP32 SM89 core (`actual_sw =
+min(sw, grid_x - strip*sw)`; used on sm_89 and H200). Fix (C): `g_first = (block_id / (grid_x*G))*G; sw = min(grid_y -
+g_first, G); g_off = block_id - g_first*grid_x; bx = g_off / sw; by = g_first + g_off % sw` (Triton / CCE `group_size`
+rule); identical order where the old one worked (532/532 grids). RTX 3060, 29 cases: normal cases bit-identical, time
+0.956-1.006 of A; broken cases: A left 0.49M-25M elements unwritten (M 6656 NT 256x128: 18,874,368 = 576 tiles), C
+complete and equal to cuBLAS, 5-16% slower than A there = the skipped work (work ratio 1.05-1.17).
+
+**3. Found on the way:** split-K dW GEMMs with huge K (16k qkv dW [1024x512xK16384], 16k o dW, 128k o dW) differ in
+1-11 elements run to run (A vs A): not bit-deterministic. FUTURE task.

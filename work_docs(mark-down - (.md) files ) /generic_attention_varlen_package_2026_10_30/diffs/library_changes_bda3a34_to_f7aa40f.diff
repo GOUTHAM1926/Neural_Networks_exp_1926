@@ -1,0 +1,901 @@
+diff --git a/include/ops/helpers/AttentionKernels.h b/include/ops/helpers/AttentionKernels.h
+index 81e657c..da57d2e 100644
+--- a/include/ops/helpers/AttentionKernels.h
++++ b/include/ops/helpers/AttentionKernels.h
+@@ -97,8 +97,9 @@ void mem_efficient_attn_backward(
+ * KV head h / (Nq_heads / Nkv_heads).
+ *
+ * Writes O as [B, Nq_heads, T, hd] (bf16) and LSE as [B, Nq_heads, T] (fp32).
+-* Constraints: hd in {64, 128}, T a multiple of 32. is_causal must be false
+-* (the kernel has no causal mask yet).
++* Constraints: hd in {64, 128}; non-causal: T a multiple of 32. Causal: Hopper
++* v62 (hd 128, T % 256 == 0), B300 hd 64 (T % 256 == 0), every other case on any
++* GPU but a B300 the generic causal WMMA kernel (since 2026-10-24), any T.
+ */
+ void gqa_flash_attn_forward(
+    const bfloat16_t* qkv,     // block-concatenated [Q | K | V]
+@@ -132,7 +133,13 @@ struct GqaChatPlan {
+     int32_t* dq_tiles = nullptr;    // device, 4 ints per padded 64-row dQ tile of ONE query head (the same list
+     int      n_dq_tiles = 0;        //   for every head): {b, row0, nrows, 0} (GQA_bwd_vj2_sm90.cu, bwd_prep_vj2_chats)
+     int B = 0, S = 0, Hq = 0;       // the shape the plan was built for (checked at every call)
+-    int32_t* storage = nullptr;     // the ONE device allocation the four lists point into
++    int32_t* storage = nullptr;     // the ONE device allocation the lists point into
++    // Generic (non-Hopper, non-B300) causal kernels, added 2026-10-24: one entry per segment, FA2 varlen's
++    // cu_seqlens list. Each kernel cuts its own tiles from the segment start, so the list does not depend on
++    // the tile size. Order: (row, start).
++    int32_t* gen_segs = nullptr;    // device, 4 ints per segment: {b, t0, L, 0}
++    int      n_gen_segs = 0;
++    int      gen_max_len = 0;       // the longest segment (the grid's tile axis)
+ };
+ // seg_b/seg_t0/seg_len: HOST arrays of n_seg segments (row, start, length). Hq <= 255.
+ // The lists go up with one asynchronous copy on the current stream: the call does not wait for the GPU.
+@@ -152,14 +159,16 @@ GqaChatPlanPtr gqa_chat_plan_make(const int32_t* seg_b, const int32_t* seg_t0, c
+ * contiguous with one another -- no packing copy is performed.
+ *
+ * Writes O as [B, Nq_heads, T, hd] (bf16) and LSE as [B, Nq_heads, T] (fp32).
+-* Same constraints as gqa_flash_attn_forward: hd in {64, 128}, T a multiple of
+-* 32 (256 for the causal hd==64 path). is_causal with hd!=64 is refused.
++* hd in {64, 128}. Causal: Hopper v62 (hd 128, T % 256 == 0), B300 hd 64 (T % 256 == 0),
++* every other case on any GPU but a B300 (incl. Hopper with BLUTRAIN_NO_SM90[_GQA] set, hd 64,
++* or T % 256 != 0) the generic causal WMMA kernel, any T. B300 hd 128 causal is refused.
++* Non-causal: T a multiple of 32.
+ *
+ * chats (v2 packed rows, design A): optional per-chat plan built for this (B, T, Nq_heads)
+ * (see GqaChatPlan). nullptr (default) = plain causal over the whole row, exactly as before.
+-* A plan is only accepted on the Hopper v62 path (causal, hd 128, T % 256 == 0); anywhere
+-* else this throws instead of ignoring it. The backward takes the SAME plan; pass it to both,
+-* or the gradients mix the chats again.
++* A plan is accepted on the Hopper v62 path and on the generic causal path; on B300, or with
++* is_causal = false, this throws instead of ignoring it. The backward takes the SAME plan; pass
++* it to both, or the gradients mix the chats again.
+ */
+ void gqa_flash_attn_forward_qkv(
+    const bfloat16_t* q,       // [B, Nq_heads,  T, hd]
+@@ -181,10 +190,10 @@ void gqa_flash_attn_forward_qkv(
+ * across the group. D_buf is per query row: [B, Nq_heads, T] (fp32); it is
+ * currently unused (D[i]=rowsum(dO[i]⊙O[i]) is recomputed inside the kernels).
+ *
+-* Causal requests (is_causal=true) route to the SM103/B300 TMA+tcgen05 kernel,
+-* which requires head_dim==64 and T a multiple of 128. Non-causal requests fall
+-* back to the WMMA kernels (head_dim 64 or 128, T a multiple of 32). A causal
+-* request with head_dim!=64 is refused (no correct kernel).
++* Causal requests (is_causal=true): Hopper hd 128 -> the Hopper kernels; B300 hd 64
++* -> the SM103 TMA+tcgen05 kernel (T a multiple of 128); every other case on any
++* GPU but a B300 -> the generic causal WMMA kernels (since 2026-10-24), any T.
++* Non-causal requests run the WMMA kernels (head_dim 64 or 128, T a multiple of 32).
+ */
+ void gqa_flash_attn_backward(
+    const bfloat16_t* qkv,         // block-concatenated [Q | K | V]
+@@ -206,9 +215,11 @@ void gqa_flash_attn_backward(
+ *
+ * chats (v2 packed rows, design A): the SAME plan the forward got; output and lse must
+ * come from that packed forward. nullptr (default) = plain causal, exactly as before.
+-* A plan is only accepted on the Hopper Vj2 (default since 2026-10-15; T % 128 == 0, else
++* A plan is accepted on the Hopper Vj2 (default since 2026-10-15; T % 128 == 0, else
+ * Vj1d runs) / Vj1d (USE_VJ2=0) paths (causal, hd 128, T % 64 == 0, neither USE_FLASH=1
+-* nor USE_DETERMINISTIC_DQ=1); anywhere else this throws instead of ignoring it.
++* nor USE_DETERMINISTIC_DQ=1) and on the generic causal path (every causal call the Hopper
++* kernels do not take, on any GPU but a B300; any T); anywhere else this throws instead of
++* ignoring it.
+ */
+ void gqa_flash_attn_backward_qkv(
+    const bfloat16_t* q,           // [B, Nq_heads,  T, hd]
+diff --git a/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu b/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
+index 7f0e002..339f6a1 100644
+--- a/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
+@@ -5,10 +5,10 @@
+ // stays in GQA_bwd_sm103.cu (compiled compute_103a) and is reached via the
+ // extern entry gqa_backward_v17_kv_launch_d64(), taken only on a B300.
+ //
+-// NOTE: the WMMA backward (launch_gqa_backward) is NON-CAUSAL. On non-Blackwell
+-// GPUs the causal path falls back to it, which is numerically correct ONLY for
+-// full (bidirectional) attention. Causal-correct training on non-B300 needs the
+-// memory-efficient backend instead.
++// The WMMA backward (launch_gqa_backward) has a CAUSAL variant since 2026-10-24
++// (segment-aware: dense rows or a GqaChatPlan's segments); every causal call the
++// Hopper and B300 kernels do not take runs it, on any GPU but a B300. (Before, the
++// causal hd==64 path ran the non-causal variant, i.e. full attention.)
+ 
+ #include <cuda_runtime.h>
+ #include <cuda.h>
+@@ -23,6 +23,8 @@
+ #include "dtype/Types.h"
+ #include "ops/helpers/KernelDispatch.h"
+ #include "ops/helpers/KernelPolicy.h"
++#include "device/DeviceCore.h"   // getCurrentStream(): the generic causal launches
++#include <string>
+ using namespace nvcuda;
+ 
+ namespace OwnTensor {
+@@ -184,21 +186,27 @@ namespace {  // internal linkage: portable WMMA backward kernels + launcher
+ 
+ 
+ // =============================================================================
+-// Legacy WMMA backward (gqa_backward_dQ / gqa_backward_dKdV / launch_gqa_backward)
+-// — kept as the NON-CAUSAL fallback path, exactly as the sibling forward keeps
+-// gqa_v2. The SM103 causal kernel below (V17) serves is_causal && head_dim==64;
+-// everything else routes here.
++// WMMA backward (gqa_backward_dQ / gqa_backward_dKdV / launch_gqa_backward).
++//   CAUSAL = false: full attention over the whole row (the original kernels).
++//   CAUSAL = true (added 2026-10-24): causal attention inside one segment, the
++//     backward of gqa_v2<CAUSAL = true> (GQA_fwd_generic.cu); same segment list
++//     (GqaChatPlan::gen_segs, nullptr = one segment per row), same tiles counted
++//     from the segment start, same mask (a key after a row -> p = 0). Rows and keys
++//     past the segment end are read as zero and never written.
++// The SM103 causal kernel (V17) serves is_causal && head_dim==64 on a B300; the
++// Hopper kernels serve causal head_dim==128 on an H100/H200.
+ // =============================================================================
+ // ─────────────────────────────────────────────────────────────────────────────
+ // Kernel 1 — dQ
+ // Grid  : (B, Hq, S/Br)  — each block owns one Q tile exclusively
++//         CAUSAL: (segments, Hq, Br-row tiles of the longest segment)
+ // Block : 32 threads (one warp)
+ //
+ // Q, dO, O stay in smem throughout.
+ // K, V are reloaded each K-tile.
+ // dQ_acc lives in registers, written once to d_dQ at the end.
+ // ─────────────────────────────────────────────────────────────────────────────
+-template<int Br, int Bc, int D>
++template<int Br, int Bc, int D, bool CAUSAL>
+ __global__ void gqa_backward_dQ(
+     const __nv_bfloat16 *d_Q,
+     const __nv_bfloat16 *d_K,
+@@ -207,18 +215,28 @@ __global__ void gqa_backward_dQ(
+     const __nv_bfloat16 *d_dO,
+     const float         *d_LSE,
+           __nv_bfloat16 *d_dQ,
+-    int B, int Hq, int Hkv, int G, int S, float scale
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int32_t       *segs
+ ){
+-    const int b       = blockIdx.x;
+     const int hq      = blockIdx.y;
+     const int q_tile  = blockIdx.z;
+     const int hkv     = hq / G;
+     const int lane    = threadIdx.x;
+-    const int q_row0  = q_tile * Br;
+-    const int nKTiles = S / Bc;
++
++    int b = blockIdx.x, t0 = 0, L = S;
++    if(CAUSAL && segs != nullptr){
++        const int4 sg = reinterpret_cast<const int4*>(segs)[blockIdx.x];
++        b = sg.x; t0 = sg.y; L = sg.z;
++    }
++    if(q_tile * Br >= L) return;                 // the grid covers the longest segment
++    const int nq      = min(Br, L - q_tile * Br);   // rows of this tile inside the segment (Br when !CAUSAL)
++    const int q_row0  = t0 + q_tile * Br;
++    const int nKTiles = CAUSAL ? (q_tile * Br + nq - 1) / Bc + 1   // up to the tile's last row
++                               : S / Bc;
++    const __nv_bfloat16 zero = __float2bfloat16(0.0f);
+ 
+     const long qBase  = ((long)(b * Hq  + hq)  * S + q_row0) * D;
+-    const long kvBase = ((long)(b * Hkv + hkv) * S) * D;
++    const long kvBase = ((long)(b * Hkv + hkv) * S + t0) * D;
+     const long lBase  =  (long)(b * Hq  + hq)  * S + q_row0;
+ 
+     __shared__ __align__(16) __nv_bfloat16 sQ  [Br * D];
+@@ -235,11 +253,12 @@ __global__ void gqa_backward_dQ(
+ 
+     // ── Load Q, dO, O — stay in smem for all K-tile iterations ───────────────
+     for(int i = lane; i < Br * D; i += 32){
+-        sQ [i] = d_Q [qBase + i];
+-        sdO[i] = d_dO[qBase + i];
+-        sO [i] = d_O [qBase + i];
++        const bool in = !CAUSAL || i / D < nq;
++        sQ [i] = in ? d_Q [qBase + i] : zero;
++        sdO[i] = in ? d_dO[qBase + i] : zero;
++        sO [i] = in ? d_O [qBase + i] : zero;
+     }
+-    if(lane < Br) sLSE[lane] = d_LSE[lBase + lane];
++    if(lane < Br) sLSE[lane] = lane < nq ? d_LSE[lBase + lane] : 0.0f;
+     __syncwarp();
+ 
+     // ── D[i] = rowsum(dO[i] ⊙ O[i])  (one scalar per query row) ─────────────
+@@ -256,13 +275,14 @@ __global__ void gqa_backward_dQ(
+     wmma::fragment<wmma::accumulator, 16, 16, 16, float> dQ_acc[D / 16];
+     for(int t = 0; t < D / 16; t++) wmma::fill_fragment(dQ_acc[t], 0.0f);
+ 
+-    // ── Main loop: stream over all K tiles ────────────────────────────────────
++    // ── Main loop: stream over the K tiles (CAUSAL: up to the tile's last row) ─
+     for(int kc = 0; kc < nKTiles; kc++){
+         const long kBase = kvBase + (long)kc * Bc * D;
+ 
+         for(int i = lane; i < Bc * D; i += 32){
+-            sK[i] = d_K[kBase + i];
+-            sV[i] = d_V[kBase + i];
++            const bool in = !CAUSAL || kc * Bc + i / D < L;
++            sK[i] = in ? d_K[kBase + i] : zero;
++            sV[i] = in ? d_V[kBase + i] : zero;
+         }
+         __syncwarp();
+ 
+@@ -284,11 +304,12 @@ __global__ void gqa_backward_dQ(
+         }
+         __syncwarp();
+ 
+-        // P = exp(S - LSE) → sP bf16
++        // P = exp(S - LSE) → sP bf16; CAUSAL: a key after this row -> p = 0 (the forward's mask)
+         if(lane < Br){
+             float lse = sLSE[lane];
+             for(int j = 0; j < Bc; j++)
+-                sP[lane * Bc + j] = __float2bfloat16(expf(sS[lane * Bc + j] - lse));
++                sP[lane * Bc + j] = (CAUSAL && kc * Bc + j > q_tile * Br + lane)
++                                  ? zero : __float2bfloat16(expf(sS[lane * Bc + j] - lse));
+         }
+         __syncwarp();
+ 
+@@ -309,7 +330,7 @@ __global__ void gqa_backward_dQ(
+         }
+         __syncwarp();
+ 
+-        // dS = P ⊙ (dP - D) → sdS bf16
++        // dS = P ⊙ (dP - D) → sdS bf16  (p = 0 -> dS = 0)
+         if(lane < Br){
+             float d = sD[lane];
+             for(int j = 0; j < Bc; j++){
+@@ -345,7 +366,7 @@ __global__ void gqa_backward_dQ(
+         __syncwarp();
+         for(int i = lane; i < Br * 16; i += 32){
+             int r = i / 16, c = i % 16;
+-            d_dQ[qBase + r * D + nt * 16 + c] = __float2bfloat16(sdP[i]);
++            if(!CAUSAL || r < nq) d_dQ[qBase + r * D + nt * 16 + c] = __float2bfloat16(sdP[i]);
+         }
+         __syncwarp();
+     }
+@@ -354,13 +375,15 @@ __global__ void gqa_backward_dQ(
+ // ─────────────────────────────────────────────────────────────────────────────
+ // Kernel 2 — dK, dV
+ // Grid  : (B, Hkv, S/Bc)  — each block owns one K tile exclusively
++//         CAUSAL: (segments, Hkv, Bc-key tiles of the longest segment)
+ // Block : 32 threads (one warp)
+ //
+ // K, V stay in smem throughout.
+-// Outer loop: G query heads; inner loop: S/Br Q tiles.
++// Outer loop: G query heads; inner loop: S/Br Q tiles
++//   (CAUSAL: from the Q tile of the block's first key to the segment end).
+ // dK_acc, dV_acc live in registers, written once at the end.
+ // ─────────────────────────────────────────────────────────────────────────────
+-template<int Br, int Bc, int D>
++template<int Br, int Bc, int D, bool CAUSAL>
+ __global__ void gqa_backward_dKdV(
+     const __nv_bfloat16 *d_Q,
+     const __nv_bfloat16 *d_K,
+@@ -370,14 +393,24 @@ __global__ void gqa_backward_dKdV(
+     const float         *d_LSE,
+           __nv_bfloat16 *d_dK,
+           __nv_bfloat16 *d_dV,
+-    int B, int Hq, int Hkv, int G, int S, float scale
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int32_t       *segs
+ ){
+-    const int b      = blockIdx.x;
+     const int hkv    = blockIdx.y;
+     const int k_tile = blockIdx.z;
+     const int lane   = threadIdx.x;
+-    const int k_row0 = k_tile * Bc;
+-    const int nQTiles = S / Br;
++
++    int b = blockIdx.x, t0 = 0, L = S;
++    if(CAUSAL && segs != nullptr){
++        const int4 sg = reinterpret_cast<const int4*>(segs)[blockIdx.x];
++        b = sg.x; t0 = sg.y; L = sg.z;
++    }
++    if(k_tile * Bc >= L) return;                     // the grid covers the longest segment
++    const int nk      = min(Bc, L - k_tile * Bc);    // keys of this tile inside the segment (Bc when !CAUSAL)
++    const int k_row0  = t0 + k_tile * Bc;
++    const int nQTiles = CAUSAL ? (L + Br - 1) / Br : S / Br;
++    const int qc0     = CAUSAL ? k_tile * Bc / Br : 0;   // earlier Q tiles cannot see these keys
++    const __nv_bfloat16 zero = __float2bfloat16(0.0f);
+ 
+     const long kvBase = ((long)(b * Hkv + hkv) * S + k_row0) * D;
+ 
+@@ -395,8 +428,9 @@ __global__ void gqa_backward_dKdV(
+ 
+     // ── Load K, V — fixed for this block ─────────────────────────────────────
+     for(int i = lane; i < Bc * D; i += 32){
+-        sK[i] = d_K[kvBase + i];
+-        sV[i] = d_V[kvBase + i];
++        const bool in = !CAUSAL || i / D < nk;
++        sK[i] = in ? d_K[kvBase + i] : zero;
++        sV[i] = in ? d_V[kvBase + i] : zero;
+     }
+     __syncwarp();
+ 
+@@ -412,18 +446,20 @@ __global__ void gqa_backward_dKdV(
+     // ── Outer: G query heads; Inner: S/Br Q tiles ────────────────────────────
+     for(int g = 0; g < G; g++){
+         const int hq = hkv * G + g;
+-        for(int qc = 0; qc < nQTiles; qc++){
+-            const int  q_row0 = qc * Br;
++        for(int qc = qc0; qc < nQTiles; qc++){
++            const int  nq     = CAUSAL ? min(Br, L - qc * Br) : Br;   // rows inside the segment
++            const int  q_row0 = t0 + qc * Br;
+             const long qBase  = ((long)(b * Hq + hq) * S + q_row0) * D;
+             const long lBase  =  (long)(b * Hq + hq) * S + q_row0;
+ 
+             // Load Q, dO, O, LSE
+             for(int i = lane; i < Br * D; i += 32){
+-                sQ [i] = d_Q [qBase + i];
+-                sdO[i] = d_dO[qBase + i];
+-                sO [i] = d_O [qBase + i];
++                const bool in = !CAUSAL || i / D < nq;
++                sQ [i] = in ? d_Q [qBase + i] : zero;
++                sdO[i] = in ? d_dO[qBase + i] : zero;
++                sO [i] = in ? d_O [qBase + i] : zero;
+             }
+-            if(lane < Br) sLSE[lane] = d_LSE[lBase + lane];
++            if(lane < Br) sLSE[lane] = lane < nq ? d_LSE[lBase + lane] : 0.0f;
+             __syncwarp();
+ 
+             // D[i] = rowsum(dO[i] ⊙ O[i])
+@@ -454,11 +490,13 @@ __global__ void gqa_backward_dKdV(
+             }
+             __syncwarp();
+ 
+-            // P = exp(S - LSE) → sP bf16
++            // P = exp(S - LSE) → sP bf16; CAUSAL: a key after the row, or a row past the
++            // segment end -> p = 0, so it adds nothing to dV or (dS = 0) to dK
+             if(lane < Br){
+                 float lse = sLSE[lane];
+                 for(int j = 0; j < Bc; j++)
+-                    sP[lane * Bc + j] = __float2bfloat16(expf(sS[lane * Bc + j] - lse));
++                    sP[lane * Bc + j] = (CAUSAL && (k_tile * Bc + j > qc * Br + lane || lane >= nq))
++                                      ? zero : __float2bfloat16(expf(sS[lane * Bc + j] - lse));
+             }
+             __syncwarp();
+ 
+@@ -542,7 +580,8 @@ __global__ void gqa_backward_dKdV(
+             __syncwarp();
+             for(int i = lane; i < 16 * 16; i += 32){
+                 int r = i / 16, c = i % 16;
+-                d_dV[kvBase + (vt * 16 + r) * D + nt * 16 + c] = __float2bfloat16(sdP[i]);
++                if(!CAUSAL || vt * 16 + r < nk)
++                    d_dV[kvBase + (vt * 16 + r) * D + nt * 16 + c] = __float2bfloat16(sdP[i]);
+             }
+             __syncwarp();
+ 
+@@ -553,7 +592,8 @@ __global__ void gqa_backward_dKdV(
+             __syncwarp();
+             for(int i = lane; i < 16 * 16; i += 32){
+                 int r = i / 16, c = i % 16;
+-                d_dK[kvBase + (vt * 16 + r) * D + nt * 16 + c] = __float2bfloat16(sdP[i]);
++                if(!CAUSAL || vt * 16 + r < nk)
++                    d_dK[kvBase + (vt * 16 + r) * D + nt * 16 + c] = __float2bfloat16(sdP[i]);
+             }
+             __syncwarp();
+         }
+@@ -563,7 +603,7 @@ __global__ void gqa_backward_dKdV(
+ // ─────────────────────────────────────────────────────────────────────────────
+ // Typed launcher
+ // ─────────────────────────────────────────────────────────────────────────────
+-template<int Br, int Bc, int D>
++template<int Br, int Bc, int D, bool CAUSAL = false>
+ void launch_gqa_backward(
+     const __nv_bfloat16 *d_Q,
+     const __nv_bfloat16 *d_K,
+@@ -574,7 +614,11 @@ void launch_gqa_backward(
+           __nv_bfloat16 *d_dQ,
+           __nv_bfloat16 *d_dK,
+           __nv_bfloat16 *d_dV,
+-    int B, int Hq, int Hkv, int G, int S, float scale
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int32_t *segs = nullptr,   // CAUSAL: the plan's segment list; nullptr = one segment per row
++    int n_segs = 0,
++    int max_len = 0,
++    cudaStream_t stream = 0
+ ){
+     // WMMA does 16x16x16 tiles, so every tiled dimension must be a multiple of 16.
+     static_assert(Br % 16 == 0, "Br must be a multiple of 16 (WMMA tile)");
+@@ -583,24 +627,55 @@ void launch_gqa_backward(
+     // The score GEMMs only emit one 16-row WMMA tile (no loop over Br/16),
+     // so these kernels process exactly 16 query rows per Q tile.
+     static_assert(Br == 16, "gqa backward processes exactly 16 query rows per Q tile");
++    static_assert(Bc % Br == 0, "a query tile must not straddle a key tile");
+ 
+     dim3 BLOCK(32);
++    const int nseg = (CAUSAL && segs) ? n_segs : B;
++    const int len  = (CAUSAL && segs) ? max_len : S;
+ 
+     // Kernel 1: dQ  — one block per Q tile
+-    dim3 GRID1(B, Hq, S / Br);
+-    gqa_backward_dQ<Br, Bc, D><<<GRID1, BLOCK>>>(
++    dim3 GRID1 = CAUSAL ? dim3(nseg, Hq, (len + Br - 1) / Br) : dim3(B, Hq, S / Br);
++    gqa_backward_dQ<Br, Bc, D, CAUSAL><<<GRID1, BLOCK, 0, stream>>>(
+         d_Q, d_K, d_V, d_O, d_dO, d_LSE, d_dQ,
+-        B, Hq, Hkv, G, S, scale
++        B, Hq, Hkv, G, S, scale, segs
+     );
+ 
+     // Kernel 2: dK, dV — one block per K tile
+-    dim3 GRID2(B, Hkv, S / Bc);
+-    gqa_backward_dKdV<Br, Bc, D><<<GRID2, BLOCK>>>(
++    dim3 GRID2 = CAUSAL ? dim3(nseg, Hkv, (len + Bc - 1) / Bc) : dim3(B, Hkv, S / Bc);
++    gqa_backward_dKdV<Br, Bc, D, CAUSAL><<<GRID2, BLOCK, 0, stream>>>(
+         d_Q, d_K, d_V, d_O, d_dO, d_LSE, d_dK, d_dV,
+-        B, Hq, Hkv, G, S, scale
++        B, Hq, Hkv, G, S, scale, segs
+     );
+ }
+ 
++// Generic causal path (2026-10-24): every causal call the dedicated kernels (Hopper v44/Vj1/Vj1d/Vj2,
++// B300 v17) do not take, on any GPU but a B300. chats == nullptr -> plain causal rows; else the plan's
++// segment list (the SAME plan the forward got).
++void gqa_generic_causal_bwd(
++    const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
++    const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* lse,
++    __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
++    int B, int Hq, int Hkv, int G, int T, int hd, float scale,
++    const GqaChatPlan* chats, const char* who)
++{
++    const int32_t* segs = chats ? chats->gen_segs : nullptr;
++    const int n_segs    = chats ? chats->n_gen_segs : 0;
++    const int max_len   = chats ? chats->gen_max_len : T;
++    cudaStream_t st     = getCurrentStream();
++    switch (hd) {
++        case 64:
++            launch_gqa_backward<16, 32, 64, true>(Q, K, V, O, dO, lse, dQ, dK, dV,
++                                                  B, Hq, Hkv, G, T, scale, segs, n_segs, max_len, st);
++            break;
++        case 128:
++            launch_gqa_backward<16, 32, 128, true>(Q, K, V, O, dO, lse, dQ, dK, dV,
++                                                   B, Hq, Hkv, G, T, scale, segs, n_segs, max_len, st);
++            break;
++        default:
++            throw std::runtime_error(std::string(who) + ": only head_dim 64 or 128 are compiled");
++    }
++}
++
+ } // anonymous namespace
+ 
+ // ---------------------------------------------------------------------------
+@@ -655,20 +730,22 @@ void gqa_flash_attn_backward(
+         return;
+     }
+ 
++    // Every other causal call: B300 has its own hd==64 kernel; any other GPU runs the
++    // generic causal WMMA backward (until 2026-10-24 it ran the WMMA backward without a
++    // mask, i.e. full attention, for hd==64 and threw for hd==128).
++    if (is_causal && get_arch() != ArchFamily::Blackwell_B300) {
++        gqa_generic_causal_bwd(dQ_in, dK_in, dV_in, dO, ddO, lse, dQ_out, dK_out, dV_out,
++                               B, Nq_heads, Nkv_heads, G, T, hd, scale,
++                               /*chats=*/nullptr, "gqa_flash_attn_backward");
++        return;
++    }
++
+     if (is_causal && hd == 64) {
+         if (T % 128 != 0) {
+             throw std::runtime_error(
+                 "gqa_flash_attn_backward: causal path requires T to be a multiple of 128");
+         }
+-        if (get_arch() == ArchFamily::Blackwell_B300) {
+-            gqa_backward_v17_kv_launch_d64(
+-                dQ_in, dK_in, dV_in, dO, ddO, lse,
+-                dQ_out, dK_out, dV_out,
+-                B, Nq_heads, Nkv_heads, G, T, scale);
+-            return;
+-        }
+-        // Non-B300: portable WMMA backward (NON-causal fallback).
+-        launch_gqa_backward<16, 32, 64>(
++        gqa_backward_v17_kv_launch_d64(
+             dQ_in, dK_in, dV_in, dO, ddO, lse,
+             dQ_out, dK_out, dV_out,
+             B, Nq_heads, Nkv_heads, G, T, scale);
+@@ -738,30 +815,31 @@ void gqa_flash_attn_backward_qkv(
+ 
+     const bool hopper_ok = is_causal && !disable_sm90_gqa() &&
+                            get_arch() == ArchFamily::Hopper && gqa_v44_shape_ok(T, hd);
++    // Generic causal path (2026-10-24): every causal call the Hopper kernels do not take, on any GPU but a B300.
++    const bool generic_ok = is_causal && !hopper_ok && get_arch() != ArchFamily::Blackwell_B300;
+ 
+-    // v2 packed rows (design A, a per-chat plan): only the Hopper Vj2 (default since 2026-10-15) and Vj1d
+-    // kernels know the plan. Vj1 (USE_FLASH=1), v44 (USE_DETERMINISTIC_DQ=1) and every non-Hopper path
+-    // below would IGNORE it and silently let the chats of a row see each other, so a plan that cannot be
++    // v2 packed rows (design A, a per-chat plan): the Hopper Vj2 (default since 2026-10-15) and Vj1d kernels
++    // and the generic causal kernels know the plan. Vj1 (USE_FLASH=1), v44 (USE_DETERMINISTIC_DQ=1) and the
++    // B300 path would IGNORE it and silently let the chats of a row see each other, so a plan that cannot be
+     // honoured is refused here instead (same rule as gqa_flash_attn_forward_qkv); it must also be the one
+     // the forward got (same shape).
+     if (chats != nullptr) {
+-        if (!(hopper_ok && gqa_bwd_mode_packs()))
++        if (!(hopper_ok && gqa_bwd_mode_packs()) && !generic_ok)
+             throw std::runtime_error(
+-                "gqa_flash_attn_backward_qkv: chats (packed rows, design A) needs the Hopper Vj2 (default) or "
+-                "Vj1d (USE_VJ2=0) path: causal, head_dim 128, T % 64 == 0, an H100/H200, "
+-                "BLUTRAIN_NO_SM90[_GQA] unset, and neither USE_FLASH=1 nor USE_DETERMINISTIC_DQ=1");
++                "gqa_flash_attn_backward_qkv: chats (packed rows, design A) needs a causal path that knows the "
++                "plan: the Hopper Vj2 (default) or Vj1d (USE_VJ2=0) path (neither USE_FLASH=1 nor "
++                "USE_DETERMINISTIC_DQ=1), or the generic causal kernel (any GPU but a B300)");
+         if (chats->B != B || chats->S != T || chats->Hq != Nq_heads || chats->bwd_tiles == nullptr ||
+-            chats->vj2_blocks == nullptr || chats->dq_tiles == nullptr)
++            chats->vj2_blocks == nullptr || chats->dq_tiles == nullptr || chats->gen_segs == nullptr)
+             throw std::runtime_error("gqa_flash_attn_backward_qkv: chats plan was built for another shape "
+                                      "(B, T, Nq_heads) or is empty");
+     }
+ 
+     // Hopper (H100/H200) causal hd==128 -> v44 (wgmma/TMA, causal-correct).
+     // This is the path bluscript's "split" attn_mode reaches.
+-    // BLUTRAIN_NO_SM90_GQA forces the generic path below. Disabling this also
++    // BLUTRAIN_NO_SM90_GQA forces the generic causal path below. Disabling this also
+     // removes compute_drowsum_v22_sm90 and convert_dq_accum_to_bf16_v5_sm90,
+-    // which are fixed sub-steps of the v44 launch. As on the forward side, there
+-    // is no generic causal kernel for hd==128, so that config throws.
++    // which are fixed sub-steps of the v44 launch.
+     if (hopper_ok) {
+         gqa_hopper_causal_bwd_d128(
+             dQ_in, dK_in, dV_in, dO, ddO, lse,
+@@ -770,19 +848,22 @@ void gqa_flash_attn_backward_qkv(
+         return;
+     }
+ 
+-    if (is_causal && hd == 64) {
++    // Any GPU but a B300 (and Hopper calls the Hopper kernels cannot take): the generic causal WMMA
++    // backward, dense rows or the plan's segments. Until 2026-10-24 hd==64 ran the WMMA backward without a
++    // mask (full attention) and hd==128 threw.
++    if (generic_ok) {
++        gqa_generic_causal_bwd(dQ_in, dK_in, dV_in, dO, ddO, lse, dQ_out, dK_out, dV_out,
++                               B, Nq_heads, Nkv_heads, G, T, hd, scale, chats,
++                               "gqa_flash_attn_backward_qkv");
++        return;
++    }
++
++    if (is_causal && hd == 64) {   // B300
+         if (T % 128 != 0) {
+             throw std::runtime_error(
+                 "gqa_flash_attn_backward_qkv: causal path requires T to be a multiple of 128");
+         }
+-        if (get_arch() == ArchFamily::Blackwell_B300) {
+-            gqa_backward_v17_kv_launch_d64(
+-                dQ_in, dK_in, dV_in, dO, ddO, lse,
+-                dQ_out, dK_out, dV_out,
+-                B, Nq_heads, Nkv_heads, G, T, scale);
+-            return;
+-        }
+-        launch_gqa_backward<16, 32, 64>(
++        gqa_backward_v17_kv_launch_d64(
+             dQ_in, dK_in, dV_in, dO, ddO, lse,
+             dQ_out, dK_out, dV_out,
+             B, Nq_heads, Nkv_heads, G, T, scale);
+diff --git a/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu b/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu
+index 97fa947..2f64429 100644
+--- a/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu
+@@ -8,6 +8,10 @@
+ // The Blackwell causal kernel (gqa_v48_causal, tcgen05/TMA) stays in
+ // GQA_fwd_sm103.cu and is reached here through the extern entry
+ // gqa_v48_causal_launch_d64(), taken only when get_arch()==Blackwell_B300.
++//
++// Since 2026-10-24 gqa_v2 also has a CAUSAL variant (segment-aware: dense rows or
++// a GqaChatPlan's segments). Every causal call the dedicated kernels (Hopper v62,
++// B300 v48) do not take runs it, on any GPU but a B300.
+ 
+ #include <cuda_runtime.h>
+ #include <cuda_bf16.h>
+@@ -56,9 +60,17 @@ static inline bool gqa_v62_shape_ok(int T, int hd) {
+ namespace {  // internal linkage: fallback kernel + launcher
+ 
+ // =============================================================================
+-// gqa_v2 -- portable WMMA fallback (sm_80+). Non-causal, head_dim 64/128.
++// gqa_v2 -- portable WMMA kernel (sm_80+), head_dim 64/128.
++//   CAUSAL = false: full attention over the whole row (the original kernel).
++//   CAUSAL = true (added 2026-10-24): causal attention inside one segment. A block is
++//     (segment, query head, 16-row query tile counted from the segment start). segs = the
++//     plan's {b, t0, L, 0} list (GqaChatPlan::gen_segs), or nullptr for one segment per row
++//     (b = blockIdx.x, t0 = 0, L = S: plain causal rows). The key loop stops at the tile's
++//     last row, and a key after a row gets score -inf (p = 0). Rows and keys past the segment
++//     end are read as zero and never written. Tiles are counted from the segment start, so a
++//     chat in a packed row runs the same tiles in the same order as the chat alone at row 0.
+ // =============================================================================
+-template<int Br, int Bc, int D>
++template<int Br, int Bc, int D, bool CAUSAL>
+ __global__ void gqa_v2(
+   __nv_bfloat16 *d_Q,
+   __nv_bfloat16 *d_K,
+@@ -70,20 +82,30 @@ __global__ void gqa_v2(
+   int Hkv,
+   int G,
+   int S,
+-  float scale
++  float scale,
++  const int32_t *segs
+ ){
+-  const int b      = blockIdx.x;
+   const int hq     = blockIdx.y;
+   const int q_tile = blockIdx.z;
+   const int hkv    = hq / G;
+   const int lane   = threadIdx.x;
+ 
+-  const int q_row0    = q_tile * Br;
+-  const int nKVTiles = S / Bc;
++  int b = blockIdx.x, t0 = 0, L = S;
++  if(CAUSAL && segs != nullptr){
++    const int4 sg = reinterpret_cast<const int4*>(segs)[blockIdx.x];
++    b = sg.x; t0 = sg.y; L = sg.z;
++  }
++  if(q_tile * Br >= L) return;                 // the grid covers the longest segment
++  const int nq = min(Br, L - q_tile * Br);     // rows of this tile inside the segment (Br when !CAUSAL)
++
++  const int q_row0   = t0 + q_tile * Br;
++  const int nKVTiles = CAUSAL ? (q_tile * Br + nq - 1) / Bc + 1   // up to the tile's last row
++                              : S / Bc;
+ 
+   const long qBase  = ((long)(b * Hq  + hq)  * S  + q_row0) * D;
+-  const long kvBase = ((long)(b * Hkv + hkv) * S) * D;
++  const long kvBase = ((long)(b * Hkv + hkv) * S  + t0) * D;
+   const long lBase  = ((long)(b * Hq  + hq)  * S) + q_row0;
++  const __nv_bfloat16 zero = __float2bfloat16(0.0f);
+ 
+   __shared__ __align__(16) __nv_bfloat16 sQ[Br * D];
+   __shared__ __align__(16) __nv_bfloat16 sK[Bc * D];
+@@ -97,7 +119,7 @@ __global__ void gqa_v2(
+   __shared__ float sCorr[Br];                           // per-row rescale factor exp(m_old - m_new)
+ 
+   for(int i = lane; i < Br * D; i += 32){
+-    sQ[i] = d_Q[qBase + i];
++    sQ[i] = (!CAUSAL || i / D < nq) ? d_Q[qBase + i] : zero;
+     sO[i] = 0.0f;
+   }
+   if(lane < Br){
+@@ -109,8 +131,9 @@ __global__ void gqa_v2(
+   for(int kc = 0; kc < nKVTiles; ++kc){
+     const long kBase = kvBase + (long)kc * Bc * D;
+     for(int i = lane; i < Bc * D; i += 32){
+-      sK[i] = d_K[kBase + i];
+-      sV[i] = d_V[kBase + i];
++      const bool in = !CAUSAL || kc * Bc + i / D < L;
++      sK[i] = in ? d_K[kBase + i] : zero;
++      sV[i] = in ? d_V[kBase + i] : zero;
+     }
+     __syncwarp();
+ 
+@@ -140,6 +163,9 @@ __global__ void gqa_v2(
+ 
+       float tile_max = -INFINITY;
+       for(int j = 0; j < Bc; ++j){
++        // causal: a key after this row (this also covers every key past the segment end) -> -inf, p = 0.
++        // Key 0 of the segment is in tile 0 for every row, so m stays finite.
++        if(CAUSAL && kc * Bc + j > q_tile * Br + lane) sS[lane * Bc + j] = -INFINITY;
+         tile_max = fmaxf(tile_max, sS[lane * Bc + j]);
+       }
+ 
+@@ -188,14 +214,16 @@ __global__ void gqa_v2(
+   }
+ 
+   for(int i = lane; i < Br * D; i += 32){
+-    d_O[qBase + i] = __float2bfloat16(sO[i] / sl[i / D]);
++    if(!CAUSAL || i / D < nq) d_O[qBase + i] = __float2bfloat16(sO[i] / sl[i / D]);
+   }
+-  if(lane < Br){
++  if(lane < nq){
+     d_LSE[lBase + lane] = sm[lane] + logf(sl[lane]);
+   }
+ }
+ 
+-template<int Br, int Bc, int D>
++// CAUSAL: grid (segments, Hq, 16-row tiles of the longest segment); segs == nullptr -> one segment per
++// row (B segments of length S). !CAUSAL: grid (B, Hq, S/16), the original launch.
++template<int Br, int Bc, int D, bool CAUSAL = false>
+ void launch_gqa_v2(
+   __nv_bfloat16 *d_Q,
+   __nv_bfloat16 *d_K,
+@@ -207,17 +235,48 @@ void launch_gqa_v2(
+   int Hkv,
+   int G,
+   int S,
+-  float scale
++  float scale,
++  const int32_t *segs = nullptr,
++  int n_segs = 0,
++  int max_len = 0,
++  cudaStream_t stream = 0
+ ){
+   static_assert(Br % 16 == 0, "Br must be a multiple of 16 (WMMA tile)");
+   static_assert(Bc % 16 == 0, "Bc must be a multiple of 16 (WMMA tile)");
+   static_assert(D  % 16 == 0, "D  must be a multiple of 16 (WMMA tile)");
+   static_assert(Br == 16, "gqa_v2 processes exactly 16 query rows per block");
++  static_assert(Bc % Br == 0, "a query tile must not straddle a key tile");
+ 
+-  dim3 GRID(B, Hq, S/Br);
++  dim3 GRID = CAUSAL ? dim3(segs ? n_segs : B, Hq, ((segs ? max_len : S) + Br - 1) / Br)
++                     : dim3(B, Hq, S / Br);
+   dim3 BLOCK(32);
+-  gqa_v2<Br, Bc, D><<<GRID, BLOCK>>>(d_Q, d_K, d_V, d_O, d_LSE,
+-                          B, Hq, Hkv, G, S, scale);
++  gqa_v2<Br, Bc, D, CAUSAL><<<GRID, BLOCK, 0, stream>>>(d_Q, d_K, d_V, d_O, d_LSE,
++                          B, Hq, Hkv, G, S, scale, segs);
++}
++
++// Generic causal path (2026-10-24): every causal call the dedicated kernels (Hopper v62, B300 v48) do not
++// take, on any GPU but a B300. chats == nullptr -> plain causal rows; else the plan's segment list.
++void gqa_generic_causal_fwd(__nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
++                            __nv_bfloat16* dO, float* lse,
++                            int B, int Hq, int Hkv, int G, int T, int hd, float scale,
++                            const GqaChatPlan* chats, const char* who)
++{
++    const int32_t* segs = chats ? chats->gen_segs : nullptr;
++    const int n_segs    = chats ? chats->n_gen_segs : 0;
++    const int max_len   = chats ? chats->gen_max_len : T;
++    cudaStream_t st     = getCurrentStream();
++    switch (hd) {
++        case 64:
++            launch_gqa_v2<16, 32, 64, true>(dQ, dK, dV, dO, lse, B, Hq, Hkv, G, T, scale,
++                                            segs, n_segs, max_len, st);
++            break;
++        case 128:
++            launch_gqa_v2<16, 32, 128, true>(dQ, dK, dV, dO, lse, B, Hq, Hkv, G, T, scale,
++                                             segs, n_segs, max_len, st);
++            break;
++        default:
++            throw std::runtime_error(std::string(who) + ": only head_dim 64 or 128 are compiled");
++    }
+ }
+ 
+ } // anonymous namespace
+@@ -252,9 +311,7 @@ void gqa_flash_attn_forward(
+     __nv_bfloat16* dO = reinterpret_cast<__nv_bfloat16*>(output);
+ 
+     // Hopper (H100/H200) causal hd==128 -> v62 (wgmma/TMA persistent kernel).
+-    // BLUTRAIN_NO_SM90_GQA forces the generic path below; note that for hd==128
+-    // there is no generic *causal* kernel, so this throws rather than silently
+-    // computing non-causal attention.
++    // BLUTRAIN_NO_SM90_GQA forces the generic causal path below.
+     if (is_causal && !disable_sm90_gqa() &&
+         get_arch() == ArchFamily::Hopper && gqa_v62_shape_ok(T, hd)) {
+         gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
+@@ -263,23 +320,23 @@ void gqa_flash_attn_forward(
+         return;
+     }
+ 
++    // Every other causal call: B300 has its own hd==64 kernel; any other GPU runs the
++    // generic causal WMMA kernel (until 2026-10-24 it ran gqa_v2 without a mask, i.e.
++    // full attention, for hd==64 and threw for hd==128).
++    if (is_causal && get_arch() != ArchFamily::Blackwell_B300) {
++        gqa_generic_causal_fwd(dQ, dK, dV, dO, lse, B, Nq_heads, Nkv_heads, G, T, hd, scale,
++                               /*chats=*/nullptr, "gqa_flash_attn_forward");
++        return;
++    }
++
+     if (is_causal && hd == 64) {
+         if (T % 256 != 0) {
+             throw std::runtime_error(
+                 "gqa_flash_attn_forward: causal path requires T to be a multiple "
+                 "of 256 (Br=Bc=128 tiles, two tiles processed per block)");
+         }
+-        if (get_arch() == ArchFamily::Blackwell_B300) {
+-            gqa_v48_causal_launch_d64(dQ, dK, dV, dO, lse,
+-                                      B, Nq_heads, Nkv_heads, T, G, scale);
+-            return;
+-        }
+-        // Non-B300 fallback (portable WMMA, causal via per-tile skip below is
+-        // NOT available in gqa_v2 -- it computes full attention). NOTE: gqa_v2
+-        // has no causal mask, so this is only numerically correct for the
+-        // Blackwell kernel; on other GPUs it approximates by full attention.
+-        launch_gqa_v2<16, 32, 64>(dQ, dK, dV, dO, lse,
+-                                  B, Nq_heads, Nkv_heads, G, T, scale);
++        gqa_v48_causal_launch_d64(dQ, dK, dV, dO, lse,
++                                  B, Nq_heads, Nkv_heads, T, G, scale);
+         return;
+     }
+ 
+@@ -336,17 +393,21 @@ void gqa_flash_attn_forward_qkv(
+ 
+     const bool v62_ok = is_causal && !disable_sm90_gqa() &&
+                         get_arch() == ArchFamily::Hopper && gqa_v62_shape_ok(T, hd);
+-
+-    // v2 packed rows (design A, a per-chat plan): only the Hopper v62 kernel knows the plan. Every
+-    // other path below would IGNORE it and silently let the chats of a row see each other, so a plan
+-    // that cannot be honoured is refused here instead. A plan is also only valid for the shape it was
+-    // built for (its units hold row indices, head indices and segment bounds of that shape).
++    // Generic causal path (2026-10-24): every causal call v62 does not take, on any GPU but a B300.
++    const bool generic_ok = is_causal && !v62_ok && get_arch() != ArchFamily::Blackwell_B300;
++
++    // v2 packed rows (design A, a per-chat plan): the Hopper v62 kernel and the generic causal kernel
++    // know the plan. Every other path below would IGNORE it and silently let the chats of a row see
++    // each other, so a plan that cannot be honoured is refused here instead. A plan is also only valid
++    // for the shape it was built for (its units hold row indices, head indices and segment bounds of
++    // that shape).
+     if (chats != nullptr) {
+-        if (!v62_ok)
++        if (!v62_ok && !generic_ok)
+             throw std::runtime_error(
+-                "gqa_flash_attn_forward_qkv: chats (packed rows, design A) needs the Hopper v62 path: "
+-                "causal, head_dim 128, T % 256 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset");
+-        if (chats->B != B || chats->S != T || chats->Hq != Nq_heads || chats->fwd_units == nullptr)
++                "gqa_flash_attn_forward_qkv: chats (packed rows, design A) needs a causal path that knows "
++                "the plan: Hopper v62 or the generic causal kernel (any GPU but a B300)");
++        if (chats->B != B || chats->S != T || chats->Hq != Nq_heads || chats->fwd_units == nullptr ||
++            chats->gen_segs == nullptr)
+             throw std::runtime_error("gqa_flash_attn_forward_qkv: chats plan was built for another shape "
+                                      "(B, T, Nq_heads) or is empty");
+     }
+@@ -362,19 +423,23 @@ void gqa_flash_attn_forward_qkv(
+         return;
+     }
+ 
+-    if (is_causal && hd == 64) {
++    // Any GPU but a B300 (and Hopper calls v62 cannot take): the generic causal WMMA kernel, dense rows
++    // or the plan's segments. Until 2026-10-24 hd==64 ran gqa_v2 without a mask (full attention) and
++    // hd==128 threw.
++    if (generic_ok) {
++        gqa_generic_causal_fwd(dQ, dK, dV, dO, lse, B, Nq_heads, Nkv_heads, G, T, hd, scale, chats,
++                               "gqa_flash_attn_forward_qkv");
++        return;
++    }
++
++    if (is_causal && hd == 64) {   // B300
+         if (T % 256 != 0) {
+             throw std::runtime_error(
+                 "gqa_flash_attn_forward_qkv: causal path requires T to be a multiple "
+                 "of 256 (Br=Bc=128 tiles, two tiles processed per block)");
+         }
+-        if (get_arch() == ArchFamily::Blackwell_B300) {
+-            gqa_v48_causal_launch_d64(dQ, dK, dV, dO, lse,
+-                                      B, Nq_heads, Nkv_heads, T, G, scale);
+-            return;
+-        }
+-        launch_gqa_v2<16, 32, 64>(dQ, dK, dV, dO, lse,
+-                                  B, Nq_heads, Nkv_heads, G, T, scale);
++        gqa_v48_causal_launch_d64(dQ, dK, dV, dO, lse,
++                                  B, Nq_heads, Nkv_heads, T, G, scale);
+         return;
+     }
+ 
+@@ -418,9 +483,11 @@ void gqa_flash_attn_forward_qkv(
+ // exactly the dense order. dq tiles {b, row0, nrows, 0}: the padded 64-row slots of Vj2's LSE / D / fp32 dQ,
+ // ceil(L/64) per segment in (row, start) order, the same list for every head (FA3 varlen's offset_padded: a chat
+ // starts at any token, but those buffers need 64-row alignment); dqt0 = hq * n_dq_tiles + the segment's first
+-// slot + 2 kt. All four lists go up in ONE allocation with one asynchronous copy on the current stream: the plan
+-// is built once per micro-batch, and a synchronous copy would first wait for the GPU to finish the previous one.
+-// The kernels only read the lists.
++// slot + 2 kt. Generic causal kernels (added 2026-10-24, any GPU but Hopper and B300): segments {b, t0, L, 0} in
++// (row, start) order, FA2 varlen's cu_seqlens list; each kernel cuts its own tiles from t0. All five lists go up in
++// ONE allocation with one asynchronous copy on the current stream (the generic list last, so the four Hopper lists
++// keep their place): the plan is built once per micro-batch, and a synchronous copy would first wait for the GPU
++// to finish the previous one. The kernels only read the lists.
+ // ---------------------------------------------------------------------------
+ int gqa_vj2_section_pairs(int S);   // GQA_bwd_vj2_sm90.cu
+ 
+@@ -499,9 +566,17 @@ void gqa_chat_plan_build(GqaChatPlan& plan, const int32_t* seg_b, const int32_t*
+         for (const VB& v : sec) for (int x : {v.b, v.t0, v.L, v.kt, v.hq, v.dqt0, 0, 0}) vb.push_back(x);
+     }
+ 
++    // Generic causal kernels: one entry per segment, (row, start) order.
++    std::vector<int32_t> gs;
++    int gmax = 0;
++    for (const Seg& g : byrow) {
++        for (int x : {g.b, g.t0, g.L, 0}) gs.push_back(x);
++        gmax = std::max(gmax, g.L);
++    }
++
+     std::vector<int32_t> all;   // every list is a multiple of 4 ints, so each one starts 16-B aligned (int4 loads)
+-    all.reserve(fu.size() + bt.size() + vb.size() + dq.size());
+-    for (const std::vector<int32_t>* v : {&fu, &bt, &vb, &dq}) all.insert(all.end(), v->begin(), v->end());
++    all.reserve(fu.size() + bt.size() + vb.size() + dq.size() + gs.size());
++    for (const std::vector<int32_t>* v : {&fu, &bt, &vb, &dq, &gs}) all.insert(all.end(), v->begin(), v->end());
+     gqa_chat_plan_free(plan);
+     auto& alloc = CachingCUDAAllocator::instance();
+     int32_t* buf = static_cast<int32_t*>(alloc.allocate(all.size() * sizeof(int32_t)));
+@@ -520,6 +595,9 @@ void gqa_chat_plan_build(GqaChatPlan& plan, const int32_t* seg_b, const int32_t*
+     plan.n_bwd_tiles  = (int)(bt.size() / 4);
+     plan.n_vj2_blocks = (int)(vb.size() / 8);
+     plan.n_dq_tiles   = nd;
++    plan.gen_segs     = plan.dq_tiles + dq.size();
++    plan.n_gen_segs   = (int)(gs.size() / 4);
++    plan.gen_max_len  = gmax;
+     plan.B = B; plan.S = S; plan.Hq = Hq;
+ }
+ 
+diff --git a/src/autograd/operations/AttentionOps.cpp b/src/autograd/operations/AttentionOps.cpp
+index 7a84a1f..8f2e7d8 100644
+--- a/src/autograd/operations/AttentionOps.cpp
++++ b/src/autograd/operations/AttentionOps.cpp
+@@ -402,7 +402,8 @@ static Tensor sdpa_flash_attention_qkv(
+     Tensor v_c = value.contiguous();
+ 
+     // v2 packed rows (design A, 2026-10-15): the kernels check the plan's shape (B, T, Nq_heads) and refuse a plan
+-    // they cannot honour (non-Hopper, hd 64, T % 256 != 0 in the forward, Vj1 / v44 in the backward).
++    // they cannot honour (B300, Vj1 / v44 in the backward). Hopper v62 / Vj2 / Vj1d and, since 2026-10-24, the
++    // generic causal kernels (every other GPU) honour it.
+     if (chats && !is_causal)
+         throw std::runtime_error("sdpa_flash_attention_qkv (GQA): a packed-rows plan needs is_causal = true");
+ 

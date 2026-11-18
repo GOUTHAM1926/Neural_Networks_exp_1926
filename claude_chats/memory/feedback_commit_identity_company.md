@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: d36b6b0d-fbee-47c9-8b10-a9773d29d8dc
-  modified: 2026-10-05T16:29:11.532Z
+  modified: 2026-11-14T09:08:43.896Z
 ---
 
 Which identity goes where:
@@ -23,7 +23,7 @@ the Neural_Networks folder stays personal.
 
     git push https://<ghp_token>@github.com/BlubridgeAI/<repo>.git <branch>
 
-- **Since 2026-10-21 the org PAT lives in `~/.config/blubridge/github_pat`** (chmod 600, outside every repo; saved there at the
+- **Since 2026-10-21 the org PAT lives in `~/.config/blubridge/github_pat`** (chmod 600, outside every project repo; CORRECTION 2026-11-14: the home folder itself is a git work tree, `~/.git`, remote GOUTHAM992003/ML_implement, 0 commits, so this folder shows as untracked there, see [[reference-colleague-clone-commands-1114]]; saved there at the
   user's request so it is never lost again). NEVER print it, never copy it into memory, notes, docs or any repo (the docs
   repo is pushed; GitHub secret scanning revokes leaked tokens). Push WITHOUT the raw token in the command line/history:
   `git push https://$(cat ~/.config/blubridge/github_pat)@github.com/BlubridgeAI/<repo>.git <branch>`.
@@ -47,3 +47,7 @@ the Neural_Networks folder stays personal.
   company-account PAT.
 - Never "fix" the personal repo's identity.
 - See [[feedback_git_no_ai_contributor]].
+
+**2026-11-03: NEVER suggest `bash -x` (or `set -x`) for a script that runs `git push https://$(cat ...pat)@...`:** the
+trace prints the expanded token. It leaked the org PAT into the user's terminal and the chat; the user was told to revoke
+and replace it. Give push commands without tracing.

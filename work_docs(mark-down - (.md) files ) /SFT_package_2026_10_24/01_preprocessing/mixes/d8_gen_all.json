@@ -1,0 +1,111 @@
+[
+ {
+  "dataset": "HuggingFaceTB/smol-smoltalk",
+  "revision": "f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc",
+  "split": "train",
+  "num": 0,
+  "val_num": 0,
+  "drop_sources": [
+   "explore-instruct-rewrite",
+   "self-oss-instruct"
+  ]
+ },
+ {
+  "dataset": "HuggingFaceTB/smol-smoltalk",
+  "revision": "f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc",
+  "split": "test",
+  "num": -1,
+  "val_num": 2000,
+  "drop_sources": [
+   "explore-instruct-rewrite"
+  ]
+ },
+ {
+  "dataset": "allenai/tulu-3-sft-olmo-2-mixture-0225",
+  "revision": "d91a0785ade02942520280fb484866fce41e448f",
+  "split": "train",
+  "num": 0,
+  "val_num": 0,
+  "sources": [
+   "allenai/tulu-3-sft-personas-math-grade-filtered",
+   "ai2-adapt-dev/tulu_v3.9_open_math_2_gsm8k_50k",
+   "ai2-adapt-dev/tulu_v3.9_personahub_math_interm_algebra_20k",
+   "allenai/tulu-3-sft-personas-math-filtered"
+  ]
+ },
+ {
+  "dataset": "HuggingFaceTB/smol-smoltalk",
+  "revision": "f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc",
+  "split": "train",
+  "num": 0,
+  "val_num": 0,
+  "sources": [
+   "self-oss-instruct"
+  ]
+ },
+ {
+  "dataset": "allenai/tulu-3-sft-olmo-2-mixture-0225",
+  "revision": "d91a0785ade02942520280fb484866fce41e448f",
+  "split": "train",
+  "num": 0,
+  "val_num": 0,
+  "sources": [
+   "ai2-adapt-dev/evol_codealpaca_heval_decontaminated",
+   "ai2-adapt-dev/personahub_code_v2_34999"
+  ]
+ },
+ {
+  "dataset": "allenai/Dolci-Instruct-SFT",
+  "revision": "bd3c8f3a9b2cc5a9682e44b96ddd0bb2ff027221",
+  "split": "train",
+  "source_field": "source_dataset",
+  "num": 0,
+  "val_num": 0,
+  "sources": [
+   "Dolci Instruct OpenThoughts3+ Science"
+  ]
+ },
+ {
+  "dataset": "allenai/tulu-3-sft-olmo-2-mixture-0225",
+  "revision": "d91a0785ade02942520280fb484866fce41e448f",
+  "split": "train",
+  "num": 0,
+  "val_num": 0,
+  "sources": [
+   "ai2-adapt-dev/tulu_v3.9_sciriff_10k"
+  ]
+ },
+ {
+  "dataset": "allenai/tulu-3-sft-olmo-2-mixture-0225",
+  "revision": "d91a0785ade02942520280fb484866fce41e448f",
+  "split": "train",
+  "num": 0,
+  "val_num": 0,
+  "sources": [
+   "ai2-adapt-dev/personahub_ifdata_manual_seed_v3_29980"
+  ]
+ },
+ {
+  "dataset": "allenai/Dolci-Instruct-SFT",
+  "revision": "bd3c8f3a9b2cc5a9682e44b96ddd0bb2ff027221",
+  "split": "train",
+  "source_field": "source_dataset",
+  "num": 0,
+  "val_num": 0,
+  "sources": [
+   "Dolci Instruct Precise IF"
+  ]
+ },
+ {
+  "dataset": "allenai/tulu-3-sft-olmo-2-mixture-0225",
+  "revision": "d91a0785ade02942520280fb484866fce41e448f",
+  "split": "train",
+  "num": 0,
+  "val_num": 0,
+  "sources": [
+   "ai2-adapt-dev/tulu_v3.9_synthetic_finalresp_wildguardmixtrain_decontaminated_50k",
+   "ai2-adapt-dev/tulu_v3.9_wildjailbreak_decontaminated_50k",
+   "ai2-adapt-dev/coconot_converted"
+  ]
+ }
+]

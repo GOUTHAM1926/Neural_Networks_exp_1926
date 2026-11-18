@@ -155,6 +155,10 @@ Measured:
 - the pad row's input-side gradient was **exactly 0**;
 - the two sides add up to PyTorch's own gradient exactly (largest difference 0.0).
 
+Note (2026-11-18): this example uses the GPT-2 tokenizer of the first SFT tests (50,304 rows, end / pad id 50256). The
+135M base model has its own tokenizer (49,280 embedding rows) and chat templates with their own end token
+(`sft/README.md` section 3.1). The way learning happens is the same; only the ids and the row count differ.
+
 ---
 
 ## 6. One full step, end to end

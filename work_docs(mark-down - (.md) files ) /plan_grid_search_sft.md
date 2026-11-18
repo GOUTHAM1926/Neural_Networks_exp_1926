@@ -5674,3 +5674,38 @@ two resumes).
      Pushed by the user and verified: BluBLAS cfa0e92, TI 4d5c738, BluTrain 597360b (dist_side_gautam_lottn only).
 255. 2026-11-11 *"Give the updated doc with the message in it, one doc to send her."* "Read first" section added to
      blublas_my_fixes_vs_symmetric_change_merge_plan.md; the user sent it.
+
+## Status 2026-11-18: what changed for SFT since 2026-11-11, and what is open
+
+(A summary of the decisions of 2026-11-12 to 2026-11-18; the full record with every test is in the work doc, sections
+45.194-45.199. Not a word-for-word record of the questions.)
+
+**Pushed and verified (branch `dist_side_gautam_lottn`):**
+
+- 2026-11-13, attention forward "mixed units" + the 2% rule (TI f1a7d98, BluTrain d9606c2): in a chat with an odd number
+  of 64-row tiles the idle compute group runs the same tile of another query head of the same KV head; forward -21 to
+  -26% on rows of chats of 64 tokens or less, SFT step on real data unchanged (`sft/README.md` 6.3, work doc 45.194-45.196).
+- 2026-11-14, every test 45.196 listed for that change: done, all pass (work doc 45.197).
+
+**Done 2026-11-14 to 11-18, pushed on 2026-11-18 (work doc 45.198-45.199):** attention backward ideas 1, 2 and 4
+(skip the fully masked half of a block's first step; write a chat's first two dQ tiles directly; add the G query heads'
+dK / dV inside one block in fp32), with two rules (block order by whole rows that fit about 80 MB; idea 4 only when a call
+has at least 2 KV heads). Idea 3 was tested and dropped (slower on real rows). Results: forward + backward call 0.570-0.980
+of the 2026-11-13 code in 12 cases, faster than FA3 / FA4 / cuDNN in all 12; SFT step 135M -1.7%, 1.6B shape -0.7%;
+pretraining 1.6B (production config, 2 micro-batches per step) -0.54%, losses within the run-to-run spread. The user's rule of 2026-11-16 was kept: no push until every idea was tested, then one final table, the
+push explained line by line, one push. The write-up for Uma Mahesh (whose 3-query-heads-per-KV-head remark started
+idea 4): `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` + the patch next to it.
+
+**Boxes:** 2026-11-17 P032 was replaced by P035 (ssh port 2225, data moved there); P015 (port 2226) stays.
+
+**Open (planned, not started unless noted):**
+
+1. Sliding-window attention (SWA) for SFT of the 350M model (planned 2026-11-17): the colleagues' SWA kernels exist only in
+   Navin's local commit b913f32 (dense rows, no packed rows); first test = the SWA-pretrained 350M checkpoint's val loss on
+   our SFT data with SWA vs with full attention; then packed-row SWA in our forward / backward. Analysis:
+   `post_Training_research/sliding_window_attention_sft_analysis.md`.
+2. Context parallelism need for the 350M model (2026-11-17): calculated from measured peaks: one H200 holds rows up to about
+   121k tokens; CP is needed above that. A GPU check ladder is ready on P035, not run yet.
+3. `prepare_sft_data.py --seq-len`: no default and no fixed upper limit (user, 2026-11-01); not started.
+4. Uma Mahesh's independent test of the backward ideas (the doc and the patch for him were written on 2026-11-18).
+5. Earlier open items: the list of 2026-11-11 (work doc 45.191) still holds, minus the items above that are done.

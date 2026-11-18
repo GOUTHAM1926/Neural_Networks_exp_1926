@@ -1,0 +1,40 @@
+diff --git a/src/autograd/backward/NormalizationBackward.cpp b/src/autograd/backward/NormalizationBackward.cpp
+index 9ea28bb..98bb7c5 100644
+--- a/src/autograd/backward/NormalizationBackward.cpp
++++ b/src/autograd/backward/NormalizationBackward.cpp
+@@ -67,9 +67,34 @@ std::vector<Tensor> FusedRMSRoPEBackward::apply(std::vector<Tensor>&& grads) {
+     Tensor dz_q = (grads.size() > 0 && grads[0].is_valid()) ? grads[0] : Tensor::zeros(q.shape(), q.opts());
+     Tensor dz_k = (grads.size() > 1 && grads[1].is_valid()) ? grads[1] : Tensor::zeros(k.shape(), k.opts());
+ 
++    // v2: positions_ is the forward's per-token positions (invalid Tensor = original path).
+     auto result = fused_rms_rope_backward(
+         dz_q, dz_k, q, k, q_gamma, k_gamma, cos_sin_cache,
+-        q_rstd, k_rstd, pos_offset_, interleaved_);
++        q_rstd, k_rstd, pos_offset_, interleaved_, positions_);
++
++    return {result.grad_q, result.grad_k, result.grad_q_gamma, result.grad_k_gamma};
++}
++
++std::vector<Tensor> FusedRMSRoPEBf16Backward::apply(std::vector<Tensor>&& grads) {
++    PROFILER_SCOPE("FusedRMSRoPEBf16Backward::apply");
++    Tensor q = q_.unpack(shared_from_this());
++    Tensor k = k_.unpack(shared_from_this());
++    Tensor q_gamma = q_gamma_.unpack(shared_from_this());
++    Tensor k_gamma = k_gamma_.unpack(shared_from_this());
++    Tensor cos_sin_cache = cos_sin_cache_.unpack(shared_from_this());
++    Tensor q_rstd = q_rstd_.unpack(shared_from_this());
++    Tensor k_rstd = k_rstd_.unpack(shared_from_this());
++
++    const auto& qs = q_rstd.shape().dims;
++    const auto& ks = k_rstd.shape().dims;
++    const int64_t hd = q.shape().dims[2] / qs[1];
++    auto bf16_opts = TensorOptions().with_dtype(Dtype::Bfloat16).with_device(q.device());
++    Tensor dz_q = (grads.size() > 0 && grads[0].is_valid()) ? grads[0] : Tensor::zeros(Shape{{qs[0], qs[1], qs[2], hd}}, bf16_opts);
++    Tensor dz_k = (grads.size() > 1 && grads[1].is_valid()) ? grads[1] : Tensor::zeros(Shape{{ks[0], ks[1], ks[2], hd}}, bf16_opts);
++
++    auto result = fused_rms_rope_backward_bf16_tm(
++        dz_q, dz_k, q, k, q_gamma, k_gamma, cos_sin_cache,
++        q_rstd, k_rstd, pos_offset_, interleaved_, positions_);
+ 
+     return {result.grad_q, result.grad_k, result.grad_q_gamma, result.grad_k_gamma};
+ }

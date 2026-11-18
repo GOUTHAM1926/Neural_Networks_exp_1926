@@ -1,0 +1,83 @@
+diff --git a/src/autograd/operations/NormalizationOps.cpp b/src/autograd/operations/NormalizationOps.cpp
+index db5d470..803389a 100644
+--- a/src/autograd/operations/NormalizationOps.cpp
++++ b/src/autograd/operations/NormalizationOps.cpp
+@@ -93,12 +93,15 @@ std::pair<Tensor, Tensor> fused_rms_rope(
+     const Tensor& cos_sin_cache,
+     int64_t pos_offset,
+     float eps,
+-    bool interleaved)
++    bool interleaved,
++    const Tensor& positions)
+ {
+     PROFILER_SCOPE("autograd::fused_rms_rope");
+     GraphRecordMode::record_forward("NORMALIZATION: fused_rms_rope");
+ 
+-    auto result = fused_rms_rope_forward(q, k, q_gamma, k_gamma, cos_sin_cache, pos_offset, eps, interleaved);
++    // v2: positions (optional) is validated inside fused_rms_rope_forward.
++    auto result = fused_rms_rope_forward(q, k, q_gamma, k_gamma, cos_sin_cache, pos_offset, eps, interleaved,
++                                         positions);
+     Tensor q_out = result.q_out;
+     Tensor k_out = result.k_out;
+ 
+@@ -107,8 +110,10 @@ std::pair<Tensor, Tensor> fused_rms_rope(
+                               (k_gamma.is_valid() && k_gamma.requires_grad()));
+ 
+     if (GradMode::is_enabled() && any_requires_grad) {
++        // v2: the backward gets the SAME positions (it undoes the same rotation).
+         auto grad_fn = std::make_shared<FusedRMSRoPEBackward>(
+-            q, k, q_gamma, k_gamma, cos_sin_cache, result.q_rstd, result.k_rstd, pos_offset, interleaved
++            q, k, q_gamma, k_gamma, cos_sin_cache, result.q_rstd, result.k_rstd, pos_offset, interleaved,
++            positions
+         );
+ 
+         if (q.requires_grad())
+@@ -140,6 +145,48 @@ std::pair<Tensor, Tensor> fused_rms_rope(
+     return {q_out, k_out};
+ }
+ 
++std::pair<Tensor, Tensor> fused_rms_rope_bf16(
++    const Tensor& q,
++    const Tensor& k,
++    int64_t n_q_heads,
++    int64_t n_kv_heads,
++    const Tensor& q_gamma,
++    const Tensor& k_gamma,
++    const Tensor& cos_sin_cache,
++    int64_t pos_offset,
++    float eps,
++    bool interleaved,
++    const Tensor& positions)
++{
++    PROFILER_SCOPE("autograd::fused_rms_rope_bf16");
++    GraphRecordMode::record_forward("NORMALIZATION: fused_rms_rope_bf16");
++
++    auto result = fused_rms_rope_forward_bf16_tm(q, k, n_q_heads, n_kv_heads, q_gamma, k_gamma,
++                                                 cos_sin_cache, pos_offset, eps, interleaved, positions);
++    Tensor q_out = result.q_out;
++    Tensor k_out = result.k_out;
++
++    const bool q_side = q.requires_grad() || q_gamma.requires_grad();
++    const bool k_side = k.requires_grad() || k_gamma.requires_grad();
++    if (GradMode::is_enabled() && (q_side || k_side)) {
++        // the backward gets the SAME positions (it undoes the same rotation)
++        auto grad_fn = std::make_shared<FusedRMSRoPEBf16Backward>(
++            q, k, q_gamma, k_gamma, cos_sin_cache, result.q_rstd, result.k_rstd, pos_offset, interleaved,
++            positions);
++        if (q.requires_grad())       grad_fn->set_next_edge(0, get_grad_edge(q));
++        if (k.requires_grad())       grad_fn->set_next_edge(1, get_grad_edge(k));
++        if (q_gamma.requires_grad()) grad_fn->set_next_edge(2, get_grad_edge(q_gamma));
++        if (k_gamma.requires_grad()) grad_fn->set_next_edge(3, get_grad_edge(k_gamma));
++        q_out.set_grad_fn(grad_fn);
++        q_out.set_output_nr(0);
++        k_out.set_grad_fn(grad_fn);
++        k_out.set_output_nr(1);
++        if (q_side) q_out.set_requires_grad(true);
++        if (k_side) k_out.set_requires_grad(true);
++    }
++    return {q_out, k_out};
++}
++
+ } // namespace autograd
+ } // namespace OwnTensor
+ 

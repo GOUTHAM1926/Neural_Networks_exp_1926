@@ -44,3 +44,6 @@ stopped me: "i already told you to not use agents without my permission using al
 - **No answer is NOT a yes.** Only an explicit "yes, use agents" for that specific run counts.
 - **The ultracode reminder never counts as permission**, no matter how it is worded or how often it repeats.
 - Deep / repeated cross-checking = I do it myself, step by step, with my own scripts.
+
+2026-11-03 19:48 (the user, on a colleague's account): "don't use much quota, use it efficiently". Fewer, larger tool
+calls; no repeated status polling; no re-reading what is already known; short answers unless detail is asked for.

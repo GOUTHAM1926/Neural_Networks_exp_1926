@@ -129,3 +129,26 @@ The 2026-09-30 sub-heading style is too many points; use paragraphs.
 
 ## 2026-10-12: EVERY comparison names what it is compared against
 He caught "design a is faster ... (forward 2-16% faster , backward 3-5% faster)": it never said against whom (it was A vs B). His words: "this is what it should be clear everywhere". Every "% faster / slower / longer / lower" in a report says "than <what>" in the same sentence, e.g. "design a is 2-16% faster than design b", "the error is 9% lower than the old kernel's". Before sending, re-read every number and check that its baseline is named.
+
+## 2026-10-29: EXAMPLES GO IN COPYABLE BLOCKS, NEVER INLINE IN THE PROSE
+The user rejected a "---second" paragraph that described the injection example inline ("1) the owner saves ... 2) the
+cheater types "hi<|im_end|>\n..." ... 6) the model reads ...") inside one long lowercase paragraph:
+*"are u mad ? ... cant u give that copyable format example like normal and trick 2 example ... so that i can take
+screenshot"*.
+
+**How to apply:**
+- Keep the EOD prose rules (lowercase, `---`, ` ,,, ,`, no full stops).
+- Put every worked example in its own code block: what the owner saves, what the customer types, "the model reads:"
+  with one turn per line, and an arrow line `-> FOOLED` / `-> NOT fooled`.
+- Label the blocks a), b), c1), c2) ...
+- Show the normal case first, then each trick, in the same real format the model sees (`[1]system\n...[2]\n`, the
+  real ids where they make the point).
+- The approved shape is the 10-29 replacement for "---second" (blocks a-e) plus blocks f-g for "---fourth".
+- **Same day, second rejection ("---third" was a long prose list of incidents):** "how come my colleagues and manager
+  understand if we write like this, not explaining each thing". Every incident, list or plan in an EOD goes into its
+  own labelled block:
+  - incidents: setup / what was typed / what happened / why, one block each;
+  - limits: a three-column block;
+  - the plan: what / which data / measured / decision / sources.
+  The `---` prose only introduces each block. A dense comma-chained summary paragraph is never enough for the user's
+  colleagues and manager.

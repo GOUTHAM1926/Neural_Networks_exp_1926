@@ -1,0 +1,25 @@
+diff --git a/include/autograd/operations/AttentionOps.h b/include/autograd/operations/AttentionOps.h
+index d7ecbad..e746d17 100644
+--- a/include/autograd/operations/AttentionOps.h
++++ b/include/autograd/operations/AttentionOps.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "core/Tensor.h"
++#include "ops/helpers/AttentionKernels.h"   // cuda::GqaChatPlanPtr (v2 packed rows)
+ 
+ namespace OwnTensor {
+ namespace autograd {
+@@ -125,7 +126,11 @@ Tensor scaled_dot_product_attention(
+   const int Nkv_heads,
+   bool is_causal = true,
+   float dropout_p = 0.0f,
+-  SDPBackend backend = SDPBackend::FlashAttention
++  SDPBackend backend = SDPBackend::FlashAttention,
++  // v2 packed rows (2026-10-15): optional per-chat plan (design A, the cu_seqlens way; GqaChatPlan in
++  // ops/helpers/AttentionKernels.h) built for this (B, T, Nq_heads). nullptr (default) = plain causal over the whole
++  // row, as before. The backward node keeps the plan: the backward must use the same one.
++  const cuda::GqaChatPlanPtr& chats = nullptr
+ );
+ 
+ /**

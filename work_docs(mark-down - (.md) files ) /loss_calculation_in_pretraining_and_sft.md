@@ -16,6 +16,11 @@
 - **Status:**
   - the library already supports the SFT loss (verified by reading the code);
   - the trainer does not use it yet. That is task 6 (section 8).
+  - **Update 2026-11-18:** task 6 is done, in the separate SFT trainer `train/production_zero/bluscript_sft.cpp`: it
+    passes label 65535 as the ignore index and `sft_denom`, the step's global trained-token count (all micro-batches,
+    all ranks), to the loss (lines 3008, 3045, 3548 and 3582 at BluTrain d9606c2). The pretraining trainer keeps
+    Method 1, which is exact there. Sections 7.3 and 8 describe the state of 2026-10-06; the current state is in
+    `sft/README.md` section 6.1.
 
 ---
 
@@ -756,6 +761,43 @@ Standalone tests prove they are **built correctly**; training runs prove whether
 | 5 | The validation loss uses Method 1 (`:2102-2106`) | a biased SFT val loss | task 6 (section 8, #6) |
 
 ---
+
+## 12b. The loss sum stopped at 65,536 rows (found and fixed 2026-10-30; pretraining and SFT)
+
+**What the forward does.** The cross-entropy forward first writes one loss per row (one row = one token position;
+ignored rows write 0). Then `sum_reduction_kernel` adds them in two launches:
+1. one block per 256 rows writes one partial sum per block;
+2. ONE block of 256 threads adds the partials.
+
+**The bug.** In step 2 each thread read exactly one partial, so only partials 0-255 were added: 256 x 256 = 65,536
+rows. The denominator (the count of trained rows) counted all rows. So the printed loss read about
+true x 65,536 / N:
+
+| rows in one loss call (B x T per GPU) | printed loss / true loss |
+| --- | --- |
+| up to 65,536 | 1 (correct) |
+| 81,920 | 0.80 |
+| 131,072 | 0.50 |
+| 1,048,576 | 0.06 |
+
+**What it did not touch.** The gradients: the backward uses the per-row max and sum saved by the forward and the
+denominator, never the summed loss. So the weights trained correctly; only the printed train / val loss was wrong.
+Checked in the trainer: the step-0 grad norm at 81,920 tokens was the same with and without the fix (2.331747 vs
+2.331774, inside the run-to-run spread).
+
+**Who it hit.** It was in the library since at least 2026-04, so pretraining too: any run with more than 65,536
+tokens per GPU in one loss call (long context, or a large B x T). In our checks: Adhitya's long-context training
+runs stayed at or below 32,768 tokens per call; one old LongRoPE search at 131,072 printed PPL 7.55 where the truth
+was 59.87 (it had been blamed on a "2^32 elements" limit).
+
+**The fix.** In step 2 each thread loops over the partials (64-bit index) when the grid does not cover all rows;
+otherwise it keeps the single load. So every sum up to 65,536 rows is bit-identical to before. Chosen after measuring
+ten ways on an H200 (the old kernel; an always-on loop; PyTorch's one-block loop; multi-pass; atomicAdd; CUB; a
+last-block finish; a torch.sum-like reduction): the only one with today's bits, the same result every run, no new
+memory or state, and today's GPU time. Results: the test (`Tests/kernel_tests/test_sparse_ce_ignore_index.cu`, group
+H) 154/154 (16 failures before); the loss bits identical up to 65,536 rows; GPU memory and compute-sanitizer the same
+as before; in the trainer at 81,920 tokens per micro-batch the val loss went from 1.300650 (wrong) to 1.606812, equal
+to the numpy reference 1.606273. Full record: SFT work log §45.108 parts 12-16.
 
 ## 13. Sources
 

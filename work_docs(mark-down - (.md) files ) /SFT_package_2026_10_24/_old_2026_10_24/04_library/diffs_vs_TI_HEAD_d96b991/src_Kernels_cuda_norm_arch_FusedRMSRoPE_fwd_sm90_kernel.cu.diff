@@ -1,0 +1,110 @@
+diff --git a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.cu b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.cu
+index dd08a1c..962526f 100644
+--- a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.cu
++++ b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_fwd_sm90_kernel.cu
+@@ -40,7 +40,13 @@ __device__ __forceinline__ float& vref(float4& v, int i) {
+     return i == 0 ? v.x : (i == 1 ? v.y : (i == 2 ? v.z : v.w));
+ }
+ 
+-template <bool IS_NEOX, int HD, int TOK_PER_WARP, int WARPS_PER_BLOCK>
++// HAS_POS (v2 packing, added 2026-10-10): false = the original kernel, position = t + pos_offset;
++// true = per-token positions[b*T + t] (several chats per row, each restarting at 0).
++// It is a template flag, not a runtime branch, so the HAS_POS=false instantiation is the
++// pre-change kernel instruction for instruction (verified by a SASS diff, see
++// Tests/kernel_tests/test_rope_positions.cu). positions is appended LAST so the existing
++// parameters keep their constant-bank offsets.
++template <bool IS_NEOX, int HD, int TOK_PER_WARP, int WARPS_PER_BLOCK, bool HAS_POS>
+ __global__ __launch_bounds__(32 * WARPS_PER_BLOCK)
+ void fused_qknorm_rope_forward_t_sm90(
+     const float* __restrict__ q_in,          // [B, Hq,  T, hd]  pre-norm Q
+@@ -52,7 +58,8 @@ void fused_qknorm_rope_forward_t_sm90(
+     const float* __restrict__ cos_sin_cache, // [cache_seq_len, hd]
+     float*       __restrict__ q_rstd,        // [B, Hq,  T]  1/rms to save for backward
+     float*       __restrict__ k_rstd,        // [B, Hkv, T]  1/rms to save for backward
+-    int Hq, int Hkv, int T, int pos_offset, float eps = 1e-5f) {
++    int Hq, int Hkv, int T, int pos_offset, float eps = 1e-5f,
++    const int32_t* __restrict__ positions = nullptr) {  // [B, T], read only when HAS_POS
+ 
+     constexpr int HALF   = HD / 2;
+     constexpr int VECS   = (HD   + 31) / 32;   // sum-of-squares steps per lane
+@@ -120,7 +127,11 @@ void fused_qknorm_rope_forward_t_sm90(
+ 
+             // a-half lanes read the cos block (0..HALF-1), b-half lanes the sin
+             // block (HALF..HD-1), hence the partner exchange.
+-            const float* cs_row = cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
++            // v2: with HAS_POS the cache row is the token's own position in its chat
++            // (was always tok_pos + pos_offset; HAS_POS=false keeps exactly that).
++            const float* cs_row = HAS_POS
++                ? cos_sin_cache + (long)positions[(long)batch * T + tok_pos] * HD
++                : cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
+             const vec_t cs0 = reinterpret_cast<const vec_t*>(cs_row)[lane];
+             const vec_t csp = shfl_xor_vec(cs0, 16);
+ 
+@@ -184,7 +195,10 @@ void fused_qknorm_rope_forward_t_sm90(
+             if (lane == 0) rstd_out[rstd_base + tt] = rstd;
+ 
+             // Norm + RoPE. One lane owns whole pairs, so both halves stay in one thread.
+-            const float* cs_row = cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
++            // v2: same position rule as the NeoX path above.
++            const float* cs_row = HAS_POS
++                ? cos_sin_cache + (long)positions[(long)batch * T + tok_pos] * HD
++                : cos_sin_cache + (long)(tok_pos + pos_offset) * HD;
+ 
+             #pragma unroll
+             for (int p = 0; p < PAIRS; ++p) {
+@@ -229,7 +243,8 @@ void fused_qk_norm_rope_forward_sm90(
+     float*       q_rstd, float* k_rstd,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, float eps, bool interleaved,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    const int32_t* positions)
+ {
+     constexpr int TPW = FWD_TOK_PER_WARP;
+     constexpr int WPB = FWD_WARPS_PER_BLOCK;
+@@ -241,26 +256,35 @@ void fused_qk_norm_rope_forward_sm90(
+     // IS_NEOX == !interleaved. hd is specialized to the shipped shapes (64, 128).
+     // Keep abort() rather than assert(): assert compiles out under -DNDEBUG and
+     // an unsupported hd would then silently leave the output buffers untouched.
+-#define LAUNCH_T(NEOX, HDV)                                                    \
+-    fused_qknorm_rope_forward_t_sm90<NEOX, HDV, TPW, WPB>                           \
++    // v2: HASP selects the per-token-positions instantiation (positions != nullptr).
++#define LAUNCH_T(NEOX, HDV, HASP)                                              \
++    fused_qknorm_rope_forward_t_sm90<NEOX, HDV, TPW, WPB, HASP>                \
+         <<<grid, block, 0, stream>>>(                                          \
+         q_in, k_in, q_out, k_out, q_gamma, k_gamma, cos_sin,                   \
+-        q_rstd, k_rstd, Hq, Hkv, T, pos_offset, eps)
++        q_rstd, k_rstd, Hq, Hkv, T, pos_offset, eps, positions)
+ 
+-#define DISPATCH_HD(NEOX)                                                      \
++#define DISPATCH_HD(NEOX, HASP)                                                \
+     switch (hd) {                                                              \
+-        case  64: LAUNCH_T(NEOX,  64);  break;                                 \
+-        case 128: LAUNCH_T(NEOX, 128);  break;                                 \
++        case  64: LAUNCH_T(NEOX,  64, HASP);  break;                           \
++        case 128: LAUNCH_T(NEOX, 128, HASP);  break;                           \
+         default :                                                              \
+             fprintf(stderr, "fused_qk_norm_rope_forward: unsupported hd=%d "   \
+                             "(expected 64 or 128)\n", hd);                     \
+             abort();                                                           \
+     }
+ 
+-    if (!interleaved) {   // NeoX (bluscript default)
+-        DISPATCH_HD(true);
+-    } else {              // GPT-J interleaved
+-        DISPATCH_HD(false);
++    if (positions == nullptr) {   // original path: position = t + pos_offset
++        if (!interleaved) {   // NeoX (bluscript default)
++            DISPATCH_HD(true, false);
++        } else {              // GPT-J interleaved
++            DISPATCH_HD(false, false);
++        }
++    } else {                      // v2: per-token positions[b*T + t]
++        if (!interleaved) {
++            DISPATCH_HD(true, true);
++        } else {
++            DISPATCH_HD(false, true);
++        }
+     }
+ 
+ #undef DISPATCH_HD

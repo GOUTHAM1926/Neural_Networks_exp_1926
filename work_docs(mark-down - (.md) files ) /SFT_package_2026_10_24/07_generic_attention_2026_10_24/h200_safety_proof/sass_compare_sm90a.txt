@@ -1,0 +1,35 @@
+GQA_fwd_sm90         kernels=2   sass_lines=14917   orig_md5=6ab9df37 new_md5=6ab9df37 IDENTICAL
+GQA_bwd_vj2_sm90     kernels=7   sass_lines=9582    orig_md5=17ce226c new_md5=17ce226c IDENTICAL
+GQA_bwd_vj1d_sm90    kernels=5   sass_lines=7604    orig_md5=5d8695a6 new_md5=5d8695a6 IDENTICAL
+GQA_bwd_vj1_sm90     kernels=3   sass_lines=3594    orig_md5=49f4e6fd new_md5=49f4e6fd IDENTICAL
+GQA_bwd_sm90         kernels=4   sass_lines=4287    orig_md5=94bf84c2 new_md5=94bf84c2 IDENTICAL
+RoPE_sm90            kernels=12  sass_lines=4743    orig_md5=830a4e8b new_md5=830a4e8b IDENTICAL
+GQA_fwd_sm90: gen_segs in preprocessed source  orig=0  new=0
+GQA_bwd_vj2_sm90: gen_segs in preprocessed source  orig=0  new=0
+== Hopper attention sources: BluTrain_sft (edited tree) vs BluTrain_lottn (untouched)
+GQA_fwd_sm90         sft=7e4197ea lottn=7e4197ea SAME  includes AttentionKernels.h: 0
+GQA_bwd_vj2_sm90     sft=cc3a6125 lottn=cc3a6125 SAME  includes AttentionKernels.h: 0
+GQA_bwd_vj1d_sm90    sft=b8c7b10f lottn=b8c7b10f SAME  includes AttentionKernels.h: 0
+GQA_bwd_vj1_sm90     sft=26f6468c lottn=26f6468c SAME  includes AttentionKernels.h: 0
+GQA_bwd_sm90         sft=115b24f6 lottn=115b24f6 SAME  includes AttentionKernels.h: 0
+RoPE_sm90            sft=cef12400 lottn=cef12400 SAME  includes AttentionKernels.h: 0
+== files that include AttentionKernels.h
+src/Kernels/cuda/attention/arch/GQA_fwd_sm103.cu
+src/Kernels/cuda/attention/arch/GQA_bwd_sm103.cu
+src/Kernels/cuda/attention/AttentionForward.cu
+src/Kernels/cuda/attention/arch/AttentionForward_sm89.cu
+src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu
+src/Kernels/cuda/attention/arch/AttentionBackward_sm89.cu
+src/Kernels/cuda/attention/arch/GQA_fused_bwd_sm103.cu
+src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
+src/autograd/backward/AttentionBackward.cpp
+src/Kernels/cuda/attention/AttentionBackward.cu
+src/Kernels/cuda/attention/arch/GQA_fused_fwd_sm103.cu
+src/autograd/operations/AttentionOps.cpp
+include/autograd/backward/AttentionBackward.h
+include/autograd/operations/AttentionOps.h
+== whole attention dir + header + ops: what differs from lottn
+Files BluTrain_lottn/Tensor-Implementations/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu and BluTrain_sft/Tensor-Implementations/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu differ
+Files BluTrain_lottn/Tensor-Implementations/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu and BluTrain_sft/Tensor-Implementations/src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu differ
+Files BluTrain_lottn/Tensor-Implementations/include/ops/helpers/AttentionKernels.h and BluTrain_sft/Tensor-Implementations/include/ops/helpers/AttentionKernels.h differ
+Files BluTrain_lottn/Tensor-Implementations/src/autograd/operations/AttentionOps.cpp and BluTrain_sft/Tensor-Implementations/src/autograd/operations/AttentionOps.cpp differ

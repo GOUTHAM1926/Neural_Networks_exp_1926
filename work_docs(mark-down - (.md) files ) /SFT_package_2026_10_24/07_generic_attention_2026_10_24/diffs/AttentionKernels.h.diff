@@ -1,0 +1,80 @@
+--- orig/AttentionKernels.h
++++ new/AttentionKernels.h
+@@ -97,8 +97,9 @@
+ * KV head h / (Nq_heads / Nkv_heads).
+ *
+ * Writes O as [B, Nq_heads, T, hd] (bf16) and LSE as [B, Nq_heads, T] (fp32).
+-* Constraints: hd in {64, 128}, T a multiple of 32. is_causal must be false
+-* (the kernel has no causal mask yet).
++* Constraints: hd in {64, 128}; non-causal: T a multiple of 32. Causal: Hopper
++* v62 (hd 128, T % 256 == 0), B300 hd 64 (T % 256 == 0), every other case on any
++* GPU but a B300 the generic causal WMMA kernel (since 2026-10-24), any T.
+ */
+ void gqa_flash_attn_forward(
+    const bfloat16_t* qkv,     // block-concatenated [Q | K | V]
+@@ -132,7 +133,13 @@
+     int32_t* dq_tiles = nullptr;    // device, 4 ints per padded 64-row dQ tile of ONE query head (the same list
+     int      n_dq_tiles = 0;        //   for every head): {b, row0, nrows, 0} (GQA_bwd_vj2_sm90.cu, bwd_prep_vj2_chats)
+     int B = 0, S = 0, Hq = 0;       // the shape the plan was built for (checked at every call)
+-    int32_t* storage = nullptr;     // the ONE device allocation the four lists point into
++    int32_t* storage = nullptr;     // the ONE device allocation the lists point into
++    // Generic (non-Hopper, non-B300) causal kernels, added 2026-10-24: one entry per segment, FA2 varlen's
++    // cu_seqlens list. Each kernel cuts its own tiles from the segment start, so the list does not depend on
++    // the tile size. Order: (row, start).
++    int32_t* gen_segs = nullptr;    // device, 4 ints per segment: {b, t0, L, 0}
++    int      n_gen_segs = 0;
++    int      gen_max_len = 0;       // the longest segment (the grid's tile axis)
+ };
+ // seg_b/seg_t0/seg_len: HOST arrays of n_seg segments (row, start, length). Hq <= 255.
+ // The lists go up with one asynchronous copy on the current stream: the call does not wait for the GPU.
+@@ -152,14 +159,16 @@
+ * contiguous with one another -- no packing copy is performed.
+ *
+ * Writes O as [B, Nq_heads, T, hd] (bf16) and LSE as [B, Nq_heads, T] (fp32).
+-* Same constraints as gqa_flash_attn_forward: hd in {64, 128}, T a multiple of
+-* 32 (256 for the causal hd==64 path). is_causal with hd!=64 is refused.
++* hd in {64, 128}. Causal: Hopper v62 (hd 128, T % 256 == 0), B300 hd 64 (T % 256 == 0),
++* every other case on any GPU but a B300 (incl. Hopper with BLUTRAIN_NO_SM90[_GQA] set, hd 64,
++* or T % 256 != 0) the generic causal WMMA kernel, any T. B300 hd 128 causal is refused.
++* Non-causal: T a multiple of 32.
+ *
+ * chats (v2 packed rows, design A): optional per-chat plan built for this (B, T, Nq_heads)
+ * (see GqaChatPlan). nullptr (default) = plain causal over the whole row, exactly as before.
+-* A plan is only accepted on the Hopper v62 path (causal, hd 128, T % 256 == 0); anywhere
+-* else this throws instead of ignoring it. The backward takes the SAME plan; pass it to both,
+-* or the gradients mix the chats again.
++* A plan is accepted on the Hopper v62 path and on the generic causal path; on B300, or with
++* is_causal = false, this throws instead of ignoring it. The backward takes the SAME plan; pass
++* it to both, or the gradients mix the chats again.
+ */
+ void gqa_flash_attn_forward_qkv(
+    const bfloat16_t* q,       // [B, Nq_heads,  T, hd]
+@@ -181,10 +190,10 @@
+ * across the group. D_buf is per query row: [B, Nq_heads, T] (fp32); it is
+ * currently unused (D[i]=rowsum(dO[i]⊙O[i]) is recomputed inside the kernels).
+ *
+-* Causal requests (is_causal=true) route to the SM103/B300 TMA+tcgen05 kernel,
+-* which requires head_dim==64 and T a multiple of 128. Non-causal requests fall
+-* back to the WMMA kernels (head_dim 64 or 128, T a multiple of 32). A causal
+-* request with head_dim!=64 is refused (no correct kernel).
++* Causal requests (is_causal=true): Hopper hd 128 -> the Hopper kernels; B300 hd 64
++* -> the SM103 TMA+tcgen05 kernel (T a multiple of 128); every other case on any
++* GPU but a B300 -> the generic causal WMMA kernels (since 2026-10-24), any T.
++* Non-causal requests run the WMMA kernels (head_dim 64 or 128, T a multiple of 32).
+ */
+ void gqa_flash_attn_backward(
+    const bfloat16_t* qkv,         // block-concatenated [Q | K | V]
+@@ -206,9 +215,11 @@
+ *
+ * chats (v2 packed rows, design A): the SAME plan the forward got; output and lse must
+ * come from that packed forward. nullptr (default) = plain causal, exactly as before.
+-* A plan is only accepted on the Hopper Vj2 (default since 2026-10-15; T % 128 == 0, else
++* A plan is accepted on the Hopper Vj2 (default since 2026-10-15; T % 128 == 0, else
+ * Vj1d runs) / Vj1d (USE_VJ2=0) paths (causal, hd 128, T % 64 == 0, neither USE_FLASH=1
+-* nor USE_DETERMINISTIC_DQ=1); anywhere else this throws instead of ignoring it.
++* nor USE_DETERMINISTIC_DQ=1) and on the generic causal path (every causal call the Hopper
++* kernels do not take, on any GPU but a B300; any T); anywhere else this throws instead of
++* ignoring it.
+ */
+ void gqa_flash_attn_backward_qkv(
+    const bfloat16_t* q,           // [B, Nq_heads,  T, hd]

@@ -1,0 +1,22 @@
+[
+ {
+  "dataset": "HuggingFaceTB/smol-smoltalk",
+  "revision": "f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc",
+  "split": "train",
+  "num": 0,
+  "val_num": 0,
+  "drop_sources": [
+   "explore-instruct-rewrite"
+  ]
+ },
+ {
+  "dataset": "HuggingFaceTB/smol-smoltalk",
+  "revision": "f73fe857d519ff6ac5af2ea67c4d3834da7b8bcc",
+  "split": "test",
+  "num": -1,
+  "val_num": 2000,
+  "drop_sources": [
+   "explore-instruct-rewrite"
+  ]
+ }
+]

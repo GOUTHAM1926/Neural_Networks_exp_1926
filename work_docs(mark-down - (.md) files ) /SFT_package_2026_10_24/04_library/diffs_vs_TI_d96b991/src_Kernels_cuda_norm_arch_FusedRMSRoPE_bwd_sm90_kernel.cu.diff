@@ -1,0 +1,97 @@
+diff --git a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.cu b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.cu
+index f6ac96c..91ef8f5 100644
+--- a/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.cu
++++ b/src/Kernels/cuda/norm/arch/FusedRMSRoPE_bwd_sm90_kernel.cu
+@@ -19,7 +19,12 @@ namespace cuda {
+ #define BWD_T_CHUNKS 32
+ #endif
+ 
+-template <bool IS_NEOX, int HD>
++// HAS_POS (v2 packing, added 2026-10-10): false = original kernel (cache row t + pos_offset),
++// true = cache row positions[b*T + t] (several chats per row, each restarting at 0). It must
++// match the forward exactly: the backward undoes the SAME rotation. Template flag so the false
++// instantiation is the pre-change kernel; positions is appended last. dgamma partials keep their
++// fixed (t-chunk, head, batch) order, so they stay bit-reproducible with positions too.
++template <bool IS_NEOX, int HD, bool HAS_POS>
+ __global__ void fused_qk_norm_rope_bwd_kernel_sm90(
+     const float* __restrict__ dz_q,      // [B, Hq,  T, hd]  upstream grad for Q
+     const float* __restrict__ dz_k,      // [B, Hkv, T, hd]  upstream grad for K
+@@ -35,7 +40,8 @@ __global__ void fused_qk_norm_rope_bwd_kernel_sm90(
+     float*       __restrict__ dq_gpart,   // [B*Hq*BWD_T_CHUNKS,  hd]  Q dgamma partials
+     float*       __restrict__ dk_gpart,   // [B*Hkv*BWD_T_CHUNKS, hd]  K dgamma partials
+     int Hq, int Hkv, int T,
+-    int pos_offset)
++    int pos_offset,
++    const int32_t* __restrict__ positions)   // [B, T], read only when HAS_POS
+ {
+     // HD must stay a template parameter: it makes HALF, PAIRS and every ia/ib
+     // compile-time constants, which is what keeps the per-lane arrays below in
+@@ -90,7 +96,11 @@ __global__ void fused_qk_norm_rope_bwd_kernel_sm90(
+         const float* x  = in_base + head_off;
+         float*       dx = dx_base + head_off;
+         const float  rstd = rstd_in[((long)b * H + h) * T + t];
+-        const float* cs_row = cos_sin + (long)(t + pos_offset) * HD;
++        // v2: same cache row as the forward used for this token (was always t + pos_offset;
++        // HAS_POS=false keeps exactly that).
++        const float* cs_row = HAS_POS
++            ? cos_sin + (long)positions[(long)b * T + t] * HD
++            : cos_sin + (long)(t + pos_offset) * HD;
+ 
+         // Pass A must finish S before any dx is written, so the two passes
+         // cannot merge. Instead xhat, dy and g are held in registers across
+@@ -200,7 +210,8 @@ void fused_qk_norm_rope_backward_sm90(
+     float*       dq_gamma, float* dk_gamma,
+     int B, int Hq, int Hkv, int T, int hd,
+     int pos_offset, bool interleaved,
+-    cudaStream_t stream)
++    cudaStream_t stream,
++    const int32_t* positions)
+ {
+     // Q and K size their partial buffers with their OWN head count (Hq vs Hkv).
+     ensure_sm90_gamma_part(&d_sm90_qgamma_part, &sm90_qgamma_part_size,
+@@ -217,26 +228,35 @@ void fused_qk_norm_rope_backward_sm90(
+     // hd is specialized to the shipped shapes (64, 128), matching the forward.
+     // Keep abort() rather than assert(): assert compiles out under -DNDEBUG and
+     // an unsupported hd would then silently leave dq/dk untouched.
+-#define LAUNCH_BWD(NEOX, HDV)                                                  \
+-    fused_qk_norm_rope_bwd_kernel_sm90<NEOX, HDV><<<grid, block, 0, stream>>>(       \
++    // v2: HASP selects the per-token-positions instantiation (positions != nullptr).
++#define LAUNCH_BWD(NEOX, HDV, HASP)                                            \
++    fused_qk_norm_rope_bwd_kernel_sm90<NEOX, HDV, HASP><<<grid, block, 0, stream>>>( \
+         dz_q, dz_k, q_in, k_in, q_gamma, k_gamma, cos_sin,                     \
+         q_rstd, k_rstd, dq_in, dk_in, dq_gamma_part, dk_gamma_part,            \
+-        Hq, Hkv, T, pos_offset)
++        Hq, Hkv, T, pos_offset, positions)
+ 
+-#define DISPATCH_BWD_HD(NEOX)                                                  \
++#define DISPATCH_BWD_HD(NEOX, HASP)                                            \
+     switch (hd) {                                                              \
+-        case  64: LAUNCH_BWD(NEOX,  64);  break;                               \
+-        case 128: LAUNCH_BWD(NEOX, 128);  break;                               \
++        case  64: LAUNCH_BWD(NEOX,  64, HASP);  break;                         \
++        case 128: LAUNCH_BWD(NEOX, 128, HASP);  break;                         \
+         default :                                                              \
+             fprintf(stderr, "fused_qk_norm_rope_backward: unsupported hd=%d "  \
+                             "(expected 64 or 128)\n", hd);                     \
+             abort();                                                           \
+     }
+ 
+-    if (!interleaved) {   // NeoX (bluscript default)
+-        DISPATCH_BWD_HD(true);
+-    } else {              // GPT-J interleaved
+-        DISPATCH_BWD_HD(false);
++    if (positions == nullptr) {   // original path: cache row = t + pos_offset
++        if (!interleaved) {   // NeoX (bluscript default)
++            DISPATCH_BWD_HD(true, false);
++        } else {              // GPT-J interleaved
++            DISPATCH_BWD_HD(false, false);
++        }
++    } else {                      // v2: per-token positions[b*T + t]
++        if (!interleaved) {
++            DISPATCH_BWD_HD(true, true);
++        } else {
++            DISPATCH_BWD_HD(false, true);
++        }
+     }
+ 
+ #undef DISPATCH_BWD_HD

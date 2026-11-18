@@ -174,6 +174,7 @@ First a small correction: it is **20 rows per optimizer step**, not 20 chats, an
 
 **Why 128 chats per step:** it was not calculated from our data size. **We copied the batch size of the published Tülu 3
 SFT recipe: 128 chats per optimizer step.** Then:
+
 - rows per step = 128 ÷ 6.4 chats per row ≈ **20**;
 - **B = 4** was the largest per-pass size we had already **measured** to fit (74 GB);
 - **5 passes** = 20 ÷ 4.
@@ -197,6 +198,7 @@ Other choices would work too:
   their own lr check.
 
 **Why 4 × 5 and not another split of 20.** B must divide 20 evenly: 1, 2, 4, 5, 10 or 20.
+
 - **B = 10 or 20** do not fit in memory (≈154 GB and more).
 - **B = 5** (5 × 4) would also have fit (≈ 21 + 5 × 13.3 ≈ 88 GB) at about the same speed.
 - **B = 4** was simply the setting already tested and measured (74 GB) in the checks before the run.
@@ -285,6 +287,7 @@ trainer counts **rows**, and the chats per step just follow (about 20 × 6.4 ≈
 
 **2. A rank = one GPU training process.** With multi-GPU training, one copy of the trainer runs on each GPU; each copy is
 called a rank.
+
 - **Ours: 1 GPU, so ranks = 1.**
 - In every pass, **each rank takes its own B rows at the same time**, so one pass covers **B × ranks** rows:
 
@@ -296,6 +299,7 @@ called a rank.
 | 4 | 5 | 20 | yes, 1 pass |
 
 **3. GRAD_ACCUM = the number of passes (micro-steps) per optimizer step. Yes.** "Gradient accumulation":
+
 1. pass 1: compute the gradients of its rows and **add** them into a gradient buffer;
 2. passes 2, 3, 4, 5: the same, each **adding** to the buffer;
 3. after the last pass: the optimizer updates the weights **once**, using the total; then the buffer is cleared.
@@ -305,6 +309,7 @@ So 5 passes of 4 rows give exactly the same update as 1 pass of 20 rows. You jus
 ### 5.2 More explanation: what happens with several GPUs in one step
 
 With 4 GPUs, B = 5, GRAD_ACCUM = 1 (the 20-row step done in one pass):
+
 1. Each of the 4 GPUs takes its own 5 rows (different rows: GPU 0 rows 0–4, GPU 1 rows 5–9, and so on).
 2. Each computes the gradients of its 5 rows.
 3. The GPUs **add their gradients together** over the network (an "all-reduce"), so every GPU now has the gradient of
@@ -535,3 +540,263 @@ kind (optimizer state) and the split into learning hyperparameters and system se
 - Data numbers: `sft_data/tulu3_noaya/train/meta.json` (741,413 chats, 115,904 rows, 325,732,264 trained tokens).
 - The 10-07 learning-rate sweep: `sft_work_documentation.md` §37.5; the run's overfitting/memorization measurements:
   `overfitting_memorization_real_learning_check_val_dev_suite_and_unseen_suite.md` sections 11–20.
+
+---
+
+## 13. Doubt: "A colleague packs differently: she fixes the chats per optimizer step (128) first, packs THOSE chats into rows, and only then decides B and the passes, so B and the passes change every step. Is that a real approach? Which libraries do it? Is ours efficient? Which is best for SFT, DPO and RL, and why?"
+
+**Context.** 2026-10-24. In section 6 we fixed the batch in chats (~128), converted it once into rows (20) using the
+average chats per row of the already packed dataset, and kept 20 rows per step. A colleague described another method:
+take exactly 128 chats for every step, pack only those 128 into rows at that step, and let the number of rows (and so the
+passes at a fixed B) change from step to step, because chat lengths differ. She said Megatron does it, and that RL (RLVR)
+should be done that way. I asked whether this approach exists, which libraries use it, whether ours is efficient, whether
+packing can be done another, more efficient way, and which is best for SFT, DPO and RL, with proofs and facts, not
+opinions. Everything below is either read from the libraries' source code or docs, or measured on our own data.
+
+### 13.1 The two methods, in our words
+
+| | **A: offline packing (ours)** | **B: fixed samples per step, packing per step (colleague's)** |
+| --- | --- | --- |
+| When packing happens | once, before training, over the whole dataset (`prepare_sft_data.py --pack`) | at every step, over that step's samples only |
+| What is fixed per step | the rows (20 × 4,096 positions) | the samples (128 chats, or 128 pairs, or N rollouts) |
+| What varies per step | the number of chats in the step | the number of rows, and so the passes at a fixed B |
+
+Both keep chats separate inside a row (block-diagonal attention, positions restart per chat); the difference is only
+which quantity is held constant per optimizer step.
+
+### 13.2 Who does what (read from source code and docs, 2026-10-24)
+
+| Library | Method | The evidence |
+| --- | --- | --- |
+| NVIDIA NeMo (SFT, "packed sequence") | **A** | "the global batch size needs to be reduced by the average number of sequences per pack n … where n = num_sequences_in_dataset / num_packs … This ensures that each gradient iteration sees, on average, the same number of tokens"; "Micro batch size must be set to 1"; the packed dataset "is automatically prepared before training" (NeMo 25.04 SFT docs). Exactly our section-6 rule. |
+| Hugging Face TRL `SFTTrainer`, `packing=True` | **A** | `pack_dataset(dataset, args.max_length, args.packing_strategy, ...)` on the dataset before training (`sft_trainer.py:1528`), Best-Fit Decreasing by default (`data_utils.py:837`). It runs as `dataset.map(..., batched=True)`, i.e. BFD inside chunks of the `map` batch (1,000 examples by default), not over the whole dataset as ours. |
+| Krell et al. 2021 (packed BERT, the paper behind "packing without cross-contamination") | **A** | §3.3: "the primary consequence of packing is an increase in the effective batch size … A direct solution is to reduce the computational batch size by the packing factor (average number of sequences per pack) and keep all other hyperparameters the same"; with that, the learning curves "show a near-identical match" (§4.2). |
+| Hugging Face Transformers `DataCollatorWithFlattening` (= TRL `padding_free=True` without packing) | **B** | flattens each mini-batch of N examples into one sequence with `cu_seqlens`; the blog: it "retains the minibatches and, hence, the same number of optimization steps"; 2x throughput on FLAN, 1.4x on OrcaMath vs padding, "no impact on train convergence". |
+| AllenAI open-instruct (the Tülu 3 trainer), `--packing` | **B** | `collate_fn = TensorDataCollatorWithFlattening()` on a DataLoader with `batch_size=args.per_device_train_batch_size` (`finetune.py:664-688`); the batch is counted in examples (`total_batch_size = per_device_train_batch_size * dp_world_size * gradient_accumulation_steps`, `:754`). |
+| verl (RL), `use_dynamic_bsz=True` | **B** | `rearrange_micro_batches`: `num_micro_batches = min(num_groups, ceildiv(total_seqlen, max_token_len))` per step, sequences spread over the micro-batches with Karmarkar–Karp for equal work, the count made equal across data-parallel ranks (`seqlen_balancing.py:348`); `force_group_size` keeps consecutive samples together ("for RM training"). |
+| Megatron-LM RL (`megatron/rl/sequence_packing_utils.py`) | **B** | `SequencePacker.pack_sequences` packs the step's trajectories, longest first, into bins of `bin_size` (max 16 per bin); `update_microbatch_calculator` then reconfigures the number of micro-batches for that step: "our batch dimension shrinks as we move some trajs onto free space in sequence dimension". |
+| NVIDIA NeMo-RL | **B** | sequence packing "reorders the elements in the batch and creates metadata" so each micro-batch holds sequences packed together (default `modified_first_fit_decreasing`, `train_mb_tokens`); "speedups in the ~2-3x range"; dynamic batching (the alternative) "is almost always slower than Sequence Packing". |
+| OpenRLHF | packing flag in every trainer | "SFT / DPO / PPO / RM trainers all support --ds.packing_samples" (docs). |
+
+So the colleague's method is real and common, and Megatron does it, **in its RL path**. Our method is also real and
+common: it is NeMo's SFT recipe, TRL's packing, and the original packing paper's rule.
+
+### 13.3 Measured on our own data (the 741,413 Tülu 3 chats we trained on)
+
+Script and output: `post_training_research/packing_methods_1024/simulate_packing.py`, `simulate_packing_output.txt`
+(input: the packed-row index files of the real training data, `seq_lengths.bin`, `seq_offsets.bin`, `valid_counts.bin`).
+Chat lengths: mean 640.3, median 470, p95 1,608, max 4,096 tokens; 474,700,628 real tokens in total, so at least
+115,894 rows of 4,096 are needed.
+
+| | **A: ours** | **B: 128 chats per step, BFD per step** (2 shuffle seeds, identical to ±0.01%) |
+| --- | --- | --- |
+| Rows per epoch | **115,904** (only 10 above the minimum possible) | 119,080 (**+2.74%**) |
+| Fill of the rows | **99.991%** | 97.32% |
+| Steps per epoch | 5,795.2 | 5,792.3 |
+| Chats per step | mean 127.9, sd 29.0 (min 67, max 390) | **exactly 128** |
+| Real tokens per step | **81,913, sd 11.5** (fixed) | 81,955, sd 6,619 (min 60,704, max 106,235) |
+| Trained tokens per step | 56,207, sd 2,885 (5.1%) | (not computable per chat from these files) |
+| Rows per step | always 20 | 15 to 27 (mean 20.6) |
+| Passes per step at B = 4 | always 5 | 4: 20 steps, 5: 2,874, 6: 2,824, 7: 74 |
+| Row slots if every pass must hold a full B = 4 rows | 115,904 | 127,648 (**+10.13%**) |
+
+What it costs in time at our measured 1.86 s per 20-row step (~3.0 h per epoch): **B needs ~2.7% more GPU time (~5 min
+per epoch)** if a pass may hold fewer than B rows, and **~10% more (~18 min per epoch)** if every pass is a full B × 4,096
+(our trainer's fixed micro-batch shape). For scale: no packing at all would need 741,413 rows = 6.4x A.
+
+Why B packs worse: Best-Fit Decreasing needs many items to fill bins well. Over the whole dataset (A) there are 741,413
+chats to choose from; inside one step (B) only 128, so the last rows of each step are left partly empty.
+
+### 13.4 Which is better depends on what the loss averages over
+
+- **Our SFT loss** is the sum of the trained tokens' losses divided by the step's trained-token count N (section 6.3; the
+  same "token-mean over the global batch" as verl: `masked_sum(loss) / batch_num_tokens * dp_size`). Each token's weight
+  in a step is 1/N.
+  - With **A**, N is almost constant (real tokens sd 0.01%, trained tokens sd 5.1%), so every token in the run gets almost
+    the same weight. That is the property Tülu 3 asked for: they switched to a **sum** loss because, with a mean over
+    samples, "each example is weighted equally", while they found that weighting **every token equally** worked better
+    (Tülu 3 paper §4.3.2; lr 5e-6, batch 128 sequences, length 4,096). A token-mean over a nearly constant N is a sum
+    loss times a constant.
+  - With **B**, the 128 chats are constant but N moves by about ±8% (sd 6,619 of 81,955 real tokens), so a token in a
+    short step weighs more than a token in a long step: 1.30x between the 5% shortest and the 5% longest steps
+    (92,931 / 71,573), 1.75x at the extremes (106,235 / 60,704).
+  - **Verdict for SFT: A** (ours): 2.7–10% cheaper on our data, the same rows and shapes every step, and equal token
+    weights. B is not wrong; nobody has shown a quality difference between the two (NeMo and the Hugging Face blog
+    each report "no impact on convergence" only against padding).
+- **DPO:** the loss is a mean over **pairs**: TRL `loss += per_sequence_loss.mean()` (`dpo_trainer.py:1580`), one value per
+  pair. And the chosen and the rejected answer of a pair must be in **the same forward pass**: TRL puts them in one batch
+  `[chosen, rejected]` and splits the log-probs with `logps.chunk(2, dim=0)` (`:1368`); verl's `force_group_size` exists to
+  keep such groups in one micro-batch.
+  - **Verdict for DPO: B**: a fixed number of pairs per step (the unit the loss averages over), packed per step, with each
+    pair kept whole. (Packing pairs offline as whole units is possible too, but then pairs per step vary, and so does
+    each pair's weight.) Note: TRL's DPO `padding_free` is currently disabled after a refactor (`:784-791`).
+- **RL (GRPO / RLVR):** the samples (rollouts) do not exist before the step: they are generated by the current model at
+  every step, so offline packing is impossible by construction. The number of samples per step is set by the algorithm
+  (prompts × rollouts per prompt).
+  - **Verdict for RL: B is the only option**, and every RL framework above does it (verl, Megatron-LM RL, NeMo-RL,
+    OpenRLHF), with the loss normalized by the step's global token count so a varying number of micro-batches stays
+    correct (verl `agg_loss`, token-mean).
+
+### 13.5 Can our packing be made more efficient?
+
+Not for SFT on this data: A is at **99.991%** fill, 10 rows above the theoretical minimum of 115,894 (0.009%). The only
+padding left is the tail of those rows. The remaining waste in an SFT step is elsewhere: the untrained prompt positions
+(trained tokens are 56,207 of 81,913 per step, 69%) and the attention work, which packing does not change.
+
+### 13.6 In short
+
+- The colleague's method (fixed samples per step, packing per step, varying passes) is real: open-instruct, the Hugging
+  Face flattening collator, verl, Megatron-LM RL, NeMo-RL and OpenRLHF do it.
+- Ours (offline packing, fixed rows per step) is real too: NeMo SFT, TRL packing and the packed-BERT paper prescribe it,
+  including our rule rows per step = chats per step ÷ chats per row.
+- On our data, ours uses 2.7% fewer rows (10% fewer row slots at a fixed B = 4) and keeps the tokens per step constant.
+- Best choice by stage: **SFT → A** (the loss averages over tokens), **DPO → B with whole pairs** (the loss averages over
+  pairs), **RL → B, the only option** (the data is generated during training).
+
+### 13.7 Sources for this section
+
+- NeMo Framework, Sequence Packing for SFT/PEFT (25.04): <https://docs.nvidia.com/nemo-framework/user-guide/25.04/sft_peft/packed_sequence.html>
+- NeMo-RL, Sequence Packing and Dynamic Batching: <https://docs.nvidia.com/nemo/rl/nightly/design-docs/sequence-packing-and-dynamic-batching.html>
+- Krell et al. 2021, Efficient Sequence Packing without Cross-contamination, arXiv 2107.02027 (§3.3, §4.2)
+- Hugging Face blog, Improving Hugging Face Training Efficiency Through Packing with Flash Attention: <https://huggingface.co/blog/packing-with-FA2>
+- TRL source: `trl/trainer/sft_trainer.py`, `trl/data_utils.py` (`pack_dataset`), `trl/trainer/dpo_trainer.py` (main branch, read 2026-10-24)
+- verl source: `verl/utils/seqlen_balancing.py` (`rearrange_micro_batches`), `verl/trainer/ppo/core_algos.py` (`agg_loss`); docs: <https://verl.readthedocs.io/en/latest/perf/perf_tuning.html>
+- Megatron-LM source: `megatron/rl/sequence_packing_utils.py` (main branch, read 2026-10-24)
+- open-instruct source: `open_instruct/finetune.py` (main branch, read 2026-10-24)
+- Tülu 3 paper, arXiv 2411.15124, §4.3.2 "Batch Aggregation", Table 11
+- OpenRLHF docs: <https://openrlhf.readthedocs.io/en/latest/non_rl.html>
+- Our data: `post_training_research/packing_methods_1024/simulate_packing.py` + output
+
+---
+
+## 14. Doubt: "In our runs the chats per step change. Doesn't the optimizer then see a different number of chats every step? Should it be based on tokens instead? Why did Tülu say 128 chats per step? What should we care about in SFT: chats, rows or tokens per step?"
+
+**Context.** 2026-10-24, right after section 13 showed that with our method the chats per step vary from 67 to 390 (mean
+128). I asked whether that hurts the update, whether a fixed number of tokens per step (we always process 20 × 4,096 =
+81,920 positions) is what really matters, whether it is fine because every answer only sees its own prompt anyway (unlike
+DPO, which needs the chosen and the rejected answer together), how Tülu's "128 chats per step" fits, and which of the
+three (chats, rows, tokens) we should care about.
+
+### 14.1 Why a changing number of chats is not a problem in SFT
+
+- The SFT loss of a step is `L = (1/N) × (sum of −ln p over all trained tokens of the step)`, N = trained tokens of the step
+  (section 6.3; `bluscript_sft.cpp` divides every micro-step by the step's global trained-token count).
+- Each token's term depends only on its own chat: the model reads that chat's prompt and earlier answer tokens and nothing
+  else (block-diagonal attention, positions restart per chat). There is **no term that links two chats**.
+- So the gradient is `(1/N) × (sum of every trained token's own gradient)`. Chats are not a unit in this formula; a chat
+  only contributes its tokens: a chat with 2,000 answer tokens contributes 2,000 terms, a chat with 20 contributes 20.
+- DPO is different: its loss has one term per pair that needs both answers (section 13.4), so there the pair is a unit.
+
+### 14.2 Which number our method holds constant, and which it does not
+
+Measured over all 5,795 steps of our Tülu run (`post_training_research/packing_methods_1024/simulate_packing_output.txt`):
+
+| Per step | Mean | Spread (sd) | Range |
+| --- | --- | --- | --- |
+| Rows | 20 | 0 | 20 |
+| Positions processed (= rows × 4,096) | 81,920 | 0 | – |
+| Real tokens (prompt + answer, 99.99% of the positions) | 81,913 | 11.5 (0.01%) | 81,510 – 81,920 |
+| **Trained tokens (answers only: what N counts)** | **56,207** | **2,885 (5.1%)** | 42,600 – 65,180 |
+| Chats | 127.9 | 29.0 (23%) | 67 – 390 |
+
+- Rows and real tokens are the same thing for us (99.99% fill), and both are fixed.
+- The trained tokens are NOT fixed: the prompt share of each chat differs (on average 69% of the positions are trained).
+  They move by ±5% per step, far less than the chats (±23%).
+
+### 14.3 Tülu's "128 chats per step"
+
+- Tülu 3 trained **without packing**: open-instruct's default is `packing=False`, which collates with
+  `DataCollatorForSeq2Seq(padding="longest")` (`finetune.py:664-668`): one chat per row, padded to the longest chat of the
+  micro-batch. So in their setup **128 chats = 128 rows**, and the tokens per step vary with the chats' lengths.
+- They also chose a **sum** loss so that every token has the same weight (Tülu 3 paper §4.3.2): what they cared about was
+  the per-token weight, not the chat count. The "128" is the batch size their learning rate (5e-6, sum loss) was tuned for.
+- We took their 128 only to size our step: 128 chats × 640 mean tokens ≈ 82k positions ≈ our 20 rows.
+
+### 14.4 What to care about in SFT, in order
+
+1. **Trained tokens per step** (N): this is what the gradient averages over, so it is the real batch size for learning.
+   Keep it roughly constant and in a sensible range. Ours: 56k ± 5%.
+2. **Positions (rows) per step**: this is the compute and the memory of a step. Ours: fixed, so the step time and memory
+   peak are the same every step (1.86 s, 74 GB).
+3. **Chats per step**: not used by the loss. It matters only indirectly: tokens of the same chat are related to each other,
+   so a step of 67 long chats holds fewer independent examples than a step of 390 short chats with the same tokens. No
+   recipe we read fixes this per step for SFT; the shuffle at data preparation spreads long and short chats over the steps.
+
+So yes: in our SFT, packing efficiently (99.99%) and fixing the rows is the right choice; what we watch is the trained tokens
+per step, and the chat count is allowed to move.
+
+---
+
+## 15. Doubt: "What does 'sum loss' mean? Is it over the valid-token count of the full step, not per micro-step? Does it change with padding or packing? Is our loss (option 2) the same as Tülu's, or only scaled?"
+
+**Context.** 2026-10-24, after section 14, which said Tülu 3 chose a "sum" loss so that every token has the same weight.
+I asked what a sum loss is exactly: is it divided by the valid-token count of the whole step or of each micro-step, and
+does padding or packing change it. Then, after the three options below, I asked whether our loss (the mean over the full
+step) is the same as Tülu's sum loss, since both give every token the same share, or only a scaled version of it.
+
+### 15.1 Three ways to turn a step's token losses into one number
+
+"Valid tokens" = the trained (answer) tokens. Prompt tokens and padding carry the "ignore" label (−100 in Hugging Face,
+65535 in ours), so they are left out of the sum and out of every count below.
+
+| Name | How one step's loss is made | Weight of one token |
+| --- | --- | --- |
+| **1. Mean per micro-step** (the old default of Hugging Face / PyTorch training loops) | each micro-batch: the sum of its tokens' losses ÷ **its own** valid-token count; then the micro-step losses are averaged (÷ GRAD_ACCUM) | 1 / (GRAD_ACCUM × that micro-batch's count): **different in every micro-batch** |
+| **2. Mean over the full step** (**ours**) | the sum over **all** valid tokens of the step (all micro-steps, all GPUs) ÷ the step's total valid-token count N | 1/N: **the same for every token of the step** |
+| **3. Sum loss** (Tülu 3) | the sum over all valid tokens of the step, **not divided by any token count** | 1: **the same in every step**; a step with more tokens gives a bigger gradient, so the learning rate must be smaller (Tülu 3: 5e-6) |
+
+So yes: "sum loss" = the plain sum of the valid tokens' losses of the step, with no division by a token count (at most
+by a fixed constant that does not depend on the data). Our option 2 divides by the valid count of the **full step**, not
+per micro-step.
+
+**Example:** one step of 2 micro-batches; micro-batch 1 has 1,000 valid tokens, micro-batch 2 has 9,000.
+
+| | Token in micro-batch 1 | Token in micro-batch 2 |
+| --- | --- | --- |
+| Option 1 | 1/(2 × 1,000) = 1/2,000 | 1/(2 × 9,000) = 1/18,000 → **9x lighter**, only because of how the tokens were grouped |
+| Option 2 | 1/10,000 | 1/10,000 |
+| Option 3 | 1 | 1 |
+
+Option 1 is the problem the Tülu 3 paper describes (§4.3.2): with gradient accumulation (or several GPUs) and padding,
+"each example is weighted equally" instead of each token, and changing the accumulation changed their results.
+
+### 15.2 Padding or packing does not change options 2 and 3
+
+- Padding and prompt positions are ignored in the sum and in N, so only the set of valid tokens of the step matters.
+- With option 2 or 3, the same chats in a step give exactly the same loss and gradient whether they were padded (one chat
+  per row) or packed (several chats per row), and however they are split into micro-batches.
+- Only option 1 depends on the grouping into micro-batches, so only option 1 changes with padding, packing or GRAD_ACCUM.
+
+### 15.3 Our loss (option 2) against Tülu's sum loss (option 3)
+
+**Inside one step: the same proportions, only scaled.** Every token gets the same share in both: ours = Tülu's sum × 1/N.
+The gradient points in exactly the same direction; only its length differs.
+
+**Across steps: not exactly the same,** because N changes a little from step to step and we divide each step by its own N.
+
+| | Step A: N = 50,000 | Step B: N = 60,000 |
+| --- | --- | --- |
+| Ours: weight of one token | 1/50,000 | 1/60,000 → a token of step A weighs **1.2x** a token of step B |
+| Tülu's sum: weight of one token | 1 | 1 → **equal** |
+
+- Ours gives every step about the same total push, whatever its token count.
+- Tülu's gives a step with more tokens a proportionally bigger push.
+
+**How much it matters for us: very little.**
+- Our N is 56,207 ± 2,885 trained tokens per step (5.1%, section 14.2), so token weights across steps differ by about ±5%
+  normally, and by 1.5x only in the rare extreme steps (42,600 vs 65,180 trained tokens).
+- Our optimizers largely ignore a constant scale of the gradient:
+  - **AdamW** divides each update by the running size (RMS) of the gradients, so multiplying all gradients by the same
+    1/N cancels out;
+  - **Muon** orthogonalizes the update, which throws away its overall size; only the learning rate sets the step length.
+- So the only real difference left is the ±5% variation of N between steps, which slightly changes how the momentum
+  mixes consecutive steps.
+
+**In short:** ours = Tülu's sum loss divided by a nearly constant number: the same proportions inside every step, and
+only ±5% different between steps.
+
+### 15.4 A note on the current open-instruct code
+
+The Tülu 3 paper (§4.3.2) describes the sum loss. The current main branch of open-instruct (`finetune.py`, read
+2026-10-24) computes `loss = outputs.loss` (the model's own loss of each micro-batch, a mean over that micro-batch's
+valid tokens) and calls `accelerator.backward(loss)` per micro-batch, so its code has changed since the paper.

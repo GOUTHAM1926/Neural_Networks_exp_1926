@@ -1,0 +1,17 @@
+1a31ba65499e451b7ad659470b72f686  ./00_README_START_HERE.docx
+fe7f83accd31f5bd745b16d39ee9351c  ./00_README_START_HERE.md
+3596876005d3332a370ad44cd86e227d  ./code/after_f7aa40f/AttentionKernels.h
+513e849a356baf579db8f6dbb643c74e  ./code/after_f7aa40f/AttentionOps.cpp
+1a48e7a794e9f474f31556662ac2e221  ./code/after_f7aa40f/GQA_bwd_generic.cu
+a7e72a963df0fff43b11d05728544f06  ./code/after_f7aa40f/GQA_fwd_generic.cu
+39e16781d5676c72481e39df10c14b96  ./code/after_f7aa40f/test_varlen_attention.cu
+a95a7c63dc507c86bc069bec5207e2a0  ./code/before_bda3a34/AttentionKernels.h
+5ea8541e0f052fbf35f1ec2e33592966  ./code/before_bda3a34/AttentionOps.cpp
+2dbe59eb48d624cd82c639993ddb1fcf  ./code/before_bda3a34/GQA_bwd_generic.cu
+c993599a12e87a89ffe5dcd56d57b2f3  ./code/before_bda3a34/GQA_fwd_generic.cu
+eec5e38b1fedeafe5894be6f1a70f96f  ./data/stage0_ultrachat_5k_T4096_train_labels.bin
+1f29e7047ec60be467eb4c351931580b  ./diffs/library_changes_bda3a34_to_f7aa40f.diff
+4e91b3f80be946e9dbd0103765aca80d  ./logs/test_build_command_rtx3060.txt
+4d67bbf70d2e14f4ee0bdf8bcd649076  ./logs/test_hd128_quick_rtx3060_2026-10-24.log
+bd99b42682c439aaf9bb16d7615e6247  ./logs/test_hd64_first_try_HARNESS_BUG_2026-10-24.log
+0b69028d6220446a5bbf94d916094e48  ./logs/test_hd64_quick_rtx3060_2026-10-24.log

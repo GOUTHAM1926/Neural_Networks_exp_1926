@@ -1,0 +1,139 @@
+diff --git a/src/Views/arch/ContiguousKernel_sm90.cu b/src/Views/arch/ContiguousKernel_sm90.cu
+index dacc503..17b97f2 100644
+--- a/src/Views/arch/ContiguousKernel_sm90.cu
++++ b/src/Views/arch/ContiguousKernel_sm90.cu
+@@ -57,8 +57,36 @@ struct ContiguousMeta {
+     int32_t    ndim;
+     int64_t    storage_offset_elems;
+     int32_t    elem_size;
++    int64_t    dims64[kMaxContigDims];   // the dims, for the 64-bit walk (copies past 2^31 elements)
+ };
+ 
++// 2026-10-31: the walk for copies that do not fit 32 bits: 64-bit element number, plain 64-bit division. The int64_t
++// instantiations used it to cast the element number to uint32_t (wrong past 2^32 elements). Copies the dispatcher in
++// ../ContiguousKernel.cu can cut into 32-bit pieces never get here; the rest (one outer slice past 32 bits) do.
++template<int NDim, typename OffT>
++__device__ __forceinline__
++OffT walk_index64(uint64_t linear, const ContiguousMeta& meta)
++{
++    OffT off = (OffT)meta.storage_offset_elems;
++    if (NDim > 0) {
++        #pragma unroll
++        for (int d = NDim - 1; d >= 0; --d) {
++            const uint64_t dd = (uint64_t)meta.dims64[d];
++            const uint64_t q = linear / dd;
++            off += (OffT)(linear - q * dd) * (OffT)meta.strides[d];
++            linear = q;
++        }
++    } else {
++        for (int d = meta.ndim - 1; d >= 0; --d) {
++            const uint64_t dd = (uint64_t)meta.dims64[d];
++            const uint64_t q = linear / dd;
++            off += (OffT)(linear - q * dd) * (OffT)meta.strides[d];
++            linear = q;
++        }
++    }
++    return off;
++}
++
+ // NDim = 0 means read meta.ndim at runtime; nonzero gives a compile-time trip
+ // count. Caller contract: OffT may be uint32_t only if every offset fits in
+ // 2^31, else int64_t.
+@@ -101,6 +129,17 @@ __global__ void strided_inner_vec_copy_kernel(
+ {
+     const int64_t gstride = (int64_t)gridDim.x * blockDim.x;
+ 
++    if constexpr (sizeof(OffT) == 8) {   // 64-bit row and vector numbers (2026-10-31)
++        const int64_t nv = inner_size / VecCount;
++        for (int64_t v = (int64_t)blockIdx.x * blockDim.x + threadIdx.x; v < total_vecs; v += gstride) {
++            const int64_t row = v / nv, vec_in_row = v - row * nv;
++            const OffT src_row_off = walk_index64<OuterDims, OffT>((uint64_t)row, meta);
++            const VecT* src_v = reinterpret_cast<const VecT*>(src_typed + (int64_t)src_row_off);
++            VecT* dst_v = reinterpret_cast<VecT*>(dst_typed + row * inner_size);
++            dst_v[vec_in_row] = __ldg(&src_v[vec_in_row]);
++        }
++        return;
++    }
+     for (int64_t v = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+          v < total_vecs; v += gstride)
+     {
+@@ -134,6 +173,33 @@ __global__ void generic_strided_copy_kernel(
+     const int64_t nruns   = (total_elems + 3) >> 2;
+     const int64_t gstride = (int64_t)gridDim.x * blockDim.x;
+ 
++    if constexpr (sizeof(OffT) == 8) {   // 64-bit element numbers (2026-10-31)
++        const int64_t isz = meta.dims64[meta.ndim - 1];
++        for (int64_t run = (int64_t)blockIdx.x * blockDim.x + threadIdx.x; run < nruns; run += gstride) {
++            const int64_t i_base = run << 2;
++            const int64_t left = total_elems - i_base;
++            const int remaining = (left < 4) ? (int)left : 4;
++            if (InnerContig) {
++                const int64_t col = i_base % isz;
++                if (col + remaining <= isz) {
++                    const OffT base = walk_index64<NDim, OffT>((uint64_t)i_base, meta);
++                    #pragma unroll
++                    for (int v = 0; v < 4; ++v) {
++                        if (v >= remaining) break;
++                        dst[i_base + v] = __ldg(&src[(int64_t)base + v]);
++                    }
++                    continue;
++                }
++            }
++            #pragma unroll
++            for (int v = 0; v < 4; ++v) {
++                if (v >= remaining) break;
++                const OffT off = walk_index64<NDim, OffT>((uint64_t)(i_base + v), meta);
++                dst[i_base + v] = __ldg(&src[(int64_t)off]);
++            }
++        }
++        return;
++    }
+     for (int64_t run = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+          run < nruns; run += gstride)
+     {
+@@ -266,7 +332,9 @@ __global__ void flat_strided_copy_kernel(
+         union { VecT vec; T elem[EPT]; } u;
+         #pragma unroll
+         for (int c = 0; c < EPT; ++c) {
+-            OffT off = walk_index<NDim, OffT>((uint32_t)(i0 + c), meta);
++            OffT off;
++            if constexpr (sizeof(OffT) == 8) off = walk_index64<NDim, OffT>((uint64_t)(i0 + c), meta);   // 64-bit
++            else off = walk_index<NDim, OffT>((uint32_t)(i0 + c), meta);
+             u.elem[c] = __ldg(&src[(int64_t)off]);
+         }
+         dst_v[v] = u.vec;
+@@ -277,7 +345,9 @@ __global__ void flat_strided_copy_kernel(
+         for (int64_t i = n_vec * EPT + threadIdx.x; i < total_elems;
+              i += blockDim.x)
+         {
+-            OffT off = walk_index<NDim, OffT>((uint32_t)i, meta);
++            OffT off;
++            if constexpr (sizeof(OffT) == 8) off = walk_index64<NDim, OffT>((uint64_t)i, meta);   // 64-bit
++            else off = walk_index<NDim, OffT>((uint32_t)i, meta);
+             dst[i] = __ldg(&src[(int64_t)off]);
+         }
+     }
+@@ -554,6 +624,7 @@ bool contiguous_strided_copy_sm90(
+         for (int d = 0; d < outer_dims && d < MaxDims; ++d) {
+             meta.divmods[d] = FastDivmod::make((uint32_t)dims[d]);
+             meta.strides[d] = strides[d];
++            meta.dims64[d] = dims[d];
+         }
+ 
+         const int64_t inner_size  = dims[ndim - 1];
+@@ -642,6 +713,7 @@ bool contiguous_strided_copy_sm90(
+         for (int d = 0; d < ndim && d < MaxDims; ++d) {
+             fmeta.divmods[d] = FastDivmod::make((uint32_t)dims[d]);
+             fmeta.strides[d] = strides[d];
++            fmeta.dims64[d] = dims[d];
+         }
+         if (elem_size == 4)
+             dispatch_3f<float>(src, dst, total_elems, ndim, use32, fmeta, stream);
+@@ -665,6 +737,7 @@ bool contiguous_strided_copy_sm90(
+     for (int d = 0; d < ndim && d < MaxDims; ++d) {
+         meta.divmods[d] = FastDivmod::make((uint32_t)dims[d]);
+         meta.strides[d] = strides[d];
++        meta.dims64[d] = dims[d];
+     }
+ 
+     // The amortized walk needs a unit-stride innermost dim so consecutive

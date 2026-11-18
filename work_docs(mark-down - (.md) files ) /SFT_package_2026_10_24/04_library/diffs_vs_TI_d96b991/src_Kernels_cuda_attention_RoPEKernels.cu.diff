@@ -1,0 +1,221 @@
+diff --git a/src/Kernels/cuda/attention/RoPEKernels.cu b/src/Kernels/cuda/attention/RoPEKernels.cu
+index 9ee7ef8..fa20b6e 100644
+--- a/src/Kernels/cuda/attention/RoPEKernels.cu
++++ b/src/Kernels/cuda/attention/RoPEKernels.cu
+@@ -32,12 +32,21 @@
+ #include <cuda_bf16.h>
+ #include <cstdint>
+ #include <cmath>
++#include <stdexcept>
++#include <string>
+ #include "ops/helpers/RoPEKernels.h"
+ #include "ops/helpers/KernelDispatch.h"
+ 
+ namespace OwnTensor {
+ namespace cuda {
+ 
++// Every launch in this file is checked (2026-10-31): a launch that the GPU refuses (for example a grid dimension over
++// its limit) must stop the run, not leave its output unwritten.
++static inline void rope_check_launch(const char* where) {
++    const cudaError_t e = cudaGetLastError();
++    if (e != cudaSuccess) throw std::runtime_error(std::string(where) + ": launch failed: " + cudaGetErrorString(e));
++}
++
+ // Defined in arch/RoPE_sm90.cu; returns false when the shape or alignment is
+ // outside what it covers.
+ bool try_launch_rope_f32_sm90(
+@@ -63,36 +72,44 @@ template <> __device__ __forceinline__ __nv_bfloat16 rope_from_f<__nv_bfloat16>(
+ // Cache builder kernel: one thread per (pos, i) where i in [0, hd/2).
+ // Writes cos at column i, sin at column i + hd/2.
+ // ---------------------------------------------------------------------------
++// One thread per (pos, i) of the whole table, over a flat grid (2026-10-31: the old grid put pos in grid y, whose limit
++// is 65,535, so a table of 65,536+ rows was never launched, and with head_dim 128 half of each 128-thread block was
++// idle). Each entry is computed exactly as before.
+ __global__ void rope_build_cache_kernel(
+     float* __restrict__ cache,
+     int64_t seq_len, int64_t head_dim, float base)
+ {
+-    int64_t pos = blockIdx.y;
+-    int64_t i   = blockIdx.x * blockDim.x + threadIdx.x;
+-    int64_t half = head_dim / 2;
+-    if (pos >= seq_len || i >= half) return;
+-
+-    // inv_freq = 1 / (base ^ (2i / hd))
+-    float exponent = (2.0f * static_cast<float>(i)) / static_cast<float>(head_dim);
+-    float inv_freq = 1.0f / powf(base, exponent);
+-    float angle    = static_cast<float>(pos) * inv_freq;
+-
+-    float c = cosf(angle);
+-    float s = sinf(angle);
+-
+-    float* row = cache + pos * head_dim;
+-    row[i]        = c;
+-    row[i + half] = s;
++    const int64_t half = head_dim / 2, n = seq_len * half;
++    for (int64_t e = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x; e < n;
++         e += static_cast<int64_t>(gridDim.x) * blockDim.x) {
++        const int64_t pos = e / half, i = e % half;
++
++        // inv_freq = 1 / (base ^ (2i / hd))
++        float exponent = (2.0f * static_cast<float>(i)) / static_cast<float>(head_dim);
++        float inv_freq = 1.0f / powf(base, exponent);
++        float angle    = static_cast<float>(pos) * inv_freq;
++
++        float c = cosf(angle);
++        float s = sinf(angle);
++
++        float* row = cache + pos * head_dim;
++        row[i]        = c;
++        row[i + half] = s;
++    }
++}
++
++// Blocks for a flat grid over n entries (256 threads each); the kernels loop, so the cap only bounds the grid.
++static inline unsigned rope_flat_blocks(int64_t n) {
++    const int64_t b = (n + 255) / 256;
++    return static_cast<unsigned>(b < 1 ? 1 : (b > (1 << 20) ? (1 << 20) : b));
+ }
+ 
+ void rope_build_cache_cuda(float* cos_sin_cache,
+                            int64_t seq_len, int64_t head_dim, float base)
+ {
+-    int64_t half = head_dim / 2;
+-    dim3 block(128);
+-    dim3 grid(static_cast<unsigned>((half + 127) / 128),
+-              static_cast<unsigned>(seq_len));
+-    rope_build_cache_kernel<<<grid, block>>>(cos_sin_cache, seq_len, head_dim, base);
++    if (seq_len <= 0 || head_dim < 2) return;
++    rope_build_cache_kernel<<<rope_flat_blocks(seq_len * (head_dim / 2)), 256>>>(cos_sin_cache, seq_len, head_dim, base);
++    rope_check_launch("rope_build_cache_cuda");
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -106,22 +123,23 @@ __global__ void rope_build_cache_learnable_kernel(
+     const float* __restrict__ alpha,
+     int64_t seq_len, int64_t head_dim, float base)
+ {
+-    int64_t pos = blockIdx.y;
+-    int64_t i   = blockIdx.x * blockDim.x + threadIdx.x;
+-    int64_t half = head_dim / 2;
+-    if (pos >= seq_len || i >= half) return;
+-
+-    float exponent  = (2.0f * static_cast<float>(i)) / static_cast<float>(head_dim);
+-    float inv_freq  = 1.0f / powf(base, exponent);
+-    float theta_hat = __expf(alpha[i]) * inv_freq;
+-    float angle     = static_cast<float>(pos) * theta_hat;
+-
+-    // theta_hat is per-frequency, not per-position: one row writes it.
+-    if (theta_hat_out != nullptr && pos == 0) theta_hat_out[i] = theta_hat;
+-
+-    float* row = cache + pos * head_dim;
+-    row[i]        = cosf(angle);
+-    row[i + half] = sinf(angle);
++    const int64_t half = head_dim / 2, n = seq_len * half;   // flat grid, as rope_build_cache_kernel (2026-10-31)
++    for (int64_t e = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x; e < n;
++         e += static_cast<int64_t>(gridDim.x) * blockDim.x) {
++        const int64_t pos = e / half, i = e % half;
++
++        float exponent  = (2.0f * static_cast<float>(i)) / static_cast<float>(head_dim);
++        float inv_freq  = 1.0f / powf(base, exponent);
++        float theta_hat = __expf(alpha[i]) * inv_freq;
++        float angle     = static_cast<float>(pos) * theta_hat;
++
++        // theta_hat is per-frequency, not per-position: one row writes it.
++        if (theta_hat_out != nullptr && pos == 0) theta_hat_out[i] = theta_hat;
++
++        float* row = cache + pos * head_dim;
++        row[i]        = cosf(angle);
++        row[i + half] = sinf(angle);
++    }
+ }
+ 
+ void rope_build_cache_learnable_cuda(float* cos_sin_cache,
+@@ -129,12 +147,10 @@ void rope_build_cache_learnable_cuda(float* cos_sin_cache,
+                                      const float* alpha,
+                                      int64_t seq_len, int64_t head_dim, float base)
+ {
+-    int64_t half = head_dim / 2;
+-    dim3 block(128);
+-    dim3 grid(static_cast<unsigned>((half + 127) / 128),
+-              static_cast<unsigned>(seq_len));
+-    rope_build_cache_learnable_kernel<<<grid, block>>>(
++    if (seq_len <= 0 || head_dim < 2) return;
++    rope_build_cache_learnable_kernel<<<rope_flat_blocks(seq_len * (head_dim / 2)), 256>>>(
+         cos_sin_cache, theta_hat_out, alpha, seq_len, head_dim, base);
++    rope_check_launch("rope_build_cache_learnable_cuda");
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -146,7 +162,8 @@ void rope_build_cache_learnable_cuda(float* cos_sin_cache,
+ // and  dL/dalpha[i] = sum dL/dphi * dphi/dalpha[i],  dphi/dalpha[i] = pos * theta_hat[i]
+ // (because theta_hat = exp(alpha) * theta, so d theta_hat / d alpha = theta_hat).
+ //
+-// Grid: (B, Tlen) — one block per token, matching rope_kernel. Each block
++// Grid: (Tlen, B) — one block per token, matching rope_kernel (2026-10-31: the token is in grid x; grid y's limit
++// is 65,535, so (B, Tlen) failed for Tlen >= 65,536). Each block
+ // reduces its own pairs into shared memory, then one atomicAdd per frequency
+ // per block. That keeps global atomic traffic at B*T*half instead of
+ // B*T*nh_total*half.
+@@ -165,8 +182,8 @@ __global__ void rope_alpha_backward_kernel(
+ {
+     extern __shared__ float s_acc[];   // half floats
+ 
+-    int64_t b = blockIdx.x;
+-    int64_t t = blockIdx.y;
++    int64_t t = blockIdx.x;   // token: grid x (no 65,535 limit)
++    int64_t b = blockIdx.y;   // batch row: grid y
+ 
+     int64_t half     = head_dim / 2;
+     int64_t nh_total = nh_q + (y_k != nullptr ? nh_k : 0);
+@@ -239,7 +256,7 @@ void rope_alpha_backward_cuda(
+     int threads = static_cast<int>(pairs < 1024 ? pairs : 1024);
+     if (threads <= 0) return;
+ 
+-    dim3 grid(static_cast<unsigned>(B), static_cast<unsigned>(Tlen));
++    dim3 grid(static_cast<unsigned>(Tlen), static_cast<unsigned>(B));
+     dim3 block(threads);
+     size_t shmem = static_cast<size_t>(half) * sizeof(float);
+ 
+@@ -256,12 +273,13 @@ void rope_alpha_backward_cuda(
+             q_token_stride, q_head_stride, k_token_stride, k_head_stride,
+             pos_offset);
+     }
++    rope_check_launch("rope_alpha_backward");
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // Core RoPE kernel.
+ //
+-// Grid:  (B, Tlen)
++// Grid:  (Tlen, B)   (the token in grid x since 2026-10-31; grid y's limit is 65,535)
+ // Block: up to 1024 threads, striding over (head, pair_index).
+ //
+ // One block handles ONE (b, t) pair. Within the block, threads are flattened
+@@ -282,8 +300,8 @@ __global__ void rope_kernel(
+     int64_t pos_offset,
+     bool inverse)
+ {
+-    int64_t b = blockIdx.x;
+-    int64_t t = blockIdx.y;
++    int64_t t = blockIdx.x;   // token: grid x (no 65,535 limit)
++    int64_t b = blockIdx.y;   // batch row: grid y
+ 
+     int64_t half     = head_dim / 2;
+     int64_t nh_total = nh_q + (k != nullptr ? nh_k : 0);
+@@ -381,7 +399,7 @@ static void launch_rope(
+     int threads = static_cast<int>(pairs < 1024 ? pairs : 1024);
+     if (threads <= 0) return;
+ 
+-    dim3 grid(static_cast<unsigned>(B), static_cast<unsigned>(Tlen));
++    dim3 grid(static_cast<unsigned>(Tlen), static_cast<unsigned>(B));
+     dim3 block(threads);
+ 
+     if (interleaved) {
+@@ -399,6 +417,7 @@ static void launch_rope(
+             k_token_stride, k_head_stride,
+             pos_offset, inverse);
+     }
++    rope_check_launch("rope_forward");
+ }
+ 
+ // ---------------------------------------------------------------------------

@@ -1,0 +1,25 @@
+data: 741,413 chats, mean length 640.3 tokens, median 470, p95 1608, max 4096
+      474,700,628 real tokens; lower bound on rows = ceil(total / 4096) = 115,894
+
+A  ours: offline packing of the whole dataset, fixed 20 rows per step
+   rows 115,904 (lower bound + 10), fill 99.991% of all row positions
+   steps per epoch 5,795.2; passes per step: always 5 (B 4)
+   chats per step       : mean 127.9  sd 29.0  min 67  p5 89  median 123  p95 181  max 390
+   real tokens per step : mean 81,912.7  sd 11.5  min 81,510  p5 81,893  median 81,919  p95 81,920  max 81,920
+   trained tokens / step: mean 56,207.1  sd 2,884.7  min 42,600  p5 51,237  median 56,325  p95 60,749  max 65,180
+
+B  fixed 128 chats per step, per-step Best-Fit Decreasing (shuffle seed 1)
+   steps per epoch 5,792.3; rows per epoch 119,080 (+2.74% vs A), fill 97.324%
+   rows per step        : mean 20.6  sd 1.7  min 15  p5 18  median 21  p95 23  max 27
+   passes per step (B 4): mean 5.5  sd 0.5  min 4  p5 5  median 6  p95 6  max 7  -> row slots if every pass is a full B 4: 127,648 (+10.13% vs A)
+   real tokens per step : mean 81,955.0  sd 6,618.9  min 60,704  p5 71,573  median 81,733  p95 92,931  max 106,235
+   passes histogram     : 4 passes: 20, 5 passes: 2874, 6 passes: 2824, 7 passes: 74
+
+B  fixed 128 chats per step, per-step Best-Fit Decreasing (shuffle seed 2)
+   steps per epoch 5,792.3; rows per epoch 119,075 (+2.74% vs A), fill 97.328%
+   rows per step        : mean 20.6  sd 1.6  min 15  p5 18  median 21  p95 23  max 27
+   passes per step (B 4): mean 5.5  sd 0.5  min 4  p5 5  median 6  p95 6  max 7  -> row slots if every pass is a full B 4: 127,656 (+10.14% vs A)
+   real tokens per step : mean 81,954.6  sd 6,517.2  min 60,175  p5 71,650  median 81,771  p95 93,215  max 106,840
+   passes histogram     : 4 passes: 18, 5 passes: 2857, 6 passes: 2862, 7 passes: 55
+
+no packing (one chat per row, padded): 741,413 rows = 6.40x the rows of A

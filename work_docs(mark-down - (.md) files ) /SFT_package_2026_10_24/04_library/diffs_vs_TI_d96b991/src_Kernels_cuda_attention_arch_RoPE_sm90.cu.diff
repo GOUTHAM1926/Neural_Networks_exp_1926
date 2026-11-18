@@ -1,0 +1,75 @@
+diff --git a/src/Kernels/cuda/attention/arch/RoPE_sm90.cu b/src/Kernels/cuda/attention/arch/RoPE_sm90.cu
+index 1e38c79..25bf764 100644
+--- a/src/Kernels/cuda/attention/arch/RoPE_sm90.cu
++++ b/src/Kernels/cuda/attention/arch/RoPE_sm90.cu
+@@ -12,12 +12,20 @@
+ 
+ #include <cuda_runtime.h>
+ #include <cstdint>
++#include <stdexcept>
++#include <string>
+ #include "ops/helpers/RoPEKernels.h"
+ 
+ namespace OwnTensor {
+ namespace cuda {
+ namespace sm90 {
+ 
++// Every launch here is checked (2026-10-31): a refused launch must stop the run, not leave Q / K unrotated.
++static inline void check_launch(const char* where) {
++    const cudaError_t e = cudaGetLastError();
++    if (e != cudaSuccess) throw std::runtime_error(std::string(where) + ": launch failed: " + cudaGetErrorString(e));
++}
++
+ template <int VEC> struct rope_vec;
+ template <> struct rope_vec<1> { using type = float;  };
+ template <> struct rope_vec<2> { using type = float2; };
+@@ -49,8 +57,8 @@ __global__ void rope_kernel_neox_f32(
+     constexpr int LANES    = HALF / VEC;   // threads covering one head's half
+     constexpr int HEAD_DIM = HALF * 2;
+ 
+-    const int64_t b = blockIdx.x;
+-    const int64_t t = blockIdx.y;
++    const int64_t t = blockIdx.x;   // token: grid x (2026-10-31; grid y's limit is 65,535)
++    const int64_t b = blockIdx.y;
+ 
+     const int64_t pos = t + pos_offset;
+     if (pos < 0 || pos >= cache_seq_len) return;
+@@ -152,8 +160,8 @@ __global__ void rope_kernel_gptj_f32(
+     constexpr int LANES    = HALF;         // one thread per pair
+     constexpr int HEAD_DIM = HALF * 2;
+ 
+-    const int64_t b = blockIdx.x;
+-    const int64_t t = blockIdx.y;
++    const int64_t t = blockIdx.x;   // token: grid x (2026-10-31; grid y's limit is 65,535)
++    const int64_t b = blockIdx.y;
+ 
+     const int64_t pos = t + pos_offset;
+     if (pos < 0 || pos >= cache_seq_len) return;
+@@ -219,11 +227,12 @@ static void launch_neox_hpt(
+     while (threads > 1024) { groups >>= 1; threads = LANES * groups; }
+     if (threads < LANES) threads = LANES;
+ 
+-    dim3 grid(static_cast<unsigned>(B), static_cast<unsigned>(Tlen));
++    dim3 grid(static_cast<unsigned>(Tlen), static_cast<unsigned>(B));
+     rope_kernel_neox_f32<HALF, VEC, HPT, INVERSE><<<grid, dim3(threads), 0, stream>>>(
+         q, k, cache, Tlen, cache_seq_len, nh_q, nh_k,
+         q_token_stride, q_head_stride, k_token_stride, k_head_stride,
+         q_batch_stride, k_batch_stride, pos_offset);
++    check_launch("rope sm90 neox");
+ }
+ 
+ // HPT pinned to 1. Deeper staging (HPT=2, 4) was measured and lost both times,
+@@ -262,11 +271,12 @@ static void launch_gptj_f32(
+     if (heads_in_flight < 1) heads_in_flight = 1;
+     const int threads = LANES * heads_in_flight;
+ 
+-    dim3 grid(static_cast<unsigned>(B), static_cast<unsigned>(Tlen));
++    dim3 grid(static_cast<unsigned>(Tlen), static_cast<unsigned>(B));
+     rope_kernel_gptj_f32<HALF, INVERSE><<<grid, dim3(threads), 0, stream>>>(
+         q, k, cache, Tlen, cache_seq_len, nh_q, nh_k,
+         q_token_stride, q_head_stride, k_token_stride, k_head_stride,
+         pos_offset);
++    check_launch("rope sm90 gptj");
+ }
+ 
+ } // namespace sm90

@@ -1,0 +1,25 @@
+diff --git a/src/autograd/operations/ReshapeOps.cpp b/src/autograd/operations/ReshapeOps.cpp
+index 9c34a3b..6440818 100644
+--- a/src/autograd/operations/ReshapeOps.cpp
++++ b/src/autograd/operations/ReshapeOps.cpp
+@@ -48,6 +48,20 @@ std::vector<Tensor> ReshapeBackward::apply(std::vector<Tensor>&& grads) {
+ Tensor contiguous(const Tensor& input) {
+     PROFILER_SCOPE("autograd::contiguous");
+     GraphRecordMode::record_forward("RESHAPE: contiguous");
++    // 2026-11-07: already contiguous (offset 0) -> return the input itself and record nothing, the same no-op rule as
++    // to_dtype below ("no-op preserves existing graph") and as PyTorch's contiguous().
++    // Why: Tensor::contiguous() returns *this in that case (same object, no copy), and make_unary_op then stamped a new
++    // ContiguousBackward onto that object -- i.e. onto the INPUT itself -- while its output_nr stayed what it was. For an
++    // input that is output #1+ of a multi-output op (k_bf from fused_rms_rope_bf16 is output 1), the next op's edge became
++    // (ContiguousBackward, slot 1), a slot that node does not have, and ContiguousBackward::apply returns nothing when
++    // slot 0 is empty: that input's gradient was dropped silently. Found by the SFT context-parallel run (CP=2: step-0
++    // grad norm 2.591 vs 2.800 without CP; k_gamma gradient 0); shown on one GPU with the real RoPE op in
++    // test_contig_alias.cu (k and k_gamma gradient 0 through autograd::contiguous, correct without it).
++    // Non-contiguous inputs are unchanged: a copy plus a ContiguousBackward node, as before.
++    // The previous body, kept for reference (it took the make_unary_op path for every input):
++    // return make_unary_op<ContiguousBackward>(input,
++    //     [](const Tensor& x) { return x.contiguous(); });
++    if (input.is_contiguous() && input.storage_offset() == 0) return input;
+     return make_unary_op<ContiguousBackward>(input,
+         [](const Tensor& x) { return x.contiguous(); });
+ }

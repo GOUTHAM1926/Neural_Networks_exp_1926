@@ -21,6 +21,7 @@
 #include <cstring>
 #include <random>
 #include <vector>
+#include <cuda_profiler_api.h>
 
 using namespace OwnTensor;
 using bf16h = __nv_bfloat16;
@@ -110,7 +111,25 @@ static void bwd(int side, const Case& c, const Data& d, const Outs& o, const Out
       o.dqg, o.dkg, c.B, c.Hq, c.Hkv, c.T, c.hd, 0, c.interleaved, 0, d.pos);
 }
 
-int main() {
+// --ncu: no checks, no timing; one backward call of the library under test per case (B 1 and B 4, without and with
+// positions, production shape), each after 3 warm-up calls, inside cudaProfilerStart/Stop, for
+// ncu --profile-from-start off (10-24: why does B 1 with positions stay at ~90 us while B 1 without reaches 56 us?).
+static int ncu_mode() {
+    std::mt19937 g(1023);
+    for (int B : {1, 4}) for (bool with_pos : {false, true}) {
+        Case c{B, 18, 6, 4096, 128, false};
+        Data d = make_data(c, with_pos, g); Outs o = make_outs(c);
+        fwd(1, c, d, o);
+        for (int i = 0; i < 3; ++i) bwd(1, c, d, o, o);
+        CK(cudaDeviceSynchronize());
+        cudaProfilerStart(); bwd(1, c, d, o, o); CK(cudaDeviceSynchronize()); cudaProfilerStop();
+        std::printf("ncu: profiled one backward, B %d %s\n", B, with_pos ? "positions" : "none");
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--ncu") == 0) return ncu_mode();
     cudaDeviceProp prop; CK(cudaGetDeviceProperties(&prop, 0));
     std::printf("device %s | library flags (--use_fast_math -O3) | stage B (5338bd7b) vs port\n", prop.name);
     std::mt19937 g(1023);

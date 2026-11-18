@@ -1,0 +1,77 @@
+diff --git a/src/autograd/backward/LossBackward.cpp b/src/autograd/backward/LossBackward.cpp
+index 6d7721d..600025d 100644
+--- a/src/autograd/backward/LossBackward.cpp
++++ b/src/autograd/backward/LossBackward.cpp
+@@ -247,8 +247,12 @@ std::vector<Tensor> SparseCrossEntropyLossBackward::apply(std::vector<Tensor>&&
+         .with_dtype(saved_logits_.dtype())
+         .with_device(saved_logits_.device());
+     
+-    Tensor grad_logits_2d = Tensor::empty(logits_2d.shape(), opts);
+-    
++    // Allocated by the branch that fills it. 2026-10-17: until then it was
++    // allocated here AND again in the CUDA branch, so for a moment the CUDA
++    // backward held the logits plus TWO gradient-sized tensors (3.1 GiB each at
++    // 8 x 4096 x 50,304 bf16), one of them never used.
++    Tensor grad_logits_2d;
++
+     // CPU implementation (templated on logits dtype, always computes in float)
+     auto cpu_sparse_ce_backward = [&](auto* logits_data, auto* grad_data) {
+         using T = std::remove_const_t<std::remove_pointer_t<decltype(logits_data)>>;
+@@ -301,6 +305,7 @@ std::vector<Tensor> SparseCrossEntropyLossBackward::apply(std::vector<Tensor>&&
+         // denom_tensor lives on logits' device, so on this path it is already a
+         // CPU tensor and to_cpu() is a no-op.
+         host_scale = 1.0f / denom_tensor.to_cpu().data<float>()[0];
++        grad_logits_2d = Tensor::empty(logits_2d.shape(), opts);
+         if (logits_2d.dtype() == Dtype::Float32) {
+             cpu_sparse_ce_backward(logits_2d.data<float>(), grad_logits_2d.data<float>());
+         } else if (logits_2d.dtype() == Dtype::Float16) {
+@@ -333,10 +338,13 @@ std::vector<Tensor> SparseCrossEntropyLossBackward::apply(std::vector<Tensor>&&
+         cudaStream_t stream = OwnTensor::cuda::getCurrentStream();
+ 
+         AUTO_PROFILE_CUDA("Backward::SparseCrossEntropy_CUDA");
+-        grad_logits_2d = Tensor::empty(logits_2d.shape(), opts);
+ 
+         // Fast path: forward saved (max, sum) → skip Reduce kernel.
+         const bool stats_path = saved_max_.is_valid() && saved_sum_.is_valid();
++        // Stats path (= training): the gradient overwrites the saved logits -- the
++        // returned tensor shares their storage, no new [rows x vocab] buffer
++        // (2026-10-17; the only behaviour since 2026-10-21, see LossOps.h).
++        grad_logits_2d = stats_path ? logits_2d : Tensor::empty(logits_2d.shape(), opts);
+ 
+         // Dispatch by logits dtype x target dtype
+         // grad_out_ptr is `const float*` for every logits dtype -- it is NOT
+@@ -344,24 +352,21 @@ std::vector<Tensor> SparseCrossEntropyLossBackward::apply(std::vector<Tensor>&&
+         // an fp32 grad_scale get read as bf16 with no error.
+         auto dispatch_targets = [&](auto* logits_ptr, auto* grad_ptr, const float* grad_out_ptr) {
+             using LogitT = std::remove_const_t<std::remove_pointer_t<decltype(logits_ptr)>>;
+-            if (stats_path) {
++            if (stats_path) {   // grad_ptr == logits_ptr: the kernel reads each logit, then writes its gradient there
+                 const float* smax = saved_max_.data<float>();
+                 const float* ssum = saved_sum_.data<float>();
+                 if (targets_cuda.dtype() == Dtype::UInt16) {
+-                    cuda::sparse_ce_backward_cuda_vec_with_stats<LogitT, uint16_t>(
+-                        logits_ptr, targets_cuda.data<uint16_t>(), grad_ptr,
+-                        smax, ssum, batch_size_, num_classes_, grad_out_ptr,
+-                        denom_tensor.data<float>(), stream, ignore_index_);
++                    cuda::sparse_ce_backward_cuda_vec_with_stats_inplace<LogitT, uint16_t>(
++                        grad_ptr, targets_cuda.data<uint16_t>(), smax, ssum, batch_size_,
++                        num_classes_, grad_out_ptr, denom_tensor.data<float>(), stream, ignore_index_);
+                 } else if (targets_cuda.dtype() == Dtype::Int64) {
+-                    cuda::sparse_ce_backward_cuda_vec_with_stats<LogitT, int64_t>(
+-                        logits_ptr, targets_cuda.data<int64_t>(), grad_ptr,
+-                        smax, ssum, batch_size_, num_classes_, grad_out_ptr,
+-                        denom_tensor.data<float>(), stream, ignore_index_);
++                    cuda::sparse_ce_backward_cuda_vec_with_stats_inplace<LogitT, int64_t>(
++                        grad_ptr, targets_cuda.data<int64_t>(), smax, ssum, batch_size_,
++                        num_classes_, grad_out_ptr, denom_tensor.data<float>(), stream, ignore_index_);
+                 } else if (targets_cuda.dtype() == Dtype::Int32) {
+-                    cuda::sparse_ce_backward_cuda_vec_with_stats<LogitT, int32_t>(
+-                        logits_ptr, targets_cuda.data<int32_t>(), grad_ptr,
+-                        smax, ssum, batch_size_, num_classes_, grad_out_ptr,
+-                        denom_tensor.data<float>(), stream, ignore_index_);
++                    cuda::sparse_ce_backward_cuda_vec_with_stats_inplace<LogitT, int32_t>(
++                        grad_ptr, targets_cuda.data<int32_t>(), smax, ssum, batch_size_,
++                        num_classes_, grad_out_ptr, denom_tensor.data<float>(), stream, ignore_index_);
+                 } else {
+                     throw std::runtime_error("SparseCrossEntropyLossBackward: unsupported target dtype for CUDA (stats path)");
+                 }

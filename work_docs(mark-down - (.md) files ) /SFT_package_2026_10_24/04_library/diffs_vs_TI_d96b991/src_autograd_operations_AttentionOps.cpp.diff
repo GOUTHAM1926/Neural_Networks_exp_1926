@@ -1,0 +1,64 @@
+diff --git a/src/autograd/operations/AttentionOps.cpp b/src/autograd/operations/AttentionOps.cpp
+index 9aff529..8f2e7d8 100644
+--- a/src/autograd/operations/AttentionOps.cpp
++++ b/src/autograd/operations/AttentionOps.cpp
+@@ -342,7 +342,8 @@ static Tensor sdpa_flash_attention_qkv(
+     const int Nkv_heads,
+     bool is_causal,
+     float dropout_p,
+-    SDPBackend /*backend*/)
++    SDPBackend /*backend*/,
++    const cuda::GqaChatPlanPtr& chats)   // v2 packed rows: per-chat plan (design A); nullptr = dense
+ {
+     PROFILER_SCOPE("sdpa_flash_attention_qkv");
+ 
+@@ -400,6 +401,12 @@ static Tensor sdpa_flash_attention_qkv(
+     Tensor k_c = key.contiguous();
+     Tensor v_c = value.contiguous();
+ 
++    // v2 packed rows (design A, 2026-10-15): the kernels check the plan's shape (B, T, Nq_heads) and refuse a plan
++    // they cannot honour (B300, Vj1 / v44 in the backward). Hopper v62 / Vj2 / Vj1d and, since 2026-10-24, the
++    // generic causal kernels (every other GPU) honour it.
++    if (chats && !is_causal)
++        throw std::runtime_error("sdpa_flash_attention_qkv (GQA): a packed-rows plan needs is_causal = true");
++
+     Tensor output = Tensor::empty(Shape{{B, static_cast<int64_t>(Nq_heads), T, hd}}, opts);
+     Tensor lse    = Tensor::empty(Shape{{B, static_cast<int64_t>(Nq_heads), T}}, lse_opts);
+ 
+@@ -411,14 +418,14 @@ static Tensor sdpa_flash_attention_qkv(
+         lse.data<float>(),
+         static_cast<int>(B), Nq_heads, Nkv_heads,
+         static_cast<int>(T), static_cast<int>(hd),
+-        is_causal);
++        is_causal, chats.get());
+ 
+     if (GradMode::is_enabled() &&
+         (query.requires_grad() || key.requires_grad() || value.requires_grad()))
+     {
+         auto grad_fn = std::make_shared<GQAFlashAttentionQKVBackward>(
+             q_c.detach(), k_c.detach(), v_c.detach(), output.detach(), lse.detach(),
+-            B, Nq_heads, Nkv_heads, T, hd, is_causal);
++            B, Nq_heads, Nkv_heads, T, hd, is_causal, chats);
+ 
+         Tensor& q_mut = const_cast<Tensor&>(query);
+         Tensor& k_mut = const_cast<Tensor&>(key);
+@@ -675,7 +682,8 @@ Tensor scaled_dot_product_attention(
+   const int Nkv_heads,
+   bool is_causal,
+   float dropout_p,
+-  SDPBackend backend
++  SDPBackend backend,
++  const cuda::GqaChatPlanPtr& chats
+ ){
+   PROFILER_SCOPE("autograd::scaled_dot_product_attention");
+   GraphRecordMode::record_forward("ATTENTION: scaled_dot_product_attention (GQA, unpacked QKV)");
+@@ -683,7 +691,8 @@ Tensor scaled_dot_product_attention(
+   switch(backend){
+     case SDPBackend::FlashAttention:
+ #ifdef WITH_CUDA
+-      return sdpa_flash_attention_qkv(query, key, value, Nq_heads, Nkv_heads, is_causal, dropout_p, backend);
++      return sdpa_flash_attention_qkv(query, key, value, Nq_heads, Nkv_heads, is_causal, dropout_p, backend,
++                                      chats);
+ #else
+       throw std::runtime_error(
+         "GQA scaled_dot_product_attention (FlashAttention) requires CUDA.");

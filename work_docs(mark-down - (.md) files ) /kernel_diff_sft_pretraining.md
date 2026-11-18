@@ -124,11 +124,47 @@ to itself.
 ```
 SftDataLoader                       -> chat list per micro-batch: (row, start, length) for every chat and the pad tail
                                        (last_segment_rows / starts / lengths, SftDataLoader.h:164-166)
-bluscript_sft.cpp:125-131           -> gqa_chat_plan_make(rows, starts, lengths, n, B, T, Hq)
+bluscript_sft.cpp (packed_rows_of)  -> gqa_chat_plan_make(rows, starts, lengths, n, B, T, Hq, Hkv)
                                        (built on the host, one asynchronous upload, shared by all 26 layers,
-                                        forward and backward)
-bluscript_sft.cpp:677-678           -> scaled_dot_product_attention(..., g_packed.chats)
+                                        forward and backward; until 2026-11-13 the call had no Hkv)
+bluscript_sft.cpp (attention block) -> scaled_dot_product_attention(..., g_packed.chats)
 ```
+
+**Mixed units (added 2026-11-13).** The plan is built with the KV-head count too (`Hkv`, the last argument).
+
+- A forward work unit is one chat x one query head x a pair of 64-row query tiles, one tile for each of the two
+  compute groups of the kernel.
+- A chat with an odd number of 64-row tiles (64 tokens or less, 129-192, 257-320, ...) left the second group of its
+  last pair with no rows: it only waited.
+- With mixed units that group runs the same last tile of ANOTHER query head of the same KV head. Both heads read the
+  same K and V, so the loads do not change. With 3 query heads per KV head two heads share and the third stays alone;
+  with 2 per KV head both share.
+- The 2% rule: the builder mixes only when at least 2% of the plan's units would share a tile. Below that the plan and
+  the kernel are exactly the ones of before (the mixed-unit kernel has a longer first step per unit, which costs
+  0.5-1% of the forward on rows with many chats).
+- Results do not change: each chat of a packed row still gives the same bits as the same chat alone.
+- Measured on H200 (8 rows x 4,096, heads 18/6, forward, against the plan of before): -21 to -26% on rows of chats of
+  64 tokens or less, -8 to -10% at 160-192 tokens, -0.5 to -1.3% on real SFT rows, no change on rows without such
+  chats. The step time of a 135M SFT run on real data does not change measurably (the attention forward is a small
+  part of the step); the gain is for data with many short chats.
+- Switches (environment of the trainer binary): `BLU_GQA_MX=0` never mixes; `BLU_GQA_MX_MIN_PCT=<n>` changes the 2% limit.
+- Code: `GqaChatPlan::mx_hkv` and the builder's comments in `include/ops/helpers/AttentionKernels.h` and
+  `src/Kernels/cuda/attention/arch/GQA_fwd_generic.cu`; the kernel instantiation `MODE_CHATS_MX` in
+  `src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu`. The dense kernel and the plain packed kernel are unchanged.
+
+**Backward: ideas 1, 2 and 4 (added 2026-11-18).** The Hopper backward (Vj2, `GQA_bwd_vj2_sm90.cu`) got three changes;
+pretraining (no plan, dense rows) gets ideas 1 and 4 too:
+- idea 1: in a 128-key block's first query step, all keys of the second compute group come after all queries of the
+  step, so that group skips the S / dP GEMMs, the exps and the dV / dK GEMMs (all exact zeros) and runs only its dQ GEMM;
+- idea 2 (packed rows only): the plan marks a chat's first two dQ tiles (`dq_tiles`, 4th number = 1); key block 0 is
+  their only contributor and writes them in bf16 directly, so the fp32 dQ buffer, its zeroing and the convert skip them;
+- idea 4: one block per (128-key tile, KV head) adds the G query heads' dK / dV in fp32 registers and writes the final
+  dK / dV: no per-head partials, no head-sum kernels. For packed rows the plan builds a per-KV-head block list when it
+  knows Hkv and G >= 2 (kept in a side table keyed by the plan, so `GqaChatPlan` keeps its layout). On when Hkv >= 2
+  (`BLU_VJ2_HSUM_MINKV`), decided from the shape only, so packed == alone stays bit-exact.
+- Switches: `BLU_VJ2_HSUM=0`, `BLU_VJ2_HSUM_MINKV=<n>`, `BLU_VJ2_HSUM_SECT=<n>`; `BLU_VJ2_DKDV_F32=1` also turns idea 4
+  off. Tests, H200 timings (against the code of before and FA3 / FA4 / cuDNN) and the trainer A/Bs: `sft/README.md`
+  section 6.3.
 
 With no plan (`chats = nullptr`, the default in `include/autograd/operations/AttentionOps.h:133`), the attention
 runs the plain causal kernel, unchanged. This is the "design A" (the `cu_seqlens` way of FlashAttention varlen).

@@ -42,3 +42,6 @@ Test case `batch_131072_half_dropped` pins it; 65537 only drops ONE row so it is
 boundary marker, not a demonstration.
 
 See [[project_sft_loss_done]], [[project_sft_dead_code_removed]].
+
+**2026-11-02 update:** the third defect (stage-2 reduction cap, >65,536 rows dropped from the loss sum) was FIXED and pushed
+2026-10-30 (TI 6aac3bf, strided loop in sum_reduction_kernel, bit-identical <= 65,536). All three are fixed now.

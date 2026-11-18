@@ -356,3 +356,42 @@ The BluTrain attention backward adds dQ with atomics, like FlashAttention 3's de
 2. **Dense attention forward.** This is a tie with FlashAttention 3 (BluTrain takes 0.6% longer). One idea is still untried: compute the diagonal tiles first and keep the current loop order.
 
 Everything else in this report is at or ahead of the best library I could find.
+
+## 8. Update 2026-11-18: attention after the forward mixed units (2026-11-13) and the backward ideas 1, 2 and 4
+
+What changed since the sections above (details in `sft/README.md` section 6.3): the forward runs "mixed units" for chats with an odd number of 64-row tiles (2026-11-13); the backward skips the fully masked half of a block's first step (idea 1), writes a chat's first two dQ tiles directly in bf16 (idea 2) and adds the G query heads' dK / dV inside one block in fp32 (idea 4) (2026-11-18).
+
+Setup (not the one of the sections above): one H200 of box P035, one session; every contender in the same Nsight Systems session, 2 rounds in ABBA order; kernel times only. FlashAttention 3.0.0 (hopper), FlashAttention 4.0.0b34, cuDNN 9.24.0 through PyTorch 2.14.1; my code built with CUDA 13.4. Packed rows of 4,096 tokens exported by my test program, so every library gets the same chat list; causal, bf16, head dim 128, heads 18/6 and 4/2.
+
+| Layout | Chats | Chat lengths (tokens) | Average |
+| --- | --- | --- | --- |
+| mix, rows 0-7 (short chats) | 353 | 3 to 160 | 93 |
+| mix, rows 8-15 (medium chats) | 42 | 161 to 1,499 | 780 |
+| mix, rows 16-23 (long chats) | 8 | 4,096, one chat per row | 4,096 |
+| real, rows 0-7 | 41 | 27 to 3,004 (rows 0-7 of my packed SFT data) | 799 |
+| real, rows 8-15 | 36 | 40 to 2,660 (rows 15,256-15,263) | 910 |
+| real, rows 16-23 | 23 | 202 to 3,109 (rows 30,512-30,519) | 1,425 |
+
+Each number is BluTrain time / other time for one call (below 1.00 = BluTrain faster): forward / whole backward call / forward + backward. "Before" = my code of 2026-11-13 (the pushed code before this change).
+
+| Heads | Layout | vs FA3 | vs FA4 | vs cuDNN | vs before |
+| --- | --- | --- | --- | --- | --- |
+| 18/6 | mix, rows 0-7 | 0.816 / 0.365 / 0.428 | 0.470 / 0.381 / 0.402 | 0.567 / 0.388 / 0.424 | 1.019 / 0.491 / 0.570 |
+| 18/6 | mix, rows 8-15 | 0.916 / 0.762 / 0.795 | 0.778 / 0.790 / 0.787 | 0.821 / 0.756 / 0.771 | 1.024 / 0.823 / 0.865 |
+| 18/6 | mix, rows 16-23 | 0.966 / 0.916 / 0.928 | 0.886 / 0.914 / 0.907 | 0.839 / 0.804 / 0.812 | 1.013 / 0.949 / 0.964 |
+| 18/6 | real, rows 0-7 | 0.924 / 0.790 / 0.818 | 0.803 / 0.833 / 0.825 | 0.791 / 0.763 / 0.770 | 1.025 / 0.879 / 0.910 |
+| 18/6 | real, rows 8-15 | 0.948 / 0.778 / 0.815 | 0.829 / 0.813 / 0.817 | 0.837 / 0.765 / 0.782 | 1.058 / 0.853 / 0.896 |
+| 18/6 | real, rows 16-23 | 0.934 / 0.840 / 0.861 | 0.832 / 0.860 / 0.853 | 0.824 / 0.805 / 0.809 | 1.022 / 0.906 / 0.932 |
+| 4/2 | mix, rows 0-7 | 0.659 / 0.357 / 0.403 | 0.427 / 0.371 / 0.383 | 0.315 / 0.217 / 0.235 | 0.985 / 0.530 / 0.597 |
+| 4/2 | mix, rows 8-15 | 0.857 / 0.699 / 0.733 | 0.815 / 0.691 / 0.718 | 0.743 / 0.647 / 0.668 | 1.017 / 0.826 / 0.867 |
+| 4/2 | mix, rows 16-23 | 0.953 / 0.871 / 0.890 | 0.938 / 0.827 / 0.852 | 0.784 / 0.755 / 0.762 | 1.012 / 0.930 / 0.949 |
+| 4/2 | real, rows 0-7 | 0.841 / 0.810 / 0.817 | 0.802 / 0.831 / 0.824 | 0.710 / 0.764 / 0.752 | 0.987 / 0.975 / 0.977 |
+| 4/2 | real, rows 8-15 | 0.868 / 0.710 / 0.744 | 0.842 / 0.730 / 0.755 | 0.790 / 0.687 / 0.711 | 1.019 / 0.852 / 0.889 |
+| 4/2 | real, rows 16-23 | 0.872 / 0.848 / 0.854 | 0.838 / 0.847 / 0.845 | 0.740 / 0.790 / 0.778 | 1.000 / 0.974 / 0.980 |
+
+- BluTrain is faster than FA3, FA4 and cuDNN in all 12 cases (forward + backward 0.235-0.928 of their time).
+- Against my code of 2026-11-13: forward + backward 0.570-0.980; the backward call is faster in all 12 cases. The forward column (0.985-1.058) is the GPU clock, not the code: the forward source did not change; the denser new backward draws more power, so under the 700 W limit the GPU runs at a lower clock (for example 1,920 against 1,980 MHz); at equal clocks (heads 4/2, mix rows 0-7) the forward ratio is 0.985.
+- The biggest gains are on rows full of short chats (mix rows 0-7): there every library runs at a few % of the GPU's peak, and my gain comes from work the backward no longer does (no per-head dK / dV partials, no head-sum kernels; for a chat's first two tiles no fp32 dQ buffer and no convert).
+- Fairness checks on the same traces: all kernels of every library summed per call agree with the reported times within 1-2% (no hidden kernels on either side); the GPU timeline including every gap still has BluTrain ahead in all 48 comparisons.
+- Training (same GPU type, 30 steps, runs base / new / new / base, median step of steps 11-29): SFT 135M -1.7%, SFT 1.6B shape -0.7%; pretraining 1.6B (production config, 2 micro-batches per step instead of 32) -0.54%; losses within the run-to-run spread.
+- Logs and scripts: `profiling_reports/attn_bwd_p015_2026_11_17/` in my work folder (`box_results_p035/rivals20/final_table.txt`, `dk18/apples20.py`); the full write-up with every source line: `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` in my work docs.

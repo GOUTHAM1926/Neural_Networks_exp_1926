@@ -1,0 +1,71 @@
+diff --git a/include/autograd/backward/NormalizationBackward.h b/include/autograd/backward/NormalizationBackward.h
+index a8dfe9b..aa4bafc 100644
+--- a/include/autograd/backward/NormalizationBackward.h
++++ b/include/autograd/backward/NormalizationBackward.h
+@@ -59,11 +59,15 @@ private:
+ 
+ class FusedRMSRoPEBackward : public Node {
+ public:
++    // positions (v2 packing, added 2026-10-10): the optional int32 [B, T] per-token RoPE
++    // positions the forward used (invalid Tensor = none). Kept as a plain Tensor reference
++    // (no grad, never modified) so its buffer stays alive until this node runs.
+     FusedRMSRoPEBackward(
+         Tensor q, Tensor k, Tensor q_gamma, Tensor k_gamma,
+         Tensor cos_sin_cache, Tensor q_rstd, Tensor k_rstd,
+-        int64_t pos_offset = 0, bool interleaved = false)
+-        : pos_offset_(pos_offset), interleaved_(interleaved)
++        int64_t pos_offset = 0, bool interleaved = false,
++        Tensor positions = Tensor())
++        : pos_offset_(pos_offset), interleaved_(interleaved), positions_(positions)
+     {
+         q_ = SavedVariable(q, false);
+         k_ = SavedVariable(k, false);
+@@ -79,12 +83,48 @@ public:
+     void release_saved_variables() override {
+         q_.reset(); k_.reset(); q_gamma_.reset(); k_gamma_.reset();
+         cos_sin_cache_.reset(); q_rstd_.reset(); k_rstd_.reset();
++        positions_ = Tensor();   // v2: drop the reference with the other saved tensors
+     }
+ 
+ private:
+     SavedVariable q_, k_, q_gamma_, k_gamma_, cos_sin_cache_, q_rstd_, k_rstd_;
+     int64_t pos_offset_;
+     bool interleaved_;
++    Tensor positions_;   // v2: optional per-token positions [B, T] (invalid = none)
++};
++
++class FusedRMSRoPEBf16Backward : public Node {
++public:
++    // positions (added 2026-10-22): as in FusedRMSRoPEBackward above.
++    FusedRMSRoPEBf16Backward(
++        Tensor q, Tensor k, Tensor q_gamma, Tensor k_gamma,
++        Tensor cos_sin_cache, Tensor q_rstd, Tensor k_rstd,
++        int64_t pos_offset = 0, bool interleaved = false,
++        Tensor positions = Tensor())
++        : pos_offset_(pos_offset), interleaved_(interleaved), positions_(positions)
++    {
++        q_ = SavedVariable(q, false);
++        k_ = SavedVariable(k, false);
++        q_gamma_ = SavedVariable(q_gamma, false);
++        k_gamma_ = SavedVariable(k_gamma, false);
++        cos_sin_cache_ = SavedVariable(cos_sin_cache, false);
++        q_rstd_ = SavedVariable(q_rstd, false);
++        k_rstd_ = SavedVariable(k_rstd, false);
++    }
++    const char* name() const override { return "FusedRMSRoPEBf16Backward"; }
++    std::vector<Tensor> apply(std::vector<Tensor>&& grads) override;
++
++    void release_saved_variables() override {
++        q_.reset(); k_.reset(); q_gamma_.reset(); k_gamma_.reset();
++        cos_sin_cache_.reset(); q_rstd_.reset(); k_rstd_.reset();
++        positions_ = Tensor();
++    }
++
++private:
++    SavedVariable q_, k_, q_gamma_, k_gamma_, cos_sin_cache_, q_rstd_, k_rstd_;
++    int64_t pos_offset_;
++    bool interleaved_;
++    Tensor positions_;   // optional per-token positions [B, T] (invalid = none)
+ };
+ 
+ } // namespace autograd

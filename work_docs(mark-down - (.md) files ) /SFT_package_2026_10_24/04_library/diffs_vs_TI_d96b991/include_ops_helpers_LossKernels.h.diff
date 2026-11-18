@@ -1,0 +1,25 @@
+diff --git a/include/ops/helpers/LossKernels.h b/include/ops/helpers/LossKernels.h
+index 1cba406..cf729ad 100644
+--- a/include/ops/helpers/LossKernels.h
++++ b/include/ops/helpers/LossKernels.h
+@@ -154,6 +154,20 @@ void sparse_ce_backward_cuda_vec_with_stats(
+     int64_t ignore_index =
+         -1); // SFT : target value meaning "skip this row"; -1 = masking off
+ 
++/**
++ * @brief The same stats-aware backward, with the gradient written OVER the
++ * logits (logits_grad is read, then overwritten). No second [rows x vocab]
++ * buffer; the gradient is bit-identical to the out-of-place call's. Only for a
++ * caller that never needs the logits again (2026-10-17; since 2026-10-21 the
++ * only path autograd::sparse_cross_entropy_loss takes on the CUDA training path).
++ */
++template <typename T, typename Tidx>
++void sparse_ce_backward_cuda_vec_with_stats_inplace(
++    T *logits_grad, const Tidx *targets, const float *saved_max,
++    const float *saved_sum, int64_t batch_size, int64_t vocab_size,
++    const float *grad_output, const float *denom, cudaStream_t stream,
++    int64_t ignore_index = -1);
++
+ 
+ /**
+  * @brief Compute gradient for Sparse Cross Entropy with Logits.

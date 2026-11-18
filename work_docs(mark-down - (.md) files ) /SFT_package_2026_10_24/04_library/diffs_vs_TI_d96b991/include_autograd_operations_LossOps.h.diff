@@ -1,0 +1,18 @@
+diff --git a/include/autograd/operations/LossOps.h b/include/autograd/operations/LossOps.h
+index bc51816..2a506da 100644
+--- a/include/autograd/operations/LossOps.h
++++ b/include/autograd/operations/LossOps.h
+@@ -37,6 +37,13 @@ Tensor categorical_cross_entropy(const Tensor &predictions,
+  *        matching torchtitan's `loss = loss / global_valid_tokens`. Passing a
+  *        Tensor rather than a scalar keeps the count on device and avoids a
+  *        CPU sync in the training loop.
++ *
++ * The backward writes the gradient OVER the logits (CUDA, when the forward
++ * saved its stats -- the training path): the returned gradient shares the
++ * logits' storage, so no second [rows x vocab] buffer exists at the start of
++ * the backward pass (2026-10-17, the default and only behaviour since
++ * 2026-10-21). Bit-identical gradient. CONTRACT: do not read the logits after
++ * backward(); in every trainer they feed only this loss.
+  */
+ Tensor sparse_cross_entropy_loss(const Tensor &logits, const Tensor &targets,
+                                  int64_t ignore_index = -1,

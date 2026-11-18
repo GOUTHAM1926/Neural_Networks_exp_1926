@@ -1,0 +1,220 @@
+diff --git a/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.cu b/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.cu
+index 6897708..0f137c5 100644
+--- a/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.cu
++++ b/src/Kernels/cuda/attention/arch/GQA_bwd_vj1d_sm90.cu
+@@ -9,8 +9,9 @@
+ //  exactly as cuDNN's dQ is. For bit-identical dQ use the v44 path with
+ //  USE_DETERMINISTIC_DQ=1 instead (GQA_bwd_sm90.cu).
+ //
+-//  This is the DEFAULT backward on Hopper. USE_FLASH=1 selects the faster
+-//  non-deterministic Vj1 (GQA_bwd_vj1_sm90.cu) instead.
++//  The default Hopper backward until 2026-10-15; since then the default is Vj2
++//  (GQA_bwd_vj2_sm90.cu) and USE_VJ2=0 selects this one. USE_FLASH=1 selects
++//  the faster non-deterministic Vj1 (GQA_bwd_vj1_sm90.cu) instead.
+ //
+ //  Adapted from the standalone deliverable GQA_bwd_baseline.cu: the driver
+ //  main(), the PyTorch-reference loader and the benchmark harness were dropped,
+@@ -412,7 +413,21 @@ __global__ void gqa_dkdv_greduce(const bf16* __restrict__ partial, bf16* __restr
+     *reinterpret_cast<uint4*>(out + (((long)(b * Hkv + hkv) * S + s) * Dd + dg * 8)) = *reinterpret_cast<const uint4*>(o);
+ }
+ 
+-template<int Br, int Bc, int D>
++// v2 design B (one seg_start value per token, added 2026-10-10) was REMOVED on 2026-10-15: design A below is
++// faster (backward 3-5% on middle and long chats, 2026-10-10/12 measurements) and is the cu_seqlens way of
++// FlashAttention, TE/Megatron and TRL. The dense kernel is unchanged by both (SASS checked).
++// v2 design A (per-segment work list, added 2026-10-10), MODE_CHATS: one CTA per (key tile of the
++// plan, query head). tiles[blockIdx.x] = {b, t0, L, kt}: key tile kt of segment [t0, t0+L) of row b.
++// Every index is segment-relative, so the loop and the diagonal mask are the dense ones with S = L.
++// Rows past L (the tail of the segment's last q-tile): LSE = +inf and D = 0, so P = 0 and dS = 0 --
++// they add nothing to dK/dV, and their dQ rows (the next segment's) get exact zeros from the
++// reduce-add (FlashAttention 2 does the same, csrc/flash_attn/src/flash_bwd_kernel.h:411-413).
++// Keys past L sit only in the segment's last key tile; their dK/dV rows belong to the next segment,
++// so that tile stores its rows < L with plain stores instead of the 64-row TMA store (FA3 stores
++// all varlen dK/dV that way, hopper/epilogue_bwd.hpp:31,263-268).
++constexpr int MODE_DENSE = 0, MODE_CHATS = 1;
++
++template<int Br, int Bc, int D, int MODE>
+ __global__ void __launch_bounds__(128, 1)
+ gqa_bwd_vj1d(
+     const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
+@@ -420,12 +435,17 @@ gqa_bwd_vj1d(
+     const __grid_constant__ CUtensorMap tma_dV_st, const __grid_constant__ CUtensorMap tma_dK_st,
+     const __grid_constant__ CUtensorMap tma_dq_red,
+     const float* __restrict__ LSE, const float* __restrict__ Drow,
+-    int B, int Hq, int Hkv, int G, int S, float scale) {
+-    const int kt = blockIdx.x, hq = blockIdx.y, b = blockIdx.z;
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int4* __restrict__ tiles, bf16* __restrict__ dVp, bf16* __restrict__ dKp) {   // A only
++    constexpr bool CHATS  = (MODE == MODE_CHATS);
++    int kt = blockIdx.x, b = blockIdx.z, t0 = 0, L = 0;
++    if constexpr (CHATS) { const int4 tl = tiles[blockIdx.x]; b = tl.x; t0 = tl.y; L = tl.z; kt = tl.w; }
++    const int hq = blockIdx.y;
+     const int hkv = hq / G;
+     const int wtid = threadIdx.x;
+-    const int nQ = S / Br;
+-    const int k_row0 = kt * Bc;
++    int nQ = S / Br;
++    if constexpr (CHATS) nQ = (L + Br - 1) / Br;   // q-tiles of the segment
++    const int k_row0 = kt * Bc;                     // relative to the row (dense) or segment (A)
+     const float scale2 = scale * LOG2E_V29;
+ 
+     __shared__ __align__(128)  bf16  sK_sw[Bc*D], sV_sw[Bc*D], sQ_sw[Br*D], sdO_sw[Br*D];
+@@ -445,7 +465,7 @@ gqa_bwd_vj1d(
+     const uint64_t descDSmn = make_desc_sw128_MN(sDS);
+     const uint64_t descDSk  = make_desc_sw128_K (sDS);
+ 
+-    const uint32_t kvRow = (uint32_t)((b*Hkv+hkv)*S + k_row0);
++    const uint32_t kvRow = (uint32_t)((b*Hkv+hkv)*S + t0 + k_row0);   // t0: A only (else 0)
+     if (wtid == 0) {
+         mbar_expect_tx_v4(&mbar_kv, (uint32_t)(Bc*64*sizeof(bf16))*4);
+         tma_load_2d_v4(&tma_K, sK_sw,       &mbar_kv, 0,  kvRow);
+@@ -453,6 +473,7 @@ gqa_bwd_vj1d(
+         tma_load_2d_v4(&tma_V, sV_sw,       &mbar_kv, 0,  kvRow);
+         tma_load_2d_v4(&tma_V, sV_sw+64*64, &mbar_kv, 64, kvRow);
+     }
++
+     mbar_wait_v4(&mbar_kv, 0);
+ 
+     float dv[64], dk[64];
+@@ -464,8 +485,8 @@ gqa_bwd_vj1d(
+     const int nq_ = nQ - kt, nIter = nq_;   // Vj1 per-hq: ONE query head per CTA
+     auto issue = [&](int it) {
+         const int q = kt + it;
+-        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
+-        const long lb = (long)(b*Hq+hq)*S + (long)q*Br;
++        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + t0 + q*Br);
++        const long lb = (long)(b*Hq+hq)*S + t0 + (long)q*Br;
+         if (wtid == 0) {
+             mbar_expect_tx_v4(&mbar_qo, (uint32_t)(Br*D*sizeof(bf16))*2);
+             tma_load_2d_v4(&tma_Q,  sQ_sw,        &mbar_qo, 0,  qRow);
+@@ -473,17 +494,35 @@ gqa_bwd_vj1d(
+             tma_load_2d_v4(&tma_dO, sdO_sw,       &mbar_qo, 0,  qRow);
+             tma_load_2d_v4(&tma_dO, sdO_sw+64*64, &mbar_qo, 64, qRow);
+         }
++        if constexpr (CHATS) {   // A: rows past L -> P = 0 and dS = 0 (see the kernel comment)
++            if (wtid < Br) {
++                const bool in_seg = q * Br + wtid < L;
++                sLSE[wtid] = in_seg ? LSE[lb+wtid] : INFINITY;
++                sD[wtid]   = in_seg ? Drow[lb+wtid] : 0.0f;
++            }
++        } else {
+         if (wtid < Br) { sLSE[wtid] = LSE[lb+wtid]; sD[wtid] = Drow[lb+wtid]; }
++        }
+     };
+     uint32_t qopar = 0;
+     issue(0);                                          // prologue: load tile 0
++    // Tile 0's sLSE/sD are written by threads 0..63 in issue(0) and read by all 4 warps in
++    // fused_p_stsm before any other __syncthreads. mbar_qo does not order those writes: only thread 0 arrives
++    // on it, and it arrives before its own sLSE store. Tiles >= 1 are published by the store barrier after
++    // issue(it + 1) (the NOTE in the loop); tile 0 had nothing. Before 2026-10-10 there was no barrier here:
++    // a race on the first tile, correct only because the 256-B LSE load lands before the 32-KB Q/dO TMA and
++    // the S GEMM finish (SASS of the old kernel: sLSE STS at 0x1010, first LDS at 0x1ee0, no BAR between;
++    // v44 orders the same data with producer_sync + the d_ready mbarrier, GQA_bwd_sm90.cu:594-596,622).
++    // Cost: one barrier per CTA, not per tile. SASS change: +1 BAR.SYNC, nothing else in the arithmetic.
++    __syncthreads();
+ 
+     for (int it = 0; it < nIter; it++) {
+         const int q = kt + it;
+-        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + q*Br);
++        const uint32_t qRow = (uint32_t)((b*Hq+hq)*S + t0 + q*Br);
+         mbar_wait_v4(&mbar_qo, qopar); qopar ^= 1;
+         // NOTE: no post-load barrier — sQ visibility is guaranteed by mbar_wait (TMA completion), and
+         // sLSE/sD were written+published by the PREVIOUS tile's store-barrier (prefetch). One barrier saved.
++        // (Tile 0 has no previous tile: it is published by the __syncthreads() right after issue(0).)
+ 
+         // S = Q@Kᵀ and dP = dO@Vᵀ ISSUED TOGETHER (overlap on the tensor pipe), waited once — instead of
+         // S(wait)→fused_p→dP(wait) which serialized the two GEMMs. Attacks wait 1.28 + 44%-idle pipe.
+@@ -546,7 +585,10 @@ gqa_bwd_vj1d(
+     // Vj1d: one-writer bf16 PARTIAL store to [B,Hq,S,D] at hqRow (each per-hq CTA owns its own slot),
+     // then a fixed-order greduce sums the G heads DETERMINISTICALLY (no atomics) -> bit-identical dK/dV
+     // run-to-run, matching cuDNN's one-writer reproducibility. Price = the ~69us greduce pass.
+-    const uint32_t hqRow = (uint32_t)((b*Hq+hq)*S + k_row0);
++    const uint32_t hqRow = (uint32_t)((b*Hq+hq)*S + t0 + k_row0);
++    bool full_tile = true;
++    if constexpr (CHATS) full_tile = (k_row0 + Bc <= L);
++    if (full_tile) {
+     if (wtid == 0) {
+         tma_store_2d_v34(&tma_dV_st, sQ_sw + 0,    0,  hqRow);
+         tma_store_2d_v34(&tma_dV_st, sQ_sw + 4096, 64, hqRow);
+@@ -554,20 +596,34 @@ gqa_bwd_vj1d(
+         tma_store_2d_v34(&tma_dK_st, sdO_sw + 4096, 64, hqRow);
+         tma_store_commit_v34(); tma_store_wait_v34();
+     }
++    } else if constexpr (CHATS) {
++        // A, the segment's last key tile: copy only its rows < L. The staging above is plain
++        // row-major [64 rows][64 cols] per column half (stage_acc_bf16_s<64,64>), 8 bf16 per uint4.
++        const int nrow = L - k_row0;
++        for (int e = wtid; e < 4 * 64 * 8; e += 128) {   // 4 blocks (dV h0/h1, dK h0/h1) x 64 rows x 8
++            const int blk = e >> 9, r = (e >> 3) & 63, c8 = e & 7;
++            if (r >= nrow) continue;
++            const bf16* src = (blk < 2 ? sQ_sw : sdO_sw) + (blk & 1) * 4096 + r * 64 + c8 * 8;
++            bf16* dst = (blk < 2 ? dVp : dKp) + ((size_t)hqRow + r) * D + (blk & 1) * 64 + c8 * 8;
++            *reinterpret_cast<uint4*>(dst) = *reinterpret_cast<const uint4*>(src);
++        }
++    }
+ }
+ 
+ #else   // ---- non-Hopper: keep the translation unit compilable ----
+ // Stubs so the host pass still sees the kernels it launches. Parameter types
+ // must match the Hopper definitions exactly (including __restrict__), or the
+ // stub fails to match the template it is meant to instantiate.
+-template<int Br, int Bc, int D>
++constexpr int MODE_DENSE = 0, MODE_CHATS = 1;
++template<int Br, int Bc, int D, int MODE>
+ __global__ void gqa_bwd_vj1d(
+     const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
+     const __grid_constant__ CUtensorMap tma_Q,  const __grid_constant__ CUtensorMap tma_dO,
+     const __grid_constant__ CUtensorMap tma_dV_st, const __grid_constant__ CUtensorMap tma_dK_st,
+     const __grid_constant__ CUtensorMap tma_dq_red,
+     const float* __restrict__ LSE, const float* __restrict__ Drow,
+-    int B, int Hq, int Hkv, int G, int S, float scale) {}
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int4* __restrict__ tiles, bf16* __restrict__ dVp, bf16* __restrict__ dKp) {}
+ __global__ void gqa_dkdv_greduce(const bf16* __restrict__ partial, bf16* __restrict__ out,
+                                  int Hq, int Hkv, int G, int S) {}
+ __global__ void compute_drowsum_v22(
+@@ -582,7 +638,8 @@ void launch_gqa_backward_vj1d(
+     const bf16 *d_Q, const bf16 *d_K, const bf16 *d_V, const bf16 *d_O,
+     const bf16 *d_dO, const float *d_LSE,
+     bf16 *d_dQ, bf16 *d_dK, bf16 *d_dV,
+-    int B, int Hq, int Hkv, int G, int S, float scale) {
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int32_t *d_chat_tiles, int n_chat_tiles) {
+     auto make_tma_sw128 = [&](const bf16* ptr, uint64_t total_rows, uint32_t tile_rows) {
+         CUtensorMap desc{}; uint64_t gS[2]={(uint64_t)D,total_rows}; uint64_t gT[1]={(uint64_t)D*sizeof(bf16)};
+         uint32_t bx[2]={64u,tile_rows}, eS[2]={1,1};
+@@ -637,7 +694,13 @@ void launch_gqa_backward_vj1d(
+     compute_drowsum_v22<<<(unsigned)dGrid,dBlock>>>(d_dO,d_O,d_Drow,drowN);
+ 
+     dim3 GRID(S/Bc, Hq, B);   // Vj1 per-hq: 3x the CTAs (Hq not Hkv) to fill the GPU at low B
+-    gqa_bwd_vj1d<Br,Bc,D><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale);
++    // d_chat_tiles != nullptr -> design A: one CTA per (plan key tile, query head).
++    if (d_chat_tiles) {
++        dim3 GRID_A(n_chat_tiles, Hq, 1);
++        gqa_bwd_vj1d<Br,Bc,D,MODE_CHATS><<<GRID_A,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale,
++            reinterpret_cast<const int4*>(d_chat_tiles), d_dVp, d_dKp);
++    } else
++        gqa_bwd_vj1d<Br,Bc,D,MODE_DENSE><<<GRID,128>>>(tK,tV,tQ,tdO,tdV,tdK,tRed,d_LSE,d_Drow,B,Hq,Hkv,G,S,scale,nullptr,nullptr,nullptr);
+     // fixed-order deterministic G-head reduction (no atomics) -> bit-identical dK/dV.
+     dim3 grGRID(S/8, Hkv, B);
+     gqa_dkdv_greduce<<<grGRID,128>>>(d_dVp, d_dV, Hq, Hkv, G, S);
+@@ -651,15 +714,17 @@ void launch_gqa_backward_vj1d(
+ // ---------------------------------------------------------------------------
+ // Library-facing entry point. Called from GQA_bwd_generic.cu only when the
+ // running GPU is Hopper AND the shape satisfies the d128 tiling constraints.
++// chat_tiles/n_chat_tiles: the bwd_tiles list of a GqaChatPlan (design A), or nullptr = dense.
+ // ---------------------------------------------------------------------------
+ void gqa_vj1d_causal_bwd_launch_d128(
+     const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
+     const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* LSE,
+     __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
+-    int B, int Hq, int Hkv, int G, int S, float scale)
++    int B, int Hq, int Hkv, int G, int S, float scale,
++    const int32_t* chat_tiles, int n_chat_tiles)
+ {
+     gqa_bwd_vj1d::launch_gqa_backward_vj1d<64, 64, 128>(
+-        Q, K, V, O, dO, LSE, dQ, dK, dV, B, Hq, Hkv, G, S, scale);
++        Q, K, V, O, dO, LSE, dQ, dK, dV, B, Hq, Hkv, G, S, scale, chat_tiles, n_chat_tiles);
+ }
+ 
+ } // namespace cuda
