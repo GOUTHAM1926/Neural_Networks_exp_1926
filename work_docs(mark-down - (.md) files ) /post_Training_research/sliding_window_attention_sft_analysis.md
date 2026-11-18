@@ -169,6 +169,14 @@ seed-pair noise is a tie.
 | 5 | decision; results written here as section 7 | - | - |
 | 6 | only if SWA stays in SFT: optimize; race FA3 `window_size` / FA4 / FlexAttention on pretraining rows and SFT rows; push | 1 | later |
 
+Note (2026-11-18): the pushed tree changed after this plan was written: the attention forward has "mixed units"
+(2026-11-13: an idle compute group runs the same tile of another query head of the same KV head) and the backward has
+ideas 1, 2 and 4 (2026-11-18: the fully masked half of a block's first step is skipped; a chat's first two dQ tiles are
+written directly; one block adds the query heads of a KV head inside itself). TI 334b244, BluTrain c52ca81. So step 2
+merges `b913f32` (written on the Vj2 and v62 of 2026-11-04) onto these new kernels, and the window has to be applied
+and tested in each new path: the shared tiles of mixed units, the per-KV-head blocks of idea 4, the skipped half of
+idea 1 (with a window, the masked part of a step is different) and the direct dQ tiles of idea 2.
+
 - **Where the arm time comes from:** for the 135M, stage 1 measured 0.18 s fixed + 0.0129 s per row per step. The
   350M needs about 2.6x the compute per token, which gives ~1.1-1.2 s per step. The smoke run replaces this
   estimate.

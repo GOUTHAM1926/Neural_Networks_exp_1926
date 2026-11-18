@@ -395,3 +395,29 @@ Each number is BluTrain time / other time for one call (below 1.00 = BluTrain fa
 - Fairness checks on the same traces: all kernels of every library summed per call agree with the reported times within 1-2% (no hidden kernels on either side); the GPU timeline including every gap still has BluTrain ahead in all 48 comparisons.
 - Training (same GPU type, 30 steps, runs base / new / new / base, median step of steps 11-29): SFT 135M -1.7%, SFT 1.6B shape -0.7%; pretraining 1.6B (production config, 2 micro-batches per step instead of 32) -0.54%; losses within the run-to-run spread.
 - Logs and scripts: `profiling_reports/attn_bwd_p015_2026_11_17/` in my work folder (`box_results_p035/rivals20/final_table.txt`, `dk18/apples20.py`); the full write-up with every source line: `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` in my work docs.
+
+### 8.1 The forward change of 2026-11-13 (mixed units), against the forward before it
+
+What it does: a forward work unit is one chat x one query head x a pair of 64-row query tiles, one tile for each of the two compute groups of the kernel. In a chat with an odd number of 64-row tiles the second group of the last pair had no rows and only waited. With mixed units it runs the same tile of another query head of the same KV head (same K and V). The plan uses mixed units only when at least 2% of its units would share a tile (the "2% rule"); otherwise the plan and the kernel are the ones of before.
+
+Setup: one H200 (box P032), heads 18/6, head dim 128, bf16, rows of 4,096 tokens, kernel times; my code with the change against my code of the same day without it, in the same session (3 rounds for the chat-length sweep, 8 rounds for the real rows). "Forward" = the forward kernel; the backward did not change (its column shows the run-to-run noise).
+
+| Every chat in the row is (tokens) | 64-row tiles per chat | Forward, new / before - 1 | Backward (unchanged code) |
+| --- | --- | --- | --- |
+| 16 | 1 (odd) | -25.6% | +0.03% |
+| 32 | 1 (odd) | -24.9% | +0.09% |
+| 64 | 1 (odd) | -21.3% | +0.19% |
+| 128 | 2 (even) | -0.05% (plain kernel) | -0.09% |
+| 160 | 3 (odd) | -10.1% | +0.02% |
+| 192 | 3 (odd) | -8.3% | +0.24% |
+| 320 | 5 (odd) | -7.2% | +0.13% |
+| 704 | 11 (odd) | -3.9% | +0.11% |
+| 1,088 | 17 (odd) | -3.0% | -0.01% |
+| 2,112 | 33 (odd) | -1.1% | +0.27% |
+| real SFT rows, group 1 / 2 / 3 | mixed | -1.33% / -1.32% / -0.52% | +0.29% / +0.04% / +0.09% |
+
+- The gain is at every chat length with an odd number of 64-row tiles: from -26% (16 tokens) to -1% (2,112 tokens); at even counts the plain kernel runs and nothing changes.
+- The one case where mixed units cost time: rows of 96-token chats that end in one 64-token leftover chat (+0.92% forward), because that one chat sent the whole plan to the mixed-unit kernel while almost nothing could share. The 2% rule was added for exactly this: such a plan now keeps the kernel of before.
+- Forward + backward together the change is smaller (on short chats the backward is the larger part): about -5.3% at 16 tokens, -3.6% at 64 tokens, and no measurable change of the SFT step on real data.
+- Correctness: quick test suite 280 / 0 at heads 18/6 (with the change, and with it switched off by `BLU_GQA_MX=0`) and 273 / 0 at heads 4/2; full suite 333 / 0 at heads 18/6; every packed chat still gives the same bits as the same chat alone.
+- Records: work log §45.194-45.195; the forward part of `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` (sections 4.4-4.8).

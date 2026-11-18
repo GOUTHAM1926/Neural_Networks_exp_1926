@@ -585,6 +585,10 @@ B x NP / U). The row length is read from the data's `meta.json`; an `SFT_T` give
 - The SFT backward is not bit-identical run to run (step-0 grad norm varies by about 1e-4 between identical runs;
   2026-10-30); which kernel is not found yet. Still so on 2026-11-07, after the deterministic split-K fix below:
   2.5158 vs 2.5157 at 4,096 tokens on an H200 (two identical runs).
+  2026-11-18: one known source is the attention backward's dQ: it is added in fp32 with reduce-add, as in FA3's
+  default backward, so its last bits can change from run to run (O, LSE, dK and dV repeat bit for bit). Since
+  2026-11-18 a chat's first two dQ tiles are written directly by one block and repeat exactly; the other tiles still
+  vary.
 - lm_head + loss on the trained tokens only (TRL / Unsloth / Apple CCE do this; same math, less work; work log §33,
   §45.34): built and measured 2026-10-31 (work log §45.129-45.131). **On this branch since 2026-11-03 as a switch, OFF
   by default:** `BLU_SFT_TRAINED_ROWS=1` (BluTrain 7184fe1; TI d18f820, which also brought BluBLAS 297f372). Two
@@ -623,6 +627,10 @@ B x NP / U). The row length is read from the data's `meta.json`; an `SFT_T` give
 - Generic dQ computes dS from the bf16-rounded P: one known case at head size 128 (1.049x the error limit) and one at head
   size 64 (1.175x, `row 0 @2688 L=64`); packed == alone is still bit-exact. Fix: dS from the fp32 P, as Vj2 and FA3 do.
 - B300: packed SFT rows are not supported (causal attention there is head size 64 only).
+- Attention backward idea 4 (head sums inside the block, 2026-11-18, section 6.3) needs at least 2 KV heads in the
+  call (`BLU_VJ2_HSUM_MINKV`, default 2). With context parallelism CP=2 on the 135M model each GPU holds 1 KV head, so
+  those calls use the per-query-head path (ideas 1 and 2 still on) and print one "idea 4 OFF" line once per process.
+  The 1.6B shape with CP=2 (3 KV heads per GPU) keeps idea 4.
 - Context parallelism (section 5.2, 2026-11-07): tested with CP=2 on 2 GPUs (135M at 4k-128k, the 1.6B shape at 4k
   and 64k). Not tested yet: CP together with data parallelism (more GPUs than U). U must divide the KV heads, so more
   CP GPUs than KV heads (e.g. U = 4 on the 135M) is not possible with plain Ulysses (copies of the KV heads or Adhitya's
