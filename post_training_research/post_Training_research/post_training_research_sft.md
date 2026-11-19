@@ -4,6 +4,29 @@
 
 This doc covers my SFT work : what SFT is and why it's needed, how it works in BluTrain , what I changed in the kernels , and what I planned to do next , and I've put the source next to every number , so that anyone can check it and the papers i referred , with links also , are listed at the end and i explained each and every topic from basics , so that anyone reading this can understand on my intentions ,,, , read the whole doc patiently ,,, ,
 
+> **Update (2026-11-19).** This copy shows the state of 2026-10-15. (The Word file "PostTraining - Research and
+> Planning.docx" in the work docs is an older export of the same Google Doc, from 2026-10-07; this Markdown copy is the
+> newer one.) What changed for SFT in BluTrain since then, in order:
+>
+> - 2026-10-15 to 10-22: the packed SFT pipeline built and proven end to end; from 2026-10-22 SFT uses packed rows only.
+>   The Tülu 3 run (1.7B, 1x H200, 2026-10-22/23): 11,590 steps, val loss 1.1757 -> 0.8501, 1.88 s per step, 52% MFU.
+> - 2026-10-16 to 10-21: the attention rebuilt (forward QPU, backward Vj2): forward + backward faster than FA3, FA4 and
+>   cuDNN on packed rows. The loss kernels: 16-byte loads, the gradient written over the logits (-5.9 GiB).
+> - 2026-10-22 to 10-24: per-chat positions in the fused bf16 RMSNorm + RoPE, its backward 2-4x faster.
+> - 2026-10-27/28: SFT pushed to the branch `dist_side_gautam_lottn`; the 135M base model's tokenizer and chat templates.
+> - 2026-10-30/31: the loss sum past 65,536 rows fixed; `--workers N`; chats longer than the row dropped (the only
+>   method); every SFT kernel fixed and tested up to 131,072 tokens per row.
+> - 2026-11-03 to 11-05: lm_head + loss on the trained rows only (a switch, off by default); trainer speed changes:
+>   SFT step 13.7% faster (135M) and 1.7% faster (1.6B) than the code of 2026-11-03.
+> - 2026-11-06/07: context parallelism (one row shared by several GPUs) and an autograd gradient bug it found.
+> - 2026-11-13: attention forward "mixed units"; 2026-11-18: attention backward ideas 1, 2 and 4 (faster than FA3, FA4
+>   and cuDNN in all 12 measured cases).
+>
+> Where the current state is written: `SFT_package_2026_10_24/all_sft_optimizations.md` (every optimization with its
+> before / after numbers), BluTrain `sft/README.md` (how SFT works in BluTrain today), `sft_kernel_benchmarks.md`
+> (the numbers against other libraries) and `sft_work_documentation.md` (every day's work). Sections 3 and 8 below
+> describe the trainer and the plan of 2026-10-07 to 10-15.
+
 ## Summary :
 
 **What SFT is:** After pretraining, a model (the "base model") can only continue text, if you ask it a question, it may write more questions, or never stop, SFT (supervised fine-tuning) is more training on examples of a prompt and a good answer, so the model learns to answer, the loss is the same next-token cross-entropy used in pretraining, the only difference is that the loss is counted on the answer tokens, and the prompt and padding are ignored.
@@ -351,6 +374,8 @@ Both are from Ai2(allen institute of ai) and publish every dataset , setting and
 | loss | plain masked cross-entropy; chunked cross-entropy (less memory) ; DFT ; proximal SFT | plain masked cross-entropy |
 
 ## 3. How SFT runs in BluTrain :
+
+> (2026-11-19: this section is the trainer of 2026-10-15. How it runs today: BluTrain `sft/README.md` sections 2-6.)
 
 ### 3.1 The whole flow :
 
@@ -980,6 +1005,8 @@ The unseen set is the tool that tells everyone how good the model actually is. B
 **Source: Tülu 3 (Ai2, 2024), evaluation section** : Lambert et al., Tülu 3: Pushing Frontiers in Open Language Model Post-Training, 2024. <https://arxiv.org/abs/2411.15124>
 
 ## 8. First SFT runs in BluTrain : what I built , the tests , the results , Muon vs AdamW , and the plan (6 and 7 Oct)
+
+> (2026-11-19: the runs and the plan of 6-7 October. What was built after them, with before / after numbers: `all_sft_optimizations.md`, section 3 timeline.)
 
 ### 8.1 What I built
 
