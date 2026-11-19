@@ -126,7 +126,7 @@ mindmap
         backward ideas 1, 2 and 4
       Long rows up to 131,072 tokens
     Libraries
-      BluBLAS GEMM tile tables, split-K, a dozen GEMM bugs
+      BluBLAS GEMM tile tables, split-K, GEMM bug fixes
       autograd contiguous fix
 ```
 
@@ -138,7 +138,7 @@ files -> SftDataLoader.h: B rows + the chat list of each row                  ->
 micro-batch -> forward:
    embedding
    per layer: RMSNorm -> q, k, v projections -> QK-norm + RoPE with per-chat positions [4.7]
-              -> attention with the chat list [4.4 - 4.6, 4.16, 4.17] -> output projection
+              -> attention with the chat list [4.4 - 4.6, 4.15, 4.16] -> output projection
               -> RMSNorm -> SwiGLU
    lm_head [4.11] -> loss with label 65535 and the step's denominator [4.1, 4.2, 4.10]
 backward: the same in reverse (most of the attention work is here)
@@ -169,8 +169,8 @@ optimizer: Muon (matrices) + AdamW (the rest), ZeRO over the GPUs [4.12]
 | 11-03 to 11-05 | trainer | Muon on the GPU and batched, fewer copies / zeroings / waits | SFT 135M -13.7%, 1.6B -1.7% step than the code of 11-03 | 4.12 |
 | 11-03 to 11-05 | BluBLAS | GEMM and addmm bugs fixed; split-K made repeatable | 654 of 6,644 GEMM cases failed before, 0 after | 4.13 |
 | 11-06 / 11-07 | trainer | context parallelism; a gradient bug in autograd fixed | 64k / 128k rows 1.58x / 1.65x faster than one GPU | 4.14 |
-| 11-13 | attention | forward "mixed units" + the 2% rule | forward -21 to -26% on rows of chats of 64 tokens or less | 4.16 |
-| 11-14 to 11-18 | attention | backward ideas 1, 2 and 4 | forward + backward 0.570-0.980 of the code before; faster than FA3 / FA4 / cuDNN in all 12 cases | 4.17 |
+| 11-13 | attention | forward "mixed units" + the 2% rule | forward -21 to -26% on rows of chats of 64 tokens or less | 4.15 |
+| 11-14 to 11-18 | attention | backward ideas 1, 2 and 4 | forward + backward 0.570-0.980 of the code before; faster than FA3 / FA4 / cuDNN in all 12 cases | 4.16 |
 
 ---
 
@@ -462,3 +462,469 @@ within the old kernels' own run-to-run noise.
 **Record.** Work log §45.14-§45.62; `attention_kernel_optimizations_h200_2026_10_10_to_2026_10_21.md` parts 2-4.
 
 ---
+
+### 4.7 RoPE: per-chat positions, then a 2-4x faster fused backward (2026-10-10 and 2026-10-22 to 10-24)
+
+**Why.** RoPE tells the model where each token sits. In a packed row the second chat starts at, say, token 1,000 of the
+row, but inside its chat its first token must be position 0, exactly as if it were alone. So RoPE needs a position for
+every token instead of "position = place in the row".
+
+**Before.** The RoPE kernels took one number (`pos_offset`) and used position = t + pos_offset for token t.
+
+**Change 1: positions per token (2026-10-10).** Every RoPE kernel got an optional int32 list of positions [B, T] and a
+template flag `HAS_POS`. Without positions (pretraining) the kernel is the original one, unchanged (checked with a SASS
+diff). With positions it reads `positions[b*T + t]`. The backward rotates by the same saved positions.
+
+```
+row:        [ chat 1: 1,000 tokens ][ chat 2: 2,500 tokens ][ pad: 596 ]
+positions:    0 1 2 ... 999           0 1 2 ... 2,499         0 1 ... 595
+```
+
+**Change 2: the same in the fused bf16 RMSNorm + RoPE kernel the trainers use (2026-10-22).** Kruthik's fused bf16
+kernel (QK-norm and RoPE in one pass) got the same positions, so SFT runs the fast fused kernel too.
+
+**Change 3: its backward made 2-4x faster (2026-10-23/24).** The backward now keeps several tokens in flight with
+asynchronous copies (cp.async), and the q and k gamma-gradient sums run in one launch. Results are **bit-identical** to
+the original kernel in all 8 outputs, in 44 of 44 test cases, on H200 and RTX 3060.
+
+| Backward + gamma reduce per call, H200 | Kruthik's original | new | new against original |
+| --- | --- | --- | --- |
+| pretraining (no positions), B 4 | 169.0 µs | 104.4 µs | 1.62x faster |
+| SFT (packed positions), B 4 | 253.3 µs | 109.2 µs | 2.32x faster |
+| SFT (packed positions), B 8 | 550.7 µs | 202.6 µs | 2.72x faster |
+
+Against torch.compile, Quack, Liger, FlashAttention's kernel and plain PyTorch: fastest in 16 of 16 cases (forward,
+backward and total; margins 1.06-1.52x), and the most exact. At the SFT shape (heads 18/6, B 4): 176.0 µs against
+243.2 µs for torch.compile.
+
+**In the real trainer** (nsys, then whole steps):
+
+| | SFT step (B 4 x 5 micro-batches) | pretraining step (B 8 x 32) |
+| --- | --- | --- |
+| RoPE backward + reduce per step, old -> new | 38.0 -> 16.4 ms | 355.3 -> 176.0 ms |
+| whole step, old -> new | 1,881.0 -> 1,868.2 ms (0.68% faster) | 21,182 -> 21,078 ms (0.49% faster) |
+
+The step gains less than the kernel saves because the H200 runs at its 700 W power limit: the old slow RoPE kernel was a
+low-power gap inside the backward; without it the matrix kernels around it run at a slightly lower clock. About 60% of
+the kernel saving reaches the step.
+
+**Pretraining.** Same kernel, same gain (0.49% per step).
+
+**Record.** Work log §40.4, §45.66, §45.68, §45.78-§45.91; `sft/README.md` section 6.2; test
+`Tests/kernel_tests/test_rope_positions.cu`.
+
+---
+
+### 4.8 Correct attention on every other GPU (2026-10-24)
+
+**Why.** Colleagues run on Ada (RTX 6000 Ada), RTX 30xx and A100 GPUs too.
+
+**Before.** On any GPU other than H100 / H200 there was no correct causal attention for our model: head size 128 stopped
+with an error, and head size 64 silently ran WITHOUT the causal mask (every token saw the future).
+
+**Change.** The portable attention kernels got the causal mask and the chat plan (packed rows), forward and backward.
+The Hopper files were not touched.
+
+**After.** Correct on every GPU except B300 (packed rows are refused there; its causal attention has head size 64 only).
+Not fast yet (0.9 TFLOP/s on an RTX 3060); a FlashAttention-2-style rewrite is an open item.
+
+**Record.** Work log §45.92, §45.94; `sft/README.md` sections 6.3 and 9.
+
+---
+
+### 4.9 Long rows: every SFT kernel from 4,096 to 131,072 tokens (2026-10-31)
+
+**Why.** Long-context SFT needs rows longer than 4,096 tokens. Many kernels had limits that are invisible at 4,096 and
+break silently above some size.
+
+**What was wrong, and the fix:**
+
+| Kernel | What broke | Fix |
+| --- | --- | --- |
+| RoPE tables | rows in grid y (at most 65,535 blocks): at T >= 65,536 the table was never built, training rotated with an unfilled table | flat grid for the tables; token in grid x for the per-token kernels; launch errors now stop the run |
+| loss (validation path) backward | rows in grid y: failed at >= 65,536 rows | (row, part) in grid x |
+| `contiguous()` | 32-bit indexes: past 2^31 elements (the logits at 128k tokens = 6.46e9 values) | split into pieces below 2^31, as PyTorch does |
+| embedding | tokens in grid y: failed above 524,280 tokens per call | tokens in grid x |
+| SwiGLU on sm120 | rows in grid y (at most 262,140); and an old bug: for a hidden size not divisible by 4 the fp32 vector kernel used wrong row strides | capped grid + row loop; vector kernel only when it is safe |
+
+Two related decisions the same day:
+
+- **Fast math only in the loss file.** `--use_fast_math` was on for every kernel; now only `LossKernels.cu` has it, and
+  every other kernel uses exact math (step +0.4%, within noise).
+- **fp32 dK / dV partials in the attention backward: an option, off by default** (`BLU_VJ2_DKDV_F32=1`). More exact,
+  but the attention backward +3-14% and the step +0.8%. Since 2026-11-18 the default backward already adds the query
+  heads in fp32 (section 4.16), and this switch also turns that off.
+
+**How it was checked.** Every kernel the 135M trainer runs, forward and backward, against references at 4k-131k; a new
+test group G14 (real packed rows at any T against a blocked fp64 reference); then the 135M trainer at 4k, 8k, 16k, 32k,
+64k and 128k tokens per row.
+
+**Pretraining.** The same kernels; pretraining at long context is protected by the same fixes.
+
+**Record.** Work log §45.113-§45.126; `sft/README.md` section 6.4.
+
+---
+
+### 4.10 The loss sum counted only the first 65,536 rows (2026-10-30)
+
+**Why.** Found while testing long rows: the printed loss was too small when one loss call had more than 65,536 tokens.
+
+**Before.** The loss forward adds the per-token losses in two stages: one partial sum per 256 rows, then ONE block of 256
+threads adds the partials. Each thread read one partial, so only 256 x 256 = 65,536 rows reached the loss, while the
+denominator counted all rows. The printed loss read about true x 65,536 / N (0.80x at 81,920 tokens per GPU, 0.50x at
+131,072). The gradients were never affected (the backward does not use the summed loss).
+
+**Change.** One load per thread while the grid covers all rows (so every sum up to 65,536 rows is bit-identical to
+before), otherwise a loop over all partials. Chosen from ten ways measured on an H200 (an always-on loop, PyTorch's
+one-block loop, multi-pass, atomics, CUB, and others): the only one with today's bits, the same result every run, no new
+memory and today's speed.
+
+**After.** 154 of 154 test cases (16 failed before). Trainer val loss at 81,920 tokens: 1.3007 before, 1.6068 after; a
+numpy reference gives 1.6063.
+
+**Pretraining.** The bug was in the library since at least 2026-04, so pretraining was affected too: any run with more
+than 65,536 tokens per GPU in one loss call printed a wrong loss.
+
+**Record.** Work log §45.108; `sft/README.md` section 6.1; `loss_calculation_in_pretraining_and_sft.md` section 12b.
+
+---
+
+### 4.11 lm_head + loss on the trained rows only (2026-10-31 to 2026-11-03)
+
+**Why.** The lm_head computes logits for every token, but in SFT about 77% of the tokens are prompt or pad and have no
+loss. TRL, Unsloth and Apple's CCE compute the lm_head only where there is a loss.
+
+**Change.** A switch, `BLU_SFT_TRAINED_ROWS=1`: the trainer gathers the rows of the trained tokens, runs the lm_head and
+the loss only on them, and scatters the gradient back. Same math, less work.
+
+**A library problem it uncovered (fixed).** Alone, lm_head + loss got 21-43% faster, but in the trainer the gain did not
+show. The cause was in BluBLAS: its table of tile orders was cached per grid size with a cudaMalloc and a copy that waits
+for ALL queued GPU work, once for every new grid size. With trained rows only, the lm_head backward GEMM has a new row
+count every micro-batch, so the CPU waited once per micro-batch. Fix (BluBLAS 297f372): a tall table depends only on the
+column count, so one table per (GPU, column count) serves every row count; it is copied without waiting and never freed.
+The wait went from 20 ms to 22-29 µs per call; the kernels are byte-identical.
+
+**After.** In the trainer: the same loss, lm_head + loss -11% than all rows (about 0.7% of the step). It is on the
+branch since 2026-11-03, OFF by default while its open points are open (a new logits block when a micro-batch has more
+trained tokens than ever before; not tested with 0 trained tokens or with more than one GPU).
+
+**Pretraining.** Nothing changes (every token is trained). The BluBLAS fix helps any training whose GEMM shapes change.
+
+**Record.** Work log §45.129-§45.137; `sft/README.md` section 9.
+
+---
+
+### 4.12 The trainer step: Muon on the GPU, fewer copies, zeroings, launches and waits (2026-11-03 to 2026-11-05)
+
+**Why.** An nsys profile of the SFT step (2026-11-05, pushed code) showed the optimizer part of every step full of small
+kernels and CPU waits: 14 stream synchronizations, 379 memsets, 525 device copies and 1,185 launches in one 15.3 ms
+optimizer window. I listed every CUDA call the trainer makes and judged each one (needed or not, cheaper way, risk).
+
+**The changes** (they are in the code SFT shares with pretraining, so pretraining got them too):
+
+| Change | Commits | Measured |
+| --- | --- | --- |
+| GEMM tile-order tables built on the GPU (no CPU wait for a new GEMM shape) | BluBLAS 297f372 | new-shape wait 20 ms -> 3.7-5.2 µs |
+| Muon's Newton-Schulz guard and ratio decided on the GPU | TI d98d6ee, BluTrain 37514ff | 222 CPU waits per step removed (135M); step -5.4% |
+| `empty_cache` at step 0 only (not also at step 5) | BluTrain e9e310c | one slow refill step removed (-6 s per run at B 4) |
+| batched Newton-Schulz (same-shape matrices in one batched GEMM) | TI dbb4e5f, BluTrain 96f135c, BluBLAS 0b552f0 | 222-matrix Newton-Schulz 21.6 -> 4.8 ms; step -13.6% (1 GPU); bit-identical weights |
+| `get_arch()` once per GPU | TI 963df8b | same speed on CUDA 13; removes ~1 ms per call where the CUDA stack does not cache it |
+| `zero_grad` as one multi-tensor launch | BluTrain 084114b | memsets per step 395 -> 23; step -0.70 ms |
+| parameter scatter / gradient staging as a few multi-tensor copies | TI 05e1d6c, BluTrain 07600db | SFT copy lists 4.5-8.7x faster (e.g. 770 -> 157 µs) |
+| Muon's per-matrix prep (momentum, weight decay, gradient norm) batched | TI e2af706, BluTrain 1bec9af | about 1,000 fewer launches per SFT step; step 108.0 -> 105.3 ms (-2.6%) |
+| no CPU wait after each multi-tensor norm / scale / Adam | TI 66a32a7, BluTrain 476808b | stream syncs 14 -> 7 per step |
+| CPU waits that ordered nothing removed | BluTrain accc6c8 | waits per SFT step 10 -> 5 |
+
+Each change was measured alone, against the same code without it (the "step -x%" values); then all of them together.
+
+**A real bug found on the way.** The multi-tensor Adam / scale / norm kernels shared ONE pinned upload buffer, so a second
+call could overwrite the first call's tensor list before the GPU read it: wrong results, no error (shown 3 times out of
+3). The waits after every call had hidden it. Now the list travels inside the launch, as in PyTorch's
+`multi_tensor_apply` (results bit-identical on H100 / H200).
+
+**After, all together** (the code of 2026-11-03 against the code of 2026-11-05, 36 settings, 30 steps each, median of
+steps 11-29):
+
+| | 135M | 1.6B |
+| --- | --- | --- |
+| SFT step | -13.7% on average (best -31.8%) | -1.7% |
+| pretraining step | -11.8% | -1.3% |
+
+The same losses, 0 errors. The small model gains most because its optimizer part (many small matrices) is a large share
+of its step. Against preproduction-135M (the 900B base model's config, 2026-11-06): SFT step 348.7 -> 309.1 ms (-11.4%).
+
+**A setting shared with pretraining.** SFT runs with the production pretraining YAML settings, including the embedding
+backward `segmented` (sort the tokens, add each embedding row in fp32, write it once; deterministic).
+
+**Record.** Work log §45.138-§45.175; `sft/README.md` section 5.1.
+
+---
+
+### 4.13 BluBLAS: wrong GEMM results fixed, and repeatable split-K (2026-11-02 to 2026-11-11)
+
+**Why.** While testing the changes above, the BluBLAS test suites showed wrong results in some GEMM and addmm cases that
+our normal shapes do not hit, but other shapes do.
+
+**Changes:**
+
+- **GEMM and addmm bugs fixed** (each with its root cause and a permanent fix, written in the BluBLAS commits). On
+  2x H200: 6,644 GEMM cases and 13,302 addmm cases, 0 failed (with the old library 654 of the 6,644 GEMM cases failed);
+  7,220 cases, 0 failed on an RTX 3060.
+- **A per-batch bias in addmm** ("FullBatched"), needed by the batched Newton-Schulz of section 4.12, fixed the way
+  PyTorch does it.
+- **The last group of tile rows on sm_80/86/89** (A100, RTX 30xx/40xx, RTX 6000 Ada): the BF16 / FP16 GEMMs skipped part
+  of the last group of 8 tile rows, so some output rows were never written (for example M = 6,656: rows 6,144 onward).
+  Fixed: the last group gets only the rows left.
+- **Repeatable split-K.** Split-K weight-gradient GEMMs with a very large K (e.g. [1,024 x 512] with K = 16,384) gave
+  slightly different results run to run (1-11 values differed). Fixed for even N: an fp32 slice per split and an ordered
+  reduce instead of atomic adds (1 distinct output in 20 runs).
+- **2026-11-11: my fixes merged with Aparna's symmetric-output change.** The merge turns nothing on by default: every
+  existing kernel is byte-identical (5,453 of 5,453), the same GEMM results, the same SFT step time.
+
+**Record.** Work log §45.133-§45.137, §45.148-§45.158, §45.193; `blublas_my_fixes_vs_symmetric_change_merge_plan.md`;
+`sft/README.md` sections 7 and 9.
+
+---
+
+### 4.14 Context parallelism: one row shared by several GPUs, and an autograd bug it found (2026-11-06 / 11-07)
+
+**Why.** A long row may not fit on one GPU (the activations grow with the row length), and even when it fits, one GPU
+is slow on it.
+
+**The change: `BLU_SFT_CP=U`.** U GPUs share every row, the Ulysses way. Each GPU keeps 1/U of the row's tokens for the
+matrix layers. Before attention, an all-to-all gives every GPU the WHOLE row for 1/U of the heads; attention then runs
+exactly as on one GPU (same kernels, same chat plan, built for those heads); a second all-to-all returns to the token
+slices. The two all-to-alls are Adhitya's functions from the `dist/Context_Parallelism` submodule, used as they are. No
+kernel changes.
+
+```
+U = 2, one row of T tokens, heads 4 query / 2 KV (135M):
+  GPU 0: tokens 0 .. T/2-1,  all heads   --all-to-all-->  GPU 0: tokens 0 .. T-1, heads {0,1} / KV {0}
+  GPU 1: tokens T/2 .. T-1,  all heads   --all-to-all-->  GPU 1: tokens 0 .. T-1, heads {2,3} / KV {1}
+  attention per GPU on its heads, then the reverse all-to-all back to the token halves
+```
+
+The loss counts every trained token once over all GPUs, so every token has the same weight, as without CP.
+
+**The bug it found (fixed in TI d59740b).** With CP, the step-0 gradient norm was 7.5% lower than without CP. The cause
+was in `autograd::contiguous`: for an input that is already contiguous it returned the same tensor but attached a new
+backward step to the INPUT, keeping the input's output number. For the second output of an op with two outputs (the fused
+QK-norm + RoPE returns q as output 0 and k as output 1), k's gradient pointed at a slot that does not exist and was dropped
+silently: k's gradient and the k-norm gamma gradient were 0 in every layer. Fix: an already-contiguous input is returned
+as it is and nothing is recorded (the rule of PyTorch's `contiguous()`). Normal SFT without CP was not affected: there
+every call passes a non-contiguous view.
+
+**After** (2x H200, 2026-11-07):
+
+| Test | Result |
+| --- | --- |
+| 135M, 4,096-token rows | step-0 gradient norm 3.0473 with CP=2 and without CP; 30-step loss within the run-to-run spread |
+| 135M, 64k / 128k-token rows | step 250.7 -> 158.2 ms / 492.9 -> 297.9 ms (1.58x / 1.65x faster than one GPU); memory per GPU 61.5 -> 36.3 GB / 111.0 -> 62.2 GB |
+| 1.6B shape, 4,096-token rows | step 480.0 -> 274.5 ms; step-0 norm +0.017% against no CP |
+| 1.6B shape, 64k-token rows | fits only with CP=2 (96.6 GB per GPU, 861 ms per step); one GPU runs out of memory |
+
+Rules: U must divide the GPU count, the query heads, the KV heads and T (135M: U = 2; 1.6B: U = 2, 3 or 6). Not tested
+yet: CP together with data parallelism.
+
+**Pretraining.** Not used there (the CP path is in the SFT trainer). The `contiguous` fix is in the shared library.
+
+**Record.** Work log §45.177-§45.184; `sft/README.md` sections 5.2 and 6.5; `context_parallelism_a_to_z.md`,
+`cp_sft_design.md`, `context_parallelism_sft_experiments.md`.
+
+---
+
+### 4.15 The attention forward on rows of short chats: "mixed units" (2026-11-13)
+
+**Why.** Uma Mahesh's forward study of 2026-11-13 named the cost of "one tile per query head" on rows of short chats and
+pointed at FA3's head packing. I measured his case with my kernel the same day.
+
+**Before.** A forward work unit is one chat x one query head x a pair of 64-row query tiles, one tile for each of the
+kernel's two compute groups. A chat with an odd number of 64-row tiles leaves the second group of its last pair with no
+rows: it only waits.
+
+```
+a chat of 192 tokens = 3 query tiles, query heads h0, h1, h2 share one KV head:
+
+before:  unit 1 (h0): [tile 1 | tile 2]    unit 2 (h0): [tile 3 | idle ]
+         unit 3 (h1): [tile 1 | tile 2]    unit 4 (h1): [tile 3 | idle ]
+         unit 5 (h2): [tile 1 | tile 2]    unit 6 (h2): [tile 3 | idle ]      6 units, 3 half empty
+
+mixed:   unit 1 (h0): [tile 1 | tile 2]    unit 2 (h0 + h1): [tile 3 of h0 | tile 3 of h1]   same K and V
+         unit 3 (h1): [tile 1 | tile 2]    unit 4 (h2):      [tile 3 of h2 | idle        ]
+         unit 5 (h2): [tile 1 | tile 2]                                                    5 units
+```
+
+**The change.** In such a chat, the idle group runs the same tile of another query head of the same KV head. Both heads
+read the same K and V, so the loads do not change. With 3 query heads per KV head two share and the third stays alone;
+with 2 per KV head both share. The **2% rule**: the plan uses mixed units only when at least 2% of its units would share
+a tile; otherwise the plan and the kernel are exactly the ones of before (the mixed-unit kernel has a slightly longer
+start per unit). Switches: `BLU_GQA_MX=0` (never), `BLU_GQA_MX_MIN_PCT=<n>` (the limit).
+
+**After** (H200, heads 18/6, rows of 4,096 tokens, forward kernel, the new code against the code of the same day without
+the change, same session):
+
+| Every chat in the row is (tokens) | 64-row tiles | Forward, new against before |
+| --- | --- | --- |
+| 16 | 1 | -25.6% |
+| 64 | 1 | -21.3% |
+| 128 | 2 (even: plain kernel) | -0.05% |
+| 160 | 3 | -10.1% |
+| 192 | 3 | -8.3% |
+| 704 | 11 | -3.9% |
+| 2,112 | 33 | -1.1% |
+| real SFT rows (3 groups) | mixed | -1.33%, -1.32%, -0.52% |
+
+Forward + backward together the change is smaller (on short chats the backward is the larger part): about -5.3% at
+16 tokens, -3.6% at 64 tokens; no measurable change of the SFT step on real data. The one loss case (rows of 96-token
+chats with one 64-token leftover chat: +0.92%) is what the 2% rule removes. Correctness: quick suites 280 / 0 (heads
+18/6) and 273 / 0 (heads 4/2), full suite 333 / 0; every packed chat still gives the same bits as the same chat alone.
+
+**Pushed** 2026-11-13: TI f1a7d98, BluTrain d9606c2.
+
+**Record.** Work log §45.194-§45.197; `sft_kernel_benchmarks.md` section 8.1; the forward part of
+`attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` (sections 4.4-4.8).
+
+---
+
+### 4.16 The attention backward with several query heads per KV head: ideas 1, 2 and 4 (2026-11-14 to 2026-11-18)
+
+**Why.** The same fact as in section 4.15, in the backward, where it matters more: each KV head serves 3 query heads
+(1.6B) or 2 (135M), and the backward did the work of each query head separately, then added the heads together in extra
+kernels.
+
+**Before (the Vj2 of 2026-11-13).** One block per (128-key tile, query head). Each query head wrote a bf16 partial dK
+and dV; two head-sum kernels added the G partials. dQ went through an fp32 buffer: zeroed by a prep kernel, added into
+step by step, converted to bf16 at the end.
+
+**Idea 1: the masked half of the first step does no work.** A block owns 128 keys; its first query step handles the 64
+queries on the diagonal. All keys 64-127 of the block come after every one of those queries, so the causal mask makes
+that half's probabilities exactly 0. The compute group that owns keys 64-127 used to compute them anyway.
+
+```
+first step of a key block:   keys 0-63 (group 0)   keys 64-127 (group 1)
+queries 0-63 (diagonal):     lower triangle         all masked (future) -> exact zeros
+now group 1 skips the score / dP GEMMs, the 2,048 exps and its dV / dK GEMMs for that step;
+it only writes zero dS rows and runs its share of the dQ GEMM.
+```
+
+**Idea 2: direct dQ for the first two query tiles of every chat.** The dQ of a query tile is the sum over all key blocks
+it can see. Queries 0-127 of a chat see only keys 0-127, which is ONE key block. So those two tiles have one contributor:
+that block now writes them straight to bf16 (with the convert kernel's rounding), and the zeroing, the fp32 buffer and
+the convert kernel skip them.
+
+**Idea 4: all query heads of a KV head in one block (Uma Mahesh's observation).** One block per (128-key tile, KV head)
+now runs the G query heads one after another and keeps adding into the same fp32 dK / dV registers; it writes the final
+dK / dV once, rounded once (the way FA3 adds GQA heads).
+
+```
+before (G = 3):  block(h0) -> dK0, dV0 partials  \
+                 block(h1) -> dK1, dV1 partials   +--> head-sum kernels --> dK, dV
+                 block(h2) -> dK2, dV2 partials  /
+now:             block(KV head) runs h0, h1, h2, adds in registers -------> dK, dV (no partials, no head-sum kernels)
+```
+
+Two rules came with it: **rule 1**, the block order (sections of whole rows, as many as fit about 80 MB, rounded down to a
+power of 2); **rule 2b**, idea 4 only when the call has at least 2 KV heads, decided from the shape alone, so a chat
+packed and the same chat alone always take the same path (bit-exact). **Idea 3** (two query heads sharing a one-step
+block) was tested and dropped: slower on real rows. Switches: `BLU_VJ2_HSUM=0`, `BLU_VJ2_HSUM_MINKV=<n>`,
+`BLU_VJ2_HSUM_SECT=<n>`; `BLU_VJ2_DKDV_F32=1` also turns idea 4 off.
+
+**After, against FA3, FA4, cuDNN and my code of 2026-11-13** (one H200, one session, all contenders in one Nsight
+Systems session, 2 rounds, 12 cases: heads 18/6 and 4/2 x rows of short, medium and long chats and real SFT rows;
+forward + backward time, mine / the other, below 1 = mine faster):
+
+| | heads 18/6 | heads 4/2 |
+| --- | --- | --- |
+| mine vs FA3 | 0.428 - 0.928 | 0.403 - 0.890 |
+| mine vs FA4 | 0.402 - 0.907 | 0.383 - 0.852 |
+| mine vs cuDNN | 0.424 - 0.812 | 0.235 - 0.778 |
+| mine vs my code of 2026-11-13 | 0.570 - 0.964 | 0.597 - 0.980 |
+
+- Faster than all three libraries in all 12 cases, and the backward call faster than my previous code in all 12.
+- **Why it is faster than FA3 / FA4 / cuDNN:** for GQA they keep fp32 buffers for dQ / dK / dV and add them up in extra
+  kernels after the main backward; mine adds the query heads inside one block and writes dK / dV once, writes a chat's
+  first two dQ tiles directly, and skips the masked half of the first step. The gain is biggest on rows of short chats
+  (every library runs at a few % of the GPU's peak there, and these fixed costs are most of the time). Example, rows
+  0-7 of the short-chat set: the dQ convert takes 19 µs in mine, 128 µs in my code before, 131 µs in FA3.
+- **Fair comparison, checked three ways:** every library got the same chat list; all kernels of every library summed per
+  call match the reported times within 1-2%; with every gap on the GPU timeline counted, mine is still ahead in all 48
+  comparisons.
+
+**In the trainers** (30 steps, runs before / new / new / before, median step of steps 11-29):
+
+| Trainer | Before | New | New against before |
+| --- | --- | --- | --- |
+| SFT 135M | 105.47 ms | 103.64 ms | 1.7% faster |
+| SFT 1.6B shape | 791.11 ms | 785.74 ms | 0.7% faster |
+| pretraining 1.6B, production config (dense rows) | 1,508.8 ms | 1,500.6 ms | 0.54% faster |
+
+The step-0 loss is identical, and the loss differences are no bigger than between two runs of the same code.
+
+**Correctness.** Quick suites 273 / 0 (heads 4/2) and 280 / 0 (heads 18/6) on the push build (a fresh clone + the 3
+changed files). One dK value in a 2-token pad piece is over the test's limit; FA3, FA3 deterministic and FA4 give a
+bit-identical dK on the same bytes (1,536 of 1,536 values), and pad tokens get no gradient in training, so it is recorded
+as a known case with that proof.
+
+**Pushed** 2026-11-18: TI 334b244, BluTrain c52ca81 (checked on GitHub file by file).
+
+**Record.** Work log §45.198-§45.199; `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` (the full
+write-up: how FA3, FA4 and cuDNN do it, every case, the fairness checks); `sft_kernel_benchmarks.md` section 8;
+`sft/README.md` section 6.3.
+
+---
+
+### 4.17 Tried and not adopted
+
+| What | When | Why not |
+| --- | --- | --- |
+| design B for packed rows (one chat start per token) | 2026-10-10 to 10-15 | slower than design A, and not bit-exact for every chat; removed |
+| splitting chats longer than the row | 2026-10-30 / 10-31 | the model would learn answers whose question it cannot see; dropping is the only method |
+| fp32 dK / dV partials as the default | 2026-10-31 | attention backward +3-14%, step +0.8%; kept as an option, off |
+| backward idea 3 (two query heads share a one-step block) | 2026-11-16 | slower on real rows (+0.9 to +2.3% at heads 4/2) |
+| forward: polynomial exps, FA3's split K/V pipeline, TMA store of O, row-split softmax, conditional rescale, 2 K/V stages | 2026-10-17 to 10-19 | slower, or broke "packed = alone" bit for bit |
+| backward: D loads early, the causal mask in its own block | 2026-10-14 / 10-16 | slower |
+
+---
+
+## 5. Every number in one table
+
+| Change | Before | After | Measured on |
+| --- | --- | --- | --- |
+| loss value in fp32 | bf16 loss error 1.565e-3 | 1.127e-5 (139x smaller) | test program |
+| no fp32 copy of the logits | 95,038 MiB peak; 41.8k tokens/s | 90,322 MiB; 42.1k tokens/s (+0.60%) | pretraining trainer, H200, B 4 |
+| loss backward, 16-byte accesses | 4.35 ms | 1.64 ms | H200, bf16 |
+| gradient written over the logits | separate gradient buffer | -5,926 MiB | H200, B 4 |
+| loss forward, 16-byte loads | 1.03 ms | 0.93 ms | H200 |
+| packing instead of padding | 30.2% real tokens; full run 17.0 min | 99.6%; 5.1 min, same val loss | stage-0 data, H200 |
+| design A for packed rows | design B | 2-16% faster forward, 3-5% faster backward | H200, real packed rows |
+| attention backward Vj2 | 3,626 µs (Vj1d) | 2,406.7 µs (-33.6%); 3.0% faster than FA3 | H200, dense 8 x 4,096, heads 18/6 |
+| attention forward QPU | 1.375x FA3 (dense), 1.28x (packed) | 1.004x (dense), 0.865x (packed) | H200 |
+| pretraining hand-over (attention + loss) | 45,936 tokens/s | 48,855 tokens/s (step -5.98%) | pretraining trainer, 1x H200 |
+| RoPE backward (fused bf16, SFT, B 4) | 253.3 µs | 109.2 µs (2.32x faster) | H200 |
+| RoPE in the step | 1,881.0 ms (SFT), 21,182 ms (pretraining) | 1,868.2 ms (-0.68%), 21,078 ms (-0.49%) | trainers, H200 |
+| loss sum past 65,536 rows | val loss 1.3007 at 81,920 tokens (wrong) | 1.6068 (numpy 1.6063) | 135M trainer |
+| lm_head + loss on trained rows (switch) | all rows | -11% (about 0.7% of the step) | SFT trainer, H200 |
+| BluBLAS tile-table wait | 20 ms per new shape | 22-29 µs | H200 |
+| trainer speed items, all together | code of 2026-11-03 | SFT 135M -13.7%, 1.6B -1.7%; pretraining -11.8% / -1.3% | 36 settings, H200 |
+| BluBLAS GEMM fixes | 654 of 6,644 GEMM cases wrong | 0 of 6,644 (+ 13,302 addmm) | 2x H200 |
+| context parallelism, CP=2 | one GPU: 250.7 / 492.9 ms per step at 64k / 128k | 158.2 / 297.9 ms (1.58x / 1.65x faster) | 135M, 2x H200 |
+| forward mixed units | code of 2026-11-13 morning | -21 to -26% on rows of chats of 64 tokens or less | H200, heads 18/6 |
+| backward ideas 1, 2, 4 | code of 2026-11-13 | forward + backward 0.570-0.980 of before; SFT 135M -1.7%, 1.6B -0.7%, pretraining -0.54% | H200 |
+
+---
+
+## 6. Where everything is
+
+| What | Where |
+| --- | --- |
+| the code | BluTrain, branch `dist_side_gautam_lottn` (with Tensor-Implementations and BluBridge-BLAS as submodules); this push: BluTrain c52ca81, TI 334b244, BluBLAS cfa0e92 |
+| the SFT guide | BluTrain `sft/README.md` (a copy: `06_docs/README_sft_BluTrain.md` in this package) |
+| why each kernel changes for SFT and pretraining does not | `sft/docs/kernel_diff_sft_pretraining.md` |
+| the kernel benchmarks against other libraries | `sft/docs/sft_kernel_benchmarks.md` |
+| the attention rebuild of October | `attention_kernel_optimizations_h200_2026_10_10_to_2026_10_21.md` (work docs) |
+| the forward and backward of November | `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` (work docs) |
+| packing | `sft/docs/sft_packing_algorithms_bfd_ffd.md` |
+| the loss | `sft/docs/loss_calculation_in_pretraining_and_sft.md`, `loss_kernel_dtype_bugs.md` (work docs) |
+| context parallelism | `context_parallelism_a_to_z.md`, `cp_sft_design.md`, `context_parallelism_sft_experiments.md` (work docs) |
+| every test and decision, day by day | `sft_work_documentation.md` (work docs), section 45 for 2026-10-15 onward |
+| how to run SFT | `how_to_handle_sft.md` (work docs) |

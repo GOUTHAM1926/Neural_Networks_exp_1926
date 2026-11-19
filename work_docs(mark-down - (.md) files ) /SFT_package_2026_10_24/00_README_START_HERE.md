@@ -24,6 +24,7 @@ explain each decision.
 | `04_library/committed_ad10e7d_...patch` | the loss change pushed on 2026-09-25 (ignore index + global denominator), unchanged |
 | `05_tests/` | `test_varlen_attention.cu`, `test_rope_positions.cu`, `test_sparse_ce_ignore_index.cu`, `test_contig_alias.cu`, `sanitize_vj2.cu` |
 | `06_docs/` | `README_sft_BluTrain.md` (the guide), the BluTrain `sft/docs/` set (kernel diff, packing, loss, learning, optimizer choice, kernel benchmarks + its 2 figures), `README_SFT_checkpoint_for_DPO.md`, the work log (`sft_work_documentation.md`), the plan (`plan_grid_search_sft.md`), how to run SFT (`how_to_handle_sft.md`), the context-parallel docs, the chat-template and chat-format studies, the hyperparameter, overfitting and learning-rate docs, and the attention write-up of 2026-11-18 |
+| `all_sft_optimizations.md` | every SFT optimization from the first day (2026-09-17) to 2026-11-18: context, before, change, after, how measured, numbers, sources; model and matrix shapes, a map and a timeline |
 | `07_generic_attention_2026_10_24/` | the 2026-10-24 work on attention for lower GPUs (unchanged) |
 | `_old_2026_10_24/` | the package of 2026-10-24, unchanged |
 | `MANIFEST_md5.txt` | the md5 of every file in this package |
@@ -32,6 +33,7 @@ explain each decision.
 
 ## 1. Where to start
 
+- **Every optimization made for SFT, with before / after numbers:** `all_sft_optimizations.md` (this folder).
 - **What SFT is and how it works here:** `06_docs/README_sft_BluTrain.md` sections 1-2 (SFT in simple words, the journey
   of one chat), then 3 (data), 4 (loader), 5 (trainer), 6 (kernel changes), 7 (tests and results), 8 (build and run),
   9 (known limits), 11 (row length and the checkpoint's context length).

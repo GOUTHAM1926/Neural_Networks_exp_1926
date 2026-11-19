@@ -538,6 +538,8 @@ The **same** GPU tensor is used at every step of this chain:
 
 ### 7.3 Trainer: not yet (this is task 6)
 
+(2026-11-19: done in the SFT trainer `bluscript_sft.cpp`; the status of every item is under the table of section 12.)
+
 - `bluscript_zero_ckpt.cpp:2164` calls `sparse_cross_entropy_loss(logits, batch.target)` with **2 arguments**. So the ignore value is −1 and `denom` is nullptr, and each micro-batch divides by its own count, 32,768.
 - The seed is 1/GA (`:1796-1797`).
 - The validation loss (`:2102`) is the same, and it averages the per-batch means (`:2106`), which is Method 1.
@@ -759,6 +761,16 @@ Standalone tests prove they are **built correctly**; training runs prove whether
 | 3 | The B300 (sm_103) forward ignores the ignore value (`LossKernels.cu:938-941`) | wrong SFT loss on a B300 | before any SFT run on a B300 |
 | 4 | The forward's second reduction stage has 256 threads, but loads one partial sum per thread (`LossKernels.cu:953-967`, `:472-488`). So for B × T > 65,536 (more than 256 partials), the partials past 256 are dropped. Today B × T = 32,768 (128 partials), so this is fine | the loss **value** only; gradients are not affected | only if B × T ever exceeds 65,536. Found by reading; not run |
 | 5 | The validation loss uses Method 1 (`:2102-2106`) | a biased SFT val loss | task 6 (section 8, #6) |
+
+**Status on 2026-11-19:**
+
+- #1 and #2: done together in the SFT trainer (`train/production_zero/bluscript_sft.cpp`): the loss gets label 65535
+  and `sft_denom`, the step's trained-token count over all micro-batches and ranks; the backward seed is W.
+- #3: still open. B300 does not take packed SFT rows at all (its causal attention has head size 64 only), so no SFT
+  run goes there today (`sft/README.md` section 9).
+- #4: fixed on 2026-10-30 (section 12b).
+- #5: done: SFT validation adds all val losses and divides once by the val set's trained-token count
+  (`sft/README.md` section 5, "SFT: the whole val set").
 
 ---
 

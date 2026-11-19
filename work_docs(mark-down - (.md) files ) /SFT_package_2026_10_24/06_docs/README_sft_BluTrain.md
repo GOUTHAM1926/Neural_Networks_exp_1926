@@ -13,8 +13,9 @@ Added on this branch since then, each in its section: the loss-sum fix (2026-10-
 16k-128k and drop-only long chats (2026-10-31, sections 6.4 and 3.2); the trained-rows lm_head switch, off by default
 (2026-11-03, sections 5 and 9); the BluBLAS GEMM fixes (2026-11-03 to 11-05, section 7); the optimizer and CPU-wait
 speed-ups both trainers got (2026-11-03 to 11-05, section 5.1); the `autograd::contiguous` fix (2026-11-07, section 6.5);
-context parallelism, one row shared by several GPUs (2026-11-06/07, section 5.2).
-This file was last brought up to date on 2026-11-11.
+context parallelism, one row shared by several GPUs (2026-11-06/07, section 5.2); the attention forward's mixed units
+(2026-11-13, section 6.3); the attention backward ideas 1, 2 and 4 (2026-11-18, section 6.3).
+This file was last brought up to date on 2026-11-19 (before that: 2026-11-11).
 
 ---
 
@@ -42,7 +43,7 @@ Tensor-Implementations files of the SFT work (all on this branch):
 |---|---|
 | loss: ignore index, global denominator, fp32 loss scalar, gradient over the logits, 16-byte loads | `src/Kernels/cuda/loss/LossKernels.cu`, `include/ops/helpers/LossKernels.h`, `src/autograd/backward/LossBackward.cpp`, `include/autograd/operations/LossOps.h` (on the branch since 2026-09-25 / 10-21) |
 | loss: the sum counts every row (it stopped at 65,536 rows; section 6.1) | `src/Kernels/cuda/loss/LossKernels.cu` `sum_reduction_kernel`; test `Tests/kernel_tests/test_sparse_ce_ignore_index.cu` group H (2026-10-30) |
-| attention: packed rows (chat plan), QPU forward, Vj2 backward | `include/ops/helpers/AttentionKernels.h`, `src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu`, `GQA_bwd_vj2_sm90.cu`, `GQA_bwd_vj1d_sm90.cu`, `GQA_bwd_vj1_sm90.cu`, `GQA_fwd_generic.cu`, `GQA_bwd_generic.cu`, `src/autograd/operations/AttentionOps.cpp`, `src/autograd/backward/AttentionBackward.cpp` and their headers (Hopper parts on the branch since 2026-10-21) |
+| attention: packed rows (chat plan), QPU forward, Vj2 backward; mixed units in the forward (2026-11-13); backward ideas 1, 2, 4 (2026-11-18) | `include/ops/helpers/AttentionKernels.h`, `src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu`, `GQA_bwd_vj2_sm90.cu`, `GQA_bwd_vj1d_sm90.cu`, `GQA_bwd_vj1_sm90.cu`, `GQA_fwd_generic.cu`, `GQA_bwd_generic.cu`, `src/autograd/operations/AttentionOps.cpp`, `src/autograd/backward/AttentionBackward.cpp` and their headers (Hopper parts on the branch since 2026-10-21) |
 | attention for every other GPU (Ada, Ampere): causal mask + packed rows in the generic kernels | `GQA_fwd_generic.cu`, `GQA_bwd_generic.cu`, `AttentionKernels.h`, `AttentionOps.cpp` (2026-10-24, added 2026-10-27) |
 | RoPE: per-chat positions in every QK-norm + RoPE kernel | `src/Kernels/cuda/norm/arch/FusedRMSRoPE_{fwd,bwd}_sm90{,_kernel}.cu`, `src/UnaryOps/cpu/Normalizations.cpp`, `include/ops/UnaryOps/Normalizations.h`, `include/ops/helpers/FusedRMSRoPEKernels.h`, `src/autograd/operations/NormalizationOps.cpp`, `src/autograd/backward/NormalizationBackward.cpp` and their headers (added 2026-10-27) |
 | RoPE: the bf16 kernel the trainers use, with positions and the 2-4x faster backward | `src/Kernels/cuda/norm/FusedRMSRoPE_bf16.cu` (added 2026-10-27; its header summarises the change, the speed and the bit-identity proof) |
@@ -649,6 +650,8 @@ B x NP / U). The row length is read from the data's `meta.json`; an `SFT_T` give
 | Our SFT kernels vs PyTorch, torch.compile, Liger, Apple CCE, FA3, FA4, cuDNN (H200) | `sft/docs/sft_kernel_benchmarks.md` |
 | Muon or AdamW for SFT: my test (7 Oct) and the Moonlight reference (all four pretraining x SFT pairs) | `sft/docs/optimizer_choice_muon_vs_adamw_for_sft.md` |
 | The Tülu 3 SFT checkpoint for DPO | `sft/README_SFT_checkpoint_for_DPO.md` |
+| The attention changes of 2026-11-13 and 2026-11-18 in full: how FA3 / FA4 / cuDNN do it, every case, the fairness checks | `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` in Gautam's work docs |
+| Every SFT optimization since the start, each with its context and before / after numbers | `all_sft_optimizations.md` in Gautam's work docs (SFT package) |
 
 ---
 

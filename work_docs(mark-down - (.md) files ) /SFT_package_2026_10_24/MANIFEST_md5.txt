@@ -1,4 +1,4 @@
-eb77be5d0ea4e2fa4b8216fe18b80ded  ./00_README_START_HERE.md
+3c88ff882e58abaa7646129955bfc731  ./00_README_START_HERE.md
 584f65d32338f95b2179354e7c38558a  ./01_preprocessing/mixes/d0_gen.json
 1bbed8474dd2fe29bb1210471a89cbc3  ./01_preprocessing/mixes/d1_gen_math.json
 131832b7ba5b1566c5a3a2965068cafd  ./01_preprocessing/mixes/d2_gen_code.json
@@ -107,22 +107,22 @@ bdf069daf884a1c6c6a161bf2df7d055  ./06_docs/attention_forward_and_backward_gqa_t
 3ae391059acb20485b545567a1f79d6b  ./06_docs/chat_format_study_report_2026_11_03.md
 3e31a6a0b76801fdd5b070d6957cc9d6  ./06_docs/chat_template_special_tokens_tests.md
 791dc839a53124fbef367899b7c3806e  ./06_docs/context_parallelism_a_to_z.md
-5a4ef4224dd703a6d364f4096d44a0b4  ./06_docs/context_parallelism_sft_experiments.md
+0b7647297a2428ca3e5622135105236d  ./06_docs/context_parallelism_sft_experiments.md
 bac76e65033d558ae79f02ff423f4465  ./06_docs/cp_sft_design.md
 e401b48036d3f98d01d6b0e8f82598e7  ./06_docs/How_learning_happens_in_sft.md
 57c4792297505acfc918c2b2930a12d5  ./06_docs/how_to_handle_sft.md
 8f7d884048625762e1b456b5f57bc4ff  ./06_docs/HYPERPARAMETERS_CONFIGS_SELECTION_FOR_MODEL_TRAINING_AND_FACTORS_AFFECTING_THESE.md
-c2acf87cc8947b620d588a142ec88d35  ./06_docs/kernel_diff_sft_pretraining.md
+3834cef5a84b0378eb6bb3eb145d1caf  ./06_docs/kernel_diff_sft_pretraining.md
 3884ac96782a4805f5616820b085680a  ./06_docs/learning_rate_schedulers.md
-0cc1b6e0d857bee640baa82fa06c7850  ./06_docs/loss_calculation_in_pretraining_and_sft.md
+44cab213ea78154e19fbeff92b1fbf49  ./06_docs/loss_calculation_in_pretraining_and_sft.md
 c5b17b9cbc847784fdb41a03bc85f852  ./06_docs/optimizer_choice_muon_vs_adamw_for_sft.md
 95ad9fa35181741de4356e9b8fa6ae6e  ./06_docs/Optimizing Packed Attention Performance.md
 43662bbb6e1c952b41aa4f7eb8b125f7  ./06_docs/overfitting_memorization_real_learning_check_val_dev_suite_and_unseen_suite.md
 475d02c2881a42d8714d3ab901fd1c1c  ./06_docs/plan_grid_search_sft.md
-8dd9856128beb491449c4c611d13d250  ./06_docs/README_sft_BluTrain.md
+7b1ac6e96d92ffafe2dce05aa026b686  ./06_docs/README_sft_BluTrain.md
 7fb8de11ee26b864b8fed6c854ab7ca8  ./06_docs/README_SFT_checkpoint_for_DPO.md
-abfb458e62127ba146496e93c7a381df  ./06_docs/sft_kernel_benchmarks.md
-85dd46c834853ac59e1493c070da5150  ./06_docs/sft_packing_algorithms_bfd_ffd.md
+40b87feaccd4e719647e1a529a27c32e  ./06_docs/sft_kernel_benchmarks.md
+800f2058fc96adb4020680eafa5ef000  ./06_docs/sft_packing_algorithms_bfd_ffd.md
 1b4a2cf0f2084f41330af23bd962f055  ./06_docs/sft_padding_vs_packing.png
 cee59326536dfddc421af1fc75a6b864  ./06_docs/sft_padding_vs_packing_same_chats.png
 c48ab48a51a9039b6de83b229082cae8  ./06_docs/sft_work_documentation.md
@@ -152,6 +152,7 @@ a95a7c63dc507c86bc069bec5207e2a0  ./07_generic_attention_2026_10_24/orig/Attenti
 2dbe59eb48d624cd82c639993ddb1fcf  ./07_generic_attention_2026_10_24/orig/GQA_bwd_generic.cu
 c993599a12e87a89ffe5dcd56d57b2f3  ./07_generic_attention_2026_10_24/orig/GQA_fwd_generic.cu
 b7c752b31c1229ba2d2e171beaab3a98  ./07_generic_attention_2026_10_24/orig/test_varlen_attention.cu
+ed124160ef36083d6a41ce521a1a1655  ./all_sft_optimizations.md
 c5da7cbbe383ec219ed8429fa82155ff  ./_old_2026_10_24/00_README_START_HERE.md
 d4d8f8b19203664cb12445476e3cd9f8  ./_old_2026_10_24/01_preprocessing/prepare_sft_data.py
 83c88d41a63461d0158bf57275fea5a8  ./_old_2026_10_24/02_dataloader/SftDataLoader.h

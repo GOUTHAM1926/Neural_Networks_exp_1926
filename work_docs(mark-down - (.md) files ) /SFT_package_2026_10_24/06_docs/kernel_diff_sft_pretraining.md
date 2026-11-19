@@ -3,6 +3,12 @@
 Written 2026-10-22. Code references are to the laptop SFT master `~/Downloads/BluTrain_sft` unless a library is named.
 Library references are to the clones in `~/Downloads/sft_research/<library>` at the commit given in section 7.
 
+Note (2026-11-19): the line numbers below point into the trainer of 2026-10-22. The trainer has grown since (the 135M
+shape settings, the trained-rows switch, context parallelism, the export), so the current list of its SFT parts, found by
+searching for quoted text, is in `sft/README.md` section 5. The rule (exactly three kernels change) and the reasoning
+below are unchanged; section 3.2 describes the attention as of 2026-11-18; the dated sections at the end list what
+changed after 2026-10-22.
+
 ---
 
 ## 0. Short answer
@@ -13,10 +19,12 @@ Library references are to the clones in `~/Downloads/sft_research/<library>` at 
 - On the non-kernel side, the changes are: the data loader, the backward seed, the SFT settings (`BLU_SFT_*`),
   the start checkpoint (`BLU_INIT_FROM`), building the packed-row inputs every micro-batch, and freeing them at exit.
 - The whole difference between the pretraining trainer `bluscript_zero_ckpt.cpp` and the SFT trainer
-  `bluscript_sft.cpp` is **61 lines**.
+  `bluscript_sft.cpp` is **61 lines**. (On 2026-10-22. On 2026-11-18: +808 / -40 lines, because the SFT trainer
+  also got the 135M shape settings, the trained-rows switch, context parallelism and the export; the kernel rule is the same.)
 - Every library checked (HF transformers, TRL, torchtitan, Megatron-LM, open-instruct, LLaMA-Factory, axolotl, Liger,
   FlashAttention, TransformerEngine) changes the same three things for packed SFT. The only kernel-level extra is
   TRL computing `lm_head` only on trained tokens. It is a speed-up with the same math, and it is our pending item Q11.
+  (2026-11-03: built as the switch `BLU_SFT_TRAINED_ROWS=1`, off by default; see the section of 2026-11-03 at the end.)
 
 ---
 
@@ -443,6 +451,9 @@ Our model has 26 layers (`n_layers = 26`, `bluscript_sft.cpp:160`). One 20-row s
 - **Not B.** It saves about 2 minutes and loses the bit-exact packed == alone check that all our packed tests rely on.
 - **C later, as a small follow-up.** Do it in a separate folder on the box, or after the run: rebuilding
   `libtensor.so` while a run is using it can crash the run.
+- **2026-10-24: C done in effect.** The new bf16 backward keeps several tokens in flight with cp.async, so the extra
+  read of the position no longer stalls each token. Backward + gamma reduce at B 4 (H200): 109.2 µs with positions
+  against 104.4 µs without (+4.6%); before, 253.3 against 169.0 µs (+50%). Work log §45.91, README section 6.2.
 
 ## 2026-10-31: long-context fixes
 
@@ -458,3 +469,11 @@ SwiGLU grid limits) are in kernels both trainers share: pretraining at long T ge
 - **Shared code, so pretraining got the same changes:** the BluBLAS GEMM fixes (297f372, 0b552f0, a6d4292), the
   optimizer speed-ups and the multi-tensor fixes (README section 5.1), and the `autograd::contiguous` fix (TI d59740b,
   README section 6.5: no change for either trainer today).
+
+## 2026-11-13 and 2026-11-18: the attention
+
+- **2026-11-13:** the forward got "mixed units" for chats with an odd number of 64-row tiles (packed rows only, with the
+  2% rule); pretraining (plain rows, no chat plan) runs the kernel of before. Section 3.2.
+- **2026-11-18:** the backward got ideas 1, 2 and 4. Pretraining gets ideas 1 and 4 too (dense rows): its step was
+  0.54% faster on the 1.6B production config. Section 3.2 and README section 6.3.
+- Still exactly three kernels differ between SFT and pretraining (with the trained-rows switch off).

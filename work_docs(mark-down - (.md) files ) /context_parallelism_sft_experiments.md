@@ -561,6 +561,19 @@ On the 2x box nothing was installed system-wide; `yaml-cpp` was unpacked into ou
 
 ---
 
+## 11b. 2026-11-17: CP=2 with the attention backward of 2026-11-18 (ideas 1, 2, 4)
+
+P035, GPUs 1 + 6, CP=2, B 4, 4 rows per step, 30 steps, runs pushed / new / new / pushed (the pushed code = TI f1a7d98;
+new = the final backward), median step of steps 11-29:
+
+| Model | Pushed | New | Change | Losses |
+| --- | --- | --- | --- | --- |
+| 135M (ckpt_A; each GPU 2 query / 1 KV head) | 52.51 / 52.02 ms | 52.51 / 52.03 ms | none: with 1 KV head per GPU idea 4 is off (rule 2b), ideas 1 + 2 are small here | step-0 val / train identical; norm within the pushed runs' own spread |
+| 1.6B shape (random init; each GPU 9 query / 3 KV heads) | 279.17 / 279.16 ms | 278.56 / 276.76 ms | -0.5% | step-0 val / train identical; norm within the spread |
+
+Every packed forward of the CP runs used the mixed-unit kernel (nsys: 4,773 / 4,810 launches of `gqa_v62_sm90<(int)2>` on the
+two ranks). Record: `profiling_reports/attn_bwd_p015_2026_11_17/box_results_p035/pkg14/trainer35g_cp.out`; work log §45.198.
+
 ## 12. What is not tested yet
 
 Listed on 2026-11-11, after the user asked whether CP is tested from every side. The answer was no: CP = 2 is proven

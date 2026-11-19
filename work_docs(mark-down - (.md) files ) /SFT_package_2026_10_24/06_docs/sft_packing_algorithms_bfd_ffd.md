@@ -1578,6 +1578,11 @@ row 2: A A A B B B B C C C                 A's tokens 11-13, all of B, all of C
 
 ## 9. Packing changes how many optimizer steps we take (future task: research and an ablation before the first packed SFT run)
 
+**Status (2026-11-19).** The first packed runs used option 2c of section 9.6 (B = 4, 20 rows per step, about 66 chats
+per step, no trainer change): the Tülu 3 run of 2026-10-22, and `sft/run_sft.sh`'s default since. The step size then became
+a factor of the 135M grid ("chats per step", work log §45.105, `plan_grid_search_sft.md`). The stage-0 ablation of
+section 9.6 itself (runs 1-4) was not run; it stays a future item.
+
 The user asked on 2026-10-14 to remember this, to research it, and to test it before the first packed SFT run. The
 user's note: real runs may use much bigger datasets, where this matters less, but with stage-0 (5,000 chats) it matters
 now.
@@ -1960,6 +1965,10 @@ varlen causal mask (three documents packed: 1500 + 800 + 1796):
 - Each chat's inputs and labels are built before packing (labels = the inputs moved by one token), so the last target of
   a chat is its own end token, never the first token of the next chat.
 
+(2026-11-19: design B was removed on 2026-10-15; design A is the only one. The kernels are now the QPU forward
+(the v62 family, with the mixed units of 2026-11-13) and the Vj2 backward (with ideas 1, 2 and 4 of 2026-11-18);
+`sft/README.md` section 6.3.)
+
 ---
 
 ## 11. Sources
@@ -2011,6 +2020,8 @@ the line numbers match that version, so they keep working even if the projects c
 | TRL's docs: the paper behind `bfd_split` | [`docs/source/paper_index.md:1294`](https://github.com/huggingface/trl/blob/478624dfa96e35451ee68b6d6299fdd10940154f/docs/source/paper_index.md?plain=1#L1294) |
 
 ### 11.3 Our own code and records
+
+(2026-11-19: the paths below are the laptop tree of 2026-10-14. The current files are on the branch `dist_side_gautam_lottn`, listed in `sft/README.md` section 0.)
 
 | what it supports | where |
 | --- | --- |

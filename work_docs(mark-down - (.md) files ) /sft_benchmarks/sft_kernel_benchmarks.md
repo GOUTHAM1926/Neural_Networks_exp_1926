@@ -128,6 +128,8 @@ Memory kept for the backward: BluTrain 3 MiB (one rstd per row), torch.compile 3
 
 ## 3. Attention: causal, grouped-query (18 query / 6 KV heads), head dim 128, bf16
 
+Note (2026-11-19): this section is the state of 2026-10-21. The forward changed on 2026-11-13 and the backward on 2026-11-18; the current numbers against FA3 / FA4 / cuDNN are in section 8.
+
 I used two shapes. Dense is 8 rows x 4,096 tokens with one causal sequence per row (pretraining, and padded SFT rows). Packed is 8 real packed rows of the stage-0 data (rows 752-759, 24 chats, the middle of the packing). Every library gets the same q, k and v. FlashAttention 3, FlashAttention 4 and cuDNN take the packed rows through their varlen interface (cu_seqlens), which gives the same per-chat attention as BluTrain.
 
 Method: one library per process, under Nsight Systems, so only kernel time counts (no Python overhead). Every run does at least 4 s of GPU work at the 700 W limit. The order is BluTrain, FA3, FA4, cuDNN, then the reverse, and the whole thing is done twice. Only calls that start at least 2 s after the first forward are counted (steady clocks). "Backward" is the whole backward call, including its small pre- and post-kernels.
@@ -354,6 +356,11 @@ The BluTrain attention backward adds dQ with atomics, like FlashAttention 3's de
 
 1. **lm_head + loss on SFT micro-batches.** On the median micro-batch CCE is 9% faster and Liger FLCE 5% faster. Both use far less memory because they never store the full logits, and the BluTrain lm_head computes logits for the 77% of tokens that are masked. Next I will run the lm_head only on the trained tokens (gather, matmul, loss, scatter). Before that, the BluBLAS transposed GEMM needs a guard for sizes that are not a multiple of 64 (a known open bug: today it gives wrong results there without an error).
 2. **Dense attention forward.** This is a tie with FlashAttention 3 (BluTrain takes 0.6% longer). One idea is still untried: compute the diagonal tiles first and keep the current loop order.
+
+Update (2026-11-19) on the two items above:
+
+- Item 1: the lm_head + loss on the trained tokens only was built on 2026-11-03 as the switch `BLU_SFT_TRAINED_ROWS=1` (off by default): lm_head + loss 11% less time in the trainer (about 0.7% of the step). Its row list is padded to a multiple of 256, so it never hits the BluBLAS case of sizes that are not a multiple of 64; that case itself is very likely fixed by the GEMM fixes of 2026-11-05 (the exact shapes were not re-run). `sft/README.md` section 9.
+- Item 2: "diagonal tiles first" had in fact been tried on 2026-10-19 (candidate QPD: +0.32% dense, not kept). The dense forward stays a tie with FA3. The attention numbers of 2026-11-18 (packed rows, against FA3 / FA4 / cuDNN) are in section 8.
 
 Everything else in this report is at or ahead of the best library I could find.
 
