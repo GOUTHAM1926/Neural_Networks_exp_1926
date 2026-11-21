@@ -13,6 +13,12 @@ explain each decision.
   `dd5b61a` (unchanged).*
   *2026-11-20 ~23:20: `06_docs/sft_kernel_benchmarks.md` is one step ahead of `bfc712b` again (section 9: the window race
   against FA3 / FA4 / FA2 / FlexAttention, +11 lines); it goes to BluTrain with the next docs push.*
+  *2026-11-21: `06_docs/README_sft_BluTrain.md` is one step ahead of `bfc712b` too (section 5.3 "Results of the SFT
+  study": the four arms incl. B and the checkpoints on Hugging Face; section 9: the open item marked done); both files
+  go to BluTrain in the next docs push.*
+  *Pushed 2026-11-21 ~16:20 IST: BluTrain `bfc712b` -> `a6645e2` (docs only: `sft/README.md` +24,
+  `sft/docs/sft_kernel_benchmarks.md` +11); checked on GitHub file by file, md5-equal to the copies here. So the docs
+  are at BluTrain `a6645e2`, the code still at `651f9c4` / TI `dd5b61a`.*
 - **The package of 2026-10-24** (its start page and every code copy its line numbers point into) is kept unchanged in
   `_old_2026_10_24/`. Nothing was deleted.
 - **The copies replaced on 2026-11-20** (the code of the 2026-11-18 push that changed since: 9 TI files and their diffs,

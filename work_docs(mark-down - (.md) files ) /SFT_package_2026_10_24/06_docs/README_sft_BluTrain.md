@@ -399,6 +399,26 @@ wrong. So the window travels with the model and is checked:
 **Run** (the 350M SWA base): `SWA_WINDOW=1024 SWA_GLOBAL_EVERY=4 ... bash sft/run_sft.sh` (section 8). The MFU line
 counts the windowed layers' attention as min(t, W) keys per query over the row.
 
+**Results of the SFT study** (2026-11-20/21; the 350M pair `kv4` (full attention) / `kv4_swa3` (window 1,024, every 4th
+layer global), Tülu 3 `m2_tulu_A`, 1 epoch = 5,652 steps, LR 1e-4, the same binary and settings for all four arms):
+
+| Arm | Pretraining | SFT | Final val loss | Val loss past position 2,048 of a chat |
+|---|---|---|---|---|
+| A | full attention | full attention | 1.178506 | 1.7961 |
+| B | full attention | window (`SWA_MISMATCH_OK=1`) | 1.180413 | 1.8132 |
+| C | window | window | 1.176781 | 1.8037 |
+| D | window | full attention (`SWA_MISMATCH_OK=1`) | 1.176567 | 1.8041 |
+
+- On a window-pretrained base the window in SFT is free (C = D within 0.003 in every group of chats and positions,
+  benchmarks within noise): **the 350M keeps the window in SFT**, as every published SWA model does.
+- On a full-attention base it costs +0.0019 (A -> B), almost all of it in long chats (+0.017 past position 2,048), and
+  that model still works better without the window: the window has to be learned in pretraining.
+- Serving must honour the window: C run with full attention (what vLLM / SGLang do) loses 0.23 past position 2,048.
+- The four checkpoints (HF export + final BluTrain checkpoint + model card + md5 list each) are on Hugging Face:
+  `hf://buckets/gautam1926/checkpoints_sft/checkpoints_sft_swa_experimentations/swa350m_sft_{A_full_full,
+  B_full_window, C_window_window, D_window_full}`. Full tables: the SWA analysis doc, section 12.2 ("C against A",
+  "Arm B").
+
 ## 6. The kernel changes (Tensor-Implementations)
 
 ### 6.1 Loss: ignore index and the global denominator
@@ -691,6 +711,10 @@ B x NP / U). The row length is read from the data's `meta.json`; an `SFT_T` give
   - open (2026-11-20): the SFT study on Tülu 3 (full base + full SFT, SWA base + window, SWA base + full attention) is
     running; it decides whether SFT of the 350M keeps the window. The race against FA3 / cuDNN / FA4 / FlexAttention on
     window rows is not done yet.
+    *(2026-11-21: both done.)* The study ran with all four arms (also B: full base + window in SFT); the 350M keeps the
+    window in SFT (section 5.3, "Results of the SFT study"). The window race: ours is faster than FA3, FA4, FA2
+    (PyTorch varlen) and FlexAttention on every layout (`sft/docs/sft_kernel_benchmarks.md` section 9); cuDNN is not
+    raced yet (its window needs NVIDIA's cudnn-frontend Python package).
 
 ---
 

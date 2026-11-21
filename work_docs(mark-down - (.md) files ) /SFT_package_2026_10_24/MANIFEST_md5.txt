@@ -1,4 +1,4 @@
-a6395d3a07fe05410eca4fdafd24e78f  ./00_README_START_HERE.md
+1b335eb36661c4e9015f761433329b38  ./00_README_START_HERE.md
 584f65d32338f95b2179354e7c38558a  ./01_preprocessing/mixes/d0_gen.json
 1bbed8474dd2fe29bb1210471a89cbc3  ./01_preprocessing/mixes/d1_gen_math.json
 131832b7ba5b1566c5a3a2965068cafd  ./01_preprocessing/mixes/d2_gen_code.json
@@ -123,13 +123,13 @@ c5b17b9cbc847784fdb41a03bc85f852  ./06_docs/optimizer_choice_muon_vs_adamw_for_s
 95ad9fa35181741de4356e9b8fa6ae6e  ./06_docs/Optimizing Packed Attention Performance.md
 43662bbb6e1c952b41aa4f7eb8b125f7  ./06_docs/overfitting_memorization_real_learning_check_val_dev_suite_and_unseen_suite.md
 8dcab8dd1540329767156adda83144f8  ./06_docs/plan_grid_search_sft.md
-68f25b7d5579459e2f6bc468fb22b983  ./06_docs/README_sft_BluTrain.md
+876086e8b428987452216af693ce4ee8  ./06_docs/README_sft_BluTrain.md
 7fb8de11ee26b864b8fed6c854ab7ca8  ./06_docs/README_SFT_checkpoint_for_DPO.md
 0e7d48a5b5ed1060d9243c11192b0370  ./06_docs/sft_kernel_benchmarks.md
 800f2058fc96adb4020680eafa5ef000  ./06_docs/sft_packing_algorithms_bfd_ffd.md
 1b4a2cf0f2084f41330af23bd962f055  ./06_docs/sft_padding_vs_packing.png
 cee59326536dfddc421af1fc75a6b864  ./06_docs/sft_padding_vs_packing_same_chats.png
-eb6c180d5a9a23a3e1ad4f1a20d4bb43  ./06_docs/sft_work_documentation.md
+bf1e46918e258df9c30d729dd870ca5b  ./06_docs/sft_work_documentation.md
 afb577c5996ba79d4378b262c870c467  ./06_docs/sliding_window_attention_sft_analysis.md
 10927417573a1303c6cb7dd02f8befb0  ./07_generic_attention_2026_10_24/diffs/AttentionKernels.h.diff
 fd4b094ac18e9c4f5276d4d1e790899d  ./07_generic_attention_2026_10_24/diffs/AttentionOps.cpp.diff

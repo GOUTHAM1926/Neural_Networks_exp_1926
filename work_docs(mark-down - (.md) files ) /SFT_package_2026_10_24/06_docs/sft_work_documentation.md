@@ -17944,3 +17944,13 @@ only; nothing after 00:00 IST; the user away until morning).**
   procedures, 07 results; `docs/` 17 detailed documents, `scripts/` 7 working scripts, `env/` the two pip version lists).
   Found while writing it: `BLU_MAX_STEPS` is ignored in SFT mode (the trainer says so); `run_sft.sh` clears every
   `BLU_*` variable, so kernel flags need a BIN wrapper (both written into 04 / 06).
+- ~16:00 P015 cleanup (the user's go): B's lm-eval outputs with the per-question samples pulled to the laptop first
+  (134 files, md5 equal), then our P015 folders deleted with literal paths: /localstorage/gautam_k/{swa9_1120, sft135,
+  deps} (22 GB; the empty /localstorage/gautam_k stays, removing it needs sudo) and all of ~/gautam_k (24 GB of
+  2026-11-05..17 work trees whose results are on the laptop and in this log). P015's system disk: 34 -> 57 GB free.
+  The Neural_Networks repo was pushed by the user before (447b107, 111 files, checked equal on GitHub).
+- ~16:20 BluTrain docs push by the user: `bfc712b` -> `a6645e2` (`sft/README.md` +24: section 5.3 "Results of the SFT
+  study" with the four arms and the checkpoints on Hugging Face, section 9's open item marked done; `sft/docs/
+  sft_kernel_benchmarks.md` +11: section 9, the window race). Checked on GitHub: exactly these 2 files, both equal to
+  the local files (md5 876086e8 / 0e7d48a5, = the package and handover copies), TI pointer unchanged (`dd5b61a`),
+  author Goutham Kumar, no AI lines.

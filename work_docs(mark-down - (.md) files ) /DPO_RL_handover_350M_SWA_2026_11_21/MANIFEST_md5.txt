@@ -18,10 +18,10 @@ e401b48036d3f98d01d6b0e8f82598e7  ./docs/How_learning_happens_in_sft.md
 c5b17b9cbc847784fdb41a03bc85f852  ./docs/optimizer_choice_muon_vs_adamw_for_sft.md
 8dcab8dd1540329767156adda83144f8  ./docs/plan_grid_search_sft.md
 c6020d9579c64475bb440ab4458b2efa  ./docs/pretraining_to_sft_trainer.diff
-68f25b7d5579459e2f6bc468fb22b983  ./docs/README_sft_BluTrain.md
+876086e8b428987452216af693ce4ee8  ./docs/README_sft_BluTrain.md
 7fb8de11ee26b864b8fed6c854ab7ca8  ./docs/README_SFT_checkpoint_for_DPO.md
 0e7d48a5b5ed1060d9243c11192b0370  ./docs/sft_kernel_benchmarks.md
-a6395d3a07fe05410eca4fdafd24e78f  ./docs/SFT_package_START_HERE.md
+1b335eb36661c4e9015f761433329b38  ./docs/SFT_package_START_HERE.md
 800f2058fc96adb4020680eafa5ef000  ./docs/sft_packing_algorithms_bfd_ffd.md
 afb577c5996ba79d4378b262c870c467  ./docs/sliding_window_attention_sft_analysis.md
 2422413e7c56d738872b5fe62d259bd0  ./env/evalenv_freeze.txt
