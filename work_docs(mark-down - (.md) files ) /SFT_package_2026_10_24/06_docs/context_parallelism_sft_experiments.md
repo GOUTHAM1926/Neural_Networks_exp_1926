@@ -671,3 +671,39 @@ them yet.
   call.
 - **For SFT, the ring part of his hybrid** would need per-chat positions. His ring has a document mask but does not
   restart the positions per chat.
+
+## 17. 2026-11-20: the 350M model on one H200 -- the row length where context parallelism becomes necessary
+
+**Why.** On 2026-11-17 I calculated from measured peaks (135M and 1.6B) that the 350M model needs CP above about
+121,000 tokens per row; the GPU check (`cp350.sh`) was ready but not run then (GPUs taken). It ran on 2026-11-20
+23:15-23:44 IST on P035 GPU 5, after the window race (the user: "other tests too if any"; nothing after 00:00).
+
+**Setup.** Our SFT trainer of the 2026-11-18 push (`attn_1113/bt_push`), the 350M shape (28 layers, d 1,024, heads 8/4,
+head size 128, SwiGLU 2,560, vocabulary 49,280, RoPE theta 10,000, tied lm_head), random weights, full attention (no
+window), one row per step (B 1), Muon, bf16; the real prepared data at each row length (`cp350/data/T<T>`, smol-smoltalk,
+tulu-plain-v1, First-Fit-Decreasing packing; 8,000 chats); 8 steps per length; peak GPU memory from nvidia-smi every
+0.5 s; the first out-of-memory ends the ladder.
+
+| Row length T (tokens) | Peak GPU memory (MiB) | Median step (ms, steps 2 and up) | Result |
+|---|---|---|---|
+| 16,384 | 30,941 | 115.8 | fits |
+| 32,768 | 48,963 | 202.4 | fits |
+| 65,536 | 83,981 | 387.7 | fits |
+| 81,920 | 101,297 | 468.7 | fits |
+| 98,304 | 118,069 | 564.2 | fits |
+| 106,496 | 127,383 | 616.8 | fits |
+| 114,688 | 136,217 | 663.5 | fits (the longest that fits) |
+| 122,880 | 142,907 at the failure | - | out of memory |
+
+- **One H200 holds 350M SFT rows of up to 114,688 tokens; from 122,880 tokens CP is needed** (`BLU_SFT_CP=2` or more;
+  for the 350M, Ulysses allows up to 4 GPUs per row, the 4 KV heads). This agrees with the 2026-11-17 calculation
+  (about 121,000).
+- Memory grows by about 1.07 MiB per token of row length (32,768 -> 65,536: +35,018 MiB), so the trend predicted
+  136,600 MiB at 114,688 (measured 136,217).
+- With the sliding window (2026-11-20) the attention needs no more memory than full attention (no score matrix is
+  stored in either case), so the limit holds for the 350M SWA model too.
+- Three setup problems of the 2026-11-17 script showed up only at run time and were fixed in `cp350b.sh`: the yaml-cpp
+  library path, `NSTOP` written inside a comment (every run stopped at once), and the trainer CSV picked as `gpu.csv`
+  (the first `*.csv`). The failed attempts are kept in `cp350/runs_failed_yaml_2252/` and `runs_failed_nstop_2313/`.
+- Records: P035 `/localstorage/gautam_k/cp350/` (status, runs/T*/), laptop
+  `profiling_reports/swa_port_2026_11_20/race/cp350b.sh`.

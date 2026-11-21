@@ -210,12 +210,12 @@ GQAFlashAttentionQKVBackward::GQAFlashAttentionQKVBackward(
     const Tensor& query, const Tensor& key, const Tensor& value,
     const Tensor& output, const Tensor& lse,
     int64_t B, int64_t Nq_heads, int64_t Nkv_heads, int64_t T, int64_t hd,
-    bool is_causal, cuda::GqaChatPlanPtr chats)
+    bool is_causal, cuda::GqaChatPlanPtr chats, int window)
     : Node(3),  // 3 inputs: Q, K, V
       saved_query_(query), saved_key_(key), saved_value_(value),
       saved_output_(output), saved_lse_(lse),
       B_(B), Nq_heads_(Nq_heads), Nkv_heads_(Nkv_heads), T_(T), hd_(hd),
-      is_causal_(is_causal), chats_(std::move(chats)) {}
+      is_causal_(is_causal), chats_(std::move(chats)), window_(window) {}
 
 std::vector<Tensor> GQAFlashAttentionQKVBackward::apply(std::vector<Tensor>&& grads) {
     PROFILER_SCOPE("GQAFlashAttentionQKVBackward::apply");
@@ -246,7 +246,8 @@ std::vector<Tensor> GQAFlashAttentionQKVBackward::apply(std::vector<Tensor>&& gr
         grad_value.data<bfloat16_t>(),
         static_cast<int>(B_), static_cast<int>(Nq_heads_), static_cast<int>(Nkv_heads_),
         static_cast<int>(T_), static_cast<int>(hd_), is_causal_,
-        chats_.get());   // v2 packed rows (design A), else dense
+        chats_.get(),    // v2 packed rows (design A), else dense
+        window_);        // sliding window (2026-11-04), 0 = plain causal
 
     return {grad_query, grad_key, grad_value};
 }

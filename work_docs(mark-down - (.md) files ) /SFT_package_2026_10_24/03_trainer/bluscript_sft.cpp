@@ -336,6 +336,18 @@ struct ModelConfig {
     float   rms_eps        = 1e-5f;                      // block RMSNorm epsilon
     float   qk_eps         = 1e-6f;                      // QK-norm (fused) epsilon
     bool    rope_interleaved = false;                    // false = NeoX half-split (Llama style)
+    // Sliding-window attention (BLU_SWA_WINDOW / BLU_SWA_GLOBAL_EVERY; 2026-11-20 step 9 (SWA in SFT): the same fields and rule as
+    // bluscript_zero_ckpt.cpp, 2026-11-20 SWA, ported from Navin's 1d8cd96). swa_window = 0 (the default) is the model of
+    // before: every layer global causal. With a window W, layer i attends globally iff (i + 1) % swa_global_every == 0,
+    // otherwise to the last W keys, itself included (HF sliding_window = W). In packed rows the window is per chat (each
+    // chat sees the last W tokens of its own; Tensor-Implementations 2356565). No parameter changes, so a checkpoint loads
+    // with any window: the base's record is checked at start-up (BLU_SWA_MISMATCH_OK, below). W must be a multiple of
+    // 128 (only the Hopper v62 forward / Vj2 backward have the window); W >= T changes nothing.
+    int     swa_window       = 0;
+    int     swa_global_every = 4;
+    int attn_window(int layer) const {
+        return (swa_window > 0 && (layer + 1) % swa_global_every != 0) ? swa_window : 0;
+    }
 
     // ---- activation / parameter precision ----------------------------------
     // All false (the default) is the shipped mixed-precision layout and is
@@ -584,14 +596,28 @@ struct MFUMeter {
         // queries, so the score matrix is still Nq deep.
         const double attn_dense  = 4.0 * T * hd * Nq;
         const double attn_causal = 0.5 * attn_dense;  // is_causal skips the mask
+        // Sliding-window layers (ModelConfig::attn_window; 2026-11-20 step 9 (SWA in SFT), the formula of bluscript_zero_ckpt.cpp): the
+        // query at t sees min(t, W) keys, so the causal count's T/2 keys on average become (W*W/2 + (T - W) * W) / T, and
+        // the dense convention's T become W. Counted over the row T as before (packed chats are not counted one by one).
+        // With swa_window = 0 both sums are exactly L * attn_causal and L * attn_dense, as before.
+        double attn_causal_all = 0.0, attn_dense_all = 0.0;
+        for (int i = 0; i < c.n_layers; ++i) {
+            const double W = static_cast<double>(c.attn_window(i));
+            const bool win = W > 0.0 && W < T;
+            attn_causal_all += win ? 4.0 * hd * Nq * (W * W / 2.0 + (T - W) * W) / T : attn_causal;
+            attn_dense_all  += win ? 4.0 * W * hd * Nq : attn_dense;
+        }
 
         // lm_head sits OUTSIDE the layer stack. The token embedding is a gather
         // (~0 FLOPs) and is correctly uncounted even though it holds the tied
         // weights.
         const double head = 2.0 * d * V;
 
-        m.fwd_per_token_causal = L * (qkv + proj + ffn + attn_causal) + head;
-        m.fwd_per_token_dense  = L * (qkv + proj + ffn + attn_dense)  + head;
+        // Old lines (kept, not deleted; 2026-11-20 step 9 (SWA in SFT)):
+        // m.fwd_per_token_causal = L * (qkv + proj + ffn + attn_causal) + head;
+        // m.fwd_per_token_dense  = L * (qkv + proj + ffn + attn_dense)  + head;
+        m.fwd_per_token_causal = L * (qkv + proj + ffn) + attn_causal_all + head;
+        m.fwd_per_token_dense  = L * (qkv + proj + ffn) + attn_dense_all  + head;
         m.flops_per_token_causal = 3.0 * m.fwd_per_token_causal;
         m.flops_per_token_dense  = 3.0 * m.fwd_per_token_dense;
 
@@ -737,15 +763,19 @@ public:
     Tensor      q_gamma, k_gamma;// [head_dim] fp32 QK-norm scales (learnable)
     Tensor      cos_sin_cache;   // shared [context_length, head_dim] fp32 RoPE cache (no grad)
     ModelConfig cfg;
+    int         window;          // sliding window in keys, 0 = global causal (ModelConfig::attn_window; 2026-11-20 step 9 (SWA in SFT))
 
-    CausalGQA(const ModelConfig& c, DeviceIndex dev, const Tensor& cache, InitRng& rng)
+    // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT): the layer index is passed in for its window):
+    // CausalGQA(const ModelConfig& c, DeviceIndex dev, const Tensor& cache, InitRng& rng)
+    CausalGQA(const ModelConfig& c, DeviceIndex dev, const Tensor& cache, InitRng& rng, int layer)
         : norm(c.d_model, c.rms_eps, c.resid_dtype()),
           wQ(c.d_model, c.q_heads  * c.head_dim, /*bias=*/false, Dtype::Bfloat16),
           wK(c.d_model, c.kv_heads * c.head_dim, /*bias=*/false, Dtype::Bfloat16),
           wV(c.d_model, c.kv_heads * c.head_dim, /*bias=*/false, Dtype::Bfloat16),
           wO(c.q_heads * c.head_dim, c.d_model,  /*bias=*/false, Dtype::Bfloat16),
           cos_sin_cache(cache),
-          cfg(c)
+          cfg(c),
+          window(c.attn_window(layer))
     {
         // GPT-2/Llama-style init: projections std=0.02, residual proj (Wo) scaled
         // by (2*n_layers)^-0.5 to keep residual-stream variance ~constant.
@@ -861,7 +891,10 @@ public:
         attn = autograd::scaled_dot_product_attention(
             q_bf, k_bf, v_bf, static_cast<int>(Nq), static_cast<int>(Nkv),
             /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention,   // [B,Nq,T,hd] bf16
-            g_packed.chats);   // packed rows: each chat attends only to itself; null = plain causal
+            // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT): the layer's window is passed last, 0 = global causal as before):
+            //     g_packed.chats);   // packed rows: each chat attends only to itself; null = plain causal
+            g_packed.chats,    // packed rows: each chat attends only to itself; null = plain causal
+            window);           // 2026-11-20 step 9 (SWA in SFT): the last W keys of each chat (0 = global causal)
         } else {
             // Context parallelism (BLU_SFT_CP=U, see SftCp above). Here T is this rank's slice (T_full / U); q_bf and
             // k_bf already carry RoPE at their true per-chat positions (g_packed.positions was sliced to match).
@@ -874,7 +907,11 @@ public:
             Tensor attn_g = autograd::scaled_dot_product_attention(
                 qg, kg, vg, static_cast<int>(Nq / U), static_cast<int>(Nkv / U),
                 /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention,   // [B,Nq/U,T_full,hd]
-                g_packed.chats);   // the FULL row's chat plan, built for Nq/U heads
+                // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT): the window too; every rank holds whole chats here, so
+                // the window is applied exactly as on one GPU):
+                //     g_packed.chats);   // the FULL row's chat plan, built for Nq/U heads
+                g_packed.chats,    // the FULL row's chat plan, built for Nq/U heads
+                window);           // 2026-11-20 step 9 (SWA in SFT): the same per-chat window as without CP
             attn = cp_partition(autograd::contiguous(attn_g));     // [B, Nq, T, hd]: back to this rank's slice
         }
 
@@ -965,7 +1002,8 @@ public:
         }
 
         for (int i = 0; i < c.n_layers; ++i) {
-            auto a = std::make_shared<CausalGQA>(c, dev, cos_sin_cache, init_rng_);
+            // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT)): auto a = std::make_shared<CausalGQA>(c, dev, cos_sin_cache, init_rng_);
+            auto a = std::make_shared<CausalGQA>(c, dev, cos_sin_cache, init_rng_, i);
             auto m = std::make_shared<SwiGLUMLP>(c, dev, init_rng_);
             attn.push_back(a);
             mlp.push_back(m);
@@ -1070,6 +1108,51 @@ static float get_lr(int step, float max_lr, float min_lr, int warmup, int max_st
 }
 
 // =============================================================================
+// Model record (2026-11-20 step 9 (SWA in SFT)): a small JSON file next to the weights that says how the model was trained, for the
+// settings no weight depends on (the sliding window above all: a wrong window loads fine and trains wrong, as a wrong
+// rope_theta does). Written as model_config.json into every checkpoint directory (master rank, after the DCP save) by
+// this trainer and by bluscript_zero_ckpt.cpp. sft/hf_to_blutrain.py writes the same window fields into its meta.json
+// (from the Hugging Face config); sft/export_to_hf.py reads model_config.json and writes the Hugging Face window fields.
+// =============================================================================
+static void write_model_record(const std::string& dir, const ModelConfig& c, const char* trainer) {
+    std::ofstream f(dir + "/model_config.json");
+    if (!f) { std::cerr << "[WARN] could not write " << dir << "/model_config.json" << std::endl; return; }
+    f << "{\"format\": \"blutrain_model_record\", \"version\": 1, \"trainer\": \"" << trainer << "\""
+      << ", \"d_model\": " << c.d_model << ", \"n_layers\": " << c.n_layers
+      << ", \"q_heads\": " << c.q_heads << ", \"kv_heads\": " << c.kv_heads << ", \"head_dim\": " << c.head_dim
+      << ", \"ffn_hidden\": " << c.ffn_hidden << ", \"vocab_size\": " << c.vocab_size
+      << ", \"context_length\": " << c.context_length << ", \"rope_theta\": " << c.rope_theta
+      << ", \"rms_eps\": " << c.rms_eps << ", \"qk_eps\": " << c.qk_eps
+      << ", \"embed_scale\": " << (c.embed_scale ? 1 : 0) << ", \"weight_tying\": " << (c.weight_tying ? 1 : 0)
+      << ", \"swa_window\": " << c.swa_window << ", \"swa_global_every\": " << c.swa_global_every << "}\n";
+}
+// The window of a model record (model_config.json above, or sft/hf_to_blutrain.py's meta.json): true with the two
+// values when the file has "swa_window" (a number or a quoted number); false when the file or the key is missing (a
+// record made before 2026-11-20).
+static bool read_window_record(const std::string& path, int& w, int& every) {
+    std::ifstream f(path);
+    if (!f) return false;
+    const std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    auto num = [&](const char* key, int& out) {
+        const size_t k = s.find(std::string("\"") + key + "\"");
+        if (k == std::string::npos) return false;
+        size_t p = s.find(':', k);
+        if (p == std::string::npos) return false;
+        ++p;
+        while (p < s.size() && (s[p] == ' ' || s[p] == '"' || s[p] == '\t' || s[p] == '\n')) ++p;
+        char* end = nullptr;
+        const long v = std::strtol(s.c_str() + p, &end, 10);
+        if (end == s.c_str() + p) return false;
+        out = static_cast<int>(v);
+        return true;
+    };
+    if (!num("swa_window", w)) return false;
+    every = 4;
+    num("swa_global_every", every);
+    return true;
+}
+
+// =============================================================================
 // Weight export (BLU_EXPORT=<path>.safetensors) — final model, rank 0 only. Copied from preproduction-135M
 // f37c616 (2026-10-28) so an SFT run ends with a file sft/blutrain_to_hf.py turns into a Hugging Face model.
 // Every tensor is written fp32 under a structural name, in this trainer's
@@ -1107,7 +1190,11 @@ static void export_safetensors(BLU& model, const std::string& path, int steps) {
         << ",\"vocab_size\":\"" << c.vocab_size << "\",\"context_length\":\"" << c.context_length << "\""
         << ",\"rope_theta\":\"" << c.rope_theta << "\",\"rms_eps\":\"" << c.rms_eps << "\""
         << ",\"qk_eps\":\"" << c.qk_eps << "\",\"embed_scale\":\"" << (c.embed_scale ? 1 : 0) << "\""
-        << ",\"weight_tying\":\"" << (c.weight_tying ? 1 : 0) << "\",\"steps\":\"" << steps << "\"}";
+        // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT): the window fields added before "steps"):
+        // << ",\"weight_tying\":\"" << (c.weight_tying ? 1 : 0) << "\",\"steps\":\"" << steps << "\"}";
+        << ",\"weight_tying\":\"" << (c.weight_tying ? 1 : 0) << "\""
+        << ",\"swa_window\":\"" << c.swa_window << "\",\"swa_global_every\":\"" << c.swa_global_every << "\""
+        << ",\"steps\":\"" << steps << "\"}";
     uint64_t off = 0;
     for (auto& [name, t] : named) {
         Tensor h = t.as_type(Dtype::Float32).to_cpu();
@@ -1432,6 +1519,66 @@ int main(int argc, char** argv) {
                          "multiples of 64, and q_heads x head_dim = d_model" << std::endl;
         dist::comm::abort_job(launch, 1);
     }
+    // 2026-11-20 step 9 (SWA in SFT): the sliding window, with the names and checks of bluscript_zero_ckpt.cpp: BLU_SWA_WINDOW=<keys>
+    // (0 = off, the default: every layer global causal, as before) and BLU_SWA_GLOBAL_EVERY=<n> (every n-th layer
+    // global, default 4). sft/run_sft.sh passes them as SWA_WINDOW / SWA_GLOBAL_EVERY (it clears every other BLU_*).
+    cfg.swa_window       = getenv_int("BLU_SWA_WINDOW", 0);
+    cfg.swa_global_every = getenv_int("BLU_SWA_GLOBAL_EVERY", cfg.swa_global_every);
+    {
+        std::string why;
+        if (cfg.swa_window < 0 || cfg.swa_window % 128 != 0)
+            why = "BLU_SWA_WINDOW must be 0 (off) or a positive multiple of 128, the window kernels' key tile (got " +
+                  std::to_string(cfg.swa_window) + ")";
+        else if (cfg.swa_window > 0 && cfg.swa_global_every < 1)
+            why = "BLU_SWA_GLOBAL_EVERY must be >= 1 (got " + std::to_string(cfg.swa_global_every) + ")";
+        else if (cfg.swa_window > 0 && cfg.head_dim != 128)
+            why = "a sliding window needs head_dim 128 (only the Hopper v62 / Vj2 kernels have it)";
+        if (!why.empty()) {
+            if (is_master) std::cerr << "ERROR: bad sliding-window setting: " << why << std::endl;
+            dist::comm::abort_job(launch, 1);
+        }
+    }
+    // 2026-11-20 step 9 (SWA in SFT): the base model's window must be this run's window. No weight depends on it, so a wrong one loads
+    // fine and trains wrong (the 21 windowed layers of the 350M base were pretrained never seeing a key more than 1,023
+    // positions back). The base's record: <BLU_INIT_FROM>/model_config.json (written with every checkpoint since
+    // 2026-11-20) or <BLU_INIT_FROM_RAW>/meta.json (sft/hf_to_blutrain.py, from the Hugging Face config). Compared layer
+    // by layer. A deliberate change (an ablation arm, e.g. full attention in SFT on a SWA base) needs
+    // BLU_SWA_MISMATCH_OK=1 and is then printed as a warning. A base without a record (made before 2026-11-20) gets a
+    // note line only.
+    {
+        std::string base, rec;
+        if (const char* p1 = std::getenv("BLU_INIT_FROM"); p1 && *p1) { base = p1; rec = base + "/model_config.json"; }
+        else if (const char* p2 = std::getenv("BLU_INIT_FROM_RAW"); p2 && *p2) { base = p2; rec = base + "/meta.json"; }
+        if (!base.empty()) {
+            int bw = 0, be = 4;
+            if (!read_window_record(rec, bw, be)) {
+                if (is_master)
+                    std::cout << "[sft] note: the base " << base << " has no window record (no \"swa_window\" in " << rec
+                              << "; made before 2026-11-20): this run uses BLU_SWA_WINDOW=" << cfg.swa_window
+                              << " (every " << cfg.swa_global_every << "), which must be the base's own" << std::endl;
+            } else {
+                ModelConfig bc = cfg;
+                bc.swa_window = bw; bc.swa_global_every = be;
+                bool same = true;
+                for (int i = 0; i < cfg.n_layers; ++i) same = same && bc.attn_window(i) == cfg.attn_window(i);
+                if (!same) {
+                    const bool ok = getenv_int("BLU_SWA_MISMATCH_OK", 0) != 0;
+                    if (is_master)
+                        std::cerr << (ok ? "[sft] WARNING (BLU_SWA_MISMATCH_OK=1, on purpose): " : "ERROR: ")
+                                  << "the base was trained with sliding window " << bw << " (every " << be
+                                  << ". layer global; " << rec << "), this run has BLU_SWA_WINDOW=" << cfg.swa_window
+                                  << " (every " << cfg.swa_global_every << ")"
+                                  << (ok ? "" : ". Set SWA_WINDOW / SWA_GLOBAL_EVERY (run_sft.sh) to the base's values, "
+                                                "or SWA_MISMATCH_OK=1 (BLU_SWA_MISMATCH_OK=1) for a deliberate ablation arm")
+                                  << std::endl;
+                    if (!ok) dist::comm::abort_job(launch, 1);
+                } else if (is_master) {
+                    std::cout << "[sft] the base's window record matches this run (window " << bw << ", every " << be
+                              << "; " << rec << ")" << std::endl;
+                }
+            }
+        }
+    }
 
     // OwnTensor::AllocationTracker::instance().init("4b_tracker.csv");
 
@@ -1656,12 +1803,37 @@ int main(int argc, char** argv) {
     const int GRAD_ACCUM = static_cast<int>(cfg.global_batch / tokens_per_micro);
 
     if (is_master) {
+        // 2026-11-20 step 9 (SWA in SFT): one line saying exactly which attention runs (as bluscript_zero_ckpt.cpp; a window >= the row
+        // length is not an error, but the line says plainly that it changes nothing). In packed rows it is per chat.
+        std::string attn_desc = "normal causal attention in all " + std::to_string(cfg.n_layers) +
+                                " layers (sliding window off: BLU_SWA_WINDOW not set)";
+        if (cfg.swa_window > 0) {
+            std::string pat;                                   // G = global, L = windowed, layer 0 first
+            int n_win = 0;
+            for (int i = 0; i < cfg.n_layers; ++i) { const bool w = cfg.attn_window(i) != 0; pat += w ? 'L' : 'G'; n_win += w; }
+            const int e = cfg.swa_global_every;
+            const std::string nth = std::to_string(e) + ((e % 100 >= 11 && e % 100 <= 13) ? "th" :
+                                    e % 10 == 1 ? "st" : e % 10 == 2 ? "nd" : e % 10 == 3 ? "rd" : "th");
+            if (cfg.swa_window >= cfg.T)
+                attn_desc = "sliding window OFF: BLU_SWA_WINDOW=" + std::to_string(cfg.swa_window) +
+                            " is >= the row length " + std::to_string(cfg.T) + ", so every token already sees all "
+                            "earlier tokens of its chat: all " + std::to_string(cfg.n_layers) + " layers run normal causal attention";
+            else if (n_win == 0)
+                attn_desc = "sliding window OFF: BLU_SWA_GLOBAL_EVERY=1 makes every layer global: all " +
+                            std::to_string(cfg.n_layers) + " layers run normal causal attention";
+            else
+                attn_desc = "sliding window ON: the last " + std::to_string(cfg.swa_window) + " tokens of each chat (< row length " +
+                            std::to_string(cfg.T) + "), every " + nth + " layer global (" +
+                            std::to_string(cfg.n_layers - n_win) + " global, " + std::to_string(n_win) +
+                            " windowed): " + pat;
+        }
         std::cout << "================ Configuration ================\n"
                   << "  d_model         : " << cfg.d_model        << "\n"
                   << "  n_layers        : " << cfg.n_layers       << "\n"
                   << "  q_heads/kv_heads: " << cfg.q_heads << " / " << cfg.kv_heads
                   << "  (G=" << (cfg.q_heads / cfg.kv_heads) << ")\n"
                   << "  head_dim        : " << cfg.head_dim       << "\n"
+                  << "  attention       : " << attn_desc          << "\n"   // 2026-11-20 step 9 (SWA in SFT)
                   << "  ffn_hidden      : " << cfg.ffn_hidden     << "  (SwiGLU)\n"
                   << "  context_length  : " << cfg.context_length << "\n"
                   << "  rope_theta      : " << cfg.rope_theta
@@ -4020,6 +4192,9 @@ int main(int argc, char** argv) {
                 OwnTensor::DistCheckpoint::save(dcp_model, ckpt_path_for(step + 1),
                                                 ckpt_pg, &dcp_opt, /*epoch=*/0,
                                                 step + 1, loss_accum);
+                // 2026-11-20 step 9 (SWA in SFT): the model record (architecture + sliding window) next to the weights, so a later SFT
+                // run (BLU_INIT_FROM) and sft/export_to_hf.py read the window instead of being told it.
+                if (is_master) write_model_record(ckpt_path_for(step + 1), cfg, "bluscript_sft");
                 if (is_master) prune_old_checkpoints();
             } catch (const std::exception& e) {
                 std::cerr << "[WARN] checkpoint save at step " << (step + 1)

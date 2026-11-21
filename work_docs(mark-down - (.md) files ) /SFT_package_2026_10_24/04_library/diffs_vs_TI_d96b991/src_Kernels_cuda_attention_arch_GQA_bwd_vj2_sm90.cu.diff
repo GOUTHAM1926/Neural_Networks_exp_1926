@@ -1,9 +1,9 @@
 diff --git a/src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.cu b/src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.cu
 new file mode 100644
-index 0000000..7dcc84e
+index 0000000..75ac5ad
 --- /dev/null
 +++ b/src/Kernels/cuda/attention/arch/GQA_bwd_vj2_sm90.cu
-@@ -0,0 +1,1359 @@
+@@ -0,0 +1,1467 @@
 +// ============================================================================
 +//  GQA_bwd_vj2_sm90.cu -- FA3-structured GQA causal backward for Hopper (sm_90a), head_dim 128.
 +//  Added 2026-10-12. Since 2026-10-15 the DEFAULT Hopper backward (USE_VJ2=0 selects Vj1d, GQA_bwd_vj1d_sm90.cu,
@@ -464,8 +464,24 @@ index 0000000..7dcc84e
 +// are the LAST ones so the older ones keep their offsets.
 +// F32P (2026-10-31): fp32 dK / dV partials (dVp / dKp then point to fp32 data; BLU_VJ2_DKDV_F32=1).
 +// 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): HSUM = one block per (key tile, KV head), all G query heads inside it (see the launcher).
++// WIN (sliding window, 2026-11-04; dense rows only): a query sees the last `win` keys, itself included (key > query -
++// win), win a multiple of 128. Key block kt is then seen by the queries k0 .. k0 + 127 + win - 1 only: the steps
++// q_first .. q_first + win/64 + 1 (fewer at the row end). The last two of them hold the window's edge (some key <=
++// query - win) and are masked like the two diagonal steps; for win >= 128 the two pairs never overlap. `win` is
++// appended after the A-only parameters and read only when WIN.
++// 2026-11-20 SWA port of Navin's b913f32 onto 334b244: WIN is the 4th flag here (2nd in b913f32, whose base had no F32P /
++// HSUM), so every instantiation of before keeps its template arguments. It composes with F32P and HSUM: its three
++// changes (the step cap, the edge-step flag, the edge mask) are per head and per step, and the step cap is applied
++// before NT = G x nIter is formed.
++// 2026-11-20 step 7 (packed rows + window): WIN also composes with CHATS (SFT rows that pack several chats; each chat sees the last `win`
++// keys of its own tokens). Nothing new is computed: in CHATS every index (k0, q0, the keys and queries of the masks) is
++// already relative to the segment start, so the window's three changes are the dense window of a row of length L. The
++// step count is min(steps to the chat's end, win/64 + 2), in that order below. Idea 2 (direct dQ for a chat's query
++// tiles 0 and 1) still holds: those queries see only key block 0, with or without a window. Idea 1 (group 1 skips the
++// first step) still holds: its keys all come after that step's queries. Rows past L keep LSE2 = +inf (P = 0).
 +// Old line (kept): template<bool CHATS, bool F32P = false>
-+template<bool CHATS, bool F32P = false, bool HSUM = false>
++// Old line (kept, 2026-11-20 SWA port of Navin's b913f32): template<bool CHATS, bool F32P = false, bool HSUM = false>
++template<bool CHATS, bool F32P = false, bool HSUM = false, bool WIN = false>
 +__global__ void __launch_bounds__(NTHREADS, 1)
 +gqa_bwd_vj2_kernel(
 +    const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
@@ -475,7 +491,12 @@ index 0000000..7dcc84e
 +    const float* __restrict__ Lse2, const float* __restrict__ Drow,
 +    int B, int Hq, int Hkv, int G, int S, float scale, int sw,
 +    const int4* __restrict__ blocks, bf16* __restrict__ dVp, bf16* __restrict__ dKp,   // A only
-+    bf16* __restrict__ dQout) {   // 2026-11-14 idea 2 (direct dQ): the dQ output (bf16 [rows][128]), A only
++    // Old line (kept, 2026-11-20 SWA port of Navin's b913f32: int win appended):
++    //     bf16* __restrict__ dQout) {   // 2026-11-14 idea 2 (direct dQ): the dQ output (bf16 [rows][128]), A only
++    bf16* __restrict__ dQout,     // 2026-11-14 idea 2 (direct dQ): the dQ output (bf16 [rows][128]), A only
++    int win) {                                                                          // WIN only
++    // Old line (kept, 2026-11-20 step 7 (packed rows + window): packed rows + window run now, see the kernel comment above):
++    // static_assert(!(CHATS && WIN), "a sliding window over packed rows is not implemented");
 +    int kt, hq, b;
 +    int t0 = 0, L = 0, dqt0 = 0;                        // A only (dense: 0)
 +    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): with HSUM, hq = the FIRST query head of the KV head's group, and hst = the padded-slot
@@ -504,6 +525,7 @@ index 0000000..7dcc84e
 +    const int q_first = 2 * kt;
 +    int nIter = S / BM - q_first;                       // >= 1: k0 < S and S % 64 == 0
 +    if constexpr (CHATS) nIter = (L + BM - 1) / BM - q_first;   // A: >= 1 because k0 < L
++    if constexpr (WIN) nIter = min(nIter, win / BM + 2);        // the last query that sees key k0 + 127 is k0 + 126 + win
 +    // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): NT = every step of the block: G heads x nIter steps with HSUM, else nIter. The loader, the
 +    // dQ writer and the compute groups count i over all NT steps (stages, barrier phases and hand-offs continue
 +    // across the head boundary); the step inside the current head is ii, the head is hq + g.
@@ -782,7 +804,9 @@ index 0000000..7dcc84e
 +        // the exp loop: 617M instructions, but the diagonal steps got slower (the mask no longer hides in the exp
 +        // latency), packed backward +0.58% in 12 of 12 race rounds. Here the diagonal steps run the original
 +        // interleaved code and the other steps skip the mask.
-+        const bool diag = (q0 < k0 + BN);
++        // Old line (kept, 2026-11-20 SWA port of Navin's b913f32): const bool diag = (q0 < k0 + BN);
++        bool diag = (q0 < k0 + BN);
++        if constexpr (WIN) diag = diag || (q0 + BM - 1 >= k0 + win);   // WIN: the window-edge steps take the mask copy
 +        if (diag) {
 +#pragma unroll
 +            for (int nt = 0; nt < 8; nt++) {
@@ -791,7 +815,10 @@ index 0000000..7dcc84e
 +                    float p = ex2_approx(__fmaf_rn(S_[4 * nt + e], scale2, -l2[2 * nt + (e & 1)]));
 +                    const int key = kbase + r0 + ((e & 2) ? 8 : 0);
 +                    const int qry = q0 + 8 * nt + 2 * t + (e & 1);
-+                    S_[4 * nt + e] = (key > qry) ? 0.f : p;
++                    // Old line (kept, 2026-11-20 SWA port of Navin's b913f32): S_[4 * nt + e] = (key > qry) ? 0.f : p;
++                    bool masked = key > qry;
++                    if constexpr (WIN) masked = masked || key <= qry - win;
++                    S_[4 * nt + e] = masked ? 0.f : p;
 +                }
 +            }
 +        } else {
@@ -1079,7 +1106,10 @@ index 0000000..7dcc84e
 +                                   const float* __restrict__ d_LSE, float* __restrict__ d_Drow,
 +                                   float* __restrict__ d_Lse2, float* __restrict__ d_dqa,
 +                                   const int4* __restrict__ dq_tiles, int nT, int Hq, int S, long nRowsP) {}
-+template<bool CHATS, bool F32P = false, bool HSUM = false>   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2) (old: no HSUM)
++// Old lines (kept, 2026-11-20 SWA port of Navin's b913f32: WIN flag and the win parameter appended):
++// template<bool CHATS, bool F32P = false, bool HSUM = false>   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2) (old: no HSUM)
++//     const int4* __restrict__ blocks, bf16* __restrict__ dVp, bf16* __restrict__ dKp, bf16* __restrict__ dQout) {}
++template<bool CHATS, bool F32P = false, bool HSUM = false, bool WIN = false>
 +__global__ void gqa_bwd_vj2_kernel(
 +    const __grid_constant__ CUtensorMap tma_K,  const __grid_constant__ CUtensorMap tma_V,
 +    const __grid_constant__ CUtensorMap tma_Q,  const __grid_constant__ CUtensorMap tma_dO,
@@ -1087,7 +1117,7 @@ index 0000000..7dcc84e
 +    float* __restrict__ dQacc,
 +    const float* __restrict__ Lse2, const float* __restrict__ Drow,
 +    int B, int Hq, int Hkv, int G, int S, float scale, int sw,
-+    const int4* __restrict__ blocks, bf16* __restrict__ dVp, bf16* __restrict__ dKp, bf16* __restrict__ dQout) {}
++    const int4* __restrict__ blocks, bf16* __restrict__ dVp, bf16* __restrict__ dKp, bf16* __restrict__ dQout, int win) {}
 +template<typename PT>
 +__global__ void gqa_dkdv_greduce_vj2(const PT* __restrict__ partial, bf16* __restrict__ out,
 +                                     int Hq, int Hkv, int G, int S) {}
@@ -1114,8 +1144,19 @@ index 0000000..7dcc84e
 +    bf16* d_dQ, bf16* d_dK, bf16* d_dV,
 +    int B, int Hq, int Hkv, int G, int S, float scale,
 +    const int32_t* d_blocks, int n_blocks,              // design A: the plan's Vj2 block list, or nullptr = dense
-+    const int32_t* d_dqt, int n_dqt) {                  //   and its padded dQ tiles (n_dqt per query head)
++    // Old line (kept, 2026-11-20 SWA port of Navin's b913f32: int win appended):
++    //     const int32_t* d_dqt, int n_dqt) {                  //   and its padded dQ tiles (n_dqt per query head)
++    const int32_t* d_dqt, int n_dqt,                    //   and its padded dQ tiles (n_dqt per query head)
++    int win) {                                          // sliding window in keys (dense only), 0 = plain causal
 +    const bool chats = d_blocks != nullptr;
++    const bool windowed = win > 0 && win < S;
++    // Old lines (kept, 2026-11-20 step 7 (packed rows + window): packed rows + window run now; only the multiple-of-128 rule stays):
++    // if (windowed && (chats || win % BN != 0)) {
++    //     fprintf(stderr, "vj2: a sliding window needs dense rows and a multiple of %d keys (win %d)\n", BN, win); exit(1);
++    // }
++    if (windowed && win % BN != 0) {
++        fprintf(stderr, "vj2: a sliding window needs a multiple of %d keys (win %d)\n", BN, win); exit(1);
++    }
 +    auto encode = [](CUtensorMap* m, CUtensorMapDataType dt, const void* ptr, uint64_t cols, uint64_t rows,
 +                     uint64_t row_bytes, uint32_t box_c, uint32_t box_r, CUtensorMapSwizzle sw, const char* what) {
 +        uint64_t gS[2] = { cols, rows }; uint64_t gT[1] = { row_bytes };
@@ -1290,8 +1331,21 @@ index 0000000..7dcc84e
 +            attr_h = true;
 +        }
 +        if (chats) {   // the plan's per-KV-head list (G == 1: the per-head list itself), dVp / dKp = the outputs
++            // 2026-11-20 SWA port of Navin's b913f32: the trailing win = 0 (packed rows have no window).
++            // 2026-11-20 step 7 (packed rows + window): with a window the WIN copy runs on the same list in the same order; without one the
++            // launch below is the one of before, unchanged.
++            if (windowed) {
++                static bool attr_hcw = false;
++                if (!attr_hcw) {
++                    GQA_BWD_VJ2_CUDA_CHECK(cudaFuncSetAttribute(gqa_bwd_vj2_kernel<true, false, true, true>,
++                                           cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM_BYTES));
++                    attr_hcw = true;
++                }
++                gqa_bwd_vj2_kernel<true, false, true, true><<<(unsigned)n_hblocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK,
++                    d_dqa, d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_hblocks), d_dV, d_dK, d_dQ, win);
++            } else
 +            gqa_bwd_vj2_kernel<true, false, true><<<(unsigned)n_hblocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK,
-+                d_dqa, d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_hblocks), d_dV, d_dK, d_dQ);
++                d_dqa, d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_hblocks), d_dV, d_dK, d_dQ, 0);
 +        } else {       // sections by rule 1 below (whole rows, ~80 MB; switch BLU_VJ2_HSUM_SECT, see the plan builder)
 +            static const int hs = [] { const char* e = getenv("BLU_VJ2_HSUM_SECT"); return e ? atoi(e) : 0; }();
 +            // 2026-11-17 FINAL RULE 1 (as in the plan builder). Old line (kept):
@@ -1301,25 +1355,77 @@ index 0000000..7dcc84e
 +            int rows2 = 1; while (2L * rows2 <= rows_fit) rows2 *= 2;
 +            const int swh = hs > 0 ? hs : (hs < 0 ? B * Hkv : rows2 * Hkv);
 +            const unsigned nBlocksH = (unsigned)((S / BN) * B * Hkv);
++            // Old lines (kept, 2026-11-20 SWA port of Navin's b913f32): the launch below without the window branch and the trailing 0
++            if (windowed) {   // 2026-11-20 SWA port of Navin's b913f32: idea 4's dense path with the window (same grid and order)
++                static bool attr_hw = false;
++                if (!attr_hw) {
++                    GQA_BWD_VJ2_CUDA_CHECK(cudaFuncSetAttribute(gqa_bwd_vj2_kernel<false, false, true, true>,
++                                           cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM_BYTES));
++                    attr_hw = true;
++                }
++                gqa_bwd_vj2_kernel<false, false, true, true><<<nBlocksH, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa,
++                    d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, swh, nullptr, nullptr, nullptr, nullptr, win);
++            } else
 +            gqa_bwd_vj2_kernel<false, false, true><<<nBlocksH, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa,
-+                d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, swh, nullptr, nullptr, nullptr, nullptr);
++                d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, swh, nullptr, nullptr, nullptr, nullptr, 0);
 +        }
 +    } else
 +    if (chats) {   // design A: one block per plan entry, in the plan's order (LPT inside sections of sw pairs)
++        // 2026-11-20 step 7 (packed rows + window): with a window the WIN copies run on the same list in the same order; without one the
++        // two launches below are the ones of before, unchanged.
++        if (windowed) {
++            static bool attr_cw = false, attr_cwf = false;
++            if (f32p && !attr_cwf) {
++                GQA_BWD_VJ2_CUDA_CHECK(cudaFuncSetAttribute(gqa_bwd_vj2_kernel<true, true, false, true>,
++                                       cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM_BYTES));
++                attr_cwf = true;
++            }
++            if (!f32p && !attr_cw) {
++                GQA_BWD_VJ2_CUDA_CHECK(cudaFuncSetAttribute(gqa_bwd_vj2_kernel<true, false, false, true>,
++                                       cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM_BYTES));
++                attr_cw = true;
++            }
++            if (f32p)
++            gqa_bwd_vj2_kernel<true, true, false, true><<<(unsigned)n_blocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa,
++                                    d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp, d_dQ, win);
++            else
++            gqa_bwd_vj2_kernel<true, false, false, true><<<(unsigned)n_blocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa, d_Lse2,
++                                    d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp, d_dQ, win);
++        } else
 +        if (f32p)
 +        gqa_bwd_vj2_kernel<true, true><<<(unsigned)n_blocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa,
-+                                    d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp, d_dQ);
++                                    d_Lse2, d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp, d_dQ, 0);
 +        else
 +        gqa_bwd_vj2_kernel<true><<<(unsigned)n_blocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa, d_Lse2,
-+                                    d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp, d_dQ);
++                                    d_Drow, B, Hq, Hkv, G, S, scale, sw, reinterpret_cast<const int4*>(d_blocks), d_dVp, d_dKp, d_dQ, 0);
 +    } else {
 +        const unsigned nBlocks = (unsigned)((S / BN) * B * Hq);  // S % 128 == 0 here (the router's condition)
++        // Old lines (kept, 2026-11-20 SWA port of Navin's b913f32): the two launches below without the window branch and the trailing 0
++        if (windowed) {   // 2026-11-20 SWA port of Navin's b913f32: the dense grid and order; the blocks of the last key tiles are the short ones now
++            static bool attr_w = false, attr_wf = false;
++            if (f32p && !attr_wf) {
++                GQA_BWD_VJ2_CUDA_CHECK(cudaFuncSetAttribute(gqa_bwd_vj2_kernel<false, true, false, true>,
++                                       cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM_BYTES));
++                attr_wf = true;
++            }
++            if (!f32p && !attr_w) {
++                GQA_BWD_VJ2_CUDA_CHECK(cudaFuncSetAttribute(gqa_bwd_vj2_kernel<false, false, false, true>,
++                                       cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM_BYTES));
++                attr_w = true;
++            }
++            if (f32p)
++            gqa_bwd_vj2_kernel<false, true, false, true><<<nBlocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa, d_Lse2,
++                                                    d_Drow, B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr, nullptr, win);
++            else
++            gqa_bwd_vj2_kernel<false, false, false, true><<<nBlocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa, d_Lse2,
++                                                    d_Drow, B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr, nullptr, win);
++        } else
 +        if (f32p)
 +        gqa_bwd_vj2_kernel<false, true><<<nBlocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa, d_Lse2, d_Drow,
-+                                                                          B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr, nullptr);
++                                                                          B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr, nullptr, 0);
 +        else
 +        gqa_bwd_vj2_kernel<false><<<nBlocks, NTHREADS, SMEM_BYTES>>>(tK, tV, tQ, tdO, tdV, tdK, d_dqa, d_Lse2, d_Drow,
-+                                                                    B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr, nullptr);
++                                                                    B, Hq, Hkv, G, S, scale, sw, nullptr, nullptr, nullptr, nullptr, 0);
 +    }
 +    dim3 grGrid(S / 8, Hkv, B);
 +    if (!hsum) {   // 2026-11-17 IDEA 4 (head sums inside the block, on top of ideas 1 + 2): the head sums are done inside the blocks
@@ -1354,9 +1460,11 @@ index 0000000..7dcc84e
 +    const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* LSE,
 +    __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
 +    int B, int Hq, int Hkv, int G, int S, float scale,
-+    const int32_t* chat_blocks, int n_chat_blocks, const int32_t* dq_tiles, int n_dq_tiles) {
++    // Old line (kept, 2026-11-20 SWA port of Navin's b913f32: int win appended):
++    //     const int32_t* chat_blocks, int n_chat_blocks, const int32_t* dq_tiles, int n_dq_tiles) {
++    const int32_t* chat_blocks, int n_chat_blocks, const int32_t* dq_tiles, int n_dq_tiles, int win) {
 +    gqa_bwd_vj2::launch_gqa_backward_vj2(Q, K, V, O, dO, LSE, dQ, dK, dV, B, Hq, Hkv, G, S, scale,
-+                                         chat_blocks, n_chat_blocks, dq_tiles, n_dq_tiles);
++                                         chat_blocks, n_chat_blocks, dq_tiles, n_dq_tiles, win);
 +}
 +// The section size of Vj2's block order for rows of S tokens (gqa_chat_plan_build orders design A's blocks with it).
 +int gqa_vj2_section_pairs(int S) { return gqa_bwd_vj2::section_pairs(S); }

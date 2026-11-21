@@ -1,5 +1,5 @@
---- 03_trainer/bluscript_zero_ckpt_PRETRAINING_d9606c2.cpp	2026-11-18 21:34:25.603913884 +0530
-+++ 03_trainer/bluscript_sft.cpp	2026-11-18 21:34:25.602381037 +0530
+--- 03_trainer/bluscript_zero_ckpt_PRETRAINING_651f9c4.cpp	2026-11-20 20:15:34.858805503 +0530
++++ 03_trainer/bluscript_sft.cpp	2026-11-20 20:15:34.831016353 +0530
 @@ -1,4 +1,51 @@
  // =============================================================================
 +// train/production_zero/bluscript_sft.cpp — the SFT (supervised fine-tuning) trainer.
@@ -227,7 +227,7 @@
  using owt::zero::ShardedOptimizer;
  using owt::zero::SymmetricShardedOptimizer;
  using owt::zero::ShardedMuon;
-@@ -147,6 +327,11 @@
+@@ -147,16 +327,22 @@
      int     rope_theta     = 10000;
      int64_t vocab_size     = 50304;                      // 50257 (tiktoken) padded for GPU efficiency
      bool    weight_tying   = true;
@@ -239,7 +239,57 @@
  
      float   rms_eps        = 1e-5f;                      // block RMSNorm epsilon
      float   qk_eps         = 1e-6f;                      // QK-norm (fused) epsilon
-@@ -625,11 +810,16 @@
+     bool    rope_interleaved = false;                    // false = NeoX half-split (Llama style)
+-    // Sliding-window attention (BLU_SWA_WINDOW / BLU_SWA_GLOBAL_EVERY; 2026-11-20 SWA, ported from Navin's 1d8cd96). swa_window = 0 (the default) is
+-    // the model of before: every layer global causal. With a window W, layer i attends globally iff
+-    // (i + 1) % swa_global_every == 0, otherwise to the last W keys, itself included (HF sliding_window = W). every = 4
+-    // on 28 layers: layers 3, 7, ..., 27 global, the other 21 windowed. No parameter changes (checkpoints load either
+-    // way). W must be a multiple of 128: only the Hopper v62 forward / Vj2 backward have the window (the library
+-    // throws on any other path). W >= T changes nothing (the library runs plain causal attention then).
++    // Sliding-window attention (BLU_SWA_WINDOW / BLU_SWA_GLOBAL_EVERY; 2026-11-20 step 9 (SWA in SFT): the same fields and rule as
++    // bluscript_zero_ckpt.cpp, 2026-11-20 SWA, ported from Navin's 1d8cd96). swa_window = 0 (the default) is the model of
++    // before: every layer global causal. With a window W, layer i attends globally iff (i + 1) % swa_global_every == 0,
++    // otherwise to the last W keys, itself included (HF sliding_window = W). In packed rows the window is per chat (each
++    // chat sees the last W tokens of its own; Tensor-Implementations 2356565). No parameter changes, so a checkpoint loads
++    // with any window: the base's record is checked at start-up (BLU_SWA_MISMATCH_OK, below). W must be a multiple of
++    // 128 (only the Hopper v62 forward / Vj2 backward have the window); W >= T changes nothing.
+     int     swa_window       = 0;
+     int     swa_global_every = 4;
+     int attn_window(int layer) const {
+@@ -410,8 +596,9 @@
+         // queries, so the score matrix is still Nq deep.
+         const double attn_dense  = 4.0 * T * hd * Nq;
+         const double attn_causal = 0.5 * attn_dense;  // is_causal skips the mask
+-        // Sliding-window layers (ModelConfig::attn_window; 2026-11-20 SWA, ported from Navin's 1d8cd96): the query at t sees min(t, W) keys, so the
+-        // causal count's T/2 keys on average become (W*W/2 + (T - W) * W) / T, and the dense convention's T become W.
++        // Sliding-window layers (ModelConfig::attn_window; 2026-11-20 step 9 (SWA in SFT), the formula of bluscript_zero_ckpt.cpp): the
++        // query at t sees min(t, W) keys, so the causal count's T/2 keys on average become (W*W/2 + (T - W) * W) / T, and
++        // the dense convention's T become W. Counted over the row T as before (packed chats are not counted one by one).
+         // With swa_window = 0 both sums are exactly L * attn_causal and L * attn_dense, as before.
+         double attn_causal_all = 0.0, attn_dense_all = 0.0;
+         for (int i = 0; i < c.n_layers; ++i) {
+@@ -426,7 +613,7 @@
+         // weights.
+         const double head = 2.0 * d * V;
+ 
+-        // Old lines (kept, not deleted; 2026-11-20 SWA, ported from Navin's 1d8cd96):
++        // Old lines (kept, not deleted; 2026-11-20 step 9 (SWA in SFT)):
+         // m.fwd_per_token_causal = L * (qkv + proj + ffn + attn_causal) + head;
+         // m.fwd_per_token_dense  = L * (qkv + proj + ffn + attn_dense)  + head;
+         m.fwd_per_token_causal = L * (qkv + proj + ffn) + attn_causal_all + head;
+@@ -576,9 +763,9 @@
+     Tensor      q_gamma, k_gamma;// [head_dim] fp32 QK-norm scales (learnable)
+     Tensor      cos_sin_cache;   // shared [context_length, head_dim] fp32 RoPE cache (no grad)
+     ModelConfig cfg;
+-    int         window;          // sliding window in keys, 0 = global causal (ModelConfig::attn_window; 2026-11-20 SWA, ported from Navin's 1d8cd96)
++    int         window;          // sliding window in keys, 0 = global causal (ModelConfig::attn_window; 2026-11-20 step 9 (SWA in SFT))
+ 
+-    // Old line (kept, not deleted; 2026-11-20 SWA, ported from Navin's 1d8cd96: the layer index is passed in for its window):
++    // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT): the layer index is passed in for its window):
+     // CausalGQA(const ModelConfig& c, DeviceIndex dev, const Tensor& cache, InitRng& rng)
+     CausalGQA(const ModelConfig& c, DeviceIndex dev, const Tensor& cache, InitRng& rng, int layer)
+         : norm(c.d_model, c.rms_eps, c.resid_dtype()),
+@@ -653,11 +840,16 @@
          // the reverse order is correct -- but it pays for a bf16 copy AND an fp32 one
          // instead of just the bf16 copy, which is the opposite of the point here.
          // BLU_QKROPE_FP32=1 restores the fp32 head-major path above, kept for A/B checks against the bf16 kernel.
@@ -257,7 +307,7 @@
          } else {
              Tensor q_4d = autograd::to_dtype(autograd::contiguous(
                  autograd::transpose(autograd::reshape(q, Shape{{B, T, Nq,  hd}}), 1, 2)), qk);
-@@ -638,7 +828,7 @@
+@@ -666,7 +858,7 @@
  
              auto [q_norm_rope, k_norm_rope] = autograd::fused_rms_rope(
                  q_4d, k_4d, q_gamma, k_gamma, cos_sin_cache,
@@ -266,7 +316,7 @@
  
              q_bf = autograd::to_dtype(q_norm_rope, Dtype::Bfloat16);
              k_bf = autograd::to_dtype(k_norm_rope, Dtype::Bfloat16);
-@@ -650,6 +840,9 @@
+@@ -678,6 +870,9 @@
          q = autograd::to_dtype(autograd::reshape(q, Shape{{B, T, Nq,  hd}}), qk);
          k = autograd::to_dtype(autograd::reshape(k, Shape{{B, T, Nkv, hd}}), qk);
  
@@ -276,19 +326,27 @@
          q = autograd::rms_norm(q, q_gamma, static_cast<int>(hd), cfg.qk_eps);
          k = autograd::rms_norm(k, k_gamma, static_cast<int>(hd), cfg.qk_eps);
          q = autograd::rope(q, cos_sin_cache);
-@@ -662,9 +855,28 @@
+@@ -690,14 +885,35 @@
          // v never leaves bf16 (F2): wV already produced bf16 and SDPA consumes bf16.
          Tensor v_bf = autograd::transpose(autograd::reshape(v, Shape{{B, T, Nkv, hd}}), 1, 2);
  
+-        // Old lines (kept, not deleted; 2026-11-20 SWA, ported from Navin's 1d8cd96: the layer's window is passed last, 0 = global causal as before):
+-        // Tensor attn = autograd::scaled_dot_product_attention(
+-        //     q_bf, k_bf, v_bf, static_cast<int>(Nq), static_cast<int>(Nkv),
+-        //     /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention); // [B,Nq,T,hd] bf16
 -        Tensor attn = autograd::scaled_dot_product_attention(
 +        // 2026-11-06: the call below is unchanged; it now sits in the U == 1 branch (no context parallelism).
 +        Tensor attn;
 +        if (g_cp.U == 1) {
 +        attn = autograd::scaled_dot_product_attention(
              q_bf, k_bf, v_bf, static_cast<int>(Nq), static_cast<int>(Nkv),
--            /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention); // [B,Nq,T,hd] bf16
+-            /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention,
+-            /*chats=*/nullptr, window);                                           // [B,Nq,T,hd] bf16
 +            /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention,   // [B,Nq,T,hd] bf16
-+            g_packed.chats);   // packed rows: each chat attends only to itself; null = plain causal
++            // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT): the layer's window is passed last, 0 = global causal as before):
++            //     g_packed.chats);   // packed rows: each chat attends only to itself; null = plain causal
++            g_packed.chats,    // packed rows: each chat attends only to itself; null = plain causal
++            window);           // 2026-11-20 step 9 (SWA in SFT): the last W keys of each chat (0 = global causal)
 +        } else {
 +            // Context parallelism (BLU_SFT_CP=U, see SftCp above). Here T is this rank's slice (T_full / U); q_bf and
 +            // k_bf already carry RoPE at their true per-chat positions (g_packed.positions was sliced to match).
@@ -301,13 +359,41 @@
 +            Tensor attn_g = autograd::scaled_dot_product_attention(
 +                qg, kg, vg, static_cast<int>(Nq / U), static_cast<int>(Nkv / U),
 +                /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention,   // [B,Nq/U,T_full,hd]
-+                g_packed.chats);   // the FULL row's chat plan, built for Nq/U heads
++                // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT): the window too; every rank holds whole chats here, so
++                // the window is applied exactly as on one GPU):
++                //     g_packed.chats);   // the FULL row's chat plan, built for Nq/U heads
++                g_packed.chats,    // the FULL row's chat plan, built for Nq/U heads
++                window);           // 2026-11-20 step 9 (SWA in SFT): the same per-chat window as without CP
 +            attn = cp_partition(autograd::contiguous(attn_g));     // [B, Nq, T, hd]: back to this rank's slice
 +        }
  
          Tensor merged = autograd::reshape(autograd::transpose(attn, 1, 2),
                                          Shape{{B, T, Nq * hd}});             // bf16
-@@ -724,10 +936,15 @@
+@@ -749,23 +965,6 @@
+ // =============================================================================
+ // Full model
+ // =============================================================================
+-// Model record (2026-11-20 step 9 (SWA in SFT); the same file as bluscript_sft.cpp writes): model_config.json next to the weights in every
+-// checkpoint directory, for the settings no weight depends on (the sliding window above all). An SFT run started from
+-// this checkpoint (BLU_INIT_FROM) compares its own window with it, and sft/export_to_hf.py writes the Hugging Face window
+-// fields from it. This trainer has no embedding scale, so embed_scale is 0.
+-static void write_model_record(const std::string& dir, const ModelConfig& c, const char* trainer) {
+-    std::ofstream f(dir + "/model_config.json");
+-    if (!f) { std::cerr << "[WARN] could not write " << dir << "/model_config.json" << std::endl; return; }
+-    f << "{\"format\": \"blutrain_model_record\", \"version\": 1, \"trainer\": \"" << trainer << "\""
+-      << ", \"d_model\": " << c.d_model << ", \"n_layers\": " << c.n_layers
+-      << ", \"q_heads\": " << c.q_heads << ", \"kv_heads\": " << c.kv_heads << ", \"head_dim\": " << c.head_dim
+-      << ", \"ffn_hidden\": " << c.ffn_hidden << ", \"vocab_size\": " << c.vocab_size
+-      << ", \"context_length\": " << c.context_length << ", \"rope_theta\": " << c.rope_theta
+-      << ", \"rms_eps\": " << c.rms_eps << ", \"qk_eps\": " << c.qk_eps
+-      << ", \"embed_scale\": 0, \"weight_tying\": " << (c.weight_tying ? 1 : 0)
+-      << ", \"swa_window\": " << c.swa_window << ", \"swa_global_every\": " << c.swa_global_every << "}\n";
+-}
+-
+ class BLU : public nn::Module {
+ public:
+     ModelConfig cfg;
+@@ -774,10 +973,15 @@
  public:
      nn::Embedding wte;            // token embedding [vocab, d_model]
      Tensor        cos_sin_cache;  // [context_length, head_dim] fp32 (shared, no grad)
@@ -323,7 +409,7 @@
  
      BLU(const ModelConfig& c, DeviceIndex dev, uint64_t seed = 1234)
          : cfg(c),
-@@ -741,6 +958,11 @@
+@@ -791,9 +995,14 @@
          init_embedding(wte, 0.02f, init_rng_);
          wte.to(dev);
          norm_f.to(dev);
@@ -334,8 +420,12 @@
 +        }
  
          for (int i = 0; i < c.n_layers; ++i) {
-             auto a = std::make_shared<CausalGQA>(c, dev, cos_sin_cache, init_rng_);
-@@ -770,6 +992,7 @@
+-            // Old line (kept, not deleted; 2026-11-20 SWA, ported from Navin's 1d8cd96): auto a = std::make_shared<CausalGQA>(c, dev, cos_sin_cache, init_rng_);
++            // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT)): auto a = std::make_shared<CausalGQA>(c, dev, cos_sin_cache, init_rng_);
+             auto a = std::make_shared<CausalGQA>(c, dev, cos_sin_cache, init_rng_, i);
+             auto m = std::make_shared<SwiGLUMLP>(c, dev, init_rng_);
+             attn.push_back(a);
+@@ -821,6 +1030,7 @@
          // residual dtype: the two are independent flags, so bf16_embed without
          // bf16_resid has to widen here (and vice versa).
          Tensor x = autograd::to_dtype(wte.forward(idx), cfg.resid_dtype());  // [B,T,d_model]
@@ -343,7 +433,7 @@
          // Blocks are invoked through Module::operator(), not forward(), so any
          // registered module hook actually fires — a direct forward() call bypasses
          // hook dispatch entirely. The ZeRO-1 staged parameter refresh registers a
-@@ -786,6 +1009,7 @@
+@@ -837,6 +1047,7 @@
          // logits are HANDED BACK in is a flag: fp32 costs a [B,T,vocab] fp32 tensor
          // (3.30 GB at B*T=16384, vocab=50304) purely to widen a bf16 product.
          Tensor x_bf = autograd::to_dtype(x, Dtype::Bfloat16);
@@ -351,7 +441,7 @@
          if (cfg.weight_tying) {
              // logits = x @ wte.weight^T ; keep the autograd edge back to wte.weight.
              //
-@@ -821,6 +1045,9 @@
+@@ -872,6 +1083,9 @@
  // WSD learning-rate schedule: linear Warmup -> Stable (constant max_lr) ->
  // cosine Decay to min_lr over the remaining steps.
  // =============================================================================
@@ -361,7 +451,7 @@
  static float get_lr(int step, float max_lr, float min_lr, int warmup, int max_steps, int stable_steps) {
      if (step < warmup) {
          return max_lr * static_cast<float>(step + 1) / static_cast<float>(warmup);
-@@ -832,6 +1059,8 @@
+@@ -883,6 +1097,8 @@
                          static_cast<float>((max_steps - (stable_steps + warmup)) - 1);
      assert(decay_ratio >= 0.0f && decay_ratio <= 1.0f);
  
@@ -370,10 +460,55 @@
      // cosine decay
      const float coeff = 0.5f * (1.0f + std::cos(M_PI * decay_ratio));  // 1 -> 0
      return min_lr + coeff * (max_lr - min_lr);
-@@ -840,6 +1069,79 @@
+@@ -891,6 +1107,128 @@
      //return min_lr + (max_lr-min_lr) * (1.0f - decay_ratio);
  }
  
++// =============================================================================
++// Model record (2026-11-20 step 9 (SWA in SFT)): a small JSON file next to the weights that says how the model was trained, for the
++// settings no weight depends on (the sliding window above all: a wrong window loads fine and trains wrong, as a wrong
++// rope_theta does). Written as model_config.json into every checkpoint directory (master rank, after the DCP save) by
++// this trainer and by bluscript_zero_ckpt.cpp. sft/hf_to_blutrain.py writes the same window fields into its meta.json
++// (from the Hugging Face config); sft/export_to_hf.py reads model_config.json and writes the Hugging Face window fields.
++// =============================================================================
++static void write_model_record(const std::string& dir, const ModelConfig& c, const char* trainer) {
++    std::ofstream f(dir + "/model_config.json");
++    if (!f) { std::cerr << "[WARN] could not write " << dir << "/model_config.json" << std::endl; return; }
++    f << "{\"format\": \"blutrain_model_record\", \"version\": 1, \"trainer\": \"" << trainer << "\""
++      << ", \"d_model\": " << c.d_model << ", \"n_layers\": " << c.n_layers
++      << ", \"q_heads\": " << c.q_heads << ", \"kv_heads\": " << c.kv_heads << ", \"head_dim\": " << c.head_dim
++      << ", \"ffn_hidden\": " << c.ffn_hidden << ", \"vocab_size\": " << c.vocab_size
++      << ", \"context_length\": " << c.context_length << ", \"rope_theta\": " << c.rope_theta
++      << ", \"rms_eps\": " << c.rms_eps << ", \"qk_eps\": " << c.qk_eps
++      << ", \"embed_scale\": " << (c.embed_scale ? 1 : 0) << ", \"weight_tying\": " << (c.weight_tying ? 1 : 0)
++      << ", \"swa_window\": " << c.swa_window << ", \"swa_global_every\": " << c.swa_global_every << "}\n";
++}
++// The window of a model record (model_config.json above, or sft/hf_to_blutrain.py's meta.json): true with the two
++// values when the file has "swa_window" (a number or a quoted number); false when the file or the key is missing (a
++// record made before 2026-11-20).
++static bool read_window_record(const std::string& path, int& w, int& every) {
++    std::ifstream f(path);
++    if (!f) return false;
++    const std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
++    auto num = [&](const char* key, int& out) {
++        const size_t k = s.find(std::string("\"") + key + "\"");
++        if (k == std::string::npos) return false;
++        size_t p = s.find(':', k);
++        if (p == std::string::npos) return false;
++        ++p;
++        while (p < s.size() && (s[p] == ' ' || s[p] == '"' || s[p] == '\t' || s[p] == '\n')) ++p;
++        char* end = nullptr;
++        const long v = std::strtol(s.c_str() + p, &end, 10);
++        if (end == s.c_str() + p) return false;
++        out = static_cast<int>(v);
++        return true;
++    };
++    if (!num("swa_window", w)) return false;
++    every = 4;
++    num("swa_global_every", every);
++    return true;
++}
++
 +// =============================================================================
 +// Weight export (BLU_EXPORT=<path>.safetensors) — final model, rank 0 only. Copied from preproduction-135M
 +// f37c616 (2026-10-28) so an SFT run ends with a file sft/blutrain_to_hf.py turns into a Hugging Face model.
@@ -412,7 +547,11 @@
 +        << ",\"vocab_size\":\"" << c.vocab_size << "\",\"context_length\":\"" << c.context_length << "\""
 +        << ",\"rope_theta\":\"" << c.rope_theta << "\",\"rms_eps\":\"" << c.rms_eps << "\""
 +        << ",\"qk_eps\":\"" << c.qk_eps << "\",\"embed_scale\":\"" << (c.embed_scale ? 1 : 0) << "\""
-+        << ",\"weight_tying\":\"" << (c.weight_tying ? 1 : 0) << "\",\"steps\":\"" << steps << "\"}";
++        // Old line (kept, not deleted; 2026-11-20 step 9 (SWA in SFT): the window fields added before "steps"):
++        // << ",\"weight_tying\":\"" << (c.weight_tying ? 1 : 0) << "\",\"steps\":\"" << steps << "\"}";
++        << ",\"weight_tying\":\"" << (c.weight_tying ? 1 : 0) << "\""
++        << ",\"swa_window\":\"" << c.swa_window << "\",\"swa_global_every\":\"" << c.swa_global_every << "\""
++        << ",\"steps\":\"" << steps << "\"}";
 +    uint64_t off = 0;
 +    for (auto& [name, t] : named) {
 +        Tensor h = t.as_type(Dtype::Float32).to_cpu();
@@ -450,10 +589,19 @@
  static bool dir_has_checkpoints(const std::filesystem::path& dir, const std::string& prefix) {
      namespace sfs = std::filesystem;
      std::error_code ec;
-@@ -1102,6 +1404,34 @@
+@@ -1146,8 +1484,44 @@
          dist::comm::abort_job(launch, 2);
      }
- 
+     if (is_master) print_config();
+-    // Sliding window (ModelConfig::attn_window; 2026-11-20 SWA, ported from Navin's 1d8cd96): BLU_SWA_WINDOW=<keys> (0 = off, every layer global
+-    // causal, as before) and BLU_SWA_GLOBAL_EVERY=<n> (every n-th layer stays global, default 4).
++    if (getenv_int("BLU_PARALLELISM", 1) == 0 && world_size > 1) {
++        if (is_master)
++            std::cerr << "ERROR: parallelism.enabled is false but the job has " << world_size
++                      << " ranks. Enable it or launch with NP=1." << std::endl;
++        dist::comm::abort_job(launch, 2);
++    }
++
 +    // Model shape overrides (2026-10-22). A checkpoint stores the weights, not the config, so the run must build the
 +    // model the checkpoint was trained as. BLU_N_LAYERS / BLU_ROPE_THETA override ModelConfig / the YAML (on this
 +    // branch 26 / 10000; it was 26 / 500000 in the tree this SFT code came from, so always set both for a checkpoint);
@@ -482,10 +630,72 @@
 +                         "multiples of 64, and q_heads x head_dim = d_model" << std::endl;
 +        dist::comm::abort_job(launch, 1);
 +    }
++    // 2026-11-20 step 9 (SWA in SFT): the sliding window, with the names and checks of bluscript_zero_ckpt.cpp: BLU_SWA_WINDOW=<keys>
++    // (0 = off, the default: every layer global causal, as before) and BLU_SWA_GLOBAL_EVERY=<n> (every n-th layer
++    // global, default 4). sft/run_sft.sh passes them as SWA_WINDOW / SWA_GLOBAL_EVERY (it clears every other BLU_*).
+     cfg.swa_window       = getenv_int("BLU_SWA_WINDOW", 0);
+     cfg.swa_global_every = getenv_int("BLU_SWA_GLOBAL_EVERY", cfg.swa_global_every);
+     {
+@@ -1161,17 +1535,51 @@
+             why = "a sliding window needs head_dim 128 (only the Hopper v62 / Vj2 kernels have it)";
+         if (!why.empty()) {
+             if (is_master) std::cerr << "ERROR: bad sliding-window setting: " << why << std::endl;
+-            dist::comm::abort_job(launch, 2);
++            dist::comm::abort_job(launch, 1);
+         }
+     }
+-    if (getenv_int("BLU_PARALLELISM", 1) == 0 && world_size > 1) {
+-        if (is_master)
+-            std::cerr << "ERROR: parallelism.enabled is false but the job has " << world_size
+-                      << " ranks. Enable it or launch with NP=1." << std::endl;
+-        dist::comm::abort_job(launch, 2);
++    // 2026-11-20 step 9 (SWA in SFT): the base model's window must be this run's window. No weight depends on it, so a wrong one loads
++    // fine and trains wrong (the 21 windowed layers of the 350M base were pretrained never seeing a key more than 1,023
++    // positions back). The base's record: <BLU_INIT_FROM>/model_config.json (written with every checkpoint since
++    // 2026-11-20) or <BLU_INIT_FROM_RAW>/meta.json (sft/hf_to_blutrain.py, from the Hugging Face config). Compared layer
++    // by layer. A deliberate change (an ablation arm, e.g. full attention in SFT on a SWA base) needs
++    // BLU_SWA_MISMATCH_OK=1 and is then printed as a warning. A base without a record (made before 2026-11-20) gets a
++    // note line only.
++    {
++        std::string base, rec;
++        if (const char* p1 = std::getenv("BLU_INIT_FROM"); p1 && *p1) { base = p1; rec = base + "/model_config.json"; }
++        else if (const char* p2 = std::getenv("BLU_INIT_FROM_RAW"); p2 && *p2) { base = p2; rec = base + "/meta.json"; }
++        if (!base.empty()) {
++            int bw = 0, be = 4;
++            if (!read_window_record(rec, bw, be)) {
++                if (is_master)
++                    std::cout << "[sft] note: the base " << base << " has no window record (no \"swa_window\" in " << rec
++                              << "; made before 2026-11-20): this run uses BLU_SWA_WINDOW=" << cfg.swa_window
++                              << " (every " << cfg.swa_global_every << "), which must be the base's own" << std::endl;
++            } else {
++                ModelConfig bc = cfg;
++                bc.swa_window = bw; bc.swa_global_every = be;
++                bool same = true;
++                for (int i = 0; i < cfg.n_layers; ++i) same = same && bc.attn_window(i) == cfg.attn_window(i);
++                if (!same) {
++                    const bool ok = getenv_int("BLU_SWA_MISMATCH_OK", 0) != 0;
++                    if (is_master)
++                        std::cerr << (ok ? "[sft] WARNING (BLU_SWA_MISMATCH_OK=1, on purpose): " : "ERROR: ")
++                                  << "the base was trained with sliding window " << bw << " (every " << be
++                                  << ". layer global; " << rec << "), this run has BLU_SWA_WINDOW=" << cfg.swa_window
++                                  << " (every " << cfg.swa_global_every << ")"
++                                  << (ok ? "" : ". Set SWA_WINDOW / SWA_GLOBAL_EVERY (run_sft.sh) to the base's values, "
++                                                "or SWA_MISMATCH_OK=1 (BLU_SWA_MISMATCH_OK=1) for a deliberate ablation arm")
++                                  << std::endl;
++                    if (!ok) dist::comm::abort_job(launch, 1);
++                } else if (is_master) {
++                    std::cout << "[sft] the base's window record matches this run (window " << bw << ", every " << be
++                              << "; " << rec << ")" << std::endl;
++                }
++            }
++        }
+     }
  
+-
      // OwnTensor::AllocationTracker::instance().init("4b_tracker.csv");
  
-@@ -1169,8 +1499,153 @@
+     
+@@ -1238,8 +1646,153 @@
          }
      }
  
@@ -640,7 +850,43 @@
      if (cfg.global_batch % tokens_per_micro != 0) {
          if (is_master) {
              std::cerr << "ERROR: global_batch (" << cfg.global_batch
-@@ -1193,6 +1668,7 @@
+@@ -1250,8 +1803,8 @@
+     const int GRAD_ACCUM = static_cast<int>(cfg.global_batch / tokens_per_micro);
+ 
+     if (is_master) {
+-        // 2026-11-20 SWA, ported from Navin's 1d8cd96: one line saying exactly which attention runs (the user, 2026-11-19: a window >= the context
+-        // length is not an error, but the line must say plainly that it changes nothing).
++        // 2026-11-20 step 9 (SWA in SFT): one line saying exactly which attention runs (as bluscript_zero_ckpt.cpp; a window >= the row
++        // length is not an error, but the line says plainly that it changes nothing). In packed rows it is per chat.
+         std::string attn_desc = "normal causal attention in all " + std::to_string(cfg.n_layers) +
+                                 " layers (sliding window off: BLU_SWA_WINDOW not set)";
+         if (cfg.swa_window > 0) {
+@@ -1263,13 +1816,13 @@
+                                     e % 10 == 1 ? "st" : e % 10 == 2 ? "nd" : e % 10 == 3 ? "rd" : "th");
+             if (cfg.swa_window >= cfg.T)
+                 attn_desc = "sliding window OFF: BLU_SWA_WINDOW=" + std::to_string(cfg.swa_window) +
+-                            " is >= the context length " + std::to_string(cfg.T) + ", so every token already sees all "
+-                            "earlier tokens: all " + std::to_string(cfg.n_layers) + " layers run normal causal attention";
++                            " is >= the row length " + std::to_string(cfg.T) + ", so every token already sees all "
++                            "earlier tokens of its chat: all " + std::to_string(cfg.n_layers) + " layers run normal causal attention";
+             else if (n_win == 0)
+                 attn_desc = "sliding window OFF: BLU_SWA_GLOBAL_EVERY=1 makes every layer global: all " +
+                             std::to_string(cfg.n_layers) + " layers run normal causal attention";
+             else
+-                attn_desc = "sliding window ON: " + std::to_string(cfg.swa_window) + " tokens (< context length " +
++                attn_desc = "sliding window ON: the last " + std::to_string(cfg.swa_window) + " tokens of each chat (< row length " +
+                             std::to_string(cfg.T) + "), every " + nth + " layer global (" +
+                             std::to_string(cfg.n_layers - n_win) + " global, " + std::to_string(n_win) +
+                             " windowed): " + pat;
+@@ -1280,13 +1833,14 @@
+                   << "  q_heads/kv_heads: " << cfg.q_heads << " / " << cfg.kv_heads
+                   << "  (G=" << (cfg.q_heads / cfg.kv_heads) << ")\n"
+                   << "  head_dim        : " << cfg.head_dim       << "\n"
+-                  << "  attention       : " << attn_desc          << "\n"
++                  << "  attention       : " << attn_desc          << "\n"   // 2026-11-20 step 9 (SWA in SFT)
+                   << "  ffn_hidden      : " << cfg.ffn_hidden     << "  (SwiGLU)\n"
+                   << "  context_length  : " << cfg.context_length << "\n"
+                   << "  rope_theta      : " << cfg.rope_theta
                    << "  (interleaved="    << (cfg.rope_interleaved ? "GPT-J" : "NeoX") << ")\n"
                    << "  vocab_size      : " << cfg.vocab_size     << "\n"
                    << "  weight_tying    : " << (cfg.weight_tying ? "ON" : "OFF") << "\n"
@@ -648,7 +894,7 @@
                    << "  precision       : resid "
                    << OwnTensor::get_dtype_name(cfg.resid_dtype())
                    << " | logits " << OwnTensor::get_dtype_name(cfg.logit_dtype())
-@@ -1339,6 +1815,21 @@
+@@ -1433,6 +1987,21 @@
                        << " (algorithms picked for this machine; BLUCCL_ALGO_REPORT=1 prints them)" << std::endl;
      }
  
@@ -670,7 +916,7 @@
      // Monitoring: every launch writes into its own <launch dir>/<logs_root>/<run name>_<mpirun|blurun>_<id>/
      // (see train/production_zero/monitoring/); the make wrapper pre-creates it for mpirun launches.
      const bool monitor = getenv_int("BLU_MONITOR", 0) != 0;
-@@ -1394,7 +1885,8 @@
+@@ -1488,7 +2057,8 @@
      const bool csv_enabled = getenv_int("BLU_LOG_ENABLED", 1) != 0;
      const std::string csv_dir = run_dir.empty() ? getenv_str("BLU_LOG_DIR", "") : run_dir;
      const std::string csv_path = (csv_dir.empty() ? fs::path() : fs::path(csv_dir)) /
@@ -680,7 +926,7 @@
                           : std::string("metrics.csv"));
      int csv_mode = 0;   // 0 = write new, 1 = append, -1 = refuse
      if (is_master && csv_enabled && fs::exists(csv_path) && getenv_int("BLU_LOG_OVERWRITE", 0) == 0)
-@@ -1418,6 +1910,162 @@
+@@ -1512,6 +2082,162 @@
      for (auto& p : params) num_params += p.numel();
      if (is_master) std::cout << "Number of parameters: " << num_params << std::endl;
  
@@ -843,7 +1089,7 @@
      // ---- MFU meter ----
      // Built here rather than at first use so its banner lands next to the
      // parameter count it cross-checks itself against (6*N), and so a bogus
-@@ -1435,8 +2083,12 @@
+@@ -1529,8 +2255,12 @@
      else if (bluccl_fused_emb && is_master)
          std::cout << "[embedding] bluccl.fused_embedding_backward ignored: it needs ZeRO-1 on the "
                       "BluCCL backend with more than one GPU; using embedding.backward" << std::endl;
@@ -857,7 +1103,7 @@
      if (is_master) {
          const char* m = std::getenv("BLUTRAIN_EMB_BWD");
          std::cout << "[embedding] backward: "
-@@ -2232,7 +2884,7 @@
+@@ -2326,7 +3056,7 @@
          return p;
      };
  
@@ -866,7 +1112,7 @@
          std::cout << "\n=== Data mixture: preset " << mix_preset
                    << (mix_schedule.size() > 1 ? " (phased)" : " (static)") << " ===\n";
          for (const auto& ph : mix_schedule) {
-@@ -2250,21 +2902,28 @@
+@@ -2344,21 +3074,28 @@
      // loop re-applies the correct phase before the first batch is drawn.
      for (size_t d = 0; d < domains.size(); ++d) domains[d].weight = mix_schedule[0].w[d];
  
@@ -900,7 +1146,7 @@
          auto fingerprint = [](const std::vector<std::string>& shards) {
              uint64_t h = 1469598103934665603ull;
              auto mix = [&h](const void* p, size_t n) {
-@@ -2344,7 +3003,10 @@
+@@ -2438,7 +3175,10 @@
              // positionally, so anything added at the end leaves it working unchanged.
              for (auto& vl : val_loaders) log_file << ",val_" << vl.first;
              log_file << ",tokens_seen,avg_tok_per_sec";
@@ -912,7 +1158,7 @@
              log_file << "\n";
          }
          log_file << std::fixed << std::setprecision(6);
-@@ -2372,9 +3034,16 @@
+@@ -2466,9 +3206,16 @@
      }
  
      // Reused GPU scalars (avoid per-step allocation).
@@ -930,7 +1176,7 @@
  
      float last_val_loss = -1.0f;  // carried across steps; refreshed every val_freq
      auto training_start = std::chrono::high_resolution_clock::now();
-@@ -2510,9 +3179,13 @@
+@@ -2604,9 +3351,13 @@
      // no collectives there). Give the checkpointer its own single-rank group so
      // one-GPU runs can still save and resume instead of faulting in save().
      std::shared_ptr<ProcessGroupNCCL> ckpt_pg = nccl_pg;
@@ -945,7 +1191,7 @@
          try {
              ckpt_pg = dist::comm::bring_up_process_group(launch, dist::comm::MemoryMode::Standard, "dcp");
              if (is_master)
-@@ -2681,16 +3354,18 @@
+@@ -2775,16 +3526,18 @@
              // That costs one extra rebase, which is harmless — the pre-resume
              // span was on target and the post-resume span is on target from a
              // zeroed accounting, so the run total is too.
@@ -968,7 +1214,7 @@
              }
          }
      }
-@@ -2720,17 +3395,59 @@
+@@ -2814,17 +3567,59 @@
          // GRAD_ACCUM micro-batches at the transition step were already picked
          // under the old weights. At GRAD_ACCUM=32 that is a 4-batch smear at
          // one step boundary — not worth draining the pipeline to avoid.
@@ -1031,7 +1277,7 @@
              autograd::NoGradGuard no_grad;
              // The validation forward reads the model parameters and runs BEFORE
              // zero_grad(), so the refresh still in flight from the previous step
-@@ -2760,6 +3477,7 @@
+@@ -2854,6 +3649,7 @@
                  for (int v = 0; v < cfg.val_loss_steps; ++v) {
                      step_watchdog.beat("validation", step);
                      Batch b = val_loaders[dvi].second->next_batch();
@@ -1039,7 +1285,7 @@
                      Tensor logits = model.forward(b.input);
                      Tensor loss = autograd::sparse_cross_entropy_loss(logits, b.target);
                      // Same fp32 bridge as the training loop — data<float>() on a bf16
-@@ -2818,12 +3536,51 @@
+@@ -2912,12 +3708,51 @@
  
          micro_loss.clear();
          micro_where.clear();
@@ -1095,7 +1341,7 @@
  
              // LossOps keys the loss scalar's dtype off the logits, so with
              // bf16_logits it comes back bf16. Two things then break unless it is
-@@ -2872,17 +3629,20 @@
+@@ -2966,17 +3801,20 @@
                  if (pg) pg->begin_rs_step();
                  for (auto& opt : optimizers) opt->arm_grad_sync();
              }
@@ -1120,7 +1366,7 @@
              } else {
                  loss_accum = local;
              }
-@@ -3118,7 +3878,9 @@
+@@ -3212,7 +4050,9 @@
          auto t1 = std::chrono::high_resolution_clock::now();
          const double dt = std::chrono::duration<double>(t1 - t0).count();
  
@@ -1131,7 +1377,7 @@
          const double tok_per_sec = static_cast<double>(tokens) / dt;
          const double elapsed_min =
              std::chrono::duration<double>(t1 - training_start).count() / 60.0;
-@@ -3168,6 +3930,7 @@
+@@ -3262,6 +4102,7 @@
                      break;
                  }
              }
@@ -1139,7 +1385,7 @@
              std::cout << std::endl;
  
              if (diag && !micro_loss.empty()) {
-@@ -3188,7 +3951,7 @@
+@@ -3282,7 +4123,7 @@
                                    << " loss " << std::setprecision(4) << micro_loss[m]
                                    << " (median " << med << ") from domain "
                                    << (micro_where[m].domain >= 0
@@ -1148,7 +1394,7 @@
                                            : std::string("<none>"))
                                    << " shard " << micro_where[m].shard
                                    << " token offset " << micro_where[m].offset << std::endl;
-@@ -3226,7 +3989,9 @@
+@@ -3320,7 +4161,9 @@
              const double run_secs = elapsed_min * 60.0;
              log_file << "," << static_cast<int64_t>(step + 1) * tokens << ","
                       << (run_secs > 0 ? static_cast<double>(step + 1 - start_step) * tokens / run_secs : 0.0);
@@ -1159,7 +1405,19 @@
              log_file << "\n";
              log_file.flush();
          }
-@@ -3262,12 +4027,17 @@
+@@ -3349,8 +4192,9 @@
+                 OwnTensor::DistCheckpoint::save(dcp_model, ckpt_path_for(step + 1),
+                                                 ckpt_pg, &dcp_opt, /*epoch=*/0,
+                                                 step + 1, loss_accum);
+-                // 2026-11-20 step 9 (SWA in SFT): the model record (architecture + sliding window) next to the weights.
+-                if (is_master) write_model_record(ckpt_path_for(step + 1), cfg, "bluscript_zero_ckpt");
++                // 2026-11-20 step 9 (SWA in SFT): the model record (architecture + sliding window) next to the weights, so a later SFT
++                // run (BLU_INIT_FROM) and sft/export_to_hf.py read the window instead of being told it.
++                if (is_master) write_model_record(ckpt_path_for(step + 1), cfg, "bluscript_sft");
+                 if (is_master) prune_old_checkpoints();
+             } catch (const std::exception& e) {
+                 std::cerr << "[WARN] checkpoint save at step " << (step + 1)
+@@ -3358,12 +4202,17 @@
              }
          }
  
@@ -1183,7 +1441,7 @@
          // The old version (step 0 and step 5), kept for reference; to bring the step-5 call back:
          // if (step == 0 || step == 5) {
          //     CachingCUDAAllocator::instance().empty_cache();
-@@ -3287,6 +4057,21 @@
+@@ -3383,6 +4232,21 @@
      for (auto& opt : optimizers) opt->drain_param_refresh();
      cudaDeviceSynchronize();
  
@@ -1205,7 +1463,7 @@
      // Flush any in-flight async checkpoint before teardown (no-op for sync saves).
      // if (cfg.checkpointing) {
      //     try { ckpt.wait_for_completion(); }
-@@ -3332,7 +4117,7 @@
+@@ -3428,7 +4292,7 @@
          // reports how many times each domain wrapped its shard list, which is
          // the number that says whether the low-weight domains had enough data
          // or were repeated many times over.

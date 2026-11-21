@@ -207,7 +207,13 @@ void gqa_flash_attn_forward_qkv(
    float*            lse,     // [B, Nq_heads, T]
    int B, int Nq_heads, int Nkv_heads, int T, int hd,
    bool is_causal,
-   const GqaChatPlan* chats = nullptr      // v2 packed rows (design A): per-chat plan, see above
+   const GqaChatPlan* chats = nullptr,     // v2 packed rows (design A): per-chat plan, see above
+   // Sliding window (2026-11-04): each query sees the last `window` keys, itself included (key > query - window;
+   // HF sliding_window = window). 0 (default) or window >= T = plain causal. 0 < window < T runs only on the Hopper
+   // v62 path, dense rows (no chats), window a multiple of 128; anything else throws.
+   // 2026-11-20 step 7 (packed rows + window): packed rows (chats) too; the window is then per chat (each chat sees the last `window` keys
+   // of its own tokens). Still Hopper v62 only and a multiple of 128.
+   int window = 0
 );
 
 /**
@@ -262,7 +268,11 @@ void gqa_flash_attn_backward_qkv(
    bfloat16_t*       grad_v,      // [B, Nkv_heads, T, hd]
    int B, int Nq_heads, int Nkv_heads, int T, int hd,
    bool is_causal,
-   const GqaChatPlan* chats = nullptr      // v2 packed rows (design A): the SAME plan the forward got
+   const GqaChatPlan* chats = nullptr,     // v2 packed rows (design A): the SAME plan the forward got
+   // Sliding window (2026-11-04): the SAME window the forward got. 0 < window < T runs only on the Hopper Vj2
+   // backward (the default), dense rows, window a multiple of 128; anything else throws.
+   // 2026-11-20 step 7 (packed rows + window): packed rows too (the same plan and window as the forward), the window per chat.
+   int window = 0
 );
 
 /**

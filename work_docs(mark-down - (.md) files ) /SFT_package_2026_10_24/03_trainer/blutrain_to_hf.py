@@ -16,6 +16,10 @@ version's init folder holds it; checked); generation_config.json stops on the ve
 of every version (plan 4.48 rule 9): the study evaluates through sft/fmt_lm_eval.py, which builds the ids itself.
 --check-against <model.safetensors>: compare every output tensor with that file bit for bit (the round-trip test:
 Navin's file -> hf_to_blutrain.py -> an export -> this script must give Navin's file back).
+2026-11-20 step 9 (SWA in SFT): the sliding window of the RUN (the export's __metadata__ swa_window / swa_global_every, written by
+bluscript_sft.cpp since 2026-11-20) is written into config.json (use_sliding_window, sliding_window, layer_types,
+max_window_layers), whatever --base-hf's config.json says; an export without these fields keeps the base's config (a
+line says so).
 """
 import argparse
 import json
@@ -77,6 +81,18 @@ def write_st_bf16(path, tensors):
     os.replace(path + ".tmp", path)
 
 
+def hf_window_fields(W, every, L):
+    """2026-11-20 step 9 (SWA in SFT): the Hugging Face Qwen3 window fields of a model with window W (0 = none), layer i global iff
+    (i + 1) % every == 0 (the trainers' rule). HF reads layer_types per layer and drops the window entirely unless
+    use_sliding_window is true (configuration_qwen3.py); vLLM / SGLang do NOT honour layer_types for Qwen3 (they serve
+    every layer with full attention: SWA analysis doc section 11.5, serving checklist)."""
+    if W <= 0:
+        return {"use_sliding_window": False, "sliding_window": None, "max_window_layers": L,
+                "layer_types": ["full_attention"] * L}
+    return {"use_sliding_window": True, "sliding_window": int(W), "max_window_layers": L,
+            "layer_types": ["full_attention" if (i + 1) % every == 0 else "sliding_attention" for i in range(L)]}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--export", required=True, help="the BLU_EXPORT safetensors of a run")
@@ -114,6 +130,18 @@ def main():
     write_st_bf16(os.path.join(a.out, "model.safetensors"), H)
     for fn in ("config.json", "generation_config.json", "special_tokens_map.json"):
         shutil.copy(os.path.join(a.base_hf, fn), os.path.join(a.out, fn))
+    # 2026-11-20 step 9 (SWA in SFT): the run's window into config.json (the base's config may have none, or another one on purpose)
+    cfg_path = os.path.join(a.out, "config.json")
+    cfg = json.load(open(cfg_path))
+    before = {k: cfg.get(k) for k in ("use_sliding_window", "sliding_window")}
+    if "swa_window" in meta:
+        cfg.update(hf_window_fields(int(meta["swa_window"]), int(meta.get("swa_global_every", 4)), L))
+        json.dump(cfg, open(cfg_path, "w"), indent=2)
+        print(f"config.json window from the run's export: use_sliding_window {cfg['use_sliding_window']}, "
+              f"sliding_window {cfg['sliding_window']}, layer_types "
+              + "".join("G" if t == "full_attention" else "L" for t in cfg["layer_types"]) + f" (base config: {before})")
+    else:
+        print(f"note: the export has no window fields (made before 2026-11-20): config.json kept from --base-hf {before}")
     shutil.copy(a.tokenizer, os.path.join(a.out, "tokenizer.json"))
     tc = json.load(open(os.path.join(a.base_hf, "tokenizer_config.json")))
     tc["chat_template"] = CHAT_TEMPLATE

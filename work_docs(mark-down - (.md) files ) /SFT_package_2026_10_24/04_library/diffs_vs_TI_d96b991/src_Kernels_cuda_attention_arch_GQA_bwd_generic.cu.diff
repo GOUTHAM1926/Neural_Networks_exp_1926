@@ -1,5 +1,5 @@
 diff --git a/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu b/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
-index 3e7c02e..339f6a1 100644
+index 3e7c02e..a98b34f 100644
 --- a/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
 +++ b/src/Kernels/cuda/attention/arch/GQA_bwd_generic.cu
 @@ -5,10 +5,10 @@
@@ -43,7 +43,7 @@ index 3e7c02e..339f6a1 100644
  
  // Defined in GQA_bwd_vj1_sm90.cu (kernel Vj1: same design as Vj1d but the
  // greduce is replaced by an atomic TMA-reduce). Faster, and dK/dV then wobble
-@@ -67,6 +71,18 @@ void gqa_vj1_causal_bwd_launch_d128(
+@@ -67,6 +71,20 @@ void gqa_vj1_causal_bwd_launch_d128(
      __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
      int B, int Hq, int Hkv, int G, int S, float scale);
  
@@ -52,17 +52,19 @@ index 3e7c02e..339f6a1 100644
 +// from fp32 P). Same outputs and determinism as Vj1d (one-writer dK/dV partials + fixed-order head sum).
 +// The default Hopper backward since 2026-10-15 (USE_VJ2=0 selects Vj1d); dense rows, and packed rows as a
 +// GqaChatPlan's Vj2 lists (design A; nullptr = dense).
++// win (2026-11-04): sliding window in keys, 0 = plain causal (dense rows only; see the WIN kernel there).
++// 2026-11-20 step 7 (packed rows + window): and packed rows (the plan's Vj2 lists), the window per chat.
 +void gqa_vj2_causal_bwd_launch_d128(
 +    const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
 +    const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* lse,
 +    __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
 +    int B, int Hq, int Hkv, int G, int S, float scale,
-+    const int32_t* chat_blocks, int n_chat_blocks, const int32_t* dq_tiles, int n_dq_tiles);
++    const int32_t* chat_blocks, int n_chat_blocks, const int32_t* dq_tiles, int n_dq_tiles, int win);
 +
  // v44 / Vj1 / Vj1d all tile at Br=Bc=64 over the KV axis, so S must be a
  // multiple of 64. Vj1d's greduce grid is S/8, which 64 already covers.
  static inline bool gqa_v44_shape_ok(int T, int hd) {
-@@ -76,47 +92,66 @@ static inline bool gqa_v44_shape_ok(int T, int hd) {
+@@ -76,47 +94,69 @@ static inline bool gqa_v44_shape_ok(int T, int hd) {
  // ---------------------------------------------------------------------------
  // Hopper backward kernel selection.
  //
@@ -135,18 +137,21 @@ index 3e7c02e..339f6a1 100644
 +}
 +
 +// chats reach only the Vj2 and Vj1d cases: the callers refuse a plan unless gqa_bwd_mode_packs(),
-+// so Vj1 / v44 never see packed rows.
++// so Vj1 / v44 never see packed rows. A sliding window (win > 0, 2026-11-04) reaches only Vj2: the
++// callers refuse one unless gqa_bwd_mode() is Vj2 and S % 128 == 0.
  static inline void gqa_hopper_causal_bwd_d128(
      const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
      const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* lse,
      __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
 -    int B, int Hq, int Hkv, int G, int S, float scale) {
 +    int B, int Hq, int Hkv, int G, int S, float scale,
-+    const GqaChatPlan* chats) {
++    const GqaChatPlan* chats, int win) {
++    if (win > 0 && !(gqa_bwd_mode() == GqaBwdMode::Vj2_Default && S % 128 == 0))
++        throw std::runtime_error("gqa_hopper_causal_bwd_d128: a sliding window needs the Vj2 backward");
      switch (gqa_bwd_mode()) {
          case GqaBwdMode::Vj1_Flash:
              gqa_vj1_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale);
-@@ -124,9 +159,24 @@ static inline void gqa_hopper_causal_bwd_d128(
+@@ -124,9 +164,24 @@ static inline void gqa_hopper_causal_bwd_d128(
          case GqaBwdMode::V44_DetDQ:
              gqa_v44_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale);
              return;
@@ -159,7 +164,7 @@ index 3e7c02e..339f6a1 100644
 +            if (S % 128 == 0) {
 +                gqa_vj2_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale,
 +                                               chats ? chats->vj2_blocks : nullptr, chats ? chats->n_vj2_blocks : 0,
-+                                               chats ? chats->dq_tiles : nullptr, chats ? chats->n_dq_tiles : 0);
++                                               chats ? chats->dq_tiles : nullptr, chats ? chats->n_dq_tiles : 0, win);
 +                return;
 +            }
 +            gqa_vj1d_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale,
@@ -173,7 +178,7 @@ index 3e7c02e..339f6a1 100644
              return;
      }
  }
-@@ -136,21 +186,27 @@ namespace {  // internal linkage: portable WMMA backward kernels + launcher
+@@ -136,21 +191,27 @@ namespace {  // internal linkage: portable WMMA backward kernels + launcher
  
  
  // =============================================================================
@@ -206,7 +211,7 @@ index 3e7c02e..339f6a1 100644
  __global__ void gqa_backward_dQ(
      const __nv_bfloat16 *d_Q,
      const __nv_bfloat16 *d_K,
-@@ -159,18 +215,28 @@ __global__ void gqa_backward_dQ(
+@@ -159,18 +220,28 @@ __global__ void gqa_backward_dQ(
      const __nv_bfloat16 *d_dO,
      const float         *d_LSE,
            __nv_bfloat16 *d_dQ,
@@ -240,7 +245,7 @@ index 3e7c02e..339f6a1 100644
      const long lBase  =  (long)(b * Hq  + hq)  * S + q_row0;
  
      __shared__ __align__(16) __nv_bfloat16 sQ  [Br * D];
-@@ -187,11 +253,12 @@ __global__ void gqa_backward_dQ(
+@@ -187,11 +258,12 @@ __global__ void gqa_backward_dQ(
  
      // ── Load Q, dO, O — stay in smem for all K-tile iterations ───────────────
      for(int i = lane; i < Br * D; i += 32){
@@ -257,7 +262,7 @@ index 3e7c02e..339f6a1 100644
      __syncwarp();
  
      // ── D[i] = rowsum(dO[i] ⊙ O[i])  (one scalar per query row) ─────────────
-@@ -208,13 +275,14 @@ __global__ void gqa_backward_dQ(
+@@ -208,13 +280,14 @@ __global__ void gqa_backward_dQ(
      wmma::fragment<wmma::accumulator, 16, 16, 16, float> dQ_acc[D / 16];
      for(int t = 0; t < D / 16; t++) wmma::fill_fragment(dQ_acc[t], 0.0f);
  
@@ -275,7 +280,7 @@ index 3e7c02e..339f6a1 100644
          }
          __syncwarp();
  
-@@ -236,11 +304,12 @@ __global__ void gqa_backward_dQ(
+@@ -236,11 +309,12 @@ __global__ void gqa_backward_dQ(
          }
          __syncwarp();
  
@@ -290,7 +295,7 @@ index 3e7c02e..339f6a1 100644
          }
          __syncwarp();
  
-@@ -261,7 +330,7 @@ __global__ void gqa_backward_dQ(
+@@ -261,7 +335,7 @@ __global__ void gqa_backward_dQ(
          }
          __syncwarp();
  
@@ -299,7 +304,7 @@ index 3e7c02e..339f6a1 100644
          if(lane < Br){
              float d = sD[lane];
              for(int j = 0; j < Bc; j++){
-@@ -297,7 +366,7 @@ __global__ void gqa_backward_dQ(
+@@ -297,7 +371,7 @@ __global__ void gqa_backward_dQ(
          __syncwarp();
          for(int i = lane; i < Br * 16; i += 32){
              int r = i / 16, c = i % 16;
@@ -308,7 +313,7 @@ index 3e7c02e..339f6a1 100644
          }
          __syncwarp();
      }
-@@ -306,13 +375,15 @@ __global__ void gqa_backward_dQ(
+@@ -306,13 +380,15 @@ __global__ void gqa_backward_dQ(
  // ─────────────────────────────────────────────────────────────────────────────
  // Kernel 2 — dK, dV
  // Grid  : (B, Hkv, S/Bc)  — each block owns one K tile exclusively
@@ -326,7 +331,7 @@ index 3e7c02e..339f6a1 100644
  __global__ void gqa_backward_dKdV(
      const __nv_bfloat16 *d_Q,
      const __nv_bfloat16 *d_K,
-@@ -322,14 +393,24 @@ __global__ void gqa_backward_dKdV(
+@@ -322,14 +398,24 @@ __global__ void gqa_backward_dKdV(
      const float         *d_LSE,
            __nv_bfloat16 *d_dK,
            __nv_bfloat16 *d_dV,
@@ -355,7 +360,7 @@ index 3e7c02e..339f6a1 100644
  
      const long kvBase = ((long)(b * Hkv + hkv) * S + k_row0) * D;
  
-@@ -347,8 +428,9 @@ __global__ void gqa_backward_dKdV(
+@@ -347,8 +433,9 @@ __global__ void gqa_backward_dKdV(
  
      // ── Load K, V — fixed for this block ─────────────────────────────────────
      for(int i = lane; i < Bc * D; i += 32){
@@ -367,7 +372,7 @@ index 3e7c02e..339f6a1 100644
      }
      __syncwarp();
  
-@@ -364,18 +446,20 @@ __global__ void gqa_backward_dKdV(
+@@ -364,18 +451,20 @@ __global__ void gqa_backward_dKdV(
      // ── Outer: G query heads; Inner: S/Br Q tiles ────────────────────────────
      for(int g = 0; g < G; g++){
          const int hq = hkv * G + g;
@@ -394,7 +399,7 @@ index 3e7c02e..339f6a1 100644
              __syncwarp();
  
              // D[i] = rowsum(dO[i] ⊙ O[i])
-@@ -406,11 +490,13 @@ __global__ void gqa_backward_dKdV(
+@@ -406,11 +495,13 @@ __global__ void gqa_backward_dKdV(
              }
              __syncwarp();
  
@@ -410,7 +415,7 @@ index 3e7c02e..339f6a1 100644
              }
              __syncwarp();
  
-@@ -494,7 +580,8 @@ __global__ void gqa_backward_dKdV(
+@@ -494,7 +585,8 @@ __global__ void gqa_backward_dKdV(
              __syncwarp();
              for(int i = lane; i < 16 * 16; i += 32){
                  int r = i / 16, c = i % 16;
@@ -420,7 +425,7 @@ index 3e7c02e..339f6a1 100644
              }
              __syncwarp();
  
-@@ -505,7 +592,8 @@ __global__ void gqa_backward_dKdV(
+@@ -505,7 +597,8 @@ __global__ void gqa_backward_dKdV(
              __syncwarp();
              for(int i = lane; i < 16 * 16; i += 32){
                  int r = i / 16, c = i % 16;
@@ -430,7 +435,7 @@ index 3e7c02e..339f6a1 100644
              }
              __syncwarp();
          }
-@@ -515,7 +603,7 @@ __global__ void gqa_backward_dKdV(
+@@ -515,7 +608,7 @@ __global__ void gqa_backward_dKdV(
  // ─────────────────────────────────────────────────────────────────────────────
  // Typed launcher
  // ─────────────────────────────────────────────────────────────────────────────
@@ -439,7 +444,7 @@ index 3e7c02e..339f6a1 100644
  void launch_gqa_backward(
      const __nv_bfloat16 *d_Q,
      const __nv_bfloat16 *d_K,
-@@ -526,7 +614,11 @@ void launch_gqa_backward(
+@@ -526,7 +619,11 @@ void launch_gqa_backward(
            __nv_bfloat16 *d_dQ,
            __nv_bfloat16 *d_dK,
            __nv_bfloat16 *d_dV,
@@ -452,7 +457,7 @@ index 3e7c02e..339f6a1 100644
  ){
      // WMMA does 16x16x16 tiles, so every tiled dimension must be a multiple of 16.
      static_assert(Br % 16 == 0, "Br must be a multiple of 16 (WMMA tile)");
-@@ -535,24 +627,55 @@ void launch_gqa_backward(
+@@ -535,24 +632,55 @@ void launch_gqa_backward(
      // The score GEMMs only emit one 16-row WMMA tile (no loop over Br/16),
      // so these kernels process exactly 16 query rows per Q tile.
      static_assert(Br == 16, "gqa backward processes exactly 16 query rows per Q tile");
@@ -514,12 +519,12 @@ index 3e7c02e..339f6a1 100644
  } // anonymous namespace
  
  // ---------------------------------------------------------------------------
-@@ -603,7 +726,17 @@ void gqa_flash_attn_backward(
+@@ -603,7 +731,17 @@ void gqa_flash_attn_backward(
          gqa_hopper_causal_bwd_d128(
              dQ_in, dK_in, dV_in, dO, ddO, lse,
              dQ_out, dK_out, dV_out,
 -            B, Nq_heads, Nkv_heads, G, T, scale);
-+            B, Nq_heads, Nkv_heads, G, T, scale, /*chats=*/nullptr);
++            B, Nq_heads, Nkv_heads, G, T, scale, /*chats=*/nullptr, /*win=*/0);
 +        return;
 +    }
 +
@@ -533,7 +538,7 @@ index 3e7c02e..339f6a1 100644
          return;
      }
  
-@@ -612,15 +745,7 @@ void gqa_flash_attn_backward(
+@@ -612,15 +750,7 @@ void gqa_flash_attn_backward(
              throw std::runtime_error(
                  "gqa_flash_attn_backward: causal path requires T to be a multiple of 128");
          }
@@ -550,16 +555,26 @@ index 3e7c02e..339f6a1 100644
              dQ_in, dK_in, dV_in, dO, ddO, lse,
              dQ_out, dK_out, dV_out,
              B, Nq_heads, Nkv_heads, G, T, scale);
-@@ -668,7 +793,7 @@ void gqa_flash_attn_backward_qkv(
+@@ -668,12 +798,17 @@ void gqa_flash_attn_backward_qkv(
      bfloat16_t*       grad_k,
      bfloat16_t*       grad_v,
      int B, int Nq_heads, int Nkv_heads, int T, int hd,
 -    bool is_causal)
-+    bool is_causal, const GqaChatPlan* chats)
++    bool is_causal, const GqaChatPlan* chats, int window)
  {
      if (Nkv_heads <= 0 || Nq_heads % Nkv_heads != 0) {
          throw std::runtime_error(
-@@ -688,34 +813,57 @@ void gqa_flash_attn_backward_qkv(
+             "gqa_flash_attn_backward_qkv: Nq_heads must be a positive multiple of Nkv_heads");
+     }
++    // Sliding window (2026-11-04): only Vj2 has it. The same rule as the forward: window >= T is plain causal, and a
++    // shorter window any other path would compute as full causal is refused.
++    const bool windowed = window > 0 && window < T;
++    if (window < 0)
++        throw std::runtime_error("gqa_flash_attn_backward_qkv: window must be >= 0 (0 = no window)");
+ 
+     const int   G     = Nq_heads / Nkv_heads;
+     const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
+@@ -688,34 +823,83 @@ void gqa_flash_attn_backward_qkv(
      __nv_bfloat16* dK_out = reinterpret_cast<__nv_bfloat16*>(grad_k);
      __nv_bfloat16* dV_out = reinterpret_cast<__nv_bfloat16*>(grad_v);
  
@@ -595,12 +610,38 @@ index 3e7c02e..339f6a1 100644
 -    if (is_causal && !disable_sm90_gqa() &&
 -        get_arch() == ArchFamily::Hopper && gqa_v44_shape_ok(T, hd)) {
 +    // which are fixed sub-steps of the v44 launch.
++    if (windowed) {
++        if (!(hopper_ok && gqa_bwd_mode() == GqaBwdMode::Vj2_Default && T % 128 == 0))
++            throw std::runtime_error(
++                "gqa_flash_attn_backward_qkv: a sliding window needs the Hopper Vj2 backward: causal, head_dim 128, "
++                "T % 128 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset, and none of USE_FLASH=1, "
++                "USE_DETERMINISTIC_DQ=1, USE_VJ2=0");
++        // Old lines (kept, not deleted; 2026-11-20 step 7 (packed rows + window): Vj2 runs a window over packed rows now, per chat):
++        // if (chats != nullptr)
++        //     throw std::runtime_error("gqa_flash_attn_backward_qkv: a sliding window with packed rows (a chats plan) "
++        //                              "is not implemented");
++        if (window % 128 != 0)
++            throw std::runtime_error("gqa_flash_attn_backward_qkv: the window must be a multiple of 128 keys, got " +
++                                     std::to_string(window));
++    }
++    // 2026-11-20 step 7, item A (FlashAttention's rule, commit 0842ec0 "Don't dispatch to local if window size >= seqlen_k", and
++    // flash_api.cpp: window_size_left >= max_seqlen_k - 1 -> no window): a window at least as long as the longest segment
++    // of the plan hides no key of any chat, so the kernels of before run (the plain backward copies, as the forward chose modes 1 / 3).
++    // The results are the same to the bit (for a chat of L <= W the window modes reduce to exactly the plain code: key
++    // range from 0, no edge tile, the same step count and masks; test_swa_packed.cu checks it in a batch that does run the
++    // window kernels). Only the KERNEL choice uses the batch: every check above is on the requested window and the same
++    // for every batch, so a run never starts fine and stops later at its first long chat. The forward and the backward
++    // decide from the same three values (window, T, the plan's gen_max_len), so they always agree. gen_max_len also counts
++    // a row's pad tail (a segment like any other): a long pad tail keeps the window kernels, which is still correct.
++    const bool win_kernels = windowed && !(chats != nullptr && window >= chats->gen_max_len);
++
 +    if (hopper_ok) {
          gqa_hopper_causal_bwd_d128(
              dQ_in, dK_in, dV_in, dO, ddO, lse,
              dQ_out, dK_out, dV_out,
 -            B, Nq_heads, Nkv_heads, G, T, scale);
-+            B, Nq_heads, Nkv_heads, G, T, scale, chats);
++            // Old argument (kept, 2026-11-20 step 7, item A): ..., chats, windowed ? window : 0);
++            B, Nq_heads, Nkv_heads, G, T, scale, chats, win_kernels ? window : 0);
          return;
      }
  

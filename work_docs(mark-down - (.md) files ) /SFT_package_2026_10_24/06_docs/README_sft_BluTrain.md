@@ -251,6 +251,9 @@ It is `bluscript_zero_ckpt.cpp` plus the SFT parts. Without `BLU_SFT_DATA` it tr
 | `BLU_SFT_DECAY_FRAC` | 0.2 | with `wsd`: the decay part, as a fraction of all steps (`run_sft.sh` does not pass it, so its `wsd` runs use 0.2) |
 | `BLU_SFT_TRAINED_ROWS` | 0 (off) | 1 = the lm_head and the loss run only on the tokens that have a label (gathered before the lm_head, the gradient scattered back); same math, experimental (2026-11-03; sections 7 and 9) |
 | `BLU_SFT_CP` | 1 (off) | U > 1: U GPUs share every row (context parallelism, section 5.2); U must divide the GPU count, the query heads, the KV heads and T; not with `BLU_SFT_TRAINED_ROWS` |
+| `BLU_SWA_WINDOW` | 0 (off) | sliding-window attention: W keys, itself included, a multiple of 128; per chat in packed rows (section 5.3, 2026-11-20); `run_sft.sh SWA_WINDOW=W` |
+| `BLU_SWA_GLOBAL_EVERY` | 4 | with a window: layer i is global (full causal) iff (i + 1) % N == 0; `run_sft.sh SWA_GLOBAL_EVERY=N` |
+| `BLU_SWA_MISMATCH_OK` | 0 | 1 = start even when the base's window record differs from this run's window (a deliberate ablation arm; printed as a warning); `run_sft.sh SWA_MISMATCH_OK=1` |
 | `BLU_EXPORT` | — | `<path>.safetensors`: the final weights (fp32, BluTrain names, rank 0); `run_sft.sh EXPORT=1` writes `<RUN_DIR>/final.safetensors`, and `sft/blutrain_to_hf.py` makes a Hugging Face model of it |
 
 Packed rows are used automatically when the data has `seq_lengths.bin`; they need `USE_FUSED_RMS_ROPE=1`
@@ -277,6 +280,7 @@ Packed rows are used automatically when the data has `seq_lengths.bin`; they nee
 | `"BLU_INIT_FROM_RAW"` | weights from `sft/hf_to_blutrain.py` output | start from a Hugging Face model |
 | `"BLU_EXPORT"` | the final weights as a safetensors file | the export for Hugging Face and the benchmarks |
 | `trained_rows`, `model.head_rows`, `gather_rows` (2026-11-03) | with `BLU_SFT_TRAINED_ROWS=1`: the final hidden rows of the tokens that have a label are gathered before the lm_head, the loss gets the matching labels (`last_trained_labels()`), and the gradient goes back through the gather's backward (a scatter) | the lm_head and the loss skip the untrained tokens (TRL and Unsloth do the same); off = every row, as before |
+| `swa_window` / `attn_window` (ModelConfig), `CausalGQA::window`, `write_model_record` / `read_window_record`, the "the base's window record" start-up check (2026-11-20) | the sliding window of each layer, passed to both attention calls (no CP and CP); the model record next to every checkpoint; the comparison with the base's record | SWA in SFT (section 5.3) |
 | `"struct SftCp"`, `cp_make_group`, `cp_combine` / `cp_partition`, `cp_slice`, the `g_cp.U` branch of the attention block (2026-11-06/07) | the CP group, the two all-to-alls around attention, each GPU's token slice of the ids, labels and positions | one row shared by U GPUs (section 5.2); at U = 1 every one of these lines is skipped |
 
 **Brought onto this branch on 2026-10-27** by a 3-way merge (base = the pretraining trainer the SFT trainer started
@@ -360,6 +364,40 @@ ZeRO reduces the gradients over all GPUs as before
 - **Not tested yet:** CP together with data parallelism (more GPUs than U).
 
 ---
+
+### 5.3 Sliding-window attention (SWA) in SFT (`BLU_SWA_WINDOW`, 2026-11-20)
+
+**What it is.** The same causal GQA attention, with one more rule in the windowed layers: a token sees only the last W
+tokens, itself included (HF `sliding_window = W`). Every N-th layer stays global (layer i global iff
+(i + 1) % N == 0; the 350M SWA base: W = 1,024, N = 4: 7 global, 21 windowed, `LLLG` x 7). No parameter changes. Its
+main purpose is inference memory: a windowed layer keeps only the last W tokens in the KV cache.
+
+**In packed rows the window is per chat**: each chat sees the last W tokens of its own (Tensor-Implementations
+2356565: forward modes 4 / 5, the backward WIN copies on the plan's lists). A chat of at most W tokens is unchanged by
+the window; a batch whose chats all fit in W runs the kernels of before (bit-identical results). With context
+parallelism (`BLU_SFT_CP`, section 5.2) nothing changes: at the attention call every GPU holds whole rows and whole
+chats, so both attention calls get the same window.
+
+**The window must be the base's.** No weight depends on it (like `rope_theta`), so a wrong window loads fine and trains
+wrong. So the window travels with the model and is checked:
+- every checkpoint directory holds `model_config.json` (the shape, rope_theta, the window), written by this trainer and
+  by the pretraining trainer;
+- `sft/hf_to_blutrain.py` reads the window from the Hugging Face `config.json` (`use_sliding_window`, `sliding_window`,
+  `layer_types`) and writes it into its `meta.json`;
+- at start-up the trainer compares the base's record (`<BLU_INIT_FROM>/model_config.json` or
+  `<BLU_INIT_FROM_RAW>/meta.json`) with its own window, layer by layer, and stops on a mismatch;
+  `BLU_SWA_MISMATCH_OK=1` allows a deliberate one (e.g. a full-attention arm on a SWA base) and prints a warning;
+  a base without a record (made before 2026-11-20) gets a note line;
+- the start-up block prints one `attention :` line saying exactly which attention runs (window on / off and the layer
+  pattern);
+- the exports carry it: the `BLU_EXPORT` metadata (`swa_window`, `swa_global_every`), and `sft/blutrain_to_hf.py` /
+  `sft/export_to_hf.py` write the HF fields (`use_sliding_window: true`, `sliding_window`, `layer_types`,
+  `max_window_layers`). HF transformers honours them. **vLLM and SGLang do not honour `layer_types` for Qwen3** (they
+  serve every layer with full attention, no error): evaluate through HF, or patch them, and compare logits on a prompt
+  longer than W first (SWA analysis doc, section 11.5, serving checklist).
+
+**Run** (the 350M SWA base): `SWA_WINDOW=1024 SWA_GLOBAL_EVERY=4 ... bash sft/run_sft.sh` (section 8). The MFU line
+counts the windowed layers' attention as min(t, W) keys per query over the row.
 
 ## 6. The kernel changes (Tensor-Implementations)
 
@@ -542,6 +580,8 @@ Every kernel the 135M SFT trainer runs was checked forward and backward at 4k-13
 | Context parallelism, 64k / 128k (2026-11-07) | 2x H200, 135M, long-source mix, B 1, 30 steps; CP=1 twice (GPU 0, GPU 1) and CP=2 | CP=2 within CP=1's own run-to-run variation (step-0 norm -0.02% / +0.18% vs CP=1; CP=1 vs CP=1: +0.56% / +0.24%); step 250.7 -> 158.2 ms / 492.9 -> 297.9 ms; peak per GPU 61.5 -> 36.3 GB / 111.0 -> 62.2 GB (nvidia-smi, including a 0.6 GB lock process) |
 | Context parallelism, 1.6B shape (2026-11-07) | 2x H200, random init, 26 layers, 18 q / 6 KV heads, vocab 49,280 | 4k: CP=2 step-0 norm +0.017% vs no CP, 30-step loss difference at most 0.000737, step 480.0 -> 274.5 ms; 64k: CP=2 runs at 96.6 GB per GPU (861 ms per step), one GPU runs out of memory |
 | Attention backward ideas 1 + 2 + 4 (2026-11-17/18, section 6.3) | `test_varlen_attention.cu` quick suites on the push tree; one H200 session with the code of before, FA3, FA4 and cuDNN (12 cases); SFT and pretraining trainers, 30 steps, base / new / new / base | 273 / 0 (heads 4/2) and 280 / 0 (18/6), one dK entry known (FA3 / FA4 bit-identical there); forward + backward call 0.570-0.980 of the code of before, 0.235-0.928 of FA3 / FA4 / cuDNN; SFT step 135M -1.7%, 1.6B shape -0.7%; pretraining 1.6B (production config, 2 micro-batches per step) -0.54%; losses within the run-to-run spread |
+| Sliding-window attention, kernels (2026-11-20, section 5.3) | TI `Tests/kernel_tests/test_swa_attention.cu` (Navin's), `test_swa_extra.cu`, `test_swa_packed.cu`, each run in the 3 backward variants (default, `BLU_VJ2_HSUM=0`, `BLU_VJ2_DKDV_F32=1`), 1x H200; and the quick suites of 2026-11-18 without a window | 24 / 24; 13 / 13; 94 / 94: every chat of a packed row with the window = the same chat alone, bit for bit for O, LSE, dK, dV (dQ at most 0.12 of FA's tolerance); chats of at most W unchanged by the window; chats longer than W against fp64; W = 128 with chats of W-1, W, W+1, 2W, 2W+1 tokens; zero-length and 1-token entries; heads 8/4, 4/1, 8/8 and the 350M's heads per GPU under CP (4/2, 2/1); repeat runs; an 8,192-token row; through autograd. Without a window: 273 / 0 and 280 / 0, as before; the old kernels compile to byte-identical machine code |
+| Sliding-window attention, SFT trainer (2026-11-20) | the 350M `kv4_swa3` base (Navin's SWA pretraining, converted by `sft/hf_to_blutrain.py`), d0_gen data, rows of 4,096, 1x H200 (2x for CP) | step-0 val loss against Hugging Face transformers on the same 2,000 val chats (844 longer than 1,024 tokens): window on 1.732441 vs 1.732514, window off 1.733759 vs 1.733824; window 0 on the SWA base stops at start-up unless `BLU_SWA_MISMATCH_OK=1`; a finished run's export and `model_config.json` carry 1024 / 4, and its HF `config.json` equals Navin's exporter's; CP=2 = 1 GPU (step-0 norm 1.5179 vs 1.5181, step-29 loss 1.682096 vs 1.682022); step 474 ms with the window, 476 ms without (20 rows per step). The pretraining trainer with the window (350M, production config, 32 micro-batches per step): step -8.6% |
 
 ---
 
@@ -636,6 +676,21 @@ B x NP / U). The row length is read from the data's `meta.json`; an `SFT_T` give
   and 64k). Not tested yet: CP together with data parallelism (more GPUs than U). U must divide the KV heads, so more
   CP GPUs than KV heads (e.g. U = 4 on the 135M) is not possible with plain Ulysses (copies of the KV heads or Adhitya's
   ring + Ulysses hybrid would be needed). (Until 2026-11-07 this item said the work was still being built and tested.)
+- Sliding-window attention (section 5.3, added 2026-11-20):
+  - only the Hopper kernels apply a window. Every other path (the generic kernels of other GPUs, the old Vj1 / Vj1d /
+    v44 kernels) refuses to run with a window instead of silently running full attention. B300: no window;
+  - W must be a multiple of 128 (the trainer and the kernels check it); the window is counted inside each chat;
+  - the start-up check needs the base's record: a base made before 2026-11-20 (no `model_config.json`, or a `meta.json`
+    without `swa_window`) only gets a note line, and the run's `SWA_WINDOW` / `SWA_GLOBAL_EVERY` must then be set by hand
+    to the base's values; a run from a random start has nothing to check;
+  - context parallelism: Ulysses (`BLU_SFT_CP=U`) works with the window unchanged (each GPU holds whole rows for its
+    heads); for the 350M, U can be at most 4 (U divides the 4 KV heads). A ring or ring + Ulysses CP for more GPUs per
+    row needs window-aware changes;
+  - serving: vLLM and SGLang serve a Qwen3 export with full attention in every layer (they ignore `layer_types`, section
+    5.3): evaluate through Hugging Face transformers, or patch vLLM, and compare the logits on a prompt longer than W;
+  - open (2026-11-20): the SFT study on Tülu 3 (full base + full SFT, SWA base + window, SWA base + full attention) is
+    running; it decides whether SFT of the 350M keeps the window. The race against FA3 / cuDNN / FA4 / FlexAttention on
+    window rows is not done yet.
 
 ---
 
@@ -652,6 +707,7 @@ B x NP / U). The row length is read from the data's `meta.json`; an `SFT_T` give
 | The Tülu 3 SFT checkpoint for DPO | `sft/README_SFT_checkpoint_for_DPO.md` |
 | The attention changes of 2026-11-13 and 2026-11-18 in full: how FA3 / FA4 / cuDNN do it, every case, the fairness checks | `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` in Gautam's work docs |
 | Every SFT optimization since the start, each with its context and before / after numbers | `all_sft_optimizations.md` in Gautam's work docs (SFT package) |
+| Sliding-window attention (2026-11-20): what is published, how every library does packed rows + window and the checks they make, the plan and every result | `post_Training_research/sliding_window_attention_sft_analysis.md` in Gautam's work docs; `all_sft_optimizations.md` section 4.17 |
 
 ---
 

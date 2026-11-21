@@ -1,0 +1,1216 @@
+--- 03_trainer/bluscript_zero_ckpt_PRETRAINING_d9606c2.cpp	2026-11-18 21:34:25.603913884 +0530
++++ 03_trainer/bluscript_sft.cpp	2026-11-18 21:34:25.602381037 +0530
+@@ -1,4 +1,51 @@
+ // =============================================================================
++// train/production_zero/bluscript_sft.cpp — the SFT (supervised fine-tuning) trainer.
++//
++// This file = this directory's pretraining trainer, bluscript_zero_ckpt.cpp (same model, ZeRO-1 AdamW / Muon,
++// DCP checkpoints, NCCL or BluCCL), plus the SFT parts. Without BLU_SFT_DATA it trains exactly like
++// bluscript_zero_ckpt.cpp. With BLU_SFT_DATA=<dir> (train/ and val/ written by sft/prepare_sft_data.py):
++//   1. Only the answers are trained. Targets come from labels.bin; label 65535 = no loss and no gradient
++//      (prompts, role markers, the pad tail of a row).
++//   2. One loss average per optimizer step. Every micro-step's loss is divided by the GLOBAL count of trained
++//      tokens in the whole step (all micro-steps, all GPUs), so every trained token has the same weight, whatever
++//      the length of its chat (torchtitan's global_valid_tokens). A per-micro-step mean would give short chats
++//      more weight.
++//   3. Packed rows. Several whole chats share one row of T tokens (far fewer rows than one chat per row + padding).
++//      Attention gets the chat plan, so each chat attends only to itself, and RoPE gets per-chat positions that
++//      restart at 0 for every chat. A chat inside a packed row then computes bit for bit what it computes alone
++//      in its own row.
++// Library pieces it uses (Tensor-Implementations): sparse_cross_entropy_loss(..., ignore_index, &denom),
++// fused_rms_rope_bf16(..., positions), scaled_dot_product_attention(..., chats) and gqa_chat_plan_make.
++// The full map of every change, its reason and its test results: sft/README.md.
++//
++// Where the SFT parts are (search for these strings):
++//   "PackedRows g_packed", packed_rows_of()    positions + chat plan, built once per micro-batch from the loader
++//   g_packed.positions / g_packed.chats        the RoPE and attention calls in the attention block
++//   "SFT mode: BLU_SFT_DATA"                   settings, the two SftDataLoaders, the step count from the epochs
++//   "BLU_N_LAYERS / BLU_ROPE_THETA"            build the model the starting checkpoint was trained as
++//   "135M base"                                the other shape knobs + BLU_EMBED_SCALE (from preproduction-135M)
++//   "initialise the weights from another run"  BLU_INIT_FROM: weights only, fresh optimizer, optional CRC32 check
++//   "BLU_INIT_FROM_RAW"                        the same from sft/hf_to_blutrain.py output (a Hugging Face export)
++//   "BLU_EXPORT"                               the final weights as a safetensors file (export_safetensors)
++//   grad_scale                                 backward seed: W in SFT (each micro loss is already divided by the
++//                                              global count and ZeRO averages over the W GPUs), else 1/GRAD_ACCUM
++//   skip_micro_batches                         resume: skips exactly the micro-batches already trained
++//   "SFT: the whole val set"                   validation by the same rule (one division by the set's count)
++//   valid_tokens_ahead, sft_denom              the step's global trained-token count = the loss denominator
++//   "struct SftCp", cp_make_group, cp_combine,  context parallelism (BLU_SFT_CP=U, 2026-11-06/07): U GPUs share each
++//   cp_partition, cp_slice                     row; Adhitya's Ulysses all-to-alls around our attention (README 5.2)
++//
++// Build (BluTrain root, after `make -j$(nproc) profiler tensor dist SM_ARCH=90`): bash sft/build_sft_trainer.sh
++// (-> ./bluscript_sft_bin; USE_FUSED_RMS_ROPE=1, which packed rows need). Run: sft/run_sft.sh, sft/README.md section 8.
++//
++// 2026-10-27: brought onto this branch from the SFT tree (where it was bluscript_sft.cpp at the repo root, on
++// dist_side_merge) by a 3-way merge, base = the pretraining trainer it started from (909ab75). Adapted to this
++// branch: the raw MPI calls became dist::comm::allreduce_scalar / abort_job (they work under mpirun AND BluRun), the
++// SFT loaders put their batches on the LOCAL rank's GPU (a device ordinal is node-local), BLU_INIT_FROM loads over an
++// NCCL group under BluCCL too, and the CSV keeps this branch's columns plus "trained_tokens". Everything below this
++// block is the pretraining trainer's own header.
++// =============================================================================
++// =============================================================================
+ // train/production_zero/bluscript_zero_ckpt.cpp — bluscript_zero_ckpt.cpp driven by
+ // bluscript_zero_ckpt_config.yaml (+ its parallelism file, whose backend selects NCCL or BluCCL).
+ // bluscript.cpp — Llama-style decoder LM training (fp32 model, bf16 fused attn,
+@@ -61,6 +108,8 @@
+ #include <fstream>
+ #include <random>
+ #include <map>
++#include <cstring>        // std::memcmp (BLU_INIT_FROM_RAW exact check)
++#include <sstream>
+ #include <set>
+ #include <functional>
+ #include <algorithm>
+@@ -77,6 +126,7 @@
+ #include "autograd/operations/AttentionOps.h"   // fused GQA scaled_dot_product_attention
+ #include "autograd/operations/RoPEOps.h"        // build_rope_cache
+ #include "autograd/operations/LossOps.h"        // sparse_cross_entropy_loss
++#include "autograd/operations/RowGatherOps.h"   // gather_rows (the trained-rows switch, 2026-10-31)
+ #include "autograd/operations/ReshapeOps.h"
+ #include "autograd/operations/EmbeddingOps.h"
+ #include "nn/NN.h"
+@@ -84,6 +134,8 @@
+ #include "checkpointing/GradMode.h"
+ #include "DistributedCheckpointing.h"   // DistCheckpoint::save / load / is_valid
+ #include "ZeroDcpBridge.h"              // ZeroDcpModule, ZeroDcpOptimizer
++#include "Metadata.h"                   // CheckpointMetadata (BLU_INIT_VERIFY)
++#include "Checksums.h"                  // CRC32 check of the weights BLU_INIT_FROM loaded
+ #include "device/CachingCudaAllocator.h"
+ #include "device/DeviceCore.h"                  // OwnTensor::cuda::getCurrentStream()
+ 
+@@ -94,6 +146,7 @@
+ // Data + distributed
+ #include "DataLoader.h"
+ #include "MixedDataloader.h"      // MixedDataLoaderLite: weighted multi-domain mixing
++#include "sft/SftDataLoader.h"    // SftDataLoader: SFT rows with masked labels (BLU_SFT_DATA)
+ #include "dist/distributed.h"
+ #include "LaunchEnv.h"                            // dist::comm::detect_launch — launcher-agnostic bring-up
+ #include "ProcessGroupBase.h"
+@@ -104,6 +157,13 @@
+ #include "dist/zero/include/SymmetricShardedOptimizer.h" // owt::zero::SymmetricShardedOptimizer (ZeRO-1 v2)
+ #include "dist/zero/include/ShardedMuon.h"        // owt::zero::ShardedMuon (ZeRO-1 over whole tensors)
+ #include "dist/zero/include/ZeroOptimizerBase.h"        // common surface so v1/v2/muon are interchangeable
++// 2026-11-06: context parallelism for long SFT rows (BLU_SFT_CP=U, off by default). Adhitya's Ulysses all-to-alls and
++// their autograd nodes, used AS THEY ARE from the Context_Parallelism submodule (dist/Context_Parallelism, pinned
++// cf1372d; header-only): cp::ulysses_combine / cp::ulysses_partition and UlyssesCombineBackward /
++// UlyssesPartitionBackward. Our QK-norm + RoPE (per-chat positions) and our packed attention (chat plan) stay as they are.
++#include "context_parallel/UlyssesAttention.h"
++#include "context_parallel/HybridUlyssesBackward.h"
++#include "sub_group.h"                                   // dist::comm::Sub_Group: the CP group (built in cp_make_group)
+ 
+ // Compile-time flag to toggle between fused RMSNorm+RoPE kernel (1) and sequential RMSNorm + RoPE (0)
+ #ifndef USE_FUSED_RMS_ROPE
+@@ -111,6 +171,126 @@
+ #endif
+ 
+ using namespace OwnTensor;
++
++// =============================================================================
++// bluscript_sft.cpp (2026-10-15): the SFT trainer. A copy of bluscript_zero_ckpt.cpp (pretraining, unchanged) with
++// v2 PACKED rows added: several whole chats per row, each attending only to itself and with RoPE positions restarting
++// at 0 for every chat. Packed data = BLU_SFT_DATA/<split>/seq_lengths.bin + seq_offsets.bin (the chats of every row as
++// a list of lengths, TRL's seq_lengths; written by sft/prepare_sft_data.py --pack ffd); without them a split trains
++// exactly as v1 (one chat per row).
++//
++// g_packed is set by the loop before every model.forward on an SFT batch (from SftDataLoader) and read by the
++// attention block: positions [B,T] int32 = index of each token inside its chat (RoPE); chats = the per-chat attention
++// plan (design A, the cu_seqlens way of FlashAttention varlen: OwnTensor::cuda::GqaChatPlan), built once per
++// micro-batch from the loader's segment lists and shared by every layer's forward and backward. Empty = dense, exactly
++// as before. There is no activation recompute, so it only has to stay valid until the micro-step's backward, which
++// runs before the next batch sets it again (each attention backward node holds its own reference to the plan).
++// (Design B, one seg_start value per token, was used here on the morning of 2026-10-15 and removed the same day.)
++// =============================================================================
++struct PackedRows { Tensor positions; OwnTensor::cuda::GqaChatPlanPtr chats; };
++static PackedRows g_packed;
++// The packed-row inputs of the batch `l` just returned: its RoPE positions, and the attention plan of its B rows for
++// Hq query heads (one asynchronous upload; the host does not wait for the GPU). Empty when `l` holds v1 rows.
++// 2026-11-13 (mixed units of the attention forward, work doc 45.194): the plan is built with the KV-head count Hkv of
++// the attention call it is for, so that in a chat with an odd number of 64-row tiles two query heads of one KV head
++// share a pair (forward -8.0% on rows of 32-160-token chats, -0.4..-1.05% on real rows, H200, heads 18/6; same results).
++// BLU_GQA_MX=0 in the environment of the binary builds the plans of before.
++// Old code (kept, not deleted):
++// static PackedRows packed_rows_of(const SftDataLoader& l, int B, int T, int Hq) {
++//     if (!l.packed()) return PackedRows{};
++//     const std::vector<int32_t>& rows = l.last_segment_rows();
++//     return PackedRows{l.last_positions(),
++//                       OwnTensor::cuda::gqa_chat_plan_make(rows.data(), l.last_segment_starts().data(),
++//                                                           l.last_segment_lengths().data(), static_cast<int>(rows.size()),
++//                                                           B, T, Hq)};
++// }
++static PackedRows packed_rows_of(const SftDataLoader& l, int B, int T, int Hq, int Hkv) {
++    if (!l.packed()) return PackedRows{};
++    const std::vector<int32_t>& rows = l.last_segment_rows();
++    return PackedRows{l.last_positions(),
++                      OwnTensor::cuda::gqa_chat_plan_make(rows.data(), l.last_segment_starts().data(),
++                                                          l.last_segment_lengths().data(), static_cast<int>(rows.size()),
++                                                          B, T, Hq, Hkv)};
++}
++
++// =============================================================================
++// Context parallelism (2026-11-06; BLU_SFT_CP=U, default 1 = off and every line below is skipped).
++// U GPUs share one packed row: they load the SAME rows (the loader runs with rank / U of world / U) and each keeps
++// token slice cp.rank of length T / U (input ids, labels, RoPE positions). Per layer, in the attention block:
++//   our fused QK-norm + RoPE on the slice, with each token's true per-chat position;
++//   combine (Adhitya's all-to-all): [B, H, T/U, hd] -> [B, H/U, T, hd], every GPU now holds the WHOLE row for H/U heads;
++//   our packed attention with the full row's chat plan, exactly as on one GPU (the plan is built for H/U heads);
++//   partition (his all-to-all back): [B, Hq/U, T, hd] -> [B, Hq, T/U, hd].
++// Everything else (embedding, MLP, norms, lm_head, loss) runs on the slice with no communication. The loss rule is
++// unchanged: trained-token sum of the slice / the step's trained count over all ranks (each CP group's rows counted
++// once), gradients summed over all ranks by ZeRO as before.
++// Needs Tensor-Implementations d59740b or later (2026-11-07): before it, autograd::contiguous() on an already-contiguous
++// k_bf (output 1 of fused_rms_rope_bf16) dropped k's gradient and the k-norm gamma gradient in every layer (CP=2 step-0
++// gradient norm -7.5% vs no CP on 2026-11-06). Tested 2026-11-07 on 2x H200 (records cp_2026_11_07_2x/results_2x.txt):
++//   135M, 4k rows: CP=2 step-0 gradient norm 3.0473 = no CP 3.0473 (gammas 0.0458 = 0.0458); without that TI fix, same
++//     box: 2.8367 (-6.9%); over 30 steps CP=2 differs from no CP by at most 0.000997 in loss (two identical no-CP runs:
++//     0.000813);
++//   135M, 64k / 128k rows: CP=2 within the run-to-run variation of CP=1 (step-0 norm -0.02% / +0.18%; two CP=1 runs
++//     +0.56% / +0.24%); step 250.7 -> 158.2 ms / 492.9 -> 297.9 ms vs CP=1 on one GPU; peak per GPU 61.5 -> 36.3 GB /
++//     111.0 -> 62.2 GB;
++//   1.6B shape (random init), 4k: CP=2 step-0 norm +0.017% vs no CP; 64k: CP=2 fits (96.6 GB per GPU), one GPU runs out
++//     of memory.
++// Not tested yet: CP together with data parallelism (world > U, needs 4+ GPUs).
++// =============================================================================
++struct SftCp { int U = 1; int rank = 0; std::shared_ptr<ProcessGroupNCCL> pg, parent; };
++static SftCp g_cp;
++// The CP group: ncclCommSplit off a world NCCL group (collective over it: every rank calls it once), with a BLOCKING
++// communication stream that the group owns -- the way Adhitya's DeviceMesh builds its CP sub-group
++// (process_group/device_mesh.cpp: cudaStreamCreate, "blocking comm stream"). His all-to-alls launch on the group's
++// stream without waiting on the compute stream; a blocking stream is ordered after the legacy default stream 0 that our
++// kernels run on, so each all-to-all reads finished data. (dist::comm::sub_group_split gives a NON-blocking stream,
++// which has no such ordering, so it is not used here.)
++static std::shared_ptr<ProcessGroupNCCL> cp_make_group(ProcessGroupNCCL& world, int rank, int U) {
++    ncclComm_t comm = nullptr;
++    const ncclResult_t r = ncclCommSplit(world.get_comm(), /*color=*/rank / U, /*key=*/rank % U, &comm, nullptr);
++    if (r != ncclSuccess || comm == nullptr)
++        throw std::runtime_error(std::string("BLU_SFT_CP: ncclCommSplit failed: ") + ncclGetErrorString(r));
++    cudaStream_t s = nullptr;
++    if (cudaStreamCreate(&s) != cudaSuccess) throw std::runtime_error("BLU_SFT_CP: cudaStreamCreate failed");
++    std::vector<int> ranks;
++    for (int i = 0; i < U; ++i) ranks.push_back(rank / U * U + i);
++    auto work = std::make_shared<Work>(s, /*comm=*/nullptr);
++    auto pg = std::make_shared<dist::comm::Sub_Group>(ranks, rank % U, comm, work, s, /*root=*/0);
++    pg->set_owns_stream(true);
++    return pg;
++}
++// Adhitya's combine_ag / partition_ag (ContextParallel.h, private members there), the same lines around his public
++// collectives and backward nodes: each all-to-all is a pure permutation, its gradient the inverse all-to-all.
++static Tensor cp_combine(const Tensor& x) {
++    Tensor out = OwnTensor::cp::ulysses_combine(g_cp.pg, x, g_cp.U);
++    if (x.requires_grad()) {
++        auto gf = std::make_shared<UlyssesCombineBackward>(g_cp.pg, g_cp.U);
++        Tensor& xm = const_cast<Tensor&>(x);
++        gf->set_next_edge(0, autograd::get_grad_edge(xm));
++        out.set_grad_fn(gf);
++        out.set_requires_grad(true);
++    }
++    return out;
++}
++static Tensor cp_partition(const Tensor& x) {
++    Tensor out = OwnTensor::cp::ulysses_partition(g_cp.pg, x, g_cp.U);
++    if (x.requires_grad()) {
++        auto gf = std::make_shared<UlyssesPartitionBackward>(g_cp.pg, g_cp.U);
++        Tensor& xm = const_cast<Tensor&>(x);
++        gf->set_next_edge(0, autograd::get_grad_edge(xm));
++        out.set_grad_fn(gf);
++        out.set_requires_grad(true);
++    }
++    return out;
++}
++// This rank's token slice of a [B, T] tensor (ids, labels or positions; no gradient), contiguous.
++static Tensor cp_slice(const Tensor& t) {
++    if (g_cp.U == 1 || !t.is_valid()) return t;
++    Tensor m = t;                                         // narrow() is non-const; a handle copy shares the storage
++    const int64_t Tl = m.shape().dims[1] / g_cp.U;
++    return m.narrow(1, static_cast<int64_t>(g_cp.rank) * Tl, Tl).contiguous();
++}
++
+ using owt::zero::ShardedOptimizer;
+ using owt::zero::SymmetricShardedOptimizer;
+ using owt::zero::ShardedMuon;
+@@ -147,6 +327,11 @@
+     int     rope_theta     = 10000;
+     int64_t vocab_size     = 50304;                      // 50257 (tiktoken) padded for GPU efficiency
+     bool    weight_tying   = true;
++    // BLU_EMBED_SCALE=1: multiply the token-embedding OUTPUT by sqrt(d_model)
++    // before the first block (Vaswani et al. / Gemma). Input side only: under
++    // weight tying the lm_head still reads the unscaled wte.weight.
++    // Copied from preproduction-135M f37c616: the 135M base was trained with it on.
++    bool    embed_scale    = false;
+ 
+     float   rms_eps        = 1e-5f;                      // block RMSNorm epsilon
+     float   qk_eps         = 1e-6f;                      // QK-norm (fused) epsilon
+@@ -625,11 +810,16 @@
+         // the reverse order is correct -- but it pays for a bf16 copy AND an fp32 one
+         // instead of just the bf16 copy, which is the opposite of the point here.
+         // BLU_QKROPE_FP32=1 restores the fp32 head-major path above, kept for A/B checks against the bf16 kernel.
++        // SFT packed rows (positions since 2026-10-10, in the bf16 kernel since 2026-10-22): both kernels take
++        // g_packed.positions = each token's position INSIDE ITS OWN CHAT (0, 1, 2, ... restarting at every chat of
++        // the row), forward and backward; an empty Tensor (pretraining, dense rows) means position t as before.
++        // The bf16 kernel is bit-identical to the fp32 path, positions included (stage A + B tests,
++        // profiling_reports/rope_bf16_port_2026_10_22), and its positions backward is the 2026-10-24 cp.async version.
+         static const bool qkrope_fp32 = getenv_int("BLU_QKROPE_FP32", 0) != 0;
+         if (!qkrope_fp32) {
+             std::tie(q_bf, k_bf) = autograd::fused_rms_rope_bf16(
+                 q, k, Nq, Nkv, q_gamma, k_gamma, cos_sin_cache,
+-                /*pos_offset=*/0, cfg.qk_eps, /*interleaved=*/false);
++                /*pos_offset=*/0, cfg.qk_eps, /*interleaved=*/false, g_packed.positions);
+         } else {
+             Tensor q_4d = autograd::to_dtype(autograd::contiguous(
+                 autograd::transpose(autograd::reshape(q, Shape{{B, T, Nq,  hd}}), 1, 2)), qk);
+@@ -638,7 +828,7 @@
+ 
+             auto [q_norm_rope, k_norm_rope] = autograd::fused_rms_rope(
+                 q_4d, k_4d, q_gamma, k_gamma, cos_sin_cache,
+-                /*pos_offset=*/0, cfg.qk_eps, /*interleaved=*/false);
++                /*pos_offset=*/0, cfg.qk_eps, /*interleaved=*/false, g_packed.positions);
+ 
+             q_bf = autograd::to_dtype(q_norm_rope, Dtype::Bfloat16);
+             k_bf = autograd::to_dtype(k_norm_rope, Dtype::Bfloat16);
+@@ -650,6 +840,9 @@
+         q = autograd::to_dtype(autograd::reshape(q, Shape{{B, T, Nq,  hd}}), qk);
+         k = autograd::to_dtype(autograd::reshape(k, Shape{{B, T, Nkv, hd}}), qk);
+ 
++        if (g_packed.chats)
++            throw std::runtime_error("packed SFT rows need USE_FUSED_RMS_ROPE=1 (the sequential RoPE takes no "
++                                     "per-chat positions)");
+         q = autograd::rms_norm(q, q_gamma, static_cast<int>(hd), cfg.qk_eps);
+         k = autograd::rms_norm(k, k_gamma, static_cast<int>(hd), cfg.qk_eps);
+         q = autograd::rope(q, cos_sin_cache);
+@@ -662,9 +855,28 @@
+         // v never leaves bf16 (F2): wV already produced bf16 and SDPA consumes bf16.
+         Tensor v_bf = autograd::transpose(autograd::reshape(v, Shape{{B, T, Nkv, hd}}), 1, 2);
+ 
+-        Tensor attn = autograd::scaled_dot_product_attention(
++        // 2026-11-06: the call below is unchanged; it now sits in the U == 1 branch (no context parallelism).
++        Tensor attn;
++        if (g_cp.U == 1) {
++        attn = autograd::scaled_dot_product_attention(
+             q_bf, k_bf, v_bf, static_cast<int>(Nq), static_cast<int>(Nkv),
+-            /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention); // [B,Nq,T,hd] bf16
++            /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention,   // [B,Nq,T,hd] bf16
++            g_packed.chats);   // packed rows: each chat attends only to itself; null = plain causal
++        } else {
++            // Context parallelism (BLU_SFT_CP=U, see SftCp above). Here T is this rank's slice (T_full / U); q_bf and
++            // k_bf already carry RoPE at their true per-chat positions (g_packed.positions was sliced to match).
++            // combine: [B, H, T, hd] -> [B, H/U, T*U, hd]; query head e uses KV head e / (Nq / Nkv), and the
++            // all-to-all keeps that pairing (rank g receives query heads g*Nq/U.. and KV heads g*Nkv/U..).
++            const int U = g_cp.U;
++            Tensor qg = cp_combine(autograd::contiguous(q_bf));   // [B, Nq/U,  T_full, hd]
++            Tensor kg = cp_combine(autograd::contiguous(k_bf));   // [B, Nkv/U, T_full, hd]
++            Tensor vg = cp_combine(autograd::contiguous(v_bf));   // [B, Nkv/U, T_full, hd]
++            Tensor attn_g = autograd::scaled_dot_product_attention(
++                qg, kg, vg, static_cast<int>(Nq / U), static_cast<int>(Nkv / U),
++                /*is_causal=*/true, /*dropout_p=*/0.0f, autograd::SDPBackend::FlashAttention,   // [B,Nq/U,T_full,hd]
++                g_packed.chats);   // the FULL row's chat plan, built for Nq/U heads
++            attn = cp_partition(autograd::contiguous(attn_g));     // [B, Nq, T, hd]: back to this rank's slice
++        }
+ 
+         Tensor merged = autograd::reshape(autograd::transpose(attn, 1, 2),
+                                         Shape{{B, T, Nq * hd}});             // bf16
+@@ -724,10 +936,15 @@
+ public:
+     nn::Embedding wte;            // token embedding [vocab, d_model]
+     Tensor        cos_sin_cache;  // [context_length, head_dim] fp32 (shared, no grad)
++    Tensor        embed_scale_t;  // [1] sqrt(d_model) in resid dtype (no grad); valid iff cfg.embed_scale
+     std::vector<std::shared_ptr<CausalGQA>> attn;
+     std::vector<std::shared_ptr<SwiGLUMLP>> mlp;
+     nn::RMSNorm   norm_f;         // final RMSNorm
+     std::shared_ptr<nn::Linear> lm_head;  // only allocated when weight_tying == false
++    // 2026-10-31, the "lm_head on trained rows only" switch (BLU_SFT_TRAINED_ROWS=1, experimental, off by default;
++    // SFT work doc 45.131): when set, forward() runs the lm_head only on these rows of [B*T] (Int32 [M], -1 = filler,
++    // SftDataLoader::last_trained_rows) and returns logits [M, vocab]. nullptr (the default) = every row, as before.
++    const Tensor* head_rows = nullptr;
+ 
+     BLU(const ModelConfig& c, DeviceIndex dev, uint64_t seed = 1234)
+         : cfg(c),
+@@ -741,6 +958,11 @@
+         init_embedding(wte, 0.02f, init_rng_);
+         wte.to(dev);
+         norm_f.to(dev);
++        if (c.embed_scale) {
++            embed_scale_t = Tensor::full(Shape{{1}},
++                TensorOptions().with_dtype(c.resid_dtype()).with_device(dev),
++                std::sqrt(static_cast<float>(c.d_model)));
++        }
+ 
+         for (int i = 0; i < c.n_layers; ++i) {
+             auto a = std::make_shared<CausalGQA>(c, dev, cos_sin_cache, init_rng_);
+@@ -770,6 +992,7 @@
+         // residual dtype: the two are independent flags, so bf16_embed without
+         // bf16_resid has to widen here (and vice versa).
+         Tensor x = autograd::to_dtype(wte.forward(idx), cfg.resid_dtype());  // [B,T,d_model]
++        if (cfg.embed_scale) x = autograd::mul(x, embed_scale_t);           // x * sqrt(d_model)
+         // Blocks are invoked through Module::operator(), not forward(), so any
+         // registered module hook actually fires — a direct forward() call bypasses
+         // hook dispatch entirely. The ZeRO-1 staged parameter refresh registers a
+@@ -786,6 +1009,7 @@
+         // logits are HANDED BACK in is a flag: fp32 costs a [B,T,vocab] fp32 tensor
+         // (3.30 GB at B*T=16384, vocab=50304) purely to widen a bf16 product.
+         Tensor x_bf = autograd::to_dtype(x, Dtype::Bfloat16);
++        if (head_rows) x_bf = autograd::gather_rows(x_bf, *head_rows);   // [M, d_model]: trained rows only (switch)
+         if (cfg.weight_tying) {
+             // logits = x @ wte.weight^T ; keep the autograd edge back to wte.weight.
+             //
+@@ -821,6 +1045,9 @@
+ // WSD learning-rate schedule: linear Warmup -> Stable (constant max_lr) ->
+ // cosine Decay to min_lr over the remaining steps.
+ // =============================================================================
++// BLU_SFT_SCHEDULE=linear (2026-10-28): the decay phase falls linearly instead of along the cosine.
++static bool g_lr_linear = false;
++
+ static float get_lr(int step, float max_lr, float min_lr, int warmup, int max_steps, int stable_steps) {
+     if (step < warmup) {
+         return max_lr * static_cast<float>(step + 1) / static_cast<float>(warmup);
+@@ -832,6 +1059,8 @@
+                         static_cast<float>((max_steps - (stable_steps + warmup)) - 1);
+     assert(decay_ratio >= 0.0f && decay_ratio <= 1.0f);
+ 
++    if (g_lr_linear) return min_lr + (max_lr - min_lr) * (1.0f - decay_ratio);
++
+     // cosine decay
+     const float coeff = 0.5f * (1.0f + std::cos(M_PI * decay_ratio));  // 1 -> 0
+     return min_lr + coeff * (max_lr - min_lr);
+@@ -840,6 +1069,79 @@
+     //return min_lr + (max_lr-min_lr) * (1.0f - decay_ratio);
+ }
+ 
++// =============================================================================
++// Weight export (BLU_EXPORT=<path>.safetensors) — final model, rank 0 only. Copied from preproduction-135M
++// f37c616 (2026-10-28) so an SFT run ends with a file sft/blutrain_to_hf.py turns into a Hugging Face model.
++// Every tensor is written fp32 under a structural name, in this trainer's
++// layout: Linear weights are [in, out] (y = x @ W), gate_up is [gate | up]
++// along the out axis. The architecture rides in __metadata__ so a converter
++// needs nothing else.
++// =============================================================================
++static void export_safetensors(BLU& model, const std::string& path, int steps) {
++    const ModelConfig& c = model.cfg;
++    std::vector<std::pair<std::string, Tensor>> named;
++    named.push_back({"wte.weight", model.wte.weight});
++    for (int i = 0; i < c.n_layers; ++i) {
++        const std::string L = "layers." + std::to_string(i) + ".";
++        named.push_back({L + "attn_norm.weight", model.attn[i]->norm.weight});
++        named.push_back({L + "wq.weight",        model.attn[i]->wQ.weight});
++        named.push_back({L + "wk.weight",        model.attn[i]->wK.weight});
++        named.push_back({L + "wv.weight",        model.attn[i]->wV.weight});
++        named.push_back({L + "wo.weight",        model.attn[i]->wO.weight});
++        named.push_back({L + "q_gamma",          model.attn[i]->q_gamma});
++        named.push_back({L + "k_gamma",          model.attn[i]->k_gamma});
++        named.push_back({L + "mlp_norm.weight",  model.mlp[i]->norm.weight});
++        named.push_back({L + "gate_up.weight",   model.mlp[i]->gate_up.weight});
++        named.push_back({L + "down.weight",      model.mlp[i]->down.weight});
++    }
++    named.push_back({"norm_f.weight", model.norm_f.weight});
++    if (!c.weight_tying && model.lm_head) named.push_back({"lm_head.weight", model.lm_head->weight});
++
++    std::vector<Tensor> host;
++    std::ostringstream hdr;
++    hdr << "{\"__metadata__\":{"
++        << "\"format\":\"blutrain\",\"linear_layout\":\"in_out\""
++        << ",\"d_model\":\"" << c.d_model << "\",\"n_layers\":\"" << c.n_layers << "\""
++        << ",\"q_heads\":\"" << c.q_heads << "\",\"kv_heads\":\"" << c.kv_heads << "\""
++        << ",\"head_dim\":\"" << c.head_dim << "\",\"ffn_hidden\":\"" << c.ffn_hidden << "\""
++        << ",\"vocab_size\":\"" << c.vocab_size << "\",\"context_length\":\"" << c.context_length << "\""
++        << ",\"rope_theta\":\"" << c.rope_theta << "\",\"rms_eps\":\"" << c.rms_eps << "\""
++        << ",\"qk_eps\":\"" << c.qk_eps << "\",\"embed_scale\":\"" << (c.embed_scale ? 1 : 0) << "\""
++        << ",\"weight_tying\":\"" << (c.weight_tying ? 1 : 0) << "\",\"steps\":\"" << steps << "\"}";
++    uint64_t off = 0;
++    for (auto& [name, t] : named) {
++        Tensor h = t.as_type(Dtype::Float32).to_cpu();
++        const uint64_t nbytes = static_cast<uint64_t>(h.numel()) * sizeof(float);
++        hdr << ",\"" << name << "\":{\"dtype\":\"F32\",\"shape\":[";
++        const auto& dims = h.shape().dims;
++        for (size_t d = 0; d < dims.size(); ++d) hdr << (d ? "," : "") << dims[d];
++        hdr << "],\"data_offsets\":[" << off << "," << (off + nbytes) << "]}";
++        off += nbytes;
++        host.push_back(std::move(h));
++    }
++    hdr << "}";
++    std::string header = hdr.str();
++    while (header.size() % 8 != 0) header.push_back(' ');
++
++    const std::string tmp = path + ".tmp";
++    std::ofstream f(tmp, std::ios::binary);
++    const uint64_t hlen = header.size();
++    f.write(reinterpret_cast<const char*>(&hlen), sizeof hlen);
++    f.write(header.data(), static_cast<std::streamsize>(header.size()));
++    for (auto& h : host)
++        f.write(reinterpret_cast<const char*>(h.data<float>()),
++                static_cast<std::streamsize>(h.numel() * sizeof(float)));
++    f.close();
++    if (!f) throw std::runtime_error("export_safetensors: write failed: " + tmp);
++    std::filesystem::rename(tmp, path);
++    std::cout << "[export] wrote " << named.size() << " tensors (" << (off >> 20)
++              << " MiB fp32) to " << path << std::endl;
++}
++
++// =============================================================================
++// Training
++// =============================================================================
++
+ static bool dir_has_checkpoints(const std::filesystem::path& dir, const std::string& prefix) {
+     namespace sfs = std::filesystem;
+     std::error_code ec;
+@@ -1102,6 +1404,34 @@
+         dist::comm::abort_job(launch, 2);
+     }
+ 
++    // Model shape overrides (2026-10-22). A checkpoint stores the weights, not the config, so the run must build the
++    // model the checkpoint was trained as. BLU_N_LAYERS / BLU_ROPE_THETA override ModelConfig / the YAML (on this
++    // branch 26 / 10000; it was 26 / 500000 in the tree this SFT code came from, so always set both for a checkpoint);
++    // e.g. navingv/fullchess has 28 layers (282 weights in its metadata.bin, 10 per layer + embedding + final norm).
++    // A wrong layer count stops the BLU_INIT_FROM load ("[Architecture Mismatch]"). A wrong theta does NOT (no weight
++    // depends on it): it must be taken from the run that made the checkpoint. Both are printed in the config block.
++    cfg.n_layers   = getenv_int("BLU_N_LAYERS", static_cast<int>(cfg.n_layers));
++    cfg.rope_theta = getenv_int("BLU_ROPE_THETA", cfg.rope_theta);
++    // 135M base (2026-10-27): the other shape knobs and the embedding scale, with the names of preproduction-135M
++    // f37c616 (BLU_VOCAB from its _135m_eqab trainer). Unset = ModelConfig / the YAML. All must be the values of the
++    // run that made BLU_INIT_FROM: a wrong width, head count, ffn or vocab stops the load (shape mismatch), a wrong
++    // BLU_EMBED_SCALE does NOT (no weight depends on it). The 135M base: 512 / 4 / 2 / 1408 / 49280, embed_scale on.
++    cfg.d_model     = getenv_int("BLU_D_MODEL",    static_cast<int>(cfg.d_model));
++    cfg.q_heads     = getenv_int("BLU_Q_HEADS",    static_cast<int>(cfg.q_heads));
++    cfg.kv_heads    = getenv_int("BLU_KV_HEADS",   static_cast<int>(cfg.kv_heads));
++    cfg.ffn_hidden  = getenv_int("BLU_FFN_HIDDEN", static_cast<int>(cfg.ffn_hidden));
++    cfg.vocab_size  = getenv_int("BLU_VOCAB",      static_cast<int>(cfg.vocab_size));
++    cfg.embed_scale = getenv_int("BLU_EMBED_SCALE", cfg.embed_scale ? 1 : 0) != 0;
++    // BLU_SFT_T (2026-10-28, SFT at 8192): row length = RoPE cache length; must equal the data's meta.json "T" (the
++    // loader checks). Unset = the YAML's context.
++    cfg.T = cfg.context_length = getenv_int("BLU_SFT_T", static_cast<int>(cfg.T));
++    if (cfg.kv_heads <= 0 || cfg.q_heads % cfg.kv_heads != 0 || cfg.d_model % 64 != 0 || cfg.ffn_hidden % 64 != 0
++        || cfg.q_heads * cfg.head_dim != cfg.d_model) {
++        if (is_master)
++            std::cerr << "ERROR: bad shape override: q_heads must be a multiple of kv_heads, d_model and ffn_hidden "
++                         "multiples of 64, and q_heads x head_dim = d_model" << std::endl;
++        dist::comm::abort_job(launch, 1);
++    }
+ 
+     // OwnTensor::AllocationTracker::instance().init("4b_tracker.csv");
+ 
+@@ -1169,8 +1499,153 @@
+         }
+     }
+ 
++    // ---- SFT mode: BLU_SFT_DATA=<dir> ----
++    // <dir>/train and <dir>/val are written by sft/prepare_sft_data.py. In this mode the trainer
++    //   * reads its batches through sft/SftDataLoader.h (targets from labels.bin, 65535 = not trained)
++    //     instead of the pretraining mixture, which is never opened, so BLU_MIX_ROOT is not needed;
++    //   * divides every micro-step's loss by the GLOBAL count of trained tokens in the step (all
++    //     micro-steps, all ranks) and seeds backward with world_size instead of 1/GRAD_ACCUM, because
++    //     the ZeRO optimizers average over ranks. Every trained token of a step then carries the same
++    //     1/N, which is torchtitan's global_valid_tokens (loss_calculation_in_pretraining_and_sft.md);
++    //   * takes its schedule from these knobs (defaults = the stage-0 plan):
++    //       BLU_SFT_ROWS_PER_STEP  64    rows (conversations) per optimizer step, all ranks together
++    //       BLU_SFT_B              8     rows per micro-batch per rank (bluscript_sft.cpp only, 2026-10-15);
++    //                                    ROWS_PER_STEP must be a multiple of B x ranks. B=1 uses every row.
++    //       BLU_SFT_EPOCHS         2     max_steps = epochs * micro-batches per epoch / GRAD_ACCUM
++    //       BLU_SFT_LR             2e-5  AdamW peak LR; BLU_SFT_MIN_LR (default LR / 10) ends the cosine
++    //       BLU_SFT_WARMUP         0.03  linear warmup as a fraction of max_steps, then cosine, no stable phase
++    //       BLU_SFT_SCHEDULE       cosine  cosine | linear (Tulu 3) | constant (min = peak) | wsd (constant, then
++    //                                    cosine over the last BLU_SFT_DECAY_FRAC = 0.2 of the steps, as pretraining)
++    //       BLU_SFT_VAL_FREQ       10    validation every N steps, over the whole val set
++    //       BLU_SFT_MUON_LR        -     required with BLU_OPTIMIZER=muon: the pretraining Muon LR would
++    //                                    wreck the weights. BLU_SFT_MUON_MIN_LR defaults to it / 10
++    //   * checkpoints into checkpoints_sft[_muon] unless BLU_CKPT_DIR is set, so it never auto-resumes a
++    //     pretraining checkpoint left in the default directory.
++    // BLU_MAX_STEPS is ignored in this mode: the schedule comes from the epochs.
++    const std::string sft_dir = getenv_str("BLU_SFT_DATA", "");
++    const bool sft = !sft_dir.empty();
++    std::unique_ptr<SftDataLoader> sft_train, sft_val;
++    bool trained_rows = false;                    // BLU_SFT_TRAINED_ROWS (2026-10-31, experimental, off by default)
++    if (sft) {
++        cfg.B = getenv_int("BLU_SFT_B", static_cast<int>(cfg.B));   // rows per micro-batch per rank (2026-10-15)
++        if (cfg.B <= 0) {
++            if (is_master) std::cerr << "ERROR: BLU_SFT_B must be positive" << std::endl;
++            dist::comm::abort_job(launch, 1);
++        }
++        const int64_t rows_per_step = getenv_int("BLU_SFT_ROWS_PER_STEP", 64);
++        const int64_t epochs        = getenv_int("BLU_SFT_EPOCHS", 2);
++        const float   warmup_frac   = getenv_float("BLU_SFT_WARMUP", 0.03f);
++        // 2026-11-06: context parallelism, BLU_SFT_CP=U (1 = off). The U ranks rank/U*U .. rank/U*U + U - 1 form one CP
++        // group: same rows, one token slice each. So rows are picked by the DATA-parallel rank (rank / U of
++        // world_size / U), and the row checks below count data-parallel ranks.
++        g_cp.U = getenv_int("BLU_SFT_CP", 1);
++        g_cp.rank = rank % std::max(1, g_cp.U);
++        if (g_cp.U < 1 || world_size % g_cp.U != 0 || cfg.q_heads % g_cp.U != 0 || cfg.kv_heads % g_cp.U != 0 ||
++            cfg.T % g_cp.U != 0) {
++            if (is_master)
++                std::cerr << "ERROR: BLU_SFT_CP (" << g_cp.U << ") must be >= 1 and divide world_size (" << world_size
++                          << "), the query heads (" << cfg.q_heads << "), the KV heads (" << cfg.kv_heads
++                          << ") and the row length T (" << cfg.T << ")" << std::endl;
++            dist::comm::abort_job(launch, 1);
++        }
++        const int dp_rank = rank / g_cp.U, dp_world = world_size / g_cp.U;
++        if (is_master && g_cp.U > 1)
++            std::cout << "[sft] BLU_SFT_CP=" << g_cp.U << ": context parallelism, " << dp_world << " data-parallel x "
++                      << g_cp.U << " CP ranks; each rank holds " << cfg.T / g_cp.U << " of the " << cfg.T
++                      << " tokens of every row (Ulysses all-to-all around our attention)" << std::endl;
++        // The previous line, kept for reference (= the line below at U == 1):
++        // const int64_t rows_per_micro = cfg.B * static_cast<int64_t>(world_size);
++        const int64_t rows_per_micro = cfg.B * static_cast<int64_t>(dp_world);
++        if (rows_per_step <= 0 || rows_per_step % rows_per_micro != 0 || epochs <= 0) {
++            if (is_master)
++                std::cerr << "ERROR: BLU_SFT_ROWS_PER_STEP (" << rows_per_step << ") must be a positive multiple "
++                          << "of B * world_size (" << rows_per_micro << "), and BLU_SFT_EPOCHS (" << epochs
++                          << ") positive" << std::endl;
++            dist::comm::abort_job(launch, 1);
++        }
++        // rank / world_size pick this rank's rows; local_rank is the GPU the batches are copied to (a device
++        // ordinal is node-local: the global rank would ask for device 8 on the second node of a 2 x 8 job).
++        // cfg.vocab_size: ids are checked against the model's rows (49,280 for the 135M base, 50,304 for the 1.7B).
++        // 2026-11-06: rank / world_size -> dp_rank / dp_world (the same at U == 1). The previous lines, kept:
++        // sft_train = std::make_unique<SftDataLoader>(sft_dir + "/train", static_cast<int>(cfg.B),
++        //                                             static_cast<int>(cfg.T), rank, world_size, local_rank, is_master,
++        //                                             cfg.vocab_size);
++        // sft_val   = std::make_unique<SftDataLoader>(sft_dir + "/val", static_cast<int>(cfg.B),
++        //                                             static_cast<int>(cfg.T), rank, world_size, local_rank, is_master,
++        //                                             cfg.vocab_size);
++        sft_train = std::make_unique<SftDataLoader>(sft_dir + "/train", static_cast<int>(cfg.B),
++                                                    static_cast<int>(cfg.T), dp_rank, dp_world, local_rank, is_master,
++                                                    cfg.vocab_size);
++        sft_val   = std::make_unique<SftDataLoader>(sft_dir + "/val", static_cast<int>(cfg.B),
++                                                    static_cast<int>(cfg.T), dp_rank, dp_world, local_rank, is_master,
++                                                    cfg.vocab_size);
++        // 2026-10-31: the "lm_head on trained rows only" switch, experimental, OFF by default (SFT work doc 45.131).
++        trained_rows = getenv_int("BLU_SFT_TRAINED_ROWS", 0) != 0;
++        if (trained_rows && g_cp.U > 1) {   // 2026-11-06: its row lists are for whole rows, not a rank's token slice
++            if (is_master) std::cerr << "ERROR: BLU_SFT_TRAINED_ROWS=1 does not work with BLU_SFT_CP > 1" << std::endl;
++            dist::comm::abort_job(launch, 1);
++        }
++        sft_train->set_trained_rows(trained_rows);
++        if (is_master && trained_rows)
++            std::cout << "[sft] BLU_SFT_TRAINED_ROWS=1: lm_head + loss on trained rows only (experimental)\n";
++        const int64_t ga = rows_per_step / rows_per_micro;
++        cfg.global_batch   = rows_per_step * cfg.T;           // so GRAD_ACCUM below comes out as ga
++        cfg.max_steps      = static_cast<int>(epochs * sft_train->micro_batches_per_epoch() / ga);
++        cfg.warmup_steps   = std::max(1, static_cast<int>(std::lround(warmup_frac * cfg.max_steps)));
++        cfg.stable_steps   = 0;
++        cfg.max_lr         = getenv_float("BLU_SFT_LR", 2e-5f);
++        cfg.min_lr         = getenv_float("BLU_SFT_MIN_LR", cfg.max_lr / 10.0f);
++        cfg.val_freq       = getenv_int("BLU_SFT_VAL_FREQ", 10);
++        cfg.val_loss_steps = static_cast<int>(sft_val->micro_batches_per_epoch());
++        cfg.ckpt_dir       = "checkpoints_sft";
++        const char* opt = std::getenv("BLU_OPTIMIZER");
++        if (opt && (std::string(opt) == "muon" || std::string(opt) == "MUON")) {
++            cfg.muon_lr = getenv_float("BLU_SFT_MUON_LR", 0.0f);
++            if (cfg.muon_lr <= 0.0f) {
++                if (is_master)
++                    std::cerr << "ERROR: BLU_OPTIMIZER=muon in SFT mode needs BLU_SFT_MUON_LR (the pretraining "
++                                 "Muon LR would wreck the weights)" << std::endl;
++                dist::comm::abort_job(launch, 1);
++            }
++            cfg.muon_min_lr = getenv_float("BLU_SFT_MUON_MIN_LR", cfg.muon_lr / 10.0f);
++        }
++        // Schedule (2026-10-28, stage 2 of the 135M SFT grid). Every decaying shape ends at the same min LR.
++        const std::string sched = getenv_str("BLU_SFT_SCHEDULE", "cosine");
++        if (sched == "linear") {
++            g_lr_linear = true;
++        } else if (sched == "constant") {
++            cfg.min_lr = cfg.max_lr;
++            cfg.muon_min_lr = cfg.muon_lr;
++        } else if (sched == "wsd") {
++            const float df = getenv_float("BLU_SFT_DECAY_FRAC", 0.2f);
++            const int decay = std::max(2, static_cast<int>(std::lround(df * cfg.max_steps)));
++            cfg.stable_steps = std::max(0, cfg.max_steps - cfg.warmup_steps - decay);
++        } else if (sched != "cosine") {
++            if (is_master) std::cerr << "ERROR: BLU_SFT_SCHEDULE must be cosine, linear, constant or wsd" << std::endl;
++            dist::comm::abort_job(launch, 1);
++        }
++        if (is_master) {
++            std::cout << "[sft] " << rows_per_step << " rows per step = B " << cfg.B << " x GRAD_ACCUM " << ga
++                      << " x W " << world_size << " | " << epochs << " epochs = " << cfg.max_steps << " steps"
++                      << " | lr " << cfg.max_lr << " -> " << cfg.min_lr << ", warmup " << cfg.warmup_steps
++                      << " steps then " << sched << (sched == "wsd" ? " (stable " + std::to_string(cfg.stable_steps)
++                      + " steps)" : std::string()) << " | val every " << cfg.val_freq << " steps ("
++                      << cfg.val_loss_steps << " batches per rank)\n"
++                      << "[sft] loss: label 65535 ignored, divided by the step's global trained-token count, "
++                         "backward seed " << world_size << " (= W) | tok/s below counts all positions, "
++                         "padding included" << std::endl;
++            if (getenv_int("BLU_MAX_STEPS", 0) > 0)
++                std::cout << "[sft] BLU_MAX_STEPS is ignored in SFT mode" << std::endl;
++            if (!std::getenv("BLU_INIT_FROM"))
++                std::cout << "[sft] WARNING: no BLU_INIT_FROM, so this run fine-tunes RANDOM weights" << std::endl;
++        }
++    }
++
+     // Tokens consumed per optimizer step = B * T * grad_accum * world_size.
+-    const int64_t tokens_per_micro = cfg.B * cfg.T * static_cast<int64_t>(world_size);
++    // 2026-11-06: / g_cp.U -- the U ranks of a CP group share their rows (1 outside SFT context parallelism).
++    // The previous line, kept for reference:
++    // const int64_t tokens_per_micro = cfg.B * cfg.T * static_cast<int64_t>(world_size);
++    const int64_t tokens_per_micro = cfg.B * cfg.T * static_cast<int64_t>(world_size / g_cp.U);
+     if (cfg.global_batch % tokens_per_micro != 0) {
+         if (is_master) {
+             std::cerr << "ERROR: global_batch (" << cfg.global_batch
+@@ -1193,6 +1668,7 @@
+                   << "  (interleaved="    << (cfg.rope_interleaved ? "GPT-J" : "NeoX") << ")\n"
+                   << "  vocab_size      : " << cfg.vocab_size     << "\n"
+                   << "  weight_tying    : " << (cfg.weight_tying ? "ON" : "OFF") << "\n"
++                  << "  embed_scale     : " << (cfg.embed_scale ? "x sqrt(d_model)" : "off") << "\n"
+                   << "  precision       : resid "
+                   << OwnTensor::get_dtype_name(cfg.resid_dtype())
+                   << " | logits " << OwnTensor::get_dtype_name(cfg.logit_dtype())
+@@ -1339,6 +1815,21 @@
+                       << " (algorithms picked for this machine; BLUCCL_ALGO_REPORT=1 prints them)" << std::endl;
+     }
+ 
++    // 2026-11-06: the context-parallel group (BLU_SFT_CP > 1; see SftCp / cp_make_group). It is split off the world
++    // NCCL group; the single-node BluCCL backend has none, so one is brought up for the split (and kept alive).
++    if (g_cp.U > 1) {
++        g_cp.parent = nccl_pg ? nccl_pg : dist::comm::bring_up_process_group(launch, dist::comm::MemoryMode::Standard);
++        try {
++            g_cp.pg = cp_make_group(*g_cp.parent, rank, g_cp.U);
++        } catch (const std::exception& e) {
++            std::cerr << "[rank " << rank << "] [sft] FATAL: " << e.what() << std::endl;
++            dist::comm::abort_job(launch, 1);
++        }
++        if (is_master)
++            std::cout << "[sft] CP groups up: " << world_size / g_cp.U << " group(s) of " << g_cp.U
++                      << " consecutive ranks (Ulysses all-to-all on a blocking stream)" << std::endl;
++    }
++
+     // Monitoring: every launch writes into its own <launch dir>/<logs_root>/<run name>_<mpirun|blurun>_<id>/
+     // (see train/production_zero/monitoring/); the make wrapper pre-creates it for mpirun launches.
+     const bool monitor = getenv_int("BLU_MONITOR", 0) != 0;
+@@ -1394,7 +1885,8 @@
+     const bool csv_enabled = getenv_int("BLU_LOG_ENABLED", 1) != 0;
+     const std::string csv_dir = run_dir.empty() ? getenv_str("BLU_LOG_DIR", "") : run_dir;
+     const std::string csv_path = (csv_dir.empty() ? fs::path() : fs::path(csv_dir)) /
+-        (run_dir.empty() ? getenv_str("BLU_LOG_CSV", use_muon ? "mix_ratio_1.csv" : "adamw_noovl_contig.csv")
++        (run_dir.empty() ? getenv_str("BLU_LOG_CSV", sft ? (use_muon ? "sft_muon.csv" : "sft_adamw.csv")
++                                                         : (use_muon ? "mix_ratio_1.csv" : "adamw_noovl_contig.csv"))
+                          : std::string("metrics.csv"));
+     int csv_mode = 0;   // 0 = write new, 1 = append, -1 = refuse
+     if (is_master && csv_enabled && fs::exists(csv_path) && getenv_int("BLU_LOG_OVERWRITE", 0) == 0)
+@@ -1418,6 +1910,162 @@
+     for (auto& p : params) num_params += p.numel();
+     if (is_master) std::cout << "Number of parameters: " << num_params << std::endl;
+ 
++    // ---- SFT: initialise the weights from another run's checkpoint (weights only) ----
++    // What:   BLU_INIT_FROM=<checkpoint dir> loads ONLY the model weights of that DCP checkpoint
++    //         (e.g. blumodel_step_8000 of a 4-GPU Muon pretraining run) into this model. Its
++    //         optimizer state, step, epoch and data position are NOT loaded: this run starts at
++    //         step 0 with a fresh optimizer. If this run later resumes its OWN checkpoint
++    //         (cfg.ckpt_dir, below), that load overwrites these weights together with the
++    //         optimizer state, so a restarted SFT run continues where it stopped. Same contract
++    //         as torchtitan's initial_load_path + initial_load_model_only=True.
++    // Why here, before the optimizers: every ZeRO optimizer (ShardedOptimizer,
++    //         SymmetricShardedOptimizer, ShardedMuon) copies the model weights into its fp32
++    //         masters inside its constructor (init_master_from_params). Loaded after that, the
++    //         masters would still hold the random init and the first step would write it back.
++    // Needs:  weights are saved by position (param_NNNNNN), so the checkpoint must hold this
++    //         model's weights with the same shape and dtype at every index. The dtypes follow the
++    //         precision flags: a checkpoint saved with BLU_ALL_BF16=1 (bf16 embedding and norms)
++    //         must be loaded with the same flag. A mismatch is not silent: DCP stops on a missing
++    //         weight or a different shape ("[Architecture Mismatch]", LoadPlanning.cpp), and
++    //         sync_back_to_model() stops on a different dtype (Tensor::copy_ refuses it).
++    // Verify: BLU_INIT_VERIFY=1 also compares every loaded weight in GPU memory with the CRC32
++    //         the checkpoint stored for it (a test switch; it copies every weight to the host).
++    std::shared_ptr<ProcessGroupNCCL> init_pg;   // the NCCL group "dcp" made here when the trainer has none
++                                                 // (W == 1, single-node BluCCL); the checkpointer reuses it
++    if (const char* init_from = std::getenv("BLU_INIT_FROM"); init_from && *init_from) {
++        const std::string init_dir = init_from;
++        auto pname = [](size_t i) {
++            char nm[32];
++            std::snprintf(nm, sizeof nm, "param_%06zu", i);
++            return std::string(nm);
++        };
++        // DCP loads over an NCCL group (it has no BluCCL backend), as the checkpointer below does:
++        //   NCCL backend          -> the trainer's own group (nccl_pg);
++        //   BluCCL, W > 1         -> a separate NCCL group "dcp" (collective: every rank gets here);
++        //   W == 1                -> a single-rank group "dcp".
++        // The last two are kept in init_pg and reused by the checkpointer, so "dcp" is created only once.
++        std::shared_ptr<ProcessGroupNCCL> load_pg = nccl_pg;
++        if (!load_pg) {
++            init_pg = world_size > 1
++                ? dist::comm::bring_up_process_group(launch, dist::comm::MemoryMode::Standard, "dcp")
++                : init_process_group(1, 0, /*stream=*/0, /*group_name=*/"dcp", dist::comm::MemoryMode::Standard);
++            load_pg = init_pg;
++        }
++        std::map<std::string, Tensor*> init_named;
++        for (size_t i = 0; i < params.size(); ++i) init_named[pname(i)] = &params[i];
++        owt::zero::ZeroDcpModule init_module(init_named);
++        int   ck_epoch = 0, ck_step = 0;
++        float ck_loss  = 0.0f;
++        OwnTensor::DistCheckpoint::load(init_module, init_dir, load_pg, /*optimizer=*/nullptr,
++                                        &ck_epoch, &ck_step, &ck_loss);
++        init_module.sync_back_to_model();   // a no-op when the dtypes match
++
++        if (getenv_int("BLU_INIT_VERIFY", 0) != 0) {
++            OwnTensor::CheckpointMetadata init_meta;
++            {
++                std::ifstream mis(init_dir + "/metadata.bin", std::ios::binary);
++                init_meta = OwnTensor::CheckpointMetadata::deserialize(mis);
++            }
++            size_t n_crc_ok = 0;
++            std::vector<std::string> crc_bad;
++            for (size_t i = 0; i < params.size(); ++i) {
++                const auto& tm = init_meta.tensors.at(pname(i));
++                Tensor host = params[i].to_cpu();
++                if (tm.shards.size() == 1 && tm.shards[0].checksum_kind != 0 &&
++                    OwnTensor::dcp::Checksum::verify(
++                        static_cast<OwnTensor::dcp::Checksum::Kind>(tm.shards[0].checksum_kind),
++                        host.data(), host.nbytes(), tm.shards[0].checksum_value))
++                    ++n_crc_ok;
++                else
++                    crc_bad.push_back(pname(i));
++            }
++            if (is_master)
++                std::cout << "[init] BLU_INIT_VERIFY: " << n_crc_ok << "/" << params.size()
++                          << " weights match the checkpoint's CRC32"
++                          << (crc_bad.empty() ? "" : "; first mismatch " + crc_bad[0]) << std::endl;
++            if (!crc_bad.empty())
++                throw std::runtime_error("BLU_INIT_FROM: loaded weights do not match the checkpoint");
++        }
++        if (is_master)
++            std::cout << "[init] weights only from " << init_dir << " (its step " << ck_step << ", loss "
++                      << std::fixed << std::setprecision(6) << ck_loss << "). Optimizer state, step "
++                         "and data position start fresh." << std::endl;
++    }
++
++    // ---- SFT: initialise the weights from a converted Hugging Face export (BLU_INIT_FROM_RAW) ----
++    // What:   BLU_INIT_FROM_RAW=<dir> written by sft/hf_to_blutrain.py: one fp32 file per weight (<name>.bin, BluTrain
++    //         layout, the names of preproduction-135M's export_safetensors) + index.txt ("<name> <dims...>"). Weights
++    //         only, like BLU_INIT_FROM: fresh optimizer, step 0. Made for the 135M base, which we have as Navin's
++    //         Hugging Face file (2026-10-27), not as a complete DCP checkpoint.
++    // Check:  every weight is read back from the GPU and must equal the file bit for bit (the files hold bf16-exact
++    //         values, so the bf16 parameters store them exactly); the run stops otherwise. Every BluTrain weight must
++    //         be in the folder and every file must belong to a weight: no silent partial load.
++    if (const char* raw_dir_c = std::getenv("BLU_INIT_FROM_RAW"); raw_dir_c && *raw_dir_c) {
++        const std::string raw_dir = raw_dir_c;
++        if (std::getenv("BLU_INIT_FROM") && *std::getenv("BLU_INIT_FROM"))
++            throw std::runtime_error("set BLU_INIT_FROM or BLU_INIT_FROM_RAW, not both");
++        if (!cfg.weight_tying)
++            throw std::runtime_error("BLU_INIT_FROM_RAW: the converter writes a tied model (no lm_head file)");
++        std::vector<std::pair<std::string, Tensor*>> named;
++        named.push_back({"wte.weight", &model.wte.weight});
++        for (int i = 0; i < cfg.n_layers; ++i) {
++            const std::string L = "layers." + std::to_string(i) + ".";
++            named.push_back({L + "attn_norm.weight", &model.attn[i]->norm.weight});
++            named.push_back({L + "wq.weight",        &model.attn[i]->wQ.weight});
++            named.push_back({L + "wk.weight",        &model.attn[i]->wK.weight});
++            named.push_back({L + "wv.weight",        &model.attn[i]->wV.weight});
++            named.push_back({L + "wo.weight",        &model.attn[i]->wO.weight});
++            named.push_back({L + "q_gamma",          &model.attn[i]->q_gamma});
++            named.push_back({L + "k_gamma",          &model.attn[i]->k_gamma});
++            named.push_back({L + "mlp_norm.weight",  &model.mlp[i]->norm.weight});
++            named.push_back({L + "gate_up.weight",   &model.mlp[i]->gate_up.weight});
++            named.push_back({L + "down.weight",      &model.mlp[i]->down.weight});
++        }
++        named.push_back({"norm_f.weight", &model.norm_f.weight});
++
++        std::map<std::string, std::vector<int64_t>> file_dims;
++        {
++            std::ifstream idx(raw_dir + "/index.txt");
++            if (!idx) throw std::runtime_error("BLU_INIT_FROM_RAW: no " + raw_dir + "/index.txt");
++            std::string line;
++            while (std::getline(idx, line)) {
++                std::istringstream ls(line);
++                std::string nm; int64_t d; std::vector<int64_t> dims;
++                if (!(ls >> nm)) continue;
++                while (ls >> d) dims.push_back(d);
++                file_dims[nm] = dims;
++            }
++        }
++        if (file_dims.size() != named.size())
++            throw std::runtime_error("BLU_INIT_FROM_RAW: index.txt lists " + std::to_string(file_dims.size()) +
++                                     " weights, this model has " + std::to_string(named.size()));
++        size_t n_exact = 0;
++        for (auto& [nm, p] : named) {
++            auto it = file_dims.find(nm);
++            if (it == file_dims.end()) throw std::runtime_error("BLU_INIT_FROM_RAW: no file for " + nm);
++            if (it->second != p->shape().dims)
++                throw std::runtime_error("BLU_INIT_FROM_RAW: " + nm + " has another shape in the file "
++                                         "(wrong BLU_D_MODEL / heads / ffn / vocab / layers?)");
++            Tensor host(p->shape(), TensorOptions().with_dtype(Dtype::Float32));
++            const size_t bytes = static_cast<size_t>(host.numel()) * sizeof(float);
++            std::ifstream f(raw_dir + "/" + nm + ".bin", std::ios::binary | std::ios::ate);
++            if (!f || static_cast<size_t>(f.tellg()) != bytes)
++                throw std::runtime_error("BLU_INIT_FROM_RAW: " + nm + ".bin is missing or not " +
++                                         std::to_string(bytes) + " bytes");
++            f.seekg(0);
++            f.read(reinterpret_cast<char*>(host.data<float>()), static_cast<std::streamsize>(bytes));
++            copy_into_param(*p, host.as_type(p->dtype()).to(p->device()));
++            Tensor back = p->as_type(Dtype::Float32).to_cpu();          // the exact check
++            if (std::memcmp(back.data<float>(), host.data<float>(), bytes) != 0)
++                throw std::runtime_error("BLU_INIT_FROM_RAW: " + nm + " on the GPU differs from its file");
++            ++n_exact;
++        }
++        if (is_master)
++            std::cout << "[init] weights only from " << raw_dir << " (BLU_INIT_FROM_RAW): " << n_exact << "/"
++                      << named.size() << " weights loaded and bit-equal to their files. Optimizer state, step and "
++                         "data position start fresh." << std::endl;
++    }
++
+     // ---- MFU meter ----
+     // Built here rather than at first use so its banner lands next to the
+     // parameter count it cross-checks itself against (6*N), and so a bogus
+@@ -1435,8 +2083,12 @@
+     else if (bluccl_fused_emb && is_master)
+         std::cout << "[embedding] bluccl.fused_embedding_backward ignored: it needs ZeRO-1 on the "
+                      "BluCCL backend with more than one GPU; using embedding.backward" << std::endl;
++    // 2026-11-06: B * T / g_cp.U -- the segmented kernel's workspace is sized for EXACTLY this many tokens per call
++    // and its hook ignores the real count, so under context parallelism it must be this rank's slice. Previous call:
++    // const bool emb_segmented = dist::comm::install_fused_embedding_backward(
++    //     cfg.B * cfg.T, cfg.d_model, cfg.vocab_size, /*padding_idx=*/-1, is_master);
+     const bool emb_segmented = dist::comm::install_fused_embedding_backward(
+-        cfg.B * cfg.T, cfg.d_model, cfg.vocab_size, /*padding_idx=*/-1, is_master);
++        cfg.B * (cfg.T / g_cp.U), cfg.d_model, cfg.vocab_size, /*padding_idx=*/-1, is_master);
+     if (is_master) {
+         const char* m = std::getenv("BLUTRAIN_EMB_BWD");
+         std::cout << "[embedding] backward: "
+@@ -2232,7 +2884,7 @@
+         return p;
+     };
+ 
+-    if (is_master) {
++    if (is_master && !sft) {
+         std::cout << "\n=== Data mixture: preset " << mix_preset
+                   << (mix_schedule.size() > 1 ? " (phased)" : " (static)") << " ===\n";
+         for (const auto& ph : mix_schedule) {
+@@ -2250,21 +2902,28 @@
+     // loop re-applies the correct phase before the first batch is drawn.
+     for (size_t d = 0; d < domains.size(); ++d) domains[d].weight = mix_schedule[0].w[d];
+ 
+-    MixedDataLoaderLite train_loader(static_cast<int>(cfg.B), static_cast<int>(cfg.T),
+-                                     rank, world_size, domains, is_master, 100000000, local_rank);
++    // Not created in SFT mode: sft_train / sft_val above replace it, and opening it would need the
++    // pretraining shards under BLU_MIX_ROOT. The last argument is the device ordinal, i.e. the LOCAL rank.
++    std::unique_ptr<MixedDataLoaderLite> train_loader;
++    if (!sft)
++        train_loader = std::make_unique<MixedDataLoaderLite>(static_cast<int>(cfg.B), static_cast<int>(cfg.T),
++                                                             rank, world_size, domains, is_master, 100000000,
++                                                             local_rank);
+     int cur_mix_phase = -1;   // forces set_weights() on the first step
+ 
+     // One val loader per domain. A single blended val number can stay flat
+     // while code and math move in opposite directions, which is precisely the
+     // thing a mixture run needs to see; the headline `val_loss` below is these
+     // recombined at the TRAINING weights, so it stays comparable to what the
+-    // single-source runs logged into the same CSV column.
+-    auto val_loaders = train_loader.create_val_loaders();
++    // single-source runs logged into the same CSV column. Empty in SFT mode (no pretraining loader).
++    std::vector<std::pair<std::string, std::unique_ptr<DataLoaderLite>>> val_loaders;
++    if (train_loader) val_loaders = train_loader->create_val_loaders();
+ 
+     // Every rank must read the SAME shards: a partial copy on one node changes its
+     // directory listing and nothing downstream notices. Fingerprint every domain's
+     // train and val shard list (names + byte sizes) and refuse to start on a mismatch.
+-    if (world_size > 1) {
++    // SFT mode opens no pretraining shard (its data is checked by SftDataLoader), so there is nothing to compare.
++    if (world_size > 1 && !sft) {
+         auto fingerprint = [](const std::vector<std::string>& shards) {
+             uint64_t h = 1469598103934665603ull;
+             auto mix = [&h](const void* p, size_t n) {
+@@ -2344,7 +3003,10 @@
+             // positionally, so anything added at the end leaves it working unchanged.
+             for (auto& vl : val_loaders) log_file << ",val_" << vl.first;
+             log_file << ",tokens_seen,avg_tok_per_sec";
+-            for (int d = 0; d < train_loader.n_domains(); ++d) log_file << ",shard_" << train_loader.name_of(d);
++            if (train_loader)   // the pretraining mixture: one column per domain (none in SFT mode)
++                for (int d = 0; d < train_loader->n_domains(); ++d) log_file << ",shard_" << train_loader->name_of(d);
++            // SFT: the step's trained tokens (labels != 65535, all micro-batches, all ranks) = its loss denominator.
++            if (sft) log_file << ",trained_tokens";
+             log_file << "\n";
+         }
+         log_file << std::fixed << std::setprecision(6);
+@@ -2372,9 +3034,16 @@
+     }
+ 
+     // Reused GPU scalars (avoid per-step allocation).
++    // The backward seed. Pretraining: each micro-step's loss is the mean over its own B*T tokens, so
++    // 1/GRAD_ACCUM turns the sum of the micro-steps into their mean. SFT: each micro-step's loss is
++    // already divided by the step's global trained-token count, so the micro-steps just add, and
++    // world_size cancels the ZeRO average over ranks.
+     Tensor grad_scale = Tensor::full(Shape{{1}}, TensorOptions().with_device(device),
+-                                     1.0f / static_cast<float>(GRAD_ACCUM));
++                                     sft ? static_cast<float>(world_size)
++                                         : 1.0f / static_cast<float>(GRAD_ACCUM));
+     Tensor loss_accum_gpu = Tensor::zeros(Shape{{1}}, TensorOptions().with_device(device));
++    Tensor sft_denom;          // SFT: the step's global trained-token count, refilled every step
++    int64_t step_tokens = 0;   // SFT: that count as an integer, for the log
+ 
+     float last_val_loss = -1.0f;  // carried across steps; refreshed every val_freq
+     auto training_start = std::chrono::high_resolution_clock::now();
+@@ -2510,9 +3179,13 @@
+     // no collectives there). Give the checkpointer its own single-rank group so
+     // one-GPU runs can still save and resume instead of faulting in save().
+     std::shared_ptr<ProcessGroupNCCL> ckpt_pg = nccl_pg;
++    // SFT: BLU_INIT_FROM (above) made the NCCL group "dcp" when the trainer had none (W == 1, or single-node BluCCL at
++    // W > 1). Reuse it rather than create a second group with the same name; without BLU_INIT_FROM init_pg is null and
++    // everything below runs exactly as in bluscript_zero_ckpt.cpp.
++    if (init_pg) ckpt_pg = init_pg;
+     bool ckpt_enabled = getenv_int("BLU_CKPT", cfg.checkpointing ? 1 : 0) != 0;
+     // DCP is typed on ProcessGroupNCCL and has no BluCCL backend, so BluCCL runs checkpoint on its own NCCL group.
+-    if (ckpt_enabled && use_bluccl && world_size > 1) {
++    if (ckpt_enabled && use_bluccl && world_size > 1 && !init_pg) {   // !init_pg: see ckpt_pg above
+         try {
+             ckpt_pg = dist::comm::bring_up_process_group(launch, dist::comm::MemoryMode::Standard, "dcp");
+             if (is_master)
+@@ -2681,16 +3354,18 @@
+             // That costs one extra rebase, which is harmless — the pre-resume
+             // span was on target and the post-resume span is on target from a
+             // zeroed accounting, so the run total is too.
+-            for (size_t i = 0; i < mix_schedule.size(); ++i) {
++            // SFT: rows are used in file order, GRAD_ACCUM micro-batches per step, so skip exactly those.
++            if (sft) sft_train->skip_micro_batches(static_cast<int64_t>(start_step) * GRAD_ACCUM);
++            for (size_t i = 0; !sft && i < mix_schedule.size(); ++i) {
+                 const int ph_start = mix_schedule[i].start_step;
+                 const int ph_end   = (i + 1 < mix_schedule.size())
+                                    ? mix_schedule[i + 1].start_step : cfg.max_steps;
+                 const int lo = std::max(0,          ph_start);
+                 const int hi = std::min(start_step, ph_end);
+                 if (hi <= lo) continue;
+-                train_loader.set_weights(mix_schedule[i].w, mix_schedule[i].name);
+-                train_loader.skip_batches(static_cast<size_t>(hi - lo) *
+-                                          static_cast<size_t>(GRAD_ACCUM));
++                train_loader->set_weights(mix_schedule[i].w, mix_schedule[i].name);
++                train_loader->skip_batches(static_cast<size_t>(hi - lo) *
++                                           static_cast<size_t>(GRAD_ACCUM));
+             }
+         }
+     }
+@@ -2720,17 +3395,59 @@
+         // GRAD_ACCUM micro-batches at the transition step were already picked
+         // under the old weights. At GRAD_ACCUM=32 that is a 4-batch smear at
+         // one step boundary — not worth draining the pipeline to avoid.
+-        if (const int ph = phase_for(step); ph != cur_mix_phase) {
++        if (const int ph = phase_for(step); !sft && ph != cur_mix_phase) {
+             cur_mix_phase = ph;
+             if (is_master) {
+                 std::cout << "\n[mix] step " << step << " entering phase '"
+                           << mix_schedule[ph].name << "'" << std::endl;
+             }
+-            train_loader.set_weights(mix_schedule[ph].w, mix_schedule[ph].name);
++            train_loader->set_weights(mix_schedule[ph].w, mix_schedule[ph].name);
+         }
+ 
+         // ---------- periodic validation ----------
+-        if (step % cfg.val_freq == 0 || step == cfg.max_steps - 1) {
++        // SFT: the whole val set by the training rule -- the token losses of every batch and rank are
++        // added up and divided once by the set's trained-token count (counted up front, all-reduced).
++        if (sft && (step % cfg.val_freq == 0 || step == cfg.max_steps - 1)) {
++            autograd::NoGradGuard no_grad;
++            for (auto& opt : optimizers) opt->refresh_param_stage(0);   // why: see the branch below
++            sft_val->reset();
++            const int64_t vb = sft_val->micro_batches_per_epoch();
++            const int64_t local_n = sft_val->valid_tokens_ahead(vb);
++            int64_t n = local_n;
++            if (world_size > 1)   // a count, exact in a double (< 2^53)
++                n = static_cast<int64_t>(dist::comm::allreduce_scalar(launch, pg, static_cast<double>(local_n), ::sum));
++            n /= g_cp.U;   // 2026-11-06: the U ranks of a CP group counted the same rows (exact; 1 = off)
++            Tensor vden = Tensor::full(Shape{{1}}, TensorOptions().with_device(device), static_cast<float>(n));
++            Tensor vsum = Tensor::zeros(Shape{{1}}, TensorOptions().with_device(device));
++            for (int64_t v = 0; v < vb; ++v) {
++                step_watchdog.beat("validation", step);
++                Batch b = sft_val->next_batch();
++                // 2026-11-06: context parallelism -- the plan for this rank's Nq/U heads over the FULL row, then this
++                // rank's token slice of the positions, ids and labels (cp_slice is a no-op at U == 1). Previous lines:
++                // g_packed = packed_rows_of(*sft_val, static_cast<int>(cfg.B), static_cast<int>(cfg.T),
++                //                           static_cast<int>(cfg.q_heads));
++                // Tensor logits = model.forward(b.input);
++                // vsum += autograd::to_dtype(autograd::sparse_cross_entropy_loss(
++                //             logits, b.target, SftDataLoader::kIgnore, &vden), Dtype::Float32);
++                // 2026-11-13: + this rank's KV-head count (kv_heads / U), for the attention plan's mixed units.
++                // Old call (kept, not deleted):
++                // g_packed = packed_rows_of(*sft_val, static_cast<int>(cfg.B), static_cast<int>(cfg.T),
++                //                           static_cast<int>(cfg.q_heads / g_cp.U));
++                g_packed = packed_rows_of(*sft_val, static_cast<int>(cfg.B), static_cast<int>(cfg.T),
++                                          static_cast<int>(cfg.q_heads / g_cp.U), static_cast<int>(cfg.kv_heads / g_cp.U));
++                g_packed.positions = cp_slice(g_packed.positions);
++                Tensor logits = model.forward(cp_slice(b.input));
++                vsum += autograd::to_dtype(autograd::sparse_cross_entropy_loss(
++                            logits, cp_slice(b.target), SftDataLoader::kIgnore, &vden), Dtype::Float32);
++            }
++            const float local = vsum.to_cpu().data<float>()[0];
++            float total = local;
++            if (world_size > 1) total = dist::comm::allreduce_scalar(launch, pg, local, ::sum);
++            last_val_loss = total;
++            if (is_master)
++                std::cout << "  [val] step " << step << " | val_loss " << std::fixed << std::setprecision(6)
++                          << total << " | " << n << " trained tokens" << std::endl;
++        } else if (step % cfg.val_freq == 0 || step == cfg.max_steps - 1) {
+             autograd::NoGradGuard no_grad;
+             // The validation forward reads the model parameters and runs BEFORE
+             // zero_grad(), so the refresh still in flight from the previous step
+@@ -2760,6 +3477,7 @@
+                 for (int v = 0; v < cfg.val_loss_steps; ++v) {
+                     step_watchdog.beat("validation", step);
+                     Batch b = val_loaders[dvi].second->next_batch();
++                    g_packed = PackedRows{};   // pretraining validation shards: plain causal rows
+                     Tensor logits = model.forward(b.input);
+                     Tensor loss = autograd::sparse_cross_entropy_loss(logits, b.target);
+                     // Same fp32 bridge as the training loop — data<float>() on a bf16
+@@ -2818,12 +3536,51 @@
+ 
+         micro_loss.clear();
+         micro_where.clear();
++        if (sft) {
++            // The step's global trained-token count: this rank's next GRAD_ACCUM micro-batches (read from
++            // valid_counts.bin, nothing consumed), summed over ranks. Every micro-step divides by it.
++            const int64_t local = sft_train->valid_tokens_ahead(GRAD_ACCUM);
++            step_tokens = local;
++            if (world_size > 1)   // a count, exact in a double (< 2^53)
++                step_tokens = static_cast<int64_t>(
++                    dist::comm::allreduce_scalar(launch, pg, static_cast<double>(local), ::sum));
++            step_tokens /= g_cp.U;   // 2026-11-06: the U ranks of a CP group counted the same rows (exact; 1 = off)
++            sft_denom = Tensor::full(Shape{{1}}, TensorOptions().with_device(device),
++                                     static_cast<float>(step_tokens));
++        }
+         for (int micro = 0; micro < GRAD_ACCUM; ++micro) {
+             step_watchdog.beat("micro-step: data, forward, backward", step);
+-            Batch batch = train_loader.next_batch();
+-
+-            Tensor logits = model.forward(batch.input);
+-            Tensor loss_raw = autograd::sparse_cross_entropy_loss(logits, batch.target);
++            Batch batch = sft ? sft_train->next_batch() : train_loader->next_batch();
++            // 2026-11-06: context parallelism -- the attention plan is for this rank's Nq/U heads over the FULL row
++            // (q_heads / 1 at U == 1, as before). The previous lines, kept for reference:
++            // g_packed = sft ? packed_rows_of(*sft_train, static_cast<int>(cfg.B), static_cast<int>(cfg.T),
++            //                                 static_cast<int>(cfg.q_heads))
++            //                : PackedRows{};
++            // 2026-11-13: + this rank's KV-head count (kv_heads / U), for the attention plan's mixed units.
++            // Old call (kept, not deleted):
++            // g_packed = sft ? packed_rows_of(*sft_train, static_cast<int>(cfg.B), static_cast<int>(cfg.T),
++            //                                 static_cast<int>(cfg.q_heads / g_cp.U))
++            //                : PackedRows{};
++            g_packed = sft ? packed_rows_of(*sft_train, static_cast<int>(cfg.B), static_cast<int>(cfg.T),
++                                            static_cast<int>(cfg.q_heads / g_cp.U), static_cast<int>(cfg.kv_heads / g_cp.U))
++                           : PackedRows{};
++            g_packed.positions = cp_slice(g_packed.positions);   // this rank's tokens' RoPE positions (no-op at U 1)
++
++            // The trained-rows switch (2026-10-31, off by default): lm_head + loss on the batch's trained rows only;
++            // the loss sum and its denominator (sft_denom) are the same tokens as the full path.
++            model.head_rows = trained_rows ? &sft_train->last_trained_rows() : nullptr;
++            // 2026-11-06: cp_slice = this rank's token slice of the ids and the labels under context parallelism; it
++            // returns its argument unchanged at U == 1 (and outside SFT). The previous lines, kept for reference:
++            // Tensor logits = model.forward(batch.input);
++            // const Tensor& sft_target = trained_rows ? sft_train->last_trained_labels() : batch.target;
++            Tensor logits = model.forward(cp_slice(batch.input));
++            model.head_rows = nullptr;                    // validation and anything else: every row
++            const Tensor sft_target = trained_rows ? sft_train->last_trained_labels() : cp_slice(batch.target);
++            // The loss backward writes the gradient over `logits` (always, since 2026-10-21; bit-identical
++            // gradient, -3.1 GiB at B 8 x T 4096 bf16). `logits` feeds only this loss and is not read after backward().
++            Tensor loss_raw = sft ? autograd::sparse_cross_entropy_loss(logits, sft_target,
++                                                                         SftDataLoader::kIgnore, &sft_denom)
++                                  : autograd::sparse_cross_entropy_loss(logits, batch.target, -1, nullptr);
+ 
+             // LossOps keys the loss scalar's dtype off the logits, so with
+             // bf16_logits it comes back bf16. Two things then break unless it is
+@@ -2872,17 +3629,20 @@
+                 if (pg) pg->begin_rs_step();
+                 for (auto& opt : optimizers) opt->arm_grad_sync();
+             }
+-            loss32.backward(&grad_scale);                          // scaled by 1/GRAD_ACCUM
++            loss32.backward(&grad_scale);                          // seed 1/GRAD_ACCUM, or W in SFT
+         }
+ 
+-        // Average loss for logging (across micro-steps, then across ranks).
++        // Loss for logging. Pretraining: the mean over the micro-steps, then over the ranks. SFT: each
++        // micro loss is already divided by the step's global count, so micro-steps and ranks just add up
++        // (dividing again would make it GRAD_ACCUM * world_size times too small).
+         float loss_accum;
+         step_watchdog.beat("loss sync + all-reduce (waits for this step's GPU work)", step);
+         {
+-            float local = loss_accum_gpu.to_cpu().data<float>()[0] / static_cast<float>(GRAD_ACCUM);
++            float local = loss_accum_gpu.to_cpu().data<float>()[0] /
++                          (sft ? 1.0f : static_cast<float>(GRAD_ACCUM));
+             if (world_size > 1) {
+                 loss_accum = dist::comm::allreduce_scalar(launch, pg, local, ::sum);
+-                loss_accum /= world_size;
++                if (!sft) loss_accum /= world_size;
+             } else {
+                 loss_accum = local;
+             }
+@@ -3118,7 +3878,9 @@
+         auto t1 = std::chrono::high_resolution_clock::now();
+         const double dt = std::chrono::duration<double>(t1 - t0).count();
+ 
+-        const int64_t tokens = cfg.B * cfg.T * GRAD_ACCUM * static_cast<int64_t>(world_size);
++        // 2026-11-06: world_size / g_cp.U -- a CP group's U ranks share their rows (1 = off). Previous line, kept:
++        // const int64_t tokens = cfg.B * cfg.T * GRAD_ACCUM * static_cast<int64_t>(world_size);
++        const int64_t tokens = cfg.B * cfg.T * GRAD_ACCUM * static_cast<int64_t>(world_size / g_cp.U);
+         const double tok_per_sec = static_cast<double>(tokens) / dt;
+         const double elapsed_min =
+             std::chrono::duration<double>(t1 - training_start).count() / 60.0;
+@@ -3168,6 +3930,7 @@
+                     break;
+                 }
+             }
++            if (sft) std::cout << " | trained " << step_tokens;   // this step's global count N
+             std::cout << std::endl;
+ 
+             if (diag && !micro_loss.empty()) {
+@@ -3188,7 +3951,7 @@
+                                   << " loss " << std::setprecision(4) << micro_loss[m]
+                                   << " (median " << med << ") from domain "
+                                   << (micro_where[m].domain >= 0
+-                                          ? train_loader.name_of(micro_where[m].domain)
++                                          ? train_loader->name_of(micro_where[m].domain)
+                                           : std::string("<none>"))
+                                   << " shard " << micro_where[m].shard
+                                   << " token offset " << micro_where[m].offset << std::endl;
+@@ -3226,7 +3989,9 @@
+             const double run_secs = elapsed_min * 60.0;
+             log_file << "," << static_cast<int64_t>(step + 1) * tokens << ","
+                      << (run_secs > 0 ? static_cast<double>(step + 1 - start_step) * tokens / run_secs : 0.0);
+-            for (int d = 0; d < train_loader.n_domains(); ++d) log_file << "," << train_loader.current_shard_of(d);
++            if (train_loader)
++                for (int d = 0; d < train_loader->n_domains(); ++d) log_file << "," << train_loader->current_shard_of(d);
++            if (sft) log_file << "," << step_tokens;
+             log_file << "\n";
+             log_file.flush();
+         }
+@@ -3262,12 +4027,17 @@
+             }
+         }
+ 
+-        // Reclaim the extra allocator high-water mark from the first couple of
+-        // steps' one-time warmup allocations (ZeRO shard buffers, autograd
+-        // graph caches, etc.).
+-        // 2026-11-04: step 0 only (was step 0 and step 5). The step-5 call freed nothing useful and cost
+-        // one slow refill step after it (~6 s with 21 GB in use, ~26 s with 70 GB); measured on the SFT
+-        // trainer, which has this same loop (train/production_zero/bluscript_sft.cpp, work doc 45.145).
++        // Reclaim the extra allocator high-water mark from step 0's one-time
++        // warmup allocations (ZeRO shard buffers, autograd graph caches, the
++        // step-0 validation pass, etc.).
++        // 2026-11-04: at step 0 only (was step 0 and step 5). Measured on the 135M
++        // SFT model (P032, work doc 45.145): the step-5 call freed nothing useful
++        // (reserved_peak identical to the MiB: 21,558 MiB at B=4, 71,158 vs 71,156
++        // at B=20) and cost one slow refill step after it (~6 s at B=4, ~26 s at
++        // B=20); by step 5 the cache holds exactly what step 6 needs again. The
++        // step-0 call is kept: without it, at B=20 the run held 3.4 GB more and
++        // split cached blocks 76% more often. The allocator also trims its cache by
++        // itself on an out-of-memory error, so neither call is needed to avoid OOM.
+         // The old version (step 0 and step 5), kept for reference; to bring the step-5 call back:
+         // if (step == 0 || step == 5) {
+         //     CachingCUDAAllocator::instance().empty_cache();
+@@ -3287,6 +4057,21 @@
+     for (auto& opt : optimizers) opt->drain_param_refresh();
+     cudaDeviceSynchronize();
+ 
++    // BLU_EXPORT=<path>.safetensors: the final weights, fp32, BluTrain names (from preproduction-135M f37c616).
++    if (const char* ex = std::getenv("BLU_EXPORT"); ex && *ex && is_master) {
++        try {
++            export_safetensors(model, ex, cfg.max_steps);
++        } catch (const std::exception& e) {
++            std::cerr << "[WARN] weight export failed: " << e.what() << std::endl;
++        }
++    }
++
++    // Packed rows: g_packed is a global made before main, so it is destroyed AFTER the caching allocator (a static
++    // made later), and freeing its two GPU tensors then hangs the process at exit (2026-10-15, e2e packed run:
++    // "Training complete", then a futex wait with 57.8 GB still held; the v1 run, whose g_packed was empty, exited).
++    // Free them here, while the allocator is alive.
++    g_packed = PackedRows{};
++
+     // Flush any in-flight async checkpoint before teardown (no-op for sync saves).
+     // if (cfg.checkpointing) {
+     //     try { ckpt.wait_for_completion(); }
+@@ -3332,7 +4117,7 @@
+         // reports how many times each domain wrapped its shard list, which is
+         // the number that says whether the low-weight domains had enough data
+         // or were repeated many times over.
+-        train_loader.print_mixture_stats();
++        if (train_loader) train_loader->print_mixture_stats();
+ 
+         std::cout << "\n=== Training complete ===" << std::endl;
+         // Allocator memory stats, printed once at the end (no cost during training):

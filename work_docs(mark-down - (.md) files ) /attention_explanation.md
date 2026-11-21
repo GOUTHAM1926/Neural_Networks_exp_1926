@@ -379,6 +379,16 @@ Measured on an H200 (2026-10-21, `sft_kernel_benchmarks.md` section 4): for the 
 to 28x less time than one chat per padded row. Each chat's RoPE positions also restart at 0, and every kernel counts
 its tiles from the chat's own start, so a chat in a packed row gives bit-for-bit the same result as the same chat alone.
 
+**How tiles are accessed and computed in causal_attention in pretraining and sft/post_training (with and without
+sliding_window_attention (swa)) : (animation)** *(added 2026-11-20)*
+- SFT packed row (3 chats): https://claude.ai/artifact/EBiPEihREutWGnkpQqi5Sy
+- Pretraining row (one sequence): https://claude.ai/artifact/EBiPEihREutWGnkpQqi5Sy#pretraining
+- The grid is the score matrix S = Q x K^T (rows = queries, columns = keys). Each orange box is one output tile of S that
+  the kernel computes: a block of Q rows times a block of K rows (transposed), summed over the head dimension. The
+  animation steps through those tiles: the diagonal tile (causal mask), the tiles fully inside (no mask), and, with a
+  window, the window-edge tile (window mask) and the tiles skipped by the window. Switches: SFT / pretraining, window on /
+  off. Small sizes so every token fits (tiles of 4, window 8; the real kernel: tiles of 128, window 1,024).
+
 ---
 
 ## 4. The backward pass, step by step
@@ -693,6 +703,31 @@ In one line each:
    per-head partials, head-sum kernels and repeated K / V loads of grouped-query attention (idea 4); in the forward,
    mixed units fill half-empty work units. Section 7 shows what this gives.
 
+### 6.8 The sliding window (added 2026-11-20)
+
+The 350M model is pretrained with a sliding window: in 21 of its 28 layers, query i sees only keys i-1,023 .. i of its
+own chat (W = 1,024 keys, itself included); every 4th layer sees the whole chat. Since 2026-11-20 my kernels do this for
+plain rows (pretraining) and for packed rows (SFT), forward and backward, together with everything above (mixed units,
+ideas 1, 2 and 4).
+
+- **What is computed.** W is a multiple of 128 (the tile size). Query tile p reads key tiles max(0, p - W/128) .. p:
+  the diagonal tile (causal mask), full tiles (no mask), and exactly one window-edge tile (window mask). Every key tile
+  further back is skipped. In the backward, a key block stops after the query steps that can still see it
+  (W/64 + 2 steps of 64 queries at most). The animation linked in section 3 shows it tile by tile.
+- **Packed rows.** The window is counted inside each chat, from the chat's own start (the same chat plan as section 3).
+  A chat of at most W tokens is not changed by the window. A batch whose chats all fit in the window runs the kernels
+  without the window (FlashAttention does the same); the result is the same bit for bit.
+- **Checks.** Every chat of a packed row with the window = the same chat alone, bit for bit (O, LSE, dK, dV); chats
+  longer than W against an fp64 reference; the SFT trainer against Hugging Face transformers to 0.00007.
+- **Speed.** At 16 rows of 4,096 tokens (heads 4/2), W 1,024: forward 1.85x and backward 1.65x faster than without the
+  window. 350M pretraining step -8.6%. In SFT at 4,096 tokens the gain is small (most chats are shorter than 1,024), and
+  the window is kept for the same attention as in pretraining and for the smaller KV cache at inference.
+- **Same design as FA3.** Navin's window forward and mine compile to byte-identical machine code: the October forward
+  plus FA3's way of handling the window.
+
+The full record: `SFT_package_2026_10_24/all_sft_optimizations.md` section 4.17 and
+`post_Training_research/sliding_window_attention_sft_analysis.md` sections 11-12.
+
 ---
 
 ## 7. Where my kernels are faster, by how much, and why
@@ -766,12 +801,61 @@ long sequence. On packed SFT rows of short chats the same changes give much more
 1. **An idea-1-style skip in the forward.** The forward's diagonal tiles waste about 3% of the attention forward at 4,096
    tokens, and half of that is a fully forbidden block that could be skipped in the same way, if the forward's diagonal
    step has the same layout (to be checked in the kernel first). For pretraining: about 1.5% of the attention forward,
-   roughly 0.05-0.1% of the step. More for SFT rows of short chats.
+   roughly 0.05-0.1% of the step. More for SFT rows of short chats. *(2026-11-19: checked in the kernel: the forward's
+   diagonal step has the same layout, so the skip applies; see section 9.1.)*
 2. **Packing the query heads in the forward, as FA3 does.** On rows of very short chats (about 40 tokens and less) FA3's
    forward is still faster than mine, because it packs the 3 query heads of a group together. This matters for SFT, not
    for pretraining.
 
 For pretraining, the bigger remaining gains are outside attention, in the linear layers (78% of the math).
+
+### 9.1 Full cross-check, forward against backward (2026-11-19): FUTURE TASKS, after the SWA work
+
+Until 2026-11-19 I had never checked every forward change against the backward, and every backward change against the
+forward, one by one. In October the two kernels were rebuilt at the same time from FA3's designs, so several ideas went
+into both; section 9 above had only two backward-to-forward items. This is the complete check, done by reading both
+kernels (`GQA_fwd_sm90.cu`, `GQA_bwd_vj2_sm90.cu` of TI `334b244`) and the records
+(`attention_kernel_optimizations_h200_2026_10_10_to_2026_10_21.md`, the 2026-11-13 and 2026-11-18 attention docs).
+Every "yes" below is a candidate only: it is kept only if it wins a race against the code before it and the test suite
+still gives "a chat in a packed row = the same chat alone" bit for bit. **Decision (the user, 2026-11-19): these are
+future tasks, done AFTER the SWA work, and every applicable one is also tried on the SWA kernels** (SWA adds a second
+edge, the window edge, where the same skips apply).
+
+**Already in both (nothing to do):** FA3's layout (one loader warp, two math groups; the backward also has a dQ writer
+warp); full-width matrix instructions (forward P·V; backward dV and dK); heaviest work first with L2 sections; the
+diagonal tile handled by its own masked copy; tuned waits between the matrix products; the scale applied once (forward:
+inside the exp, backward: G4); packed rows through the per-chat list (design A), bit-exact with the chat alone.
+
+**Forward changes the backward does not have:**
+
+| Forward change (its gain in the forward, October / November 2026) | The backward today | Can the backward use it? |
+| --- | --- | --- |
+| Persistent kernel + dynamic work counter (G5: -2.63% dense, -3.55% packed) | a fixed grid, one block per unit (FA3's backward is not persistent either) | **Yes, a big change.** It helps mostly rows of short chats (many tiny blocks), and it is the base of the next row. |
+| Next unit's first loads before the old unit ends (PF: -2.60% / -3.01%), Q prefetched + decoded unit published (QPU: -0.81%), O staged in a free buffer for a fast end (K4b: -5.26% / -7.37%) | none | **Only after the persistent change:** these speed up the hand-over between units, and only a persistent kernel has hand-overs. |
+| L2 cache hints (LHOd: -0.34% dense) | no hints at all | **Yes, small and cheap to test:** K / V are read once per block (evict first); Q, dO, LSE and D are read by every key block of the chat (evict last). |
+| Registers split 40 / 232 (FA3's 24 / 240 was 1.1% slower in the forward) | FA3's 24 / 240 | **Unlikely:** the backward's math groups need about 240 registers (128 for the fp32 dK and dV sums, 64 for S and dP). A quick test only. |
+| Exps spaced between other work (SM3m: -3.51% / -4.48%), split softmax (K5q: -4.33% packed) | exps in one run | **Profile first:** both are timed around the forward's running max, which the backward does not have; its exps could be mixed with the dS math if a profile shows the exp unit waiting. |
+| Softmax of tile n while P·V of tile n-1 runs (F1: -0.50% / -1.82%) | one step at a time | **No:** a second set of S and dP sums needs 64 more registers, which do not fit next to the dK and dV sums (FA3 has the same limit). |
+| O rescaled every step without a branch (F2: -3.84% dense) | - | **Does not apply:** the backward reads the stored LSE and never rescales. |
+| Mixed units for short chats (MX, 2026-11-13: -21% to -26% on chats of 64 tokens or less) | on a chat of 64 tokens or less, the second math group has no keys and waits (idea 1 removed its wasted work, not the wait) | **Possible, little value:** give the waiting group the 64 keys of another head or chat; such chats are rare in real SFT data. |
+| A third load stage (the forward with 2 stages was 39% slower, K1n2) | 2 Q / dO stages, 199 of 227 KB of shared memory used | **No room:** a third stage needs 32 KB more (FA3 also uses 2 stages here). |
+
+**Backward changes the forward does not have:**
+
+| Backward change (its gain in the backward) | The forward today | Can the forward use it? |
+| --- | --- | --- |
+| Idea 1: skip the all-zero 64 x 64 block on the diagonal (-1.40% to -3.05%) | checked in the code: its first 64-row group runs the whole 128-key diagonal tile (`BLOCK_M` 64, `BLOCK_N` 128, `my_nkv = pair + 1` for both groups), and the right 64 keys come after all its rows | **Yes:** about 1.5% of the forward at 4,096 tokens, more on rows of short chats. |
+| Idea 4: one block per KV head, K / V loaded once for its query heads (the head-sum kernels were 8.6% / 6.8% of a backward call) | the mixed units already give two query heads of one KV head to one pair, but only for a chat's last odd 64-row tile | **Yes, as full head packing (FA3's PackGQA):** the 3 query heads stacked in one tile; this is where FA3's forward is still faster than mine (chats of about 40 tokens and less). Little for long rows (the forward is compute-bound there). |
+| Idea 2 (direct bf16 dQ), Fix 1 (dQ path), B-1 (dQ zeroed in prep) | - | **No:** dQ exists only in the backward; every forward O tile already has exactly one writer. |
+| Fix 5: swizzled dK / dV staging (bank conflicts 18.3M -> 1.79M) | O is staged in the last tile's K buffer (K4b); its bank conflicts were never measured | **One profile decides.** |
+| Rule 1: sections of whole rows for the L2 | sections by FA3's rule | **A cheap test** of the section size. |
+| G3 / B-4a (the LSE and D loads) | - | **Does not apply:** the forward computes the LSE. |
+
+**Order for later (by value per effort):** (1) idea 1 in the forward (small change, the pattern is proven in the
+backward); (2) L2 hints in the backward (cheapest test); (3) head packing in the forward for very short chats;
+(4) a persistent backward, only if a profile shows block start-up costs on rows of short chats; (5) the rest only after
+a profile. **Size of the prize:** attention is about 15% of the 1.6B pretraining step's math at 4,096 tokens (more at
+135M), so each item is worth about 0.1% to 1% of a step.
 
 ---
 

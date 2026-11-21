@@ -145,13 +145,14 @@ private:
     int64_t B_, Nq_heads_, Nkv_heads_, T_, hd_;
     bool is_causal_;
     cuda::GqaChatPlanPtr chats_;   // v2 packed rows (design A); null = dense. The SAME plan as the forward.
+    int window_;                   // sliding window in keys (2026-11-04); 0 = plain causal. The SAME as the forward.
 
 public:
     GQAFlashAttentionQKVBackward(
         const Tensor& query, const Tensor& key, const Tensor& value,
         const Tensor& output, const Tensor& lse,
         int64_t B, int64_t Nq_heads, int64_t Nkv_heads, int64_t T, int64_t hd,
-        bool is_causal, cuda::GqaChatPlanPtr chats = nullptr);
+        bool is_causal, cuda::GqaChatPlanPtr chats = nullptr, int window = 0);
 
     const char* name() const override { return "GQAFlashAttentionQKVBackward"; }
     std::vector<Tensor> apply(std::vector<Tensor>&& grads) override;

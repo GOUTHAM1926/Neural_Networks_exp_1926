@@ -1,5 +1,5 @@
 diff --git a/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu b/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu
-index 063f35a..560d916 100644
+index 063f35a..6e626d4 100644
 --- a/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu
 +++ b/src/Kernels/cuda/attention/arch/GQA_fwd_sm90.cu
 @@ -1,13 +1,24 @@
@@ -299,7 +299,7 @@ index 063f35a..560d916 100644
                "r"(a[4]), "r"(a[5]), "r"(a[6]), "r"(a[7]),
                "r"(a[8]), "r"(a[9]), "r"(a[10]), "r"(a[11]),
                "r"(a[12]), "r"(a[13]), "r"(a[14]), "r"(a[15]),
-@@ -329,6 +501,55 @@ __device__ __forceinline__ uint64_t make_swz_desc(const void* p) {
+@@ -329,6 +501,84 @@ __device__ __forceinline__ uint64_t make_swz_desc(const void* p) {
                "l"(b[0]), "l"(b[1]), "l"(b[2]), "l"(b[3]), "l"(b[4]), "l"(b[5]), "l"(b[6]), "l"(b[7]));
      }
  
@@ -347,34 +347,72 @@ index 063f35a..560d916 100644
 +// 0.5-1.1% on rows with many units (measured 2026-11-13: the MX code with a plain plan against the kernel of before),
 +// so plans without mixed units keep MODE_CHATS, whose machine code is unchanged (SASS compared, 0 lines differ), as is
 +// MODE_DENSE's.
++// Sliding window (2026-11-04), MODE_WIN: dense rows where each query sees only the last W keys, itself included
++// (key > row - W; HF's sliding_window = W, FlashAttention window_size = (W - 1, 0)). W = win_tiles * BLOCK_N.
++// Changes against the dense kernel:
++//   * pair p reads key tiles kv_first(p) = max(0, p - win_tiles) .. p: its diagonal tile and the win_tiles before
++//     it (the producer and both groups agree on the range, so the stage / handshake counts stay paired).
++//   * for p >= win_tiles the FIRST tile (the prologue) holds the window's lower edge: keys at or before row - W
++//     are masked there. The tiles between it and the diagonal are mask-free; the diagonal keeps the causal mask.
++//   * the window's first tile can mask a whole row (row 128p + 127 sees no key of tile p - win_tiles), so the
++//     prologue softmax gets FA3's Check_inf guard: max -inf -> exponent bias 0 and rescale 0. Every row has a key in
++//     the next tile, so from there on the running max is finite again; l and O are still 0 for such a row.
++// MODE_DENSE and MODE_CHATS are unchanged: win_tiles is appended LAST and only MODE_WIN reads it.
++// 2026-11-20 SWA port of Navin's b913f32 onto 334b244: MODE_WIN = 2 as in b913f32, and MODE_CHATS_MX (2026-11-13) moves from 2
++// to 3 (the user, 2026-11-20). The modes are only compared by name, so the mixed-unit kernel's code is unchanged;
++// only its instantiation name changes (gqa_v62_sm90<2> -> <3>). MODE_WIN reads no unit list, so the mixed-unit
++// decode never runs in it.
++// MODE_CHATS_WIN = 4 and MODE_CHATS_MX_WIN = 5 (2026-11-20 step 7 (packed rows + window)): MODE_CHATS / MODE_CHATS_MX with the window of
++// MODE_WIN, for SFT rows that pack several chats. Each chat sees the last W keys of ITS OWN tokens, itself included.
++// Nothing new is computed: in the packed modes every row and tile index is already relative to the segment start (see
++// design A above), and MODE_WIN's three changes are written in those indices: the key range kv_first(p) .. p of a pair,
++// the window-edge mask in the first tile (with the -inf guard), the causal mask in the diagonal tile. So inside a chat
++// they are exactly the dense window of a row of length L; a chat no longer than W never reaches the edge (kv_first = 0)
++// and runs the plain packed path. The mixed units (MX) need nothing either: both groups of a mixed unit take the same
++// pair, so the same key range. The one change of order: a q-tile past the chat's end (my_nkv = 0, the inactive tail) is
++// decided AFTER the window's my_nkv = nkv_shared (before step 7 the window line came second and, with both on, would
++// have given that empty group active tiles). Modes 0-3 compile to the same machine code as before (SASS compared).
 +// Old line (kept, not deleted):
 +// constexpr int MODE_DENSE = 0, MODE_CHATS = 1;
-+constexpr int MODE_DENSE = 0, MODE_CHATS = 1, MODE_CHATS_MX = 2;
++// Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32):
++// constexpr int MODE_DENSE = 0, MODE_CHATS = 1, MODE_CHATS_MX = 2;
++// Old line (kept, not deleted; 2026-11-20 step 7 (packed rows + window)):
++// constexpr int MODE_DENSE = 0, MODE_CHATS = 1, MODE_WIN = 2, MODE_CHATS_MX = 3;
++constexpr int MODE_DENSE = 0, MODE_CHATS = 1, MODE_WIN = 2, MODE_CHATS_MX = 3, MODE_CHATS_WIN = 4, MODE_CHATS_MX_WIN = 5;
 +
 +template <int MODE>
  __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
      const __grid_constant__ CUtensorMap tmapKsw,
      const __grid_constant__ CUtensorMap tmapVsw,
-@@ -336,8 +557,17 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+@@ -336,8 +586,26 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
      const __nv_bfloat16* __restrict__ Q,
      __nv_bfloat16* __restrict__ O,
      float* __restrict__ LSE,
 -    int B, int Hq, int Hkv, int S, float scale)
 +    int B, int Hq, int Hkv, int S, float scale,
 +    const int4* __restrict__ units,          // v2 A: work list, read only when CHATS
-+    int n_units)
++    // Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: win_tiles appended last):
++    //     int n_units)
++    int n_units,
++    int win_tiles)                           // sliding window in key tiles of BLOCK_N, read only when WIN
  {
 +    // 2026-11-13: MODE_CHATS_MX is MODE_CHATS plus the mixed-unit decode (MX).
 +    // Old line (kept, not deleted):
 +    // constexpr bool CHATS  = (MODE == MODE_CHATS);
-+    constexpr bool CHATS  = (MODE == MODE_CHATS || MODE == MODE_CHATS_MX);
-+    constexpr bool MX     = (MODE == MODE_CHATS_MX);
++    // Old lines (kept, not deleted; 2026-11-20 step 7 (packed rows + window): modes 4 / 5 are CHATS and WIN at once, 5 also MX):
++    // constexpr bool CHATS  = (MODE == MODE_CHATS || MODE == MODE_CHATS_MX);
++    // constexpr bool MX     = (MODE == MODE_CHATS_MX);
++    // constexpr bool WIN    = (MODE == MODE_WIN);   // 2026-11-20 SWA port of Navin's b913f32
++    constexpr bool CHATS  = (MODE == MODE_CHATS || MODE == MODE_CHATS_MX || MODE == MODE_CHATS_WIN || MODE == MODE_CHATS_MX_WIN);
++    constexpr bool MX     = (MODE == MODE_CHATS_MX || MODE == MODE_CHATS_MX_WIN);
++    constexpr bool WIN    = (MODE == MODE_WIN || MODE == MODE_CHATS_WIN || MODE == MODE_CHATS_MX_WIN);
++    static_assert(!WIN || !DIAG_FIRST, "MODE_WIN walks the key tiles upwards (its masked window tile is the prologue)");
 +    constexpr bool HINT_LD = L2_HINT != 0 && !(L2_HINT_DENSE && CHATS);   // L2_HINT: Q / K / V loads with an L2 policy
 +    constexpr bool HINT_O  = L2_HINT >= 2 && !(L2_HINT_DENSE && CHATS);   // L2_HINT 2: the O stores too
      const int G = Hq / Hkv;
      const int tid = threadIdx.x;
      const int wg = tid / WG;
-@@ -345,11 +575,20 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+@@ -345,11 +613,20 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
      const float scale2 = scale * LOG2E;
  
      const int nTiles = S / BLOCK_M;
@@ -400,7 +438,7 @@ index 063f35a..560d916 100644
          b = bh / Hq; hq = bh % Hq; hkv = hq / G;
      };
  
-@@ -357,67 +596,188 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+@@ -357,67 +634,202 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
      __nv_bfloat16* sK   = reinterpret_cast<__nv_bfloat16*>(smem_raw);
      __nv_bfloat16* sV   = sK + NSTAGES * TILE_K;
      __nv_bfloat16* Qt   = sV + NSTAGES * TILE_K;
@@ -436,7 +474,18 @@ index 063f35a..560d916 100644
      }
      __syncthreads();
  
-     auto shared_nkv = [&](int pair) { return pair + 1; };
+-    auto shared_nkv = [&](int pair) { return pair + 1; };
++    // Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32):
++    // auto shared_nkv = [&](int pair) { return pair + 1; };
++    // WIN: a pair reads key tiles kv_first(pair) .. pair; dense and A start at tile 0.
++    // b913f32's lines (kept as comments; same values):
++    //     auto kv_first   = [&](int pair) { return WIN ? max(0, pair - win_tiles) : 0; };
++    //     auto shared_nkv = [&](int pair) { return pair - kv_first(pair) + 1; };
++    // 2026-11-20 port: written with if constexpr so that MODE_DENSE / CHATS / CHATS_MX compile from exactly the lines of
++    // before (b913f32's ternary form, though equal in value, changed their machine code on 334b244: 3976 -> 3960
++    // instructions for MODE_DENSE, ptxas 13.0, while every other change of the port leaves it byte-identical).
++    auto kv_first   = [&](int pair) { if constexpr (WIN) return max(0, pair - win_tiles); else return 0; };
++    auto shared_nkv = [&](int pair) { if constexpr (WIN) return pair - kv_first(pair) + 1; else return pair + 1; };
  
      if (wg == 0) {
 -        // PRODUCER: unchanged from v49/v53. It is ~100% idle (its whole sample share is spin), so
@@ -517,7 +566,11 @@ index 063f35a..560d916 100644
              const int nkv = shared_nkv(pair);
 -            const int kv_row_base = (b * Hkv + hkv) * S;
 -            for (int n = 0; n < nkv; ++n) {
-+            const int kv_row_base = (b * Hkv + hkv) * S + t0;   // t0: A only (else 0)
++            // Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32):
++            // const int kv_row_base = (b * Hkv + hkv) * S + t0;   // t0: A only (else 0)
++            // b913f32's line (kept as a comment; same value): const int kv_row_base = (b * Hkv + hkv) * S + t0 + kv_first(pair) * BLOCK_N;
++            int kv_row_base = (b * Hkv + hkv) * S + t0;   // t0: A only (else 0)
++            if constexpr (WIN) kv_row_base += kv_first(pair) * BLOCK_N;   // WIN: the window's first tile (2026-11-20 port)
 +            auto load_kv = [&](const int n) {          // tile n's K and V into the next stage (waits for the slot)
                  if (g >= NSTAGES) mbar_wait(&empty[stage], ph ^ 1);
                  if (lane_wg == 0) {
@@ -613,7 +666,7 @@ index 063f35a..560d916 100644
          const int warp = lane_wg / 32, lane = lane_wg % 32;
          const int groupID = lane / 4, tig = lane % 4;
          const int R0 = 16 * warp + groupID, R1 = R0 + 8;
-@@ -425,27 +785,130 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+@@ -425,27 +837,138 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
          int g = 0, j = 0, stage = 0, ph = 0;
          if (c == 1) pp_arrive1();
  
@@ -701,7 +754,15 @@ index 063f35a..560d916 100644
 +            const long long q_base = ((long long)(b * Hq + hq) * S + t0 + (long long)q_tile * BLOCK_M) * HEAD_DIM;
              const int nkv_shared = shared_nkv(pair);
 -            const int my_nkv = (q_tile * BLOCK_M + BLOCK_M - 1) / BLOCK_N + 1;
++            const int kv0 = kv_first(pair);             // absolute index of this pair's first key tile (WIN; else 0)
 +            int my_nkv = (q_tile * BLOCK_M + BLOCK_M - 1) / BLOCK_N + 1;
++            // Old lines (kept, not deleted; 2026-11-20 step 7 (packed rows + window): the same two rules, the window first, so that a
++            // q-tile past the chat's end stays inactive when both are on; in modes 0-3 at most one of them exists):
++            // // A: a q-tile that starts at or past L holds no row of the segment (the second tile of a
++            // // last pair when L % 128 is in 1..64): no active tile, only the inactive-tail handshake.
++            // if constexpr (CHATS) { if (q_tile * BLOCK_M >= L) my_nkv = 0; }
++            // if constexpr (WIN) my_nkv = nkv_shared;     // both groups: tiles kv0 .. pair
++            if constexpr (WIN) my_nkv = nkv_shared;     // both groups: tiles kv0 .. pair
 +            // A: a q-tile that starts at or past L holds no row of the segment (the second tile of a
 +            // last pair when L % 128 is in 1..64): no active tile, only the inactive-tail handshake.
 +            if constexpr (CHATS) { if (q_tile * BLOCK_M >= L) my_nkv = 0; }
@@ -752,7 +813,7 @@ index 063f35a..560d916 100644
              auto issue_qk = [&](__nv_bfloat16* Kt_) {
                  #pragma unroll
                  for (int i = 0; i < ACC_QK; ++i) S_acc[i] = 0.0f;
-@@ -460,120 +923,316 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+@@ -460,120 +983,358 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
                  wgmma_qk128_x8(qd, kd, S_acc);
                  wgmma_commit();
              };
@@ -786,8 +847,29 @@ index 063f35a..560d916 100644
 +            float rs0 = 0.0f;                           // SM3: row 0's running sum, l0 * cc0 + its exps in column order
 +#endif
 +            auto softmax_tile = [&](const int nt, auto mask_tag) {   // part A: mask, max, cc, exps of regs [0, K1_SPLIT)
-+                constexpr bool MASK = decltype(mask_tag)::value;
-+                if constexpr (MASK) {
++                // Old lines (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32):
++                // constexpr bool MASK = decltype(mask_tag)::value;
++                // if constexpr (MASK) {
++                // nt: the key tile's absolute index. MASK: 0 none, 1 the causal diagonal (true_type), 2 the window's
++                // lower edge (WIN prologue only): key <= row - W is hidden, i.e. keycol <= gR - W - nt * BLOCK_N.
++                constexpr int MASK = decltype(mask_tag)::value;
++                if constexpr (MASK == 2) {
++                    const int win = win_tiles * BLOCK_N;
++#if SM3
++                    const int wl0 = gR0 - win - nt * BLOCK_N - 2 * tig, wl1 = gR1 - win - nt * BLOCK_N - 2 * tig;
++                    #pragma unroll
++                    for (int k = 0; k < 32; ++k) { if (8 * (k / 2) + (k % 2) <= wl0) S_acc[4 * (k / 2) + (k % 2)] = -INFINITY; }
++                    #pragma unroll
++                    for (int k = 0; k < 32; ++k) { if (8 * (k / 2) + (k % 2) <= wl1) S_acc[4 * (k / 2) + (k % 2) + 2] = -INFINITY; }
++#else
++                    #pragma unroll
++                    for (int reg = 0; reg < ACC_QK; ++reg) {
++                        const int keycol = 8 * (reg / 4) + 2 * tig + (reg & 1);
++                        if (nt * BLOCK_N + keycol <= ((reg % 4 < 2) ? gR0 : gR1) - win) S_acc[reg] = -INFINITY;
++                    }
++#endif
++                }
++                if constexpr (MASK == 1) {
 +#if SM3
 +                    // SM3 (45.52): FA3's mask order (hopper/mask.h, causal): row by row, each element's column offset (a
 +                    // constant) against ONE per-row limit; the same condition as below (nt * BLOCK_N + keycol > gR). The
@@ -823,8 +905,17 @@ index 063f35a..560d916 100644
 +#endif
 +                // No -inf guard is needed: every row (dense, or A's segment-relative rows) sees key 0
 +                // of its own row or segment in the first tile, so nm0/nm1 are finite from tile 0 on.
-+                cc0 = ex2_approx((m0 - nm0) * scale2); cc1 = ex2_approx((m1 - nm1) * scale2);
-+                this_bb0 = -nm0 * scale2; this_bb1 = -nm1 * scale2;
++                // WIN's window tile is the exception (see MODE_WIN): FA3's Check_inf (hopper/softmax.h max_get_scale).
++                // (2026-11-20 SWA port of Navin's b913f32: the two old lines are the else branch, unchanged.)
++                if constexpr (MASK == 2) {
++                    cc0 = (nm0 == -INFINITY) ? 0.0f : ex2_approx((m0 - nm0) * scale2);
++                    cc1 = (nm1 == -INFINITY) ? 0.0f : ex2_approx((m1 - nm1) * scale2);
++                    this_bb0 = (nm0 == -INFINITY) ? 0.0f : -nm0 * scale2;
++                    this_bb1 = (nm1 == -INFINITY) ? 0.0f : -nm1 * scale2;
++                } else {
++                    cc0 = ex2_approx((m0 - nm0) * scale2); cc1 = ex2_approx((m1 - nm1) * scale2);
++                    this_bb0 = -nm0 * scale2; this_bb1 = -nm1 * scale2;
++                }
 +                const float bb0 = this_bb0, bb1 = this_bb1;
 +                m0 = nm0; m1 = nm1;
 +#if SM3
@@ -919,8 +1010,18 @@ index 063f35a..560d916 100644
 +#if DIAG_FIRST
 +                softmax_tile(my_nkv - 1, std::true_type{});   // DIAG_FIRST: the first tile IS the diagonal one (FA3 :1150)
 +#else
-+                if (my_nkv == 1) softmax_tile(0, std::true_type{});   // tile 0 is the diagonal one only when it is the last
-+                else             softmax_tile(0, std::false_type{});
++                // Old lines (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32):
++                // if (my_nkv == 1) softmax_tile(0, std::true_type{});   // tile 0 is the diagonal one only when it is the last
++                // else             softmax_tile(0, std::false_type{});
++                if (my_nkv == 1) softmax_tile(kv0, std::true_type{});   // tile 0 is the diagonal one only when it is the last
++                else {
++                    if constexpr (WIN) {                // the window's lower edge is in this tile once pair >= win_tiles
++                        if (pair >= win_tiles) softmax_tile(kv0, std::integral_constant<int, 2>{});
++                        else                   softmax_tile(kv0, std::false_type{});
++                    } else {
++                        softmax_tile(kv0, std::false_type{});
++                    }
++                }
 +#endif
 +                softmax_rest(0.0f);
 +                pack_p(std::integral_constant<int, 0>{});   // P(0) -> pa0
@@ -1052,7 +1153,9 @@ index 063f35a..560d916 100644
 +#if DIAG_FIRST
 +                softmax_tile(n, std::false_type{});     // DIAG_FIRST: no later tile is masked (mask_tag marks the LAST tile: K4)
 +#else
-+                softmax_tile(n, mask_tag);              // ... while P@V(n-1) runs
++                // Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32):
++                // softmax_tile(n, mask_tag);              // ... while P@V(n-1) runs
++                softmax_tile(kv0 + n, mask_tag);        // ... while P@V(n-1) runs (kv0: WIN's first tile, else 0)
 +#endif
 +#if K1_DB
 +#if K1_SPLIT >= 64
@@ -1170,7 +1273,7 @@ index 063f35a..560d916 100644
              for (int n = my_nkv; n < nkv_shared; ++n) {  // inactive tail: baton + handshake only
                  const int cur = stage;
                  int nstage = stage + 1, nph = ph;
-@@ -585,6 +1244,19 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+@@ -585,6 +1346,19 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
                  stage = nstage; ph = nph;
              }
  
@@ -1190,7 +1293,7 @@ index 063f35a..560d916 100644
              l0 = quad_sum(l0); l1 = quad_sum(l1);   // v57: the deferred reduction, once per q-tile
              const float r0 = rcp_approx(l0), r1 = rcp_approx(l1);   // v61 (was 1.0f/l, v53)
              // v62: pair the stores. In the accumulator map col = 8*bcol + 2*tig + (s&1), so regs
-@@ -594,6 +1266,68 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+@@ -594,6 +1368,68 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
              // per row instead of four 2-byte writes on a 4-byte stride, so a row costs one sector for
              // 16 B of payload instead of one sector for 8 B. Address is 4 B aligned (head is even and
              // q_base + row*HEAD_DIM is a multiple of 128).
@@ -1259,7 +1362,7 @@ index 063f35a..560d916 100644
              #pragma unroll
              for (int reg = 0; reg < ACC_PV; reg += 2) {
                  int half2 = reg / 32, rr = reg % 32;
-@@ -601,12 +1335,14 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+@@ -601,12 +1437,14 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
                  int row = (s < 2) ? R0 : R1;
                  int head = half2 * 64 + 8 * bcol + 2 * tig;
                  float rcp = (s < 2) ? r0 : r1;
@@ -1276,7 +1379,7 @@ index 063f35a..560d916 100644
              }
              ++j;
          }
-@@ -615,35 +1351,94 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
+@@ -615,35 +1453,134 @@ __global__ __launch_bounds__(NUM_THREADS, 1) void gqa_v62_sm90(
  }
  
  #else   // ---- non-Hopper: keep the translation unit compilable ----
@@ -1285,14 +1388,19 @@ index 063f35a..560d916 100644
 +// exactly (the old non-template stub could differ in __restrict__; a template cannot).
 +// Old line (kept, not deleted; 2026-11-13: MODE_CHATS_MX added, see the Hopper definition):
 +// constexpr int MODE_DENSE = 0, MODE_CHATS = 1;
-+constexpr int MODE_DENSE = 0, MODE_CHATS = 1, MODE_CHATS_MX = 2;
++// Old lines (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: MODE_WIN and the win_tiles parameter):
++// constexpr int MODE_DENSE = 0, MODE_CHATS = 1, MODE_CHATS_MX = 2;
++//                         const int4* __restrict__, int) {}
++// Old line (kept, not deleted; 2026-11-20 step 7 (packed rows + window)):
++// constexpr int MODE_DENSE = 0, MODE_CHATS = 1, MODE_WIN = 2, MODE_CHATS_MX = 3;
++constexpr int MODE_DENSE = 0, MODE_CHATS = 1, MODE_WIN = 2, MODE_CHATS_MX = 3, MODE_CHATS_WIN = 4, MODE_CHATS_MX_WIN = 5;
 +template <int MODE>
  __global__ void gqa_v62_sm90(const __grid_constant__ CUtensorMap, const __grid_constant__ CUtensorMap,
 -                        const __grid_constant__ CUtensorMap, const __nv_bfloat16*,
 -                        __nv_bfloat16*, float*, int, int, int, int, float) {}
 +                        const __grid_constant__ CUtensorMap, const __nv_bfloat16* __restrict__,
 +                        __nv_bfloat16* __restrict__, float* __restrict__, int, int, int, int, float,
-+                        const int4* __restrict__, int) {}
++                        const int4* __restrict__, int, int) {}
  #endif
  
  size_t smem_bytes() { return T3_SMEM_V34; }   // sK+sV + Qt + mbarriers
@@ -1310,12 +1418,18 @@ index 063f35a..560d916 100644
 +//     __nv_bfloat16* O, float* LSE,
 +//     int B, int Hq, int Hkv, int S, float scale, cudaStream_t stream,
 +//     const int32_t* chat_units, int n_units)
++// win (2026-11-04, Navin's b913f32): sliding window in keys, 0 = plain causal. 0 < win < S selects MODE_WIN (dense rows
++// only; the caller checks win % 128 == 0 and refuses a window with a chat plan); win >= S is plain causal, the dense kernel.
++// 2026-11-20 step 7 (packed rows + window): with a chat plan, 0 < win < S selects MODE_CHATS_WIN, or MODE_CHATS_MX_WIN for a plan with mixed
++// units (the window is per chat, see the kernel); the caller no longer refuses that pair. win >= S: the kernels of before.
++// Old signature (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: int win appended):
++// void gqa_v62_causal_launch_d128(..., const int32_t* chat_units, int n_units, bool mixed_units)
  void gqa_v62_causal_launch_d128(
      const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
      __nv_bfloat16* O, float* LSE,
 -    int B, int Hq, int Hkv, int S, float scale, cudaStream_t stream)
 +    int B, int Hq, int Hkv, int S, float scale, cudaStream_t stream,
-+    const int32_t* chat_units, int n_units, bool mixed_units)
++    const int32_t* chat_units, int n_units, bool mixed_units, int win)
  {
 -    int device = 0; cudaGetDevice(&device);
 -    cudaDeviceProp prop{}; cudaGetDeviceProperties(&prop, device);
@@ -1359,24 +1473,53 @@ index 063f35a..560d916 100644
 +    // The dynamic-smem opt-in is per kernel, so each variant gets its own once-flag.
 +    // Old line (kept, not deleted; 2026-11-13: one more once-flag for MODE_CHATS_MX):
 +    // static bool cfg_dense = false, cfg_chats = false;
-+    static bool cfg_dense = false, cfg_chats = false, cfg_chats_mx = false;
++    // Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: one more once-flag for MODE_WIN):
++    // static bool cfg_dense = false, cfg_chats = false, cfg_chats_mx = false;
++    // Old line (kept, not deleted; 2026-11-20 step 7 (packed rows + window): two more once-flags, MODE_CHATS_WIN / MODE_CHATS_MX_WIN):
++    // static bool cfg_dense = false, cfg_chats = false, cfg_chats_mx = false, cfg_win = false;
++    static bool cfg_dense = false, cfg_chats = false, cfg_chats_mx = false, cfg_win = false,
++                cfg_chats_win = false, cfg_chats_mx_win = false;
      size_t smem_bytes = gqa62::smem_bytes();
 -    if (!cfg) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg = true; }
      dim3 grid(gqa62::NUM_SMS); dim3 block(gqa62::NUM_THREADS);
 -    gqa62::gqa_v62_sm90<<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale);
 +    const int4* units = reinterpret_cast<const int4*>(chat_units);
++    const bool windowed = win > 0 && win < S;   // 2026-11-20 SWA port of Navin's b913f32
++    // Old line (kept, not deleted; 2026-11-20 step 7 (packed rows + window): a window now runs with a chat plan too):
++    // assert(!windowed || (win % gqa62::BLOCK_N == 0 && chat_units == nullptr));
++    assert(!windowed || win % gqa62::BLOCK_N == 0);
++    // 2026-11-20 step 7 (packed rows + window): packed rows with a window (each chat sees the last win keys of its own tokens) run modes 4 / 5;
++    // every other call goes on to the branches of before, unchanged.
++    if (chat_units != nullptr && windowed) {
++        if (mixed_units) {
++            if (!cfg_chats_mx_win) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90<gqa62::MODE_CHATS_MX_WIN>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg_chats_mx_win = true; }
++            gqa62::gqa_v62_sm90<gqa62::MODE_CHATS_MX_WIN><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, units, n_units, win / gqa62::BLOCK_N);
++        } else {
++            if (!cfg_chats_win) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90<gqa62::MODE_CHATS_WIN>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg_chats_win = true; }
++            gqa62::gqa_v62_sm90<gqa62::MODE_CHATS_WIN><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, units, n_units, win / gqa62::BLOCK_N);
++        }
++    } else
 +    // 2026-11-13: a plan with mixed units runs the instantiation that decodes them; every other plan and the dense
 +    // rows run the two kernels of before (the branches below are unchanged).
 +    if (chat_units != nullptr && mixed_units) {
 +        if (!cfg_chats_mx) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90<gqa62::MODE_CHATS_MX>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg_chats_mx = true; }
-+        gqa62::gqa_v62_sm90<gqa62::MODE_CHATS_MX><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, units, n_units);
++        // Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: the trailing win_tiles = 0):
++        // gqa62::gqa_v62_sm90<gqa62::MODE_CHATS_MX><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, units, n_units);
++        gqa62::gqa_v62_sm90<gqa62::MODE_CHATS_MX><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, units, n_units, 0);
 +    } else
 +    if (chat_units != nullptr) {
 +        if (!cfg_chats) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90<gqa62::MODE_CHATS>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg_chats = true; }
-+        gqa62::gqa_v62_sm90<gqa62::MODE_CHATS><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, units, n_units);
++        // Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: the trailing win_tiles = 0):
++        // gqa62::gqa_v62_sm90<gqa62::MODE_CHATS><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, units, n_units);
++        gqa62::gqa_v62_sm90<gqa62::MODE_CHATS><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, units, n_units, 0);
++    } else if (windowed) {   // 2026-11-20 SWA port of Navin's b913f32: dense rows with a window
++        if (!cfg_win) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90<gqa62::MODE_WIN>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg_win = true; }
++        gqa62::gqa_v62_sm90<gqa62::MODE_WIN><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, nullptr, 0, win / gqa62::BLOCK_N);
 +    } else {
 +        if (!cfg_dense) { cudaFuncSetAttribute(gqa62::gqa_v62_sm90<gqa62::MODE_DENSE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem_bytes); cfg_dense = true; }
-+        gqa62::gqa_v62_sm90<gqa62::MODE_DENSE><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, nullptr, 0);
++        // Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: the trailing win_tiles = 0):
++        // gqa62::gqa_v62_sm90<gqa62::MODE_DENSE><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, nullptr, 0);
++        gqa62::gqa_v62_sm90<gqa62::MODE_DENSE><<<grid, block, smem_bytes, stream>>>(tmapKsw, tmapVsw, tmapQsw, Q, O, LSE, B, Hq, Hkv, S, scale, nullptr, 0, 0);
 +    }
  }
  

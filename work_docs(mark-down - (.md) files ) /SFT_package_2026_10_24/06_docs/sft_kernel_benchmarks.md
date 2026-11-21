@@ -428,3 +428,32 @@ Setup: one H200 (box P032), heads 18/6, head dim 128, bf16, rows of 4,096 tokens
 - Forward + backward together the change is smaller (on short chats the backward is the larger part): about -5.3% at 16 tokens, -3.6% at 64 tokens, and no measurable change of the SFT step on real data.
 - Correctness: quick test suite 280 / 0 at heads 18/6 (with the change, and with it switched off by `BLU_GQA_MX=0`) and 273 / 0 at heads 4/2; full suite 333 / 0 at heads 18/6; every packed chat still gives the same bits as the same chat alone.
 - Records: work log §45.194-45.195; the forward part of `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md` (sections 4.4-4.8).
+
+## 9. Update 2026-11-20: sliding-window attention (the 350M model)
+
+What changed: the attention kernels apply a sliding window (W keys, itself included; every N-th layer global), for plain rows and for packed SFT rows, forward and backward, together with mixed units and ideas 1, 2 and 4 (`sft/README.md` section 5.3).
+
+Setup of the kernel numbers: one H200 of box P035; the timing case of Navin's test `test_swa_attention.cu` (T6): 16 rows of 4,096 tokens, one sequence per row, heads 4/2, head dim 128, bf16, causal; my code built with CUDA 13.4.
+
+| Window | Forward (ms) | Backward (ms) | Faster than causal (forward / backward) |
+| --- | --- | --- | --- |
+| none (causal) | 0.396 | 1.187 | - |
+| 1,024 | 0.213 | 0.721 | 1.85x / 1.65x |
+| 512 | 0.141 | 0.466 | 2.81x / 2.51x (against 1.168 ms causal in that run) |
+
+- Navin's own build of 2026-11-04 (older backward, without ideas 1, 2, 4), same test, 2026-11-19: forward 0.391 -> 0.214 ms, backward 1.249 -> 0.771 ms at W 1,024.
+- In training (one H200, 30 steps, median of steps 11-29): 350M pretraining (production trainer, 32 micro-batches of 8 rows per step) 6,748.7 -> 6,166.8 ms per step (-8.6%); SFT 350M on d0_gen rows (20 rows of 4,096 per step) 476 -> 474 ms (-0.4%: most chats are shorter than 1,024 tokens).
+- Against Navin's trainer with Navin's settings (350M, micro-batch 16, 2.1M tokens per step): no window 13,627.2 ms (Navin's) vs 13,244.3 ms (mine), W 1,024 12,550.4 vs 12,193.1 ms: mine 2.8% faster in both; the window saves 7.9% in both. Navin's window forward compiles to the same machine code as mine.
+- Not measured yet: FA3 / cuDNN / FA4 / FlexAttention with the window (planned). Each library counts the window differently, so each one is checked against an fp64 reference first: FlashAttention `window_size = (W-1, 0)`; cuDNN `left_bound = W`; PyTorch `varlen_attn` `(W-1, 0)` (its doc says `(W, 0)`, but its own test attends W + 1 keys).
+- *Update 2026-11-20 (22:34-22:47), measured:* the window race on one H200 per layout (P035), the 350M heads 8/4, head dim 128, bf16, window 1,024, 8 rows of 4,096 tokens per call; 4 sets of real Tülu rows and rows of uniform chats of 512 / 1,024 / 2,048 / 4,096 tokens; two rounds in ABBA order, one process per run, both sides timed the same way (CUDA events around 20 back-to-back calls, 5 repeats). Every library passed a spike test of its window convention and an fp64 check first. BluTrain time / other time, forward + backward (below 1.00 = BluTrain faster):
+
+| Layout | vs FA3 | vs FA4 | vs FA2 (PyTorch varlen_attn) | vs FlexAttention |
+| --- | --- | --- | --- | --- |
+| real Tülu rows (4 sets of 8 rows) | 0.649 - 0.725 | 0.681 - 0.725 | 0.398 - 0.422 | 0.518 - 0.541 |
+| uniform 512 | 0.623 | 0.624 | 0.430 | 0.605 |
+| uniform 1,024 | 0.736 | 0.733 | 0.434 | 0.601 |
+| uniform 2,048 | 0.812 | 0.825 | 0.469 | 0.625 |
+| uniform 4,096 (one sequence per row) | 0.818 | 0.800 | 0.468 | 0.612 |
+
+  BluTrain is faster than every library on every layout (forward alone 0.64-0.88 of FA3 / FA4, backward alone 0.60-0.81). cuDNN is not in it: its window needs NVIDIA's cudnn-frontend Python package, which the bench environment does not have yet. The median difference between the two rounds is 0.29%. Full table, the gate and the harness: `post_Training_research/sliding_window_attention_sft_analysis.md` section 12.3 in my work docs; records `profiling_reports/swa_port_2026_11_20/race/` in my work folder.
+- Correctness: `sft/README.md` section 7. Records: `profiling_reports/swa_port_2026_11_20/` in my work folder; the full record: `post_Training_research/sliding_window_attention_sft_analysis.md` in my work docs (sections 11-12).

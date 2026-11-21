@@ -1,4 +1,7 @@
-# Every SFT optimization in BluTrain, from the first day (2026-09-17 to 2026-11-18)
+# Every SFT optimization in BluTrain, from the first day (2026-09-17 to 2026-11-20)
+
+*(Updated 2026-11-20: section 4.17, sliding-window attention for the 350M model, in pretraining and in SFT. "Tried and
+not adopted" moved from 4.17 to 4.18. The rest is unchanged except the added rows and notes marked 2026-11-20.)*
 
 This document lists every change I made to make SFT (supervised fine-tuning) in BluTrain correct and fast, in one place.
 For each change it says:
@@ -48,6 +51,8 @@ below 1.00 means A is faster.
 | H200 | the NVIDIA GPU all numbers here come from (141 GB memory, 700 W power limit) |
 | MFU | model FLOPs utilization: the share of the GPU's peak math speed the training uses |
 | nsys / ncu | NVIDIA's profilers: nsys times every kernel, ncu looks inside one kernel |
+| sliding window (SWA), window W | *(added 2026-11-20)* in a windowed layer each token sees only the last W tokens of its own chat, itself included (W = 1,024 for the 350M); the other layers ("global") see the whole chat |
+| kv4, kv4_swa3 | *(added 2026-11-20)* the two 350M base models of the window study, 8 query / 4 KV heads each: kv4 has full attention in all 28 layers; kv4_swa3 has the window in 21 layers (3 windowed : 1 global) |
 
 ---
 
@@ -90,6 +95,12 @@ Two numbers worth keeping in mind, because several optimizations below are about
   head. Eight chats of 512 tokens in the same row have only 8 x 512 x 512 / 2 pairs: 8 times less work, if the kernel
   knows where each chat starts.
 
+**Added 2026-11-20: the 350M model of the sliding-window work (section 4.17).** 28 layers; d 1,024; heads 8 / 4 (G = 2);
+head size 128; SwiGLU hidden size 2,560; vocabulary 49,280 (the 135M's tokenizer); RoPE theta 50,000; row length 4,096;
+window 1,024 in 21 layers, every 4th layer (layers 3, 7, ..., 27, counted from 0) global. Its matrices per layer: query
+1,024 -> 1,024; key and value 1,024 -> 512 each; output 1,024 -> 1,024; SwiGLU gate + up 1,024 -> 5,120; down
+2,560 -> 1,024; lm_head 1,024 -> 49,280.
+
 ---
 
 ## 2. Map: where each optimization sits in the SFT path
@@ -110,6 +121,7 @@ mindmap
       lm_head on trained rows only, switch
       context parallelism, BLU_SFT_CP
       fewer copies, zeroings, launches, CPU waits
+      sliding window per layer, BLU_SWA_WINDOW, checked against the base
     Kernels
       Loss
         masking and the global denominator
@@ -124,6 +136,7 @@ mindmap
         backward Vj2, forward QPU
         mixed units in the forward
         backward ideas 1, 2 and 4
+        sliding window, packed rows too
       Long rows up to 131,072 tokens
     Libraries
       BluBLAS GEMM tile tables, split-K, GEMM bug fixes
@@ -138,7 +151,8 @@ files -> SftDataLoader.h: B rows + the chat list of each row                  ->
 micro-batch -> forward:
    embedding
    per layer: RMSNorm -> q, k, v projections -> QK-norm + RoPE with per-chat positions [4.7]
-              -> attention with the chat list [4.4 - 4.6, 4.15, 4.16] -> output projection
+              -> attention with the chat list [4.4 - 4.6, 4.15, 4.16], with the window in windowed layers [4.17]
+              -> output projection
               -> RMSNorm -> SwiGLU
    lm_head [4.11] -> loss with label 65535 and the step's denominator [4.1, 4.2, 4.10]
 backward: the same in reverse (most of the attention work is here)
@@ -171,6 +185,7 @@ optimizer: Muon (matrices) + AdamW (the rest), ZeRO over the GPUs [4.12]
 | 11-06 / 11-07 | trainer | context parallelism; a gradient bug in autograd fixed | 64k / 128k rows 1.58x / 1.65x faster than one GPU | 4.14 |
 | 11-13 | attention | forward "mixed units" + the 2% rule | forward -21 to -26% on rows of chats of 64 tokens or less | 4.15 |
 | 11-14 to 11-18 | attention | backward ideas 1, 2 and 4 | forward + backward 0.570-0.980 of the code before; faster than FA3 / FA4 / cuDNN in all 12 cases | 4.16 |
+| 11-17 to 11-20 | attention, trainers | sliding window (1,024, every 4th layer global) for the 350M: ported onto our kernels, packed rows, both trainers, the window carried by checkpoints and exports | 350M pretraining step -8.6% than without the window; SFT trainer = Hugging Face to 0.00007; packed + window = each chat alone, bit for bit | 4.17 |
 
 ---
 
@@ -370,6 +385,16 @@ query C          .    .    X        (inside each block only the causal lower hal
   because every kernel counts its tiles from the chat's own start.
 
 Design A is what FlashAttention 2/3/4, TransformerEngine, PyTorch varlen and TRL use. Design B was removed on 2026-10-15.
+
+**How tiles are accessed and computed in causal_attention in pretraining and sft/post_training (with and without
+sliding_window_attention (swa)) : (animation)** *(added 2026-11-20)*
+- SFT packed row (3 chats): https://claude.ai/artifact/EBiPEihREutWGnkpQqi5Sy
+- Pretraining row (one sequence): https://claude.ai/artifact/EBiPEihREutWGnkpQqi5Sy#pretraining
+- What it shows: the score matrix S = Q x K^T, one square per (query, key) pair. It steps through the tiles the kernel
+  really computes, tile by tile: the diagonal tile (causal mask), tiles fully inside (no mask), and, with a window, the
+  window-edge tile (window mask) and the tiles skipped by the window. Switches: SFT / pretraining, window on / off. Small
+  sizes so every token fits (tiles of 4, window 8; the real kernel: tiles of 128, window 1,024).
+- Shared with the BlubridgeAI organization (claude.ai artifact).
 
 **How it works today.** The trainer builds one "chat plan" per micro-batch on the CPU (`gqa_chat_plan_make`): the lists
 every attention kernel needs, checked to cover every token exactly once, uploaded with ONE asynchronous copy, shared by
@@ -873,7 +898,179 @@ write-up: how FA3, FA4 and cuDNN do it, every case, the fairness checks); `sft_k
 
 ---
 
-### 4.17 Tried and not adopted
+### 4.17 Sliding-window attention (SWA) for the 350M model, in pretraining and in SFT (2026-11-17 to 2026-11-20)
+
+*(Added 2026-11-20.)*
+
+**Why.** Our 350M model is pretrained with a sliding window. In 21 of its 28 layers a token sees only the last 1,024
+tokens before it (itself included). Every 4th layer (layers 3, 7, ..., 27, counted from 0) sees everything before it.
+The colleagues' pretraining screen chose this layout (`kv4_swa3`, section 1). A model should be fine-tuned and served
+with the attention it was pretrained with: every published SWA model keeps its window in its instruct version (Mistral
+7B, Gemma 2 and 3, gpt-oss), and no one has published an SFT that switches it. Our SFT could not do this:
+
+- the window existed only in Navin's local commit `b913f32` (2026-11-04), on the attention kernels of that date (before
+  mixed units and ideas 1, 2 and 4), and only for plain rows: both kernels refused packed rows;
+- the SFT trainer had no window, and the HF export wrote `use_sliding_window: false`, which makes Hugging Face drop the
+  window without any message.
+
+**What the window means in a packed row.** Query i sees keys i-1,023 .. i of its own chat (the Hugging Face meaning of
+`sliding_window = 1024`). The window is counted inside each chat, so a chat of at most 1,024 tokens is not changed by
+it. Nothing is dropped: tokens further back reach a token through the global layers and through the stacked windowed
+layers. W must be a multiple of 128 (the tile size). Then every tile of 128 queries has exactly one partly masked key
+tile at the window's edge:
+
+```
+query tile p reads key tiles max(0, p - 8) .. p      (W = 1,024 = 8 tiles of 128 keys)
+                 key tile:  0  1  2  3  4  5  6  7  8  9 10 11 12
+query tile 0                D
+query tile 5                F  F  F  F  F  D
+query tile 8                E  F  F  F  F  F  F  F  D
+query tile 12               .  .  .  .  E  F  F  F  F  F  F  F  D
+D = diagonal tile (causal mask)   F = full tile (no mask)   E = window-edge tile (window mask)   . = skipped
+```
+
+The animation linked in section 4.4 shows the same, tile by tile, with the window on and off.
+
+**The change, in the steps of the SWA plan.** Each step was tested before the next one started. The plan and every
+result are in `sliding_window_attention_sft_analysis.md`.
+
+1. **Survey (2026-11-19).** Who implements SWA, for plain rows and for packed rows: 38 repositories read at their latest
+   commit. No framework has its own SWA kernel; all of them end in FlashAttention 2 / 3 / 4, cuDNN, FlexAttention or
+   PyTorch's flash kernel. The fastest published one on Hopper is FA3 (varlen + `window_size`), so FA3 is the first rival.
+2. **Navin's code tested as it is (2026-11-19).** Navin's commit, built unchanged on an H200: Navin's test passed 24 / 24.
+3. **Port onto our kernels (2026-11-20 morning).** The forward got a window mode. The backward got a 4th switch (the
+   window) that works together with the fp32 partials, idea 4 and ideas 1 / 2. Every code path without a window compiles
+   to byte-identical machine code (checked with cuobjdump), so models without a window are not affected. The pretraining
+   trainer got `BLU_SWA_WINDOW` / `BLU_SWA_GLOBAL_EVERY`.
+4. **Packed rows + window (2026-11-20).** Two new forward modes (packed + window, also with mixed units) and three new
+   backward copies for packed rows with the window. As FlashAttention does, a batch whose chats all fit inside the
+   window runs the kernels without the window. The result is the same bit for bit (test P2), so batches of short chats
+   pay nothing.
+5. **SFT trainer (2026-11-20).** `BLU_SWA_WINDOW=1024 BLU_SWA_GLOBAL_EVERY=4` (in `run_sft.sh`: `SWA_WINDOW=1024
+   SWA_GLOBAL_EVERY=4`). The window now travels with the model: `model_config.json` next to every checkpoint (both
+   trainers), the `meta.json` of the converter `hf_to_blutrain.py`, the export metadata, and the HF `config.json`
+   (`use_sliding_window: true`, `sliding_window`, `layer_types`, as in Navin's exporter). At start-up the SFT trainer
+   compares the base model's window with its own and stops on a mismatch (`BLU_SWA_MISMATCH_OK=1` for a deliberate
+   test).
+
+**Correctness.**
+
+| Check | Result |
+| --- | --- |
+| Navin's test on our kernels (plain rows; fp64 reference; exact key counts) | 24 / 24 |
+| `test_swa_extra` (the 350M shape against fp64; every path that cannot use the window must refuse; the autograd node gets the window) | 13 / 13, in each of the 3 backward variants (default, `BLU_VJ2_HSUM=0`, `BLU_VJ2_DKDV_F32=1`) |
+| `test_swa_packed` (new): every chat of a packed row with the window = the same chat alone, bit for bit for O, LSE, dK, dV (dQ at most 0.12 of FlashAttention's tolerance); chats of at most W unchanged by the window; chats longer than W against fp64; W = 128 with chats of W-1, W, W+1, 2W and 2W+1 tokens; zero-length and 1-token entries; heads 8/4, 4/1, 8/8 and the 350M's heads per GPU under context parallelism (4/2, 2/1); repeat runs; one 8,192-token row; through autograd | 94 / 94, in each of the 3 backward variants |
+| without a window: the quick suites of 2026-11-18 | 273 / 0 and 280 / 0, the same counts as before |
+| SFT trainer against Hugging Face transformers (the 350M `kv4_swa3` base; step-0 val loss on the 2,000 val chats of the d0_gen data, 844 of them longer than 1,024 tokens) | window on: 1.732441 vs 1.732514; window off: 1.733759 vs 1.733824. The same model to 0.00007 in both modes; the window's effect is +0.00132 (trainer) vs +0.00131 (HF) |
+| context parallelism, CP = 2 against 1 GPU (window on) | step-0 gradient norm 1.5179 vs 1.5181; loss at step 29 1.682096 vs 1.682022 |
+
+**Speed.** One H200 for each run.
+
+- Pretraining: the production pretraining trainer, the 350M kv4 shape (28 layers, d 1,024, heads 8/4, T 4,096),
+  micro-batch 8, 32 micro-batches (1,048,576 tokens) per step, 30 steps, median of steps 11-29.
+- SFT: the SFT trainer, the 350M, rows of 4,096 tokens, 20 rows (81,920 tokens) per step, 30 steps.
+
+| What | Without the window | With the window (1,024, every 4th layer global) | With against without |
+| --- | --- | --- | --- |
+| attention kernels alone (16 rows of 4,096, heads 4/2: Navin's test shape) | forward 0.396 ms, backward 1.187 ms | forward 0.213 ms, backward 0.721 ms | forward 1.85x, backward 1.65x faster (the test's own ratios, from the unrounded times) |
+| pretraining 350M, one step | 6,748.7 ms (155,375 tokens/s) | 6,166.8 ms (170,036 tokens/s) | 8.6% faster |
+| SFT 350M, one step (d0_gen rows) | 476 ms | 474 ms | 0.4% faster |
+
+**Mine against Navin's code** (Navin's binary and Navin's settings: micro-batch 16, 2.1M tokens per step, Muon; 30 steps,
+median of steps 11-29; one H200):
+
+| | Navin's | Mine | Mine against Navin's |
+| --- | --- | --- | --- |
+| without the window | 13,627.2 ms | 13,244.3 ms | 2.8% faster |
+| with the window | 12,550.4 ms | 12,193.1 ms | 2.8% faster |
+| the window's saving | 7.9% | 7.9% | |
+
+- Navin's window forward and mine compile to byte-identical machine code (the same design: our forward of October plus the
+  window). The 2.8% is the same with and without the window, so it comes from what changed outside the window code since
+  2026-11-04 (Navin's tree is from that date).
+- The two runs differed in one setting: Navin's used the embedding scale (x32, `BLU_EMBED_SCALE=1`), mine did not. The step
+  times are comparable; the loss values are not. The user decided not to re-run.
+
+**Why SFT gains so little speed at 4,096 tokens.** The window removes work only for tokens past position 1,024 of their
+chat. In Tülu 3, 15.4% of the tokens are there: the window removes 13.6% of the attention pairs and 1.31% of the step's
+FLOPs (calculated from the packed data, 350M shape). A pretraining row is one 4,096-token sequence, where most tokens are
+past 1,024: hence the 8.6%. So in SFT the reasons for the window are: the same attention as in pretraining, and the KV
+cache at inference. The 350M's KV cache is 2 KiB per token per layer. With the window, the cache needs:
+
+| Context length | KV cache with the window, as a share of full attention's |
+| --- | --- |
+| 4,096 | 44% |
+| 32,768 | 27% |
+| 131,072 | 26% |
+
+**What it means for pretraining.** The same kernels serve both (a pretraining row is one chat of 4,096 tokens): the 350M
+pretraining step is 8.6% faster with the window. Models without a window run the same machine code as before.
+
+**Open (2026-11-20 evening).**
+
+- The SFT study on Tülu 3, 350M, 1 epoch per arm: A (full-attention base, full attention in SFT), C (window base +
+  window), D (window base + full attention, `BLU_SWA_MISMATCH_OK=1`). Running on P035 GPU 7 since 20:09 IST, one arm
+  after the other (about 47 minutes each). It decides whether SFT keeps the window: if C is as good as D, keep it, as
+  every published SWA model does.
+  *Result (2026-11-20 22:30; D and A ran side by side on GPUs 4 and 5 from 20:51):*
+
+  | Arm | Pretrained | SFT | Final val loss | Val loss past position 2,048 of a chat (HF) | IFEval (instructions, loose) |
+  | --- | --- | --- | --- | --- | --- |
+  | C | window | window | 1.176781 | 1.8037 | 0.391 |
+  | D | window | full attention | 1.176567 | 1.8041 | 0.381 |
+  | A | full attention | full attention | 1.178506 | 1.7961 | 0.383 |
+
+  C and D are the same within about 0.003 in every group of chats and positions, and the benchmarks are within their
+  standard errors (IFEval prompt-level 0.018). But C served with full attention (what vLLM and SGLang do with our
+  export) loses 0.23 of loss past position 2,048 (1.804 -> 2.031). So a model fine-tuned with the window must be served
+  with it. The HF exports equal the trainer like for like (within 0.00006). Full tables: the SWA analysis doc, section
+  12.2.
+  *2026-11-21 (a user question): C against A, the window in both stages against full attention in both (the setup of
+  every SFT run before 2026-11-20): C's val loss is 0.0017 lower overall, 0.0035 lower on chats of at most 1,024
+  tokens and 0.0076 higher past position 2,048 of a chat; the benchmarks are mixed (A higher on WinoGrande 0.531 vs
+  0.497 and ARC-c 0.217 vs 0.203, C higher on IFEval instruction-level 0.374 vs 0.357 strict), and only WinoGrande
+  differs by more than 2 standard errors. The two bases had the same pattern before SFT (the window base 0.0038 lower
+  overall, 0.0052 higher past position 2,048). The plan's fourth arm, B (full-attention base, window in SFT), was
+  dropped by the user on 2026-11-20 (not our case: the 350M is pretrained with the window); the second-seed repeats
+  were not run. Table: the SWA analysis doc, end of section 12.2.*
+  *2026-11-21 12:23-13:52 IST, arm B run after all (the user: check the conclusion along the other path), on P015 GPU 3
+  with inputs made on P015 and checked against P035 by md5 (one difference: P015's CUDA 13.0 runtime, which B's math does
+  not use): final val loss B 1.180413, so the window in SFT costs +0.0019 on the full-attention base (A -> B) against
+  +0.0002 on the window base (D -> C); B's cost sits in long chats (+0.0072 at positions 1,024-2,047, +0.0171 past
+  2,048; chats of at most 1,024 tokens +0.0004), B served with full attention is better than with its window (-0.0036
+  past position 1,024), and its benchmarks are within noise of A's. So the window has to be learned in pretraining;
+  for our 350M (pretrained with it) C = D still holds. Full tables: the SWA analysis doc, "Arm B" at the end of 12.2.*
+  *2026-11-21 ~15:00: the four checkpoints (A, B, C, D) are on Hugging Face (`hf://buckets/gautam1926/checkpoints_sft/checkpoints_sft_swa_experimentations/`, each with the HF export, the final BluTrain checkpoint, a model card and md5 list); the handover for the DPO and RL teams is `work_docs/DPO_RL_handover_350M_SWA_2026_11_21/`.*
+- vLLM and SGLang serve our Qwen3 export with full attention in every layer (they do not read per-layer windows).
+  Evaluate through Hugging Face transformers, or patch vLLM.
+- The race against FA3 / cuDNN / FA4 / FlexAttention on window rows. Each library counts the window differently (FA:
+  `(W-1, 0)`; cuDNN: `left_bound = W`), so each harness is checked against fp64 before timing.
+  *Result (2026-11-20 22:34-22:47, 350M heads 8/4, window 1,024, 8 rows of 4,096 per call, 8 layouts, two rounds ABBA,
+  every library first checked against fp64 and a spike test of its window convention):* ours is faster than every
+  library on every layout. Forward + backward, ours / theirs: FA3 0.62-0.82, FA4 0.62-0.83, FA2 (PyTorch varlen)
+  0.40-0.47, FlexAttention 0.52-0.63; the largest gains on real SFT rows of many chats (0.65-0.73 of FA3). cuDNN was
+  not raced: its window needs NVIDIA's cudnn-frontend Python package (not installed; to be done after the user's OK).
+  Full table: the SWA analysis doc, section 12.3.
+- Speed-ups found while reading the other libraries: skip the fully masked half of the window-edge step (the mirror of
+  idea 1); order the chats by their real cost with the window (L x min(L, W) instead of L x L / 2).
+- Context parallelism: Ulysses (up to 4 GPUs per row for the 350M) works unchanged with the window. Ring (more GPUs per
+  row) needs window-aware changes.
+
+**Pushed** 2026-11-20 on `dist_side_gautam_lottn`, each push checked on GitHub file by file: TI 55d1058 (the port),
+2356565 (packed rows + tests), dd5b61a (test shapes for context parallelism); BluTrain 534538a (pretraining trainer + TI
+pointer), 651f9c4 (SFT trainer, checkpoint record, converter, exports, `run_sft.sh`, `sft/README.md` section 5.3),
+bfc712b (the SFT docs: `sft/README.md` sections 7, 9, 10, `kernel_diff_sft_pretraining.md`, `sft_kernel_benchmarks.md`
+section 9).
+
+**Record.** `post_Training_research/sliding_window_attention_sft_analysis.md` (work docs: the published evidence, the
+plan (6.1), the survey (10), how every library does packed rows + window and the checks they make (11), every result
+(11.6, 12)); work log §45.200-§45.201; `sft/README.md` sections 5.3, 7 and 9 (how to run, the tests, the limits);
+`sft/docs/kernel_diff_sft_pretraining.md` section "2026-11-20"; `sft/docs/sft_kernel_benchmarks.md` section 9; scripts
+and logs in `profiling_reports/swa_port_2026_11_20/`.
+
+---
+
+### 4.18 Tried and not adopted
 
 | What | When | Why not |
 | --- | --- | --- |
@@ -910,6 +1107,11 @@ write-up: how FA3, FA4 and cuDNN do it, every case, the fairness checks); `sft_k
 | context parallelism, CP=2 | one GPU: 250.7 / 492.9 ms per step at 64k / 128k | 158.2 / 297.9 ms (1.58x / 1.65x faster) | 135M, 2x H200 |
 | forward mixed units | code of 2026-11-13 morning | -21 to -26% on rows of chats of 64 tokens or less | H200, heads 18/6 |
 | backward ideas 1, 2, 4 | code of 2026-11-13 | forward + backward 0.570-0.980 of before; SFT 135M -1.7%, 1.6B -0.7%, pretraining -0.54% | H200 |
+| sliding window 1,024, attention kernels | no window: forward 0.396 ms, backward 1.187 ms | 0.213 ms, 0.721 ms | H200, 16 x 4,096, heads 4/2 |
+| sliding window 1,024, pretraining 350M | no window: 6,748.7 ms per step | 6,166.8 ms (-8.6%) | production pretraining trainer, 1x H200 |
+| sliding window 1,024, SFT 350M | no window: 476 ms per step | 474 ms (-0.4%); trainer = Hugging Face to 0.00007 | SFT trainer, d0_gen rows, 1x H200 |
+| window code, mine against Navin's | Navin's 13,627.2 / 12,550.4 ms (no window / window) | 13,244.3 / 12,193.1 ms (-2.8% both) | Navin's settings, 350M, 1x H200 |
+| window race against the libraries | FA3 / FA4 / FA2 / FlexAttention with window 1,024 | ours / theirs (fwd + bwd): 0.62-0.82 / 0.62-0.83 / 0.40-0.47 / 0.52-0.63 | 350M heads 8/4, 8 layouts, 1x H200 each |
 
 ---
 
@@ -917,7 +1119,8 @@ write-up: how FA3, FA4 and cuDNN do it, every case, the fairness checks); `sft_k
 
 | What | Where |
 | --- | --- |
-| the code | BluTrain, branch `dist_side_gautam_lottn` (with Tensor-Implementations and BluBridge-BLAS as submodules); this push: BluTrain c52ca81, TI 334b244, BluBLAS cfa0e92 |
+| the code | BluTrain, branch `dist_side_gautam_lottn` (with Tensor-Implementations and BluBridge-BLAS as submodules); push of 2026-11-18: BluTrain c52ca81, TI 334b244, BluBLAS cfa0e92. *Updated 2026-11-20:* the latest push is BluTrain 651f9c4, TI dd5b61a (BluBLAS unchanged, cfa0e92); then BluTrain bfc712b (SFT docs only) |
+| sliding-window attention (the 350M) | `post_Training_research/sliding_window_attention_sft_analysis.md` (work docs); `sft/README.md` section 5.3 |
 | the SFT guide | BluTrain `sft/README.md` (a copy: `06_docs/README_sft_BluTrain.md` in this package) |
 | why each kernel changes for SFT and pretraining does not | `sft/docs/kernel_diff_sft_pretraining.md` |
 | the kernel benchmarks against other libraries | `sft/docs/sft_kernel_benchmarks.md` |

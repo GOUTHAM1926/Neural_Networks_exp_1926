@@ -130,7 +130,10 @@ Tensor scaled_dot_product_attention(
   // v2 packed rows (2026-10-15): optional per-chat plan (design A, the cu_seqlens way; GqaChatPlan in
   // ops/helpers/AttentionKernels.h) built for this (B, T, Nq_heads). nullptr (default) = plain causal over the whole
   // row, as before. The backward node keeps the plan: the backward must use the same one.
-  const cuda::GqaChatPlanPtr& chats = nullptr
+  const cuda::GqaChatPlanPtr& chats = nullptr,
+  // Sliding window (2026-11-04): each query sees the last `window` keys, itself included. 0 (default) = plain
+  // causal; see cuda::gqa_flash_attn_forward_qkv for where a window can run. The backward node keeps it.
+  int window = 0
 );
 
 /**

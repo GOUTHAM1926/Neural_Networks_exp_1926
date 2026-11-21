@@ -25,7 +25,15 @@
 #     Shapes cannot tell q_gamma from k_gamma or wK from wV; verify_export.py's val loss would expose a swap.
 #   Our Linear stores W as [in, out] and computes y = x @ W (nn/NN.cpp:239, :270); HF stores [out, in] -> transposed.
 #
+# 2026-11-20 step 9 (SWA in SFT): a checkpoint written since 2026-11-20 holds model_config.json (the model record of bluscript_sft.cpp /
+#   bluscript_zero_ckpt.cpp): the shape, rope_theta, the row length and the sliding window are then read from it (an
+#   explicit --layers / --rope-theta / --swa-window / --swa-global-every must agree with it), and config.json gets the
+#   window fields (use_sliding_window, sliding_window, layer_types, max_window_layers). Without the record: the 1.7B
+#   fullchess shape as before, and the window from --swa-window / --swa-global-every (default: none).
+#   The tokenizer step below is the GPT-2 one (50,257 ids): models with another tokenizer go through BLU_EXPORT and
+#   sft/blutrain_to_hf.py instead.
 # usage: python export_to_hf.py <checkpoint dir> <output dir> [--layers 28] [--rope-theta 50000]
+#        [--swa-window W --swa-global-every N]
 import argparse, hashlib, json, os, struct
 import numpy as np
 import torch
@@ -108,13 +116,52 @@ CHAT_TEMPLATE = (   # tulu-plain-v1 (sft/prepare_sft_data.py:16-17, 48-75): mark
 )
 
 
+def hf_window_fields(W, every, L):
+    """2026-11-20 step 9 (SWA in SFT): the Hugging Face Qwen3 window fields of a model with window W (0 = none), layer i global iff
+    (i + 1) % every == 0 (the trainers' rule). HF reads layer_types per layer and drops the window entirely unless
+    use_sliding_window is true (configuration_qwen3.py); vLLM / SGLang do NOT honour layer_types for Qwen3 (they serve
+    every layer with full attention: SWA analysis doc section 11.5, serving checklist)."""
+    if W <= 0:
+        return {"use_sliding_window": False, "sliding_window": None, "max_window_layers": L,
+                "layer_types": ["full_attention"] * L}
+    return {"use_sliding_window": True, "sliding_window": int(W), "max_window_layers": L,
+            "layer_types": ["full_attention" if (i + 1) % every == 0 else "sliding_attention" for i in range(L)]}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ckpt"); ap.add_argument("out")
-    ap.add_argument("--layers", type=int, default=28); ap.add_argument("--rope-theta", type=float, default=50000.0)
+    # 2026-11-20 step 9 (SWA in SFT): defaults applied below (None = not given, so a model record can be checked against it). Old line (kept):
+    # ap.add_argument("--layers", type=int, default=28); ap.add_argument("--rope-theta", type=float, default=50000.0)
+    ap.add_argument("--layers", type=int, default=None); ap.add_argument("--rope-theta", type=float, default=None)
+    ap.add_argument("--swa-window", type=int, default=None, help="sliding window W (0 = none); read from model_config.json when present")
+    ap.add_argument("--swa-global-every", type=int, default=None, help="layer i global iff (i + 1) %% N == 0")
     ap.add_argument("--tokenizer", default="openai-community/gpt2")
     a = ap.parse_args()
-    d, Hq, Hkv, hd, F, V, L = 2304, 18, 6, 128, 6144, 50304, a.layers
+    # Old line (kept, 2026-11-20 step 9 (SWA in SFT)): d, Hq, Hkv, hd, F, V, L = 2304, 18, 6, 128, 6144, 50304, a.layers
+    d, Hq, Hkv, hd, F, V, L, ctx = 2304, 18, 6, 128, 6144, 50304, 28, 4096
+    rope_theta, swa_w, swa_e = 50000.0, 0, 4
+    rec_path = os.path.join(a.ckpt, "model_config.json")
+    rec = json.load(open(rec_path)) if os.path.exists(rec_path) else None
+    if rec is not None:
+        d, Hq, Hkv, hd, F, V, L, ctx = (int(rec[k]) for k in ("d_model", "q_heads", "kv_heads", "head_dim", "ffn_hidden",
+                                                               "vocab_size", "n_layers", "context_length"))
+        rope_theta, swa_w, swa_e = float(rec["rope_theta"]), int(rec["swa_window"]), int(rec["swa_global_every"])
+        for flag, given, have in (("--layers", a.layers, L), ("--rope-theta", a.rope_theta, rope_theta),
+                                  ("--swa-window", a.swa_window, swa_w)):
+            if given is not None and given != have:
+                raise SystemExit(f"{flag} {given} but the checkpoint's model record says {have} ({rec_path})")
+        if a.swa_global_every is not None and swa_w > 0 and a.swa_global_every != swa_e:
+            raise SystemExit(f"--swa-global-every {a.swa_global_every} but the model record says {swa_e} ({rec_path})")
+        print(f"model record {rec_path}: d {d}, layers {L}, heads {Hq}/{Hkv}, ffn {F}, vocab {V}, theta {rope_theta:g}, "
+              f"window {swa_w} every {swa_e}")
+    else:
+        L = a.layers if a.layers is not None else L
+        rope_theta = a.rope_theta if a.rope_theta is not None else rope_theta
+        swa_w = a.swa_window if a.swa_window is not None else 0
+        swa_e = a.swa_global_every if a.swa_global_every is not None else 4
+        print(f"no model record in {a.ckpt} (a checkpoint made before 2026-11-20): layers {L}, theta {rope_theta:g}, "
+              f"window {swa_w} every {swa_e} (from the flags; the window must be the training run's)")
 
     meta = read_metadata(os.path.join(a.ckpt, "metadata.bin"))
     params = sorted(k for k in meta["tensors"] if k.startswith("param_") and len(k) == 12 and k[6:].isdigit())
@@ -160,11 +207,16 @@ def main():
     cfg = {"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",
            "vocab_size": V, "hidden_size": d, "intermediate_size": F, "num_hidden_layers": L,
            "num_attention_heads": Hq, "num_key_value_heads": Hkv, "head_dim": hd, "hidden_act": "silu",
-           "max_position_embeddings": 4096, "rms_norm_eps": 1e-5, "rope_theta": a.rope_theta, "rope_scaling": None,
+           # 2026-11-20 step 9 (SWA in SFT): the row length and theta from the record (or the flags), the window fields from
+           # hf_window_fields below. Old lines (kept):
+           # "max_position_embeddings": 4096, "rms_norm_eps": 1e-5, "rope_theta": a.rope_theta, "rope_scaling": None,
+           # "use_sliding_window": False, "sliding_window": None, "max_window_layers": L, "initializer_range": 0.02,
+           "max_position_embeddings": ctx, "rms_norm_eps": 1e-5, "rope_theta": rope_theta, "rope_scaling": None,
            "attention_bias": False, "attention_dropout": 0.0, "tie_word_embeddings": True,
-           "use_sliding_window": False, "sliding_window": None, "max_window_layers": L, "initializer_range": 0.02,
+           "initializer_range": 0.02,
            "use_cache": True, "torch_dtype": "bfloat16",
            "bos_token_id": 50256, "eos_token_id": 50256, "pad_token_id": 50256}
+    cfg.update(hf_window_fields(swa_w, swa_e, L))
     json.dump(cfg, open(os.path.join(a.out, "config.json"), "w"), indent=2)
     # no max_new_tokens here: it would override a benchmark's own limit (lm-eval passes max_length = prompt + max_gen_toks;
     # a max_new_tokens of 2048 here won over IFEval's 1280 in the 10-23 smoke test)
@@ -182,7 +234,10 @@ def main():
     for fn in ("metadata.bin",):
         md5[fn] = hashlib.md5(open(os.path.join(a.ckpt, fn), "rb").read()).hexdigest()
     json.dump({"source": os.path.abspath(a.ckpt), "source_md5": md5, "meta_step": meta["step"], "meta_epoch": meta["epoch"],
-               "meta_loss": meta["loss"], "layers": L, "rope_theta": a.rope_theta, "template": "tulu-plain-v1",
+               # 2026-11-20 step 9 (SWA in SFT): + the window and the record. Old line (kept):
+               # "meta_loss": meta["loss"], "layers": L, "rope_theta": a.rope_theta, "template": "tulu-plain-v1",
+               "meta_loss": meta["loss"], "layers": L, "rope_theta": rope_theta, "template": "tulu-plain-v1",
+               "swa_window": swa_w, "swa_global_every": swa_e, "model_record": rec_path if rec is not None else None,
                "qk_norm_eps_in_training": 1e-6, "block_norm_eps_in_training": 1e-5},
               open(os.path.join(a.out, "export_info.json"), "w"), indent=2)
     print(f"wrote {a.out}: model.safetensors ({os.path.getsize(os.path.join(a.out, 'model.safetensors')) / 1e9:.2f} GB), "

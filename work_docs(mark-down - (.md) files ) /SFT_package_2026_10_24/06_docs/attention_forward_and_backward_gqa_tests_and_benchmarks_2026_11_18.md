@@ -7,7 +7,7 @@
 > trainer (1.6B production config, dense rows, 30 steps, runs pushed / new / new / pushed on one H200): new code 0.54%
 > faster per step, the same step-0 loss, the loss differences no bigger than between two runs of the same code.
 
-This note is for Uma Mahesh. It covers both of my attention kernels for packed rows, the forward and the backward.
+ It covers both of my attention kernels for packed rows, the forward and the backward.
 Both were rebuilt in October 2026 (forward: sections 4.1 to 4.3; backward: section 6.1). The work your study started
 then went in this order:
 
@@ -45,7 +45,7 @@ me.
 **What I changed, forward first:**
 
 | Kernel | When | What | Result | State |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | forward | 16 to 19/10/2026 | rebuilt from v62 to QPU: FA3's loop order, full-width P·V, a persistent scheduler, a cheaper unit start and end, softmax placement | forward time from 1.375 × FA3's to 1.004 × (dense rows) and from 1.28 × to 0.865 × (packed rows) | pushed |
 | forward | 13/11/2026 | MX: in a chat with an odd number of 64-row tiles, the idle compute group takes the same tile of another query head of the same KV head; plus the 2% rule | forward 21% to 26% less time on rows of chats of 64 tokens or less, 8% on chats of 32 to 160, 0 on long chats | pushed |
 | backward | 10 to 16/10/2026 | rebuilt from Vj1d to Vj2 in FA3's layout, then tuned | main kernel 3,626 → 2,406.7 µs (dense rows), 3.0% faster than FA3's | pushed |
@@ -54,7 +54,7 @@ me.
 The four backward changes of 14 to 18/11:
 
 | Change | In one sentence |
-|---|---|
+| --- | --- |
 | Idea 1 | In the first step of every block, half of the block's keys are hidden by the causal mask; that half no longer computes zeros. |
 | Idea 2 | The first two 64-row query tiles of every chat get dQ from one block only, so that block writes dQ directly in bf16 instead of going through an fp32 buffer that must be zeroed, added into and converted. |
 | Idea 4 | One block does the backward for all query heads of a KV head (3 at heads 18/6). It loads that KV head's keys and values once, adds the heads' dK and dV in its registers and writes the final dK and dV once. No partial buffers, no head-sum kernels. This is the idea that comes from your observation. |
@@ -64,7 +64,7 @@ The four backward changes of 14 to 18/11:
 one H200, my final code against FA3, FA4 and cuDNN; below 1.00 = mine takes less time):
 
 | | vs FA3 | vs FA4 | vs cuDNN | Section |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Forward | 0.659 to 0.966 | 0.427 to 0.938 | 0.315 to 0.839 | 5, 13 |
 | Backward | 0.357 to 0.916 | 0.371 to 0.914 | 0.217 to 0.805 | 13 |
 | Forward + backward | 0.403 to 0.928 | 0.383 to 0.907 | 0.235 to 0.812 | 13 |
@@ -135,7 +135,7 @@ byte-identical to that commit (md5 checked). FA4: the installed `flash-attn-4` 4
 the kernel name in the nsys traces of my 18/11 campaign.
 
 | | Mine | FA3 | FA4 | cuDNN 9.24 |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Tile, head dim 128 | 128 query rows × 128 keys | 128 × 128 (today's kernel: `TileShape_MNK` = 128, 128, 128) | 128 × 128 (`_tile_size_fwd_sm90` returns `FwdConfig(128, 128, ...)` for head dim up to 128) | 64 × 128 (kernel name `..._flash_fprop_..._64x128x128_...`) |
 | Query heads of one KV head | one tile per query head; MX lets two heads share a half-empty pair (section 4.5) | PackGQA: always on for packed rows: `heuristics.h` line 11 `if (varlen_q) return true;`; today's kernel has the PackGQA flag set (template order in `mainloop_fwd_sm90_tma_gmma_ws.hpp` lines 31 to 33: causal 1, Varlen 1, PackGQA 1) | PackGQA on by default: `pack_gqa = qhead_per_kvhead > 1` (`interface.py` lines 999 to 1000; the exception in lines 1001 to 1010 is only for SM100 / SM110 at head dim 256) | not visible |
 | Shared-memory stages for K / V | 3 | 2 (today's kernel: `Stages` = 2) | not checked | not visible |
@@ -161,7 +161,7 @@ Every change passed the test suite (296 checks then) before its race. "Dense" = 
 "Packed" = 8 real packed SFT rows (`real_rows_752`). Each % is against the build before it; minus = less time.
 
 | Change (date) | What it does | Dense | Packed |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | G1 (16/10) | P·V as 8 full-width `m64n128k16` matrix products instead of 16 half-width ones | −3.34% (12/12) | −3.22% (12/12) |
 | F1 (16/10) | FA3's loop order: the softmax of tile n runs while P·V of tile n − 1 is still on the tensor cores | −0.50% (12/12) | −1.82% (12/12) |
 | G5 (16/10) | persistent scheduler: units through a work counter, heaviest first, in sections sized by FA3's L2 rule | −2.63% (12/12) | −3.55% (12/12) |
@@ -178,7 +178,7 @@ Every change passed the test suite (296 checks then) before its race. "Dense" = 
 Tried and NOT kept (each measured; details in the October record):
 
 | Change | Result |
-|---|---|
+| --- | --- |
 | 2 K / V stages as FA3 has (K1n2) | dense +39%, packed +22% more time |
 | FA3's split K and V pipelines (SKV) | dense +0.20%, packed +0.87% |
 | FA3's 24 / 240 register split with the hand-over (F3b) | dense +1.11% |
@@ -192,7 +192,7 @@ Tried and NOT kept (each measured; details in the October record):
 Scoreboard of 19/10/2026 evening (my forward QPU, nsys kernel times, free clocks; ratio = my time / the library's time):
 
 | | Dense forward | Packed forward |
-|---|---|---|
+| --- | --- | --- |
 | vs FA3 | 1.004 (984.2 against 980.4 µs: a tie) | 0.865 |
 | vs FA4 | 0.919 | 0.781 |
 | vs cuDNN | 0.863 | 0.827 |
@@ -207,7 +207,7 @@ the cause "one tile per query head". My forward tiles per query head too, and I 
 the same day (P032, 8 rows × 4,096, heads 18/6, head dim 128, two rounds, nsys kernel times):
 
 | Layout | Direction | Mine | FA3 | FA4 | cuDNN | vs FA3 | vs FA4 | vs cuDNN |
-|---|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | chats of 32 to 160 | forward | 191.8 µs | 219.2 | 380.9 | 315.6 | 0.875 | 0.503 | 0.607 |
 | chats of 32 to 160 | forward + backward | 1,186.7 µs | 1,555.9 | 1,660.8 | 1,572.2 | 0.763 | 0.715 | 0.755 |
 | chats of 300 to 1,500 | forward | 341.2 µs | 375.3 | 442.1 | 420.8 | 0.909 | 0.772 | 0.811 |
@@ -216,7 +216,7 @@ So on short chats my forward was already ahead of FA3, although it does not pack
 of a unit. In layouts where every chat has the same length, every unit is the same:
 
 | Every chat is | Rows used in the 128-row pair | Units per call | Forward time | Time per unit |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 40 tokens | 31% | 14,832 | 282.9 µs | 19.1 ns |
 | 64 tokens | 50% | 9,216 | 180.4 µs | 19.6 ns |
 | 120 tokens | 94% | 5,040 | 129.8 µs | 25.7 ns |
@@ -244,7 +244,7 @@ K and V, so the unit's K / V loads do not change, and both groups run the same n
 128-row pairs per call (8 × 4,096, heads 18/6):
 
 | Layout | Before | With MX | FA3-style packing (rows of 3 heads in one tile) |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | chats of 32 to 160 | 7,974 | 6,798 (−14.7%) | 5,658 (−29.0%) |
 | chats of 300 to 1,500 | 5,040 | 4,878 (−3.2%) | 4,728 (−6.2%) |
 | one chat of 4,096 per row | 4,608 | 4,608 | 4,608 |
@@ -252,7 +252,7 @@ K and V, so the unit's K / V loads do not change, and both groups run the same n
 **Race of MX against my forward before it** (P032 GPU 5, one session, 4 rounds, forward time):
 
 | Layout | Before | MX code, old work list | MX code, MX work list |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | chats of 32 to 160 | 0.1956 ms | +1.06% (slower in 4 of 4) | −8.01% (faster in 4 of 4) |
 | chats of 300 to 1,500 | 0.3461 ms | −0.54% | −2.68% (4 of 4) |
 | one chat of 4,096 per row | 0.9949 ms | −0.14% | −0.06% |
@@ -267,7 +267,7 @@ fixed cost of a pair is paid once for two heads.
 **By chat length** (20 lengths, 3 rounds, forward):
 
 | Chat length | Forward with MX |
-|---|---|
+| --- | --- |
 | 16 / 32 / 48 / 64 tokens | −25.6% / −24.9% / −24.1% / −21.3% |
 | 160 / 192 | −10.1% / −8.3% |
 | 320 / 448 / 704 | −7.2% / −4.5% / −3.9% |
@@ -292,7 +292,7 @@ P032, 13/11/2026, 8 rows × 4,096, heads 18/6, nsys kernel times, FA3 `94e22c9` 
 chat of the row has N tokens. Ratio = my time / FA3's time.
 
 | Chats in the row | My forward / FA3, before MX | With MX / FA3 | Forward + backward / FA3, with MX |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | every chat 32 tokens | 1.536 | 1.146 | 0.643 |
 | every chat 64 tokens | 0.788 | 0.620 | 0.645 |
 | every chat 128 tokens | 0.656 | 0.656 | 0.783 |
@@ -328,7 +328,7 @@ Forward main kernel, µs per call, the mean of 2 rounds (the setup is in section
 clock (section 13.6).
 
 | Heads | Layout | Mine | Pushed | FA3 | FA4 | cuDNN | Mine / FA3 | Mine / FA4 | Mine / cuDNN |
-|---|---|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 18/6 | mix, rows 0-7 | 178.3 | 175.0 | 218.5 | 379.6 | 314.5 | 0.816 | 0.470 | 0.567 |
 | 18/6 | mix, rows 8-15 | 344.4 | 336.4 | 376.0 | 442.8 | 419.7 | 0.916 | 0.778 | 0.821 |
 | 18/6 | mix, rows 16-23 | 1,006.1 | 993.3 | 1,041.2 | 1,135.0 | 1,199.2 | 0.966 | 0.886 | 0.839 |
@@ -363,7 +363,7 @@ Main kernel on dense rows: 3,626 µs → 2,406.7 µs (−33.6%), from 1.46 × FA
 against the build before; races of 13 shapes):
 
 | Change (date) | What it does | Result |
-|---|---|---|
+| --- | --- | --- |
 | Vj2, first version (12/10) | a new kernel in FA3's layout: 128 keys per block, a loader warp, a dQ-writer warp and 2 compute warpgroups; P and dS in registers; dS from the fp32 P | 5.2% to 13.0% faster than Vj1d; 605 / 605 checks; dK and dV bit-identical every run |
 | Vj2 fixed (13/10) | shared memory used through real shared loads and stores (they had compiled to generic loads); descriptors built once | 18% to 22% faster than Vj1d; instructions 1,096 M → 840 M |
 | Fix 1, dQ path (13/10) | dQ in thread order with 128-bit stores and one bulk reduce-add per group (FA3's scheme) | −5.7% (13/13) |
@@ -381,7 +381,7 @@ against the build before; races of 13 shapes):
 Per backward call, 5 kernels:
 
 | Kernel | What it does |
-|---|---|
+| --- | --- |
 | prep (`bwd_prep_vj2_chats`) | zeroes the fp32 dQ buffer; computes D; copies LSE into 64-row slots |
 | main (`gqa_bwd_vj2_kernel`) | one block per (128-key tile of a chat, query head); every step adds its dQ into the fp32 buffer; at the end the block writes its own bf16 dK and dV partial for its query head |
 | head sum, twice (`gqa_dkdv_greduce_vj2`) | for dK and then for dV: adds the G partials of each KV head into the final bf16 values |
@@ -394,7 +394,7 @@ head-sum kernels.
 Measured on 14/11/2026 (P032, nsys, one backward call, median of 50 calls, µs):
 
 | Layout | Heads | Whole call | prep | main | head sums | dQ conversion | Outside the main kernel |
-|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- |
 | chats of 32 to 160 tokens | 18/6 | 994.5 | 196.8 | 560.6 | 104.9 | 128.1 | 43% |
 | real packed rows | 18/6 | 1,546 | 171 | 1,158 | 105 | 108 | 25% |
 | chats of 32 to 160 tokens | 4/2 | 242.8 | 45.7 | 130.1 | 30.9 | 30.4 | 44% |
@@ -513,7 +513,7 @@ times bigger, so the old section size no longer kept a row's work together in L2
 **Measured** (P015, 17/11/2026, ideas 1 + 2 + 4 against my pushed code, heads 18/6, backward call):
 
 | Order | sh | pk | one | real 1 | real 2 | real 3 |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
 | one list, no sections | −51.4% | +4.9% | +0.2% | −3.7% | +7.6% | +7.8% |
 | sections of 6 pairs | −52.0% | −17.5% | −5.6% | −12.4% | −15.8% | −9.7% |
 
@@ -538,7 +538,7 @@ same as the pushed code), the CP 1.6B step −0.5%.
 ### 7.7 Switches and messages
 
 | Switch | Default | Effect |
-|---|---|---|
+| --- | --- | --- |
 | `BLU_VJ2_HSUM=0` | 1 | idea 4 off: the per-query-head path with ideas 1 and 2 |
 | `BLU_VJ2_HSUM_MINKV=n` | 2 | idea 4 only if the call has at least n KV heads |
 | `BLU_VJ2_HSUM_SECT=n` | 0, which means rule 1 | block order: n pairs per section, or −1 for one list |
@@ -558,7 +558,7 @@ per-KV-head list); fewer KV heads than `BLU_VJ2_HSUM_MINKV`.
 ## 8. The backward code change (the patch)
 
 | File | Lines | What changed |
-|---|---|---|
+| --- | --- | --- |
 | `GQA_bwd_vj2_sm90.cu` | +288 / −28 | Main kernel: template flag `HSUM`; the step loop over G × steps; idea 1 inside the loop; idea 2 (a new kernel argument, the bf16 dQ output); the final dK / dV epilogue. Prep kernel: does not zero direct dQ tiles. Conversion kernel: skips direct tiles. Launcher: the idea-4 decision (switches, rule 2b, messages); the `HSUM` launch (packed rows use the per-KV-head list, dense rows a grid ordered by rule 1); with idea 4, no partial buffers and no head-sum launches. |
 | `GQA_fwd_generic.cu` | +72 / −3 | Plan builder only, host code: the direct flag in the dQ tile list; the per-KV-head block list with rule 1; the side table and its lookup `gqa_vj2_hsum_list`. No forward kernel changed. |
 | `test_varlen_attention.cu` | +12 / −0 | One KNOWN entry (section 10.3). |
@@ -571,7 +571,7 @@ benchmarked `flash_attn_3` was built from. Kernel counts per call come from the 
 14.5).
 
 | | FA3 | FA4 | cuDNN 9.24 | Mine, pushed | Mine, final |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | Backward tile, head dim 128, causal (queries × keys) | 64 × 128 (`flash_bwd_launch_template.h` lines 349 to 351) | 64 × 128 (`interface.py`, function `_tile_size_bwd_sm90`) | 64 × 64 (kernel name `..._flash_bprop_..._64x64x128_...`) | 64 × 128 | 64 × 128 |
 | One block per | (key tile, query head) | (key tile, query head); the source says "pack_gqa backward not yet supported in bwd" (`interface.py` lines 2532 to 2533) | not visible; the kernel list has per-head results reduced by a separate kernel | (key tile, query head) | (key tile, KV head), with all G query heads inside |
 | dK and dV over the G heads of a group | fp32 buffers `dk_accum`, `dv_accum` made with `torch::zeros` (`flash_api.cpp` lines 1491 to 1497); each block adds its head's dK and dV with bulk reduce-add or `atomicAdd` (`epilogue_bwd.hpp` lines 471, 480, 502, 511); 2 conversion kernels to bf16 (`flash_bwd_launch_template.h` lines 250 to 252) | the same scheme; the source says "GQA (qhead_per_kvhead > 1) needs dK/dV accum+postprocess since multiple Q heads accumulate into the same dK/dV" (`interface.py` lines 2600 to 2604); fp32 `torch.zeros` buffers (lines 2631 to 2640); post-process kernels | 2 `fmha_reduce_head` kernels per call | a bf16 partial per query head, then 2 head-sum kernels | summed in fp32 registers inside the block, written once in bf16; no buffer, no extra kernel |
@@ -604,7 +604,7 @@ neither FA3 nor FA4 packs heads, and my final code does.
 ### 10.2 Results
 
 | Test | Result |
-|---|---|
+| --- | --- |
 | Quick suite at 4/2, 8/4 (my 350M model), 12/4, 16/4 and 6/6 | 273 of 273 each (P035, 17/11/2026) |
 | Quick suite at 18/6 | 280 of 280 |
 | Quick suite at 2/1 and 5/1 | pass |
@@ -647,7 +647,7 @@ Two separate measurements of the same change:
 - **18/11 campaign:** the nsys-based campaign of section 12 (P035 GPU 2).
 
 | Layout | 4/2, 17/11 race | 4/2, 18/11 campaign | 18/6, 17/11 race | 18/6, 18/11 campaign |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | sh: chats of 32 to 160 | −46.9% | −47.0% | −51.7% | −50.9% |
 | pk: chats of 300 to 1,500 | −16.9% | −17.4% | −16.8% | −17.7% |
 | one chat of 4,096 per row | −6.4% | −7.0% | −4.7% | −5.1% |
@@ -663,7 +663,7 @@ The two methods agree within about 1 point. Dense rows (no chats), heads 18/6, 1
 steps. Step time = the median of steps 11 to 29. Two runs per side. P035, 17/11/2026.
 
 | Model | GPUs | Pushed, 2 runs | Final, 2 runs | Change |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 135M | 1 | 105.24 / 105.70 ms | 103.18 / 104.09 ms | −1.7% |
 | 1.6B shape | 1 | 791.78 / 790.43 ms | 785.70 / 785.77 ms | −0.7% |
 | 135M, CP = 2 | 2 | 52.51 / 52.02 ms | 52.51 / 52.03 ms | 0.0% (1 KV head per GPU, so rule 2b turns idea 4 off) |
@@ -684,7 +684,7 @@ is 0.0004 to 0.0013 for the final code, and 0.0004 to 0.0009 between two runs of
 ### 12.1 Hardware and software
 
 | Item | Value |
-|---|---|
+| --- | --- |
 | Box, GPU | P035, GPU 2: NVIDIA H200, 141 GB, power limit 700 W, driver 595.91.07 |
 | Clocks | free, not locked (the GPU picks its clock under the power limit, as in training) |
 | My code | final library md5 `437b8663` (the push build minus the message change; the message change only decides when a line is printed), pushed library `be273224`, built with CUDA 13.4; the forward kernel is the same in both |
@@ -701,7 +701,7 @@ is 0.0004 to 0.0013 for the final code, and 0.0004 to 0.0009 between two runs of
 ### 12.3 The contenders and how each is called
 
 | Contender | How it is called |
-|---|---|
+| --- | --- |
 | Mine, final | my test program in timing mode with `VARLEN_BENCH_IMPL=ours_A_plan` (the packed path, as the trainer uses it): forward, then backward, with a CUDA-event wait after each call |
 | Mine, pushed | the same test program with the pushed library (the library is loaded at run time) |
 | FA3 | `flash_attn_interface._flash_attn_forward` and `_flash_attn_backward` with `cu_seqlens`, causal, deterministic off |
@@ -748,7 +748,7 @@ Kernel times from nsys (CUDA trace), per run:
 averages are from the exported chat lists.
 
 | Layout | Chats | Chat lengths (tokens) | Average length | What it stands for |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | mix, rows 0-7 ("short chats", sh) | 353 | 3 to 160: chats of 32 to 160 tokens, a few shorter where a chat is cut at the end of a row | 93 | rows full of short chats: the hardest case for every library |
 | mix, rows 8-15 ("medium chats", pk) | 42 | 161 to 1,499 | 780 | rows of medium chats |
 | mix, rows 16-23 ("long chats", one) | 8 | 4,096, one chat per row | 4,096 | long documents: the attention matrix is fully used |
@@ -763,7 +763,7 @@ campaign's kernel times). Below 1.00 means mine is faster. In brackets: how much
 contender.
 
 | Heads | Layout | vs FA3 | vs FA4 | vs cuDNN | vs my pushed code |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 18/6 | mix, rows 0-7 | 0.428 (57.2% less) | 0.402 (59.8% less) | 0.424 (57.6% less) | 0.570 (43.0% less) |
 | 18/6 | mix, rows 8-15 | 0.795 (20.5% less) | 0.787 (21.3% less) | 0.771 (22.9% less) | 0.865 (13.5% less) |
 | 18/6 | mix, rows 16-23 | 0.928 (7.2% less) | 0.907 (9.3% less) | 0.812 (18.8% less) | 0.964 (3.6% less) |
@@ -782,7 +782,7 @@ contender.
 Same ratios, split into the forward main kernel (fwd), the whole backward call (bwd) and both together (f+b).
 
 | Heads | Layout | vs FA3: fwd / bwd / f+b | vs FA4: fwd / bwd / f+b | vs cuDNN: fwd / bwd / f+b | vs pushed: fwd / bwd / f+b |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 18/6 | mix, rows 0-7 | 0.816 / 0.365 / 0.428 | 0.470 / 0.381 / 0.402 | 0.567 / 0.388 / 0.424 | 1.019 / 0.491 / 0.570 |
 | 18/6 | mix, rows 8-15 | 0.916 / 0.762 / 0.795 | 0.778 / 0.790 / 0.787 | 0.821 / 0.756 / 0.771 | 1.024 / 0.823 / 0.865 |
 | 18/6 | mix, rows 16-23 | 0.966 / 0.916 / 0.928 | 0.886 / 0.914 / 0.907 | 0.839 / 0.804 / 0.812 | 1.013 / 0.949 / 0.964 |
@@ -805,7 +805,7 @@ Microseconds per call, the mean of the 2 rounds. f+b = forward main kernel + who
 median GPU clock while busy, for mine / my pushed code / FA3. The forward of every contender is in section 5.
 
 | Heads | Layout | Mine fwd | Mine bwd | **Mine f+b** | Pushed f+b | FA3 f+b | FA4 f+b | cuDNN f+b | MHz |
-|---|---|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 18/6 | mix, rows 0-7 | 178 | 488 | **666** | 1,169 | 1,555 | 1,658 | 1,571 | 1920 / 1980 / 1980 |
 | 18/6 | mix, rows 8-15 | 344 | 1,069 | **1,414** | 1,635 | 1,779 | 1,797 | 1,834 | 1658 / 1702 / 1808 |
 | 18/6 | mix, rows 16-23 | 1,006 | 2,982 | **3,988** | 4,135 | 4,298 | 4,397 | 4,909 | 1620 / 1635 / 1662 |
@@ -829,7 +829,7 @@ The numbers in this section are from the kernel-by-kernel count of section 14.5 
 fixed costs per block and per call dominate.
 
 | Heads 18/6, µs per iteration | Forward | Backward main | Backward helpers | Total |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Mine, final | 180 | 311 | 178 (prep 159, dQ conversion 19) | 669 |
 | Mine, pushed | 175 | 560 | 429 (prep 196, dQ conversion 128, head sums 105) | 1,163 |
 | FA3 | 219 | 801 | 532 (prep 182, dQ conversion 131, dK/dV conversions 108, zero-fills 105, scheduler 6) | 1,552 |
@@ -858,7 +858,7 @@ two tiles" are a small share; idea 4 still removes the whole dK / dV buffer path
 is near its best (18/6: mine 615 TFLOPS forward and 519 backward, FA3 594 and 475; section 14.6).
 
 | Heads 18/6, µs per iteration | Forward | Backward main | Backward helpers | Total |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Mine, final | 1,019 | 2,738 | 278 (prep 173, dQ conversion 105) | 4,034 |
 | FA3 | 1,057 | 2,907 | 386 (prep 154, dQ conversion 106, dK/dV conversions 76, zero-fills 47, scheduler 4) | 4,350 |
 
@@ -890,7 +890,7 @@ conversions (123 µs) have no counterpart in mine. The forward takes 38 µs less
 Forward + backward against FA3:
 
 | Run | 18/6 mix rows 0-7 | 18/6 mix rows 8-15 | 18/6 real rows 0-7 | 18/6 real rows 8-15 | 18/6 real rows 16-23 |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 13/11, my pushed code (P015) | 0.752 | 0.920 | 0.899 | 0.908 | 0.929 |
 | 18/11, my pushed code (this campaign) | 0.751 | 0.919 | 0.899 | 0.909 | 0.924 |
 | 17/11, my final code (P035 GPU 1) | 0.425 | 0.792 | 0.817 | 0.799 | not measured |
@@ -929,7 +929,7 @@ From each run's own nsys trace, in the steady part of its loop, per iteration (f
   test program waits after each call and the rivals' loop does not.
 
 | Mine against | A (reported) | B (all kernels) | C (with all gaps) |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | FA3 | 0.403 to 0.928 | 0.400 to 0.928 | 0.453 to 0.938 |
 | FA4 | 0.383 to 0.907 | 0.347 to 0.910 | 0.397 to 0.920 |
 | cuDNN | 0.235 to 0.812 | 0.230 to 0.824 | 0.269 to 0.830 |
@@ -948,7 +948,7 @@ Mine: the test program's own median per call (CUDA events), forward + backward. 
 timed loop divided by the iterations (Python launch overhead included). Milliseconds per forward + backward:
 
 | Heads | Layout | Mine | Pushed | FA3 | FA4 | cuDNN | Mine / FA3 | Mine / FA4 | Mine / cuDNN | Mine / pushed |
-|---|---|---|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 18/6 | mix, rows 0-7 | 0.681 | 1.183 | 1.560 | 1.780 | 1.603 | 0.436 | 0.382 | 0.425 | 0.575 |
 | 18/6 | mix, rows 8-15 | 1.429 | 1.651 | 1.801 | 1.820 | 1.879 | 0.793 | 0.785 | 0.761 | 0.866 |
 | 18/6 | mix, rows 16-23 | 4.003 | 4.154 | 4.358 | 4.443 | 4.926 | 0.919 | 0.901 | 0.813 | 0.964 |
@@ -970,7 +970,7 @@ All kernels of one iteration (round 1, steady loop, µs): forward / backward mai
 total.
 
 | Heads | Layout | Mine, final | Mine, pushed | FA3 | FA4 | cuDNN |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
 | 18/6 | mix, rows 0-7 | 180 / 311 / 178 / **669** | 175 / 560 / 429 / 1,163 | 219 / 801 / 532 / 1,552 | 380 / 823 / 562 / 1,766 | 314 / 635 / 626 / 1,575 |
 | 18/6 | mix, rows 8-15 | 350 / 818 / 264 / **1,432** | 337 / 907 / 388 / 1,632 | 381 / 1,008 / 402 / 1,791 | 449 / 958 / 406 / 1,812 | 424 / 1,007 / 419 / 1,851 |
 | 18/6 | mix, rows 16-23 | 1,019 / 2,738 / 278 / **4,034** | 1,006 / 2,796 / 384 / 4,186 | 1,057 / 2,907 / 386 / 4,350 | 1,146 / 2,898 / 391 / 4,435 | 1,198 / 3,301 / 400 / 4,900 |
@@ -994,7 +994,7 @@ Useful work per second, computed the same way for everyone: forward FLOPs = 4 ×
 of length² / 2 (causal), backward = 2.5 × forward. The H200's bf16 peak is 989 TFLOPS.
 
 | Heads | Layout | Chats | Average length | Forward TFLOPS: mine / FA3 / FA4 / cuDNN | Backward TFLOPS: mine / FA3 / FA4 / cuDNN |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 18/6 | mix, rows 0-7 | 353 | 93 | 92 / 75 / 43 / 52 | 85 / 31 / 32 / 33 |
 | 18/6 | mix, rows 8-15 | 42 | 780 | 426 / 390 / 331 / 350 | 343 / 261 / 271 / 259 |
 | 18/6 | mix, rows 16-23 | 8 | 4,096 | 615 / 594 / 545 / 516 | 519 / 475 / 474 / 417 |
@@ -1185,7 +1185,7 @@ python3 $OUT/dk18/apples20.py $OUT/campaign/g<gpu>      # the counts A, B, C of 
 ## 16. Where things are
 
 | What | Where |
-|---|---|
+| --- | --- |
 | The backward patch | `gqa_backward_ideas_1_2_4_vs_TI_f1a7d98.patch`, next to this note |
 | October record of both kernels (every variant, kept or not) | `attention_kernel_optimizations_h200_2026_10_10_to_2026_10_21.md`, next to this note |
 | My 13/11 note to you (forward, MX) | `attention_packed_rows_our_experiments_for_nova_forward_study_2026_11_13.md`, next to this note |

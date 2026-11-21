@@ -343,7 +343,8 @@ static Tensor sdpa_flash_attention_qkv(
     bool is_causal,
     float dropout_p,
     SDPBackend /*backend*/,
-    const cuda::GqaChatPlanPtr& chats)   // v2 packed rows: per-chat plan (design A); nullptr = dense
+    const cuda::GqaChatPlanPtr& chats,   // v2 packed rows: per-chat plan (design A); nullptr = dense
+    int window)                          // sliding window in keys (2026-11-04); 0 = plain causal
 {
     PROFILER_SCOPE("sdpa_flash_attention_qkv");
 
@@ -418,14 +419,14 @@ static Tensor sdpa_flash_attention_qkv(
         lse.data<float>(),
         static_cast<int>(B), Nq_heads, Nkv_heads,
         static_cast<int>(T), static_cast<int>(hd),
-        is_causal, chats.get());
+        is_causal, chats.get(), window);
 
     if (GradMode::is_enabled() &&
         (query.requires_grad() || key.requires_grad() || value.requires_grad()))
     {
         auto grad_fn = std::make_shared<GQAFlashAttentionQKVBackward>(
             q_c.detach(), k_c.detach(), v_c.detach(), output.detach(), lse.detach(),
-            B, Nq_heads, Nkv_heads, T, hd, is_causal, chats);
+            B, Nq_heads, Nkv_heads, T, hd, is_causal, chats, window);
 
         Tensor& q_mut = const_cast<Tensor&>(query);
         Tensor& k_mut = const_cast<Tensor&>(key);
@@ -683,7 +684,8 @@ Tensor scaled_dot_product_attention(
   bool is_causal,
   float dropout_p,
   SDPBackend backend,
-  const cuda::GqaChatPlanPtr& chats
+  const cuda::GqaChatPlanPtr& chats,
+  int window
 ){
   PROFILER_SCOPE("autograd::scaled_dot_product_attention");
   GraphRecordMode::record_forward("ATTENTION: scaled_dot_product_attention (GQA, unpacked QKV)");
@@ -692,7 +694,7 @@ Tensor scaled_dot_product_attention(
     case SDPBackend::FlashAttention:
 #ifdef WITH_CUDA
       return sdpa_flash_attention_qkv(query, key, value, Nq_heads, Nkv_heads, is_causal, dropout_p, backend,
-                                      chats);
+                                      chats, window);
 #else
       throw std::runtime_error(
         "GQA scaled_dot_product_attention (FlashAttention) requires CUDA.");

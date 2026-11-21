@@ -57,11 +57,15 @@ void gqa_v48_causal_launch_d64(
 //     __nv_bfloat16* O, float* LSE,
 //     int B, int Hq, int Hkv, int S, float scale, cudaStream_t stream,
 //     const int32_t* chat_units, int n_units);
+// win (2026-11-04): sliding window in keys (0 = plain causal), dense rows only; see MODE_WIN there.
+// 2026-11-20 step 7 (packed rows + window): and packed rows (a chat plan), the window per chat; see MODE_CHATS_WIN / MODE_CHATS_MX_WIN there.
+// Old declaration (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: int win appended):
+// void gqa_v62_causal_launch_d128(..., const int32_t* chat_units, int n_units, bool mixed_units);
 void gqa_v62_causal_launch_d128(
     const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
     __nv_bfloat16* O, float* LSE,
     int B, int Hq, int Hkv, int S, float scale, cudaStream_t stream,
-    const int32_t* chat_units, int n_units, bool mixed_units);
+    const int32_t* chat_units, int n_units, bool mixed_units, int win);
 
 // v62 needs S % 256 == 0: total_units = B*Hq*(nTiles/4) with nTiles = S/BLOCK_M
 // (=S/64), so the /4 pairing requires S/64 to be a multiple of 4.
@@ -331,9 +335,13 @@ void gqa_flash_attn_forward(
         // gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
         //                            B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0,
         //                            /*chat_units=*/nullptr, 0);
+        // Old call (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: this entry has no window, win = 0):
+        // gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
+        //                            B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0,
+        //                            /*chat_units=*/nullptr, 0, /*mixed_units=*/false);
         gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
                                    B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0,
-                                   /*chat_units=*/nullptr, 0, /*mixed_units=*/false);
+                                   /*chat_units=*/nullptr, 0, /*mixed_units=*/false, /*win=*/0);
         return;
     }
 
@@ -393,12 +401,19 @@ void gqa_flash_attn_forward_qkv(
     bfloat16_t*       output,
     float*            lse,
     int B, int Nq_heads, int Nkv_heads, int T, int hd,
-    bool is_causal, const GqaChatPlan* chats)
+    // Old line (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: int window appended):
+    //     bool is_causal, const GqaChatPlan* chats)
+    bool is_causal, const GqaChatPlan* chats, int window)
 {
     if (Nkv_heads <= 0 || Nq_heads % Nkv_heads != 0) {
         throw std::runtime_error(
             "gqa_flash_attn_forward_qkv: Nq_heads must be a positive multiple of Nkv_heads");
     }
+    // Sliding window (2026-11-04): only the Hopper v62 kernel has it (MODE_WIN). A window at least as long as the
+    // row is plain causal attention; a shorter one on any other path would silently be full causal, so it is refused.
+    const bool windowed = window > 0 && window < T;
+    if (window < 0)
+        throw std::runtime_error("gqa_flash_attn_forward_qkv: window must be >= 0 (0 = no window)");
 
     const int   G     = Nq_heads / Nkv_heads;
     const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
@@ -436,6 +451,30 @@ void gqa_flash_attn_forward_qkv(
                                      std::to_string(Nkv_heads));
     }
 
+    if (windowed) {
+        if (!v62_ok)
+            throw std::runtime_error(
+                "gqa_flash_attn_forward_qkv: a sliding window needs the Hopper v62 path: causal, head_dim 128, "
+                "T % 256 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset");
+        // Old lines (kept, not deleted; 2026-11-20 step 7 (packed rows + window): v62 runs a window over packed rows now, per chat):
+        // if (chats != nullptr)
+        //     throw std::runtime_error("gqa_flash_attn_forward_qkv: a sliding window with packed rows (a chats plan) "
+        //                              "is not implemented");
+        if (window % 128 != 0)
+            throw std::runtime_error("gqa_flash_attn_forward_qkv: the window must be a multiple of 128 keys, got " +
+                                     std::to_string(window));
+    }
+    // 2026-11-20 step 7, item A (FlashAttention's rule, commit 0842ec0 "Don't dispatch to local if window size >= seqlen_k", and
+    // flash_api.cpp: window_size_left >= max_seqlen_k - 1 -> no window): a window at least as long as the longest segment
+    // of the plan hides no key of any chat, so the kernels of before run (modes 1 / 3 and the plain backward copies).
+    // The results are the same to the bit (for a chat of L <= W the window modes reduce to exactly the plain code: key
+    // range from 0, no edge tile, the same step count and masks; test_swa_packed.cu checks it in a batch that does run the
+    // window kernels). Only the KERNEL choice uses the batch: every check above is on the requested window and the same
+    // for every batch, so a run never starts fine and stops later at its first long chat. The forward and the backward
+    // decide from the same three values (window, T, the plan's gen_max_len), so they always agree. gen_max_len also counts
+    // a row's pad tail (a segment like any other): a long pad tail keeps the window kernels, which is still correct.
+    const bool win_kernels = windowed && !(chats != nullptr && window >= chats->gen_max_len);
+
     // Hopper (H100/H200) causal hd==128 -> v62 (wgmma/TMA persistent kernel).
     // This is the path bluscript's "split" attn_mode reaches.
     // BLUTRAIN_NO_SM90_GQA forces the generic path below; see the note on the
@@ -446,10 +485,22 @@ void gqa_flash_attn_forward_qkv(
         // gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
         //                            B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0,
         //                            chats ? chats->fwd_units : nullptr, chats ? chats->n_fwd_units : 0);
+        // Old call (kept, not deleted; 2026-11-20 SWA port of Navin's b913f32: the window goes last, 0 when not windowed):
+        // gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
+        //                            B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0,
+        //                            chats ? chats->fwd_units : nullptr, chats ? chats->n_fwd_units : 0,
+        //                            /*mixed_units=*/chats != nullptr && chats->mx_hkv != 0);
+        // Old call (kept, not deleted; 2026-11-20 step 7, item A: the window goes to the kernels only when it hides a key):
+        // gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
+        //                            B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0,
+        //                            chats ? chats->fwd_units : nullptr, chats ? chats->n_fwd_units : 0,
+        //                            /*mixed_units=*/chats != nullptr && chats->mx_hkv != 0,
+        //                            windowed ? window : 0);
         gqa_v62_causal_launch_d128(dQ, dK, dV, dO, lse,
                                    B, Nq_heads, Nkv_heads, T, scale, /*stream=*/0,
                                    chats ? chats->fwd_units : nullptr, chats ? chats->n_fwd_units : 0,
-                                   /*mixed_units=*/chats != nullptr && chats->mx_hkv != 0);
+                                   /*mixed_units=*/chats != nullptr && chats->mx_hkv != 0,
+                                   win_kernels ? window : 0);
         return;
     }
 

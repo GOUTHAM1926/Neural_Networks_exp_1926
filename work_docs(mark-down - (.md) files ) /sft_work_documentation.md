@@ -17671,3 +17671,276 @@ sft_kernel_benchmarks abfb458e, loss doc 0cc1b6e0, learning doc e401b480; on the
 planned): the 18 untracked study files of the laptop BluTrain tree (sft/fmt_* and others).
 Next (the user): the Neural_Networks repo push tonight; 2026-11-19 morning: `all_sft_optimizations.md` (every SFT
 optimization from the start, with context and before / after), then SWA.
+
+### 45.200 2026-11-19 (IST): all_sft_optimizations.md written and pushed; preproduction-135M against our branch (6 pairs); SWA steps 1 and 2 (the rival survey, Navin's test 24 / 24)
+
+**Order of the day.**
+1. Morning (CPU): `all_sft_optimizations.md` in the SFT package: every SFT optimization since 2026-09-17 (context, before,
+   change, after, how measured, numbers, sources; sections 0-6), plus a line-by-line pass of every living SFT doc.
+   Pushed ~12:30: BluTrain e24470c (5 SFT docs), Neural_Networks 48d4165 (14 md + MANIFEST), md5-equal on GitHub. Also
+   pushed: `attention_explanation.md` (Neural_Networks e0ac62d).
+2. 12:35-15:31: preproduction-135M against our branch, pretraining and SFT, 135M / 350M / 1.6B (below).
+3. Afternoon and evening: SWA step 1 (the rival survey) and step 2 (Navin's code built and tested).
+
+**Preproduction-135M ("pre") against our branch ("ours").**
+- Trees on P035 `/localstorage/gautam_k/cmp19`: pre = `src_pre.tar.gz` of 2026-11-06 = preproduction-135M (BluTrain
+  60754ce, TI a9e37e6) + our SFT files of 2026-10-30 (the pre tree has no SFT pipeline); ours = `attn_1117/bt_p18` (the
+  code of the 18/11 push). Binaries: sft_pre add511a2, pz_pre 6ce6ae42, sft_ours c999c74e, pz_ours cbabee76. The 6
+  configs passed a dry run.
+- Runs: one run per side, pre and ours at the same time on GPUs 6 + 7, 30 steps, medians of steps 11-29. Started
+  14:09:22 IST, after Surendra's jobs had left GPUs 6 + 7 (4 clean checks 30 s apart). Paused 14:36 on the user's word
+  (Surendra needed the GPUs again): our process group killed (every process in `/localstorage/gautam_k`), STOP file set;
+  5 of 6 pairs were done. The pretraining 1.6B pair was re-run on GPU 0 (the user: "ours is gpu 0"), pre and then ours,
+  one after the other (`cmp19_seq.sh`, 14:58-15:31).
+- Setup differences, written next to every number (the user's rule): the SFT 350M ran 26 layers, not 28 (`run_sft.sh`
+  passes N_LAYERS only with INIT_FROM / INIT_FROM_RAW; from a random start the trainer default 26 applies; the same in both
+  trees); GQA, not SWA; random start; vocabulary 49,280 (SFT) / 50,304 (pretraining); RoPE theta 10,000 (the 350M
+  production model uses 50,000); pretraining on 1 GPU with 32 micro-batches per step; the pre SFT side = pre + our 10-30
+  SFT files; pretraining = the production trainer, not Navin's eqab trainer.
+
+  | Cell | Pre step (ms) | Ours step (ms) | Ours against pre | tok/s, pre -> ours | MFU, pre -> ours |
+  |---|---|---|---|---|---|
+  | SFT 135M | 138.3 | 103.8 | -24.9% | 237,016 -> 315,698 (+33.2%) | 30.5% -> 40.6% |
+  | SFT 350M (26 layers, not 28; GQA, not SWA) | 210.9 | 185.5 | -12.0% | 155,377 -> 176,622 (+13.7%) | 42.0% -> 47.7% |
+  | SFT 1.6B | 798.5 | 789.6 | -1.1% | 41,039 -> 41,501 (+1.1%) | 45.6% -> 46.1% |
+  | pretraining 135M | 3,691.0 | 3,584.4 | -2.9% | 284,087 -> 292,542 (+3.0%) | 36.6% -> 37.7% |
+  | pretraining 350M (GQA, not SWA) | 6,734.3 | 6,681.6 | -0.8% | 155,706 -> 156,934 (+0.8%) | 45.1% -> 45.4% |
+  | pretraining 1.6B (GPU 0, one after the other) | 21,565.9 | 21,413.3 | -0.7% | 48,622 -> 48,969 (+0.7%) | 54.1% -> 54.4% |
+
+  - Step-0 losses agree in every pair to the bf16 level (SFT 135M 1.530128 / 1.530339; pretraining 1.6B 11.301873 /
+    11.301915).
+  - GPU 7 ran about 1.5% lower clock than GPU 6 under the power cap, so the cells near 1% are within the spread of the two
+    GPUs (one run per side).
+- Push preview (read-only, 14:35): the preproduction-135M heads are unchanged (BluTrain 60754ce, TI a9e37e6). TI merge of
+  ours into preprod: clean (tree 183530f; BluBLAS -> cfa0e92, of which ea666ab is an ancestor); it adds 18 DPO / data /
+  test files on top of ours. BluTrain: the only conflict is the TI gitlink (tree 5d1a228); 21 files added (DPO,
+  `MixedDataloader135.h`, the 2 eqab 135M trainers; the root trainers merge automatically). Navin's eqab trainers keep the
+  bf16 atomic embedding backward, which is +44.9% slower with our TI (06/11); the recorded decision (45.175): no kernel
+  fix, tell Navin before the push.
+- Records: `profiling_reports/preprod_vs_ours_2026_11_19/` (scripts; `box_results/compare.txt`, 12 run folders).
+- Open for this item: a build check of the merged trees (CPU; the user's OK), the push to preproduction-135M (the user's
+  word), the note to Navin.
+
+**SWA step 1, the rival survey (laptop, read-only).** 38 repositories at their 19/11 tip, plus PyTorch main 3dc057e03e
+and JAX. No framework has its own SWA kernel: all of them end in FA2 / FA3 / FA4 / cuDNN / FlexAttention (Triton or FA4
+CuTe) / PyTorch's flash kernel. TransformerEngine picks cuDNN on Hopper and newer when both qualify, and prefers FA3 over
+FA4 on SM90. OLMo 3 uses the pattern [4096, 4096, 4096, -1] (3 windowed : 1 global, like our 350M), FA2 by default.
+modded-nanogpt: varlen FA3 + windows. The published H100 SWA benchmark (MagiAttention: W 1,024, head size 128, GQA
+64:8, one sequence): FA3 fastest in forward and backward. First rival = FA3 varlen + `window_size`; the race list: FA3,
+cuDNN, FA4, Flex, FA2. The window convention differs by 1 between libraries (FA left = W-1; cuDNN left_bound = W; Flex
+= W keys), so every harness is checked against fp64 before timing. Written as section 10 of
+`post_Training_research/sliding_window_attention_sft_analysis.md`.
+
+**SWA step 2, Navin's code.** Read-only on P015 (the user's permission). Kernel half: TI branch swa-135m, `b913f32` on
+a9e37e6 (Navin's newest; Navin's uncommitted TI edits are only `DataLoader.h` / `MixedDataloader.h`). Trainer half: BluTrain
+swa-135m `1d8cd96`, `bluscript_zero_ckpt_bluccl_multi_135m_eqab.cpp` (`attn_window(layer)`, the window per block, the
+SDPA call with no chat plan + the window, windowed FLOPs, the swa fields in the meta, env + checks, the G / L pattern log).
+HF export: `swa_ablation/tools/blu_to_hf.py` (`use_sliding_window`, `sliding_window`, `max_window_layers`,
+`layer_types`). kv4_swa3's settings (env.txt): d 1,024, 28 layers, heads 8/4, head size 128, ffn 2,560, SWA 1,024 /
+every 4, micro-batch 16, Muon, all bf16, embed scale on, 2,384 steps, RoPE theta 50,000 (the committed default). Built
+unchanged on P035 (BluTrain ac6714d + TI b913f32 + BluBLAS ea666ab, git-archived from P015 into
+`/localstorage/gautam_k/swa_1119`); Navin's test on GPU 5 (the user's word), 20:51: 24 / 24 checks. Speed at 16 rows of 4,096,
+heads 4/2: forward 0.391 -> 0.214 ms (x1.82), backward 1.249 -> 0.771 ms (x1.62); W 512: x2.67 / x2.16. Records:
+`profiling_reports/swa_navin_test_2026_11_19/`.
+
+End of day (~21:00): the user: "we will do that tomorrow". Next: step 3, the port onto TI 334b244.
+
+### 45.201 2026-11-20 (IST): SWA steps 3-9 (the port, the pretraining trainer, packed rows + window, the tests, the SFT trainer and the exports), four pushes, Navin's code against ours, the SFT arms started
+
+**Order of the day** (every GPU run on the GPU the user named; details and every number in sections 11 and 12 of the SWA
+doc, `post_Training_research/sliding_window_attention_sft_analysis.md`).
+1. Morning, step 3, the port onto TI 334b244 (laptop branch `swa_port`): 7 of Navin's 10 files unchanged; the 3 kernel
+   files by hand (`swa_port_3_kernel_files.patch`, md5 23deb619). The user chose MODE_WIN = 2 (MODE_CHATS_MX moved to 3).
+   The backward's window is a 4th template flag that composes with F32P and HSUM. Every old kernel: byte-identical machine
+   code (cuobjdump).
+2. 13:12-13:21, step 4 on P035 GPU 1: Navin's test 24 / 24; our `test_swa_extra.cu` 12 / 12 in each of the 3 backward
+   variants; the 18/11 push checks (quick 273 / 0 and 280 / 0, dK KNOWN, idea-4 messages). T6 W 1,024: forward 0.396 ->
+   0.213 ms (1.85x), backward 1.187 -> 0.721 ms (1.65x).
+3. Step 5, the pretraining trainer (`bluscript_zero_ckpt.cpp`: `BLU_SWA_WINDOW` / `BLU_SWA_GLOBAL_EVERY`), smoke on GPU 1
+   (350M kv4 shape, micro-batch 8, 32 micro-batches per step, 30 steps, medians of steps 11-29): no window 6,748.7 ms
+   (155,375 tok/s); W 1,024 6,166.8 ms (170,036 tok/s): step -8.6%, tok/s +9.4% (Navin's screen: +8.9%); W 4,096 = no
+   window (step-0 loss identical); W 1,000 refused at start-up. The first try failed (the config's companion YAML was not
+   copied); fixed.
+4. ~14:40, step 6, the push (the user): TI 334b244 -> 55d1058 (11 files), BluTrain e24470c -> 534538a (trainer + TI
+   pointer); every file md5-equal on GitHub; author Goutham Kumar, no co-author line.
+5. 15:40, Navin's code against ours (cmp20, GPU 1, Navin's settings: micro-batch 16, 2.1M tokens per step, Muon): no window
+   13,627.2 ms (Navin's) / 13,244.3 ms (ours); W 1,024 12,550.4 / 12,193.1 ms: ours -2.8% in both, the window -7.9% in both.
+   Not identical in one setting: Navin's run used `BLU_EMBED_SCALE=1` (x32; step-0 loss 19.7 vs 11.0), so the step times compare and
+   the losses do not. Decision (the user): no re-run; from now on every comparison uses identical settings ("next time
+   make sure we run in same things"), and every launch is announced with its run count and total time first. Machine
+   code: Navin's window forward = ours, byte for byte (4,016
+   instructions); Navin's backward is the Vj2 of 2026-11-04 + the window (no ideas 1, 2, 4, no packed + window). The nsys
+   "ours forward +6% with the window" was the capture, not the code.
+6. 15:50-16:50, step 7, packed rows + window (laptop): forward modes 4 (CHATS_WIN) and 5 (CHATS_MX_WIN), the
+   static_assert and the refusals removed (kept as comments), 3 new backward copies. The user asked for a full study of
+   how the other libraries implement packed + window before going on: SWA doc section 11 (FA3 point by point, their extra
+   checks, their tests and bug history; found: vLLM and SGLang serve our Qwen3 layout with no window; our package
+   exporter wrote `use_sliding_window: false`; PyTorch varlen `(W, 0)` = W + 1 keys). The user approved items A (the window
+   kernels only when some chat is longer than W, as FA does) and B (the test additions). Patch
+   `swa_step7_packed_window.patch` (7 files, md5 d6820acb). SASS of every old kernel unchanged (CUDA 13.0 and 13.4).
+7. 17:08-17:28, step 8 on GPU 7: Navin 24 / 24; `test_swa_extra` 13 / 13 x 3; `test_swa_packed` (new) 72 / 72 x 3 (P1
+   every chat == alone, bit for bit; P2 chats <= W unchanged; P3 fp64; P4 item A; P5 refusals incl. a zero-length entry;
+   P6 repeat; P7 an 8k row; P8 autograd; mixed units really ran: `mx_hkv` 4 / 1 / 0 for heads 8/4, 4/1, 8/8); the push
+   checks pass. ~17:45: TI 55d1058 -> 2356565 pushed by the user, 7 / 7 files md5-equal on GitHub.
+8. Step 9 (laptop, then P035 `swa9_1120`): the SFT trainer (`ModelConfig` window fields, `attn_window(layer)`, the window
+   per CausalGQA layer, windowed MFU sums, `BLU_SWA_WINDOW` / `BLU_SWA_GLOBAL_EVERY` + checks, the "attention :" config
+   line, the start-up guard with `BLU_SWA_MISMATCH_OK`), `model_config.json` written next to every checkpoint by both
+   trainers, the converter `hf_to_blutrain.py` (window from the HF config into `meta.json`; F32 inputs; the fp32 QK-norm
+   scales are exempt from the bf16-exact check: the converter had stopped at `layers.0.q_gamma`), `export_to_hf.py` and
+   `blutrain_to_hf.py` (the HF window fields, from the record), `run_sft.sh` (passes SWA_WINDOW, SWA_GLOBAL_EVERY,
+   SWA_MISMATCH_OK), `sft/README.md` section 5.3; the TI test got the 350M's heads per GPU under CP (4/2, 2/1). Build
+   19:00-19:05 (CPU; libtensor unchanged; sft_swa 3af3e48d). Checks 19:42-20:01 on GPUs 7 + 5 (a 19:40 launch was stopped
+   on the user's "stop": our processes killed by exact PID, then relaunched on "use 7"): kernel test 94 / 94 x 3; trainer
+   vs HF transformers, step-0 val loss (d0_gen data, 2,000 chats, 844 longer than 1,024): window on 1.732441 vs 1.732514,
+   off 1.733759 vs 1.733824; the guard stops window 0 on the SWA base without the override; a run that ends: export +
+   record carry 1024 / 4, the HF config equals Navin's; CP = 2 = 1 GPU (gradient norm 1.5179 vs 1.5181; step-29 loss
+   1.682096 vs 1.682022); step 474 ms with the window, 476 ms without (d0_gen rows). The HF checker's window-off mode had
+   crashed (DynamicCache with no window): fixed (all layers full + `use_cache=False`) and re-run on GPU 5.
+9. ~20:10, the push (the user): TI 2356565 -> dd5b61a (the test), BluTrain 534538a -> 651f9c4 (8 paths: 7 files + the TI
+   pointer; `run_sft.sh` mode 755). Every file md5-equal on GitHub. A first check showed an empty-file md5 for some files:
+   the read-only fetch had fetched blobs lazily without credentials; with the askpass helper on every git command all
+   matched. The step-9 patch had first included `__pycache__` and the wrong mode for `run_sft.sh`: rebuilt before the user
+   applied it.
+10. Data for the SFT arms (the user): Tülu 3, `m2_tulu_A` (744,023 chats, 463.1M tokens per epoch, 311.6M trained; Aya and
+    the hardcoded set removed). OLMo 3 Instruct SFT (allenai/Dolci-Instruct-SFT bd3c8f3a) counted with our prep for
+    comparison: 1,928,901 of 2,152,112 chats kept (197,363 tool / unknown-role chats our template has no place for, 14,569
+    longer than 4,096, 11,267 empty), 1.198B tokens per epoch (292,573 rows), 750.8M trained; its length profile is
+    Tülu's (mean 621 tokens, 2.7% longer than 2,048). Arms: A (kv4 base, full attention), C (kv4_swa3 + window), D
+    (kv4_swa3 + full attention, `BLU_SWA_MISMATCH_OK=1`); arm B dropped by the user (not our case). Ulysses CP needs no
+    change for the window (whole rows per GPU); Ring / hybrid CP (more than 4 GPUs per row for the 350M) needs
+    Adhitya's window work.
+11. 20:09:45, the arms started on GPU 7 (the user: "gpu 7 free bro, continue all"), one after the other: C, D, A
+    (`swa23_arms_seq.sh`; 1 epoch = 5,652 steps, ~481 ms per step, ~47 min per arm). Arm C: the guard matched the base
+    record (window 1024, every 4); val at step 0 1.668373, 500 1.394243, 1,000 1.337176. Results: SWA doc 12.2.
+
+**Docs (evening).** `all_sft_optimizations.md` section 4.17 (SWA; "Tried and not adopted" moved to 4.18); SWA doc section
+12 (every step with its result; steps 3-6 and cmp20 were written nowhere before); the SFT package brought to the pushed
+code (9 TI files + their diffs against d96b991, 5 trainer files, the pretraining trainer of 651f9c4 + the new trainer
+diff, `README_sft_BluTrain.md`, the 3 SWA tests; the replaced copies kept in `_old_2026_11_18/`); this entry and the
+previous one. Neural_Networks repo: not pushed yet (the user's word).
+
+**Addendum 2026-11-20 ~20:40 IST (45.201): the BluTrain SFT docs.** Asked whether step 11 was complete, I checked the
+pushed BluTrain docs against the rule of 2026-10-30 (every SFT change updates `sft/README.md` and the matching
+`sft/docs`): only `sft/README.md` section 5.3 described the window. Added (docs only, 59 lines, none removed):
+`sft/README.md` section 7 (the 3 window kernel tests and the SFT trainer checks), section 9 (the window limits: only the
+Hopper kernels apply a window and the other paths refuse; W a multiple of 128; a base made before 2026-11-20 has no
+window record and gets only a note line; Ulysses CP up to 4 GPUs per row for the 350M, ring CP needs changes; vLLM /
+SGLang ignore per-layer windows), section 10 (where to read more); `sft/docs/kernel_diff_sft_pretraining.md` section
+"2026-11-20" (the window in both trainers; still the same three kernels differ); `sft/docs/sft_kernel_benchmarks.md`
+section 9 (window kernel times, the effect in training, against Navin's trainer). Pushed by the user: BluTrain
+651f9c4 -> bfc712b (3 files, +59). Checked on GitHub: only these 3 files changed, md5 68f25b7d / 1cf84a66 / c8ec5119 =
+the laptop files = the copies in work docs and in the package; TI pointer dd5b61a; author Goutham Kumar, no co-author
+line. Step 10 status at the same time: done, except the loss comparison with identical settings, which the user waived
+(`cmp20c.sh` ready, about 15 minutes on one GPU).
+
+**Addendum 2026-11-20 evening (45.201): the arms, their evaluation, the race and the other tests (the user's GPUs 7, 4, 5
+only; nothing after 00:00 IST; the user away until morning).**
+- 20:51: arms D and A moved to GPUs 4 and 5 side by side (the user: "can't we use other GPUs?"; `swa24_arms_par.sh`, the
+  same settings lines as `swa23_arms_seq.sh`), C stayed on GPU 7; swa23 then found D's folder and stopped by itself.
+- Arms final val (trainer): A 1.178506, C 1.176781, D 1.176567 (5,652 steps each, 0 error lines).
+- Evaluation (`swa25_eval.sh`, then `swa25b_eval.sh`): HF exports (config checked: C window 1024 LLLG x 7, D / A full),
+  val loss by groups in both attention modes (`hf_val_groups.py`), the 135M dev suite through lm-eval. Results in the
+  SWA doc 12.2. HF = trainer like for like (D 1.176537 vs 1.176567, A 1.178484 vs 1.178506, base kv4 1.672310 vs
+  1.672250); the all-rows totals are 0.0044 higher because the trainer's val loader uses 308 of the 311 val rows. C ~ D in
+  every group (within about 0.003) and in the benchmarks (within their standard errors); C served with full attention:
+  +0.228 past position 2,048.
+- Incident 21:42: every lm-eval run failed when IFEval was scored (NLTK refuses punkt_tab owned by another account /
+  writable by others). Fixed with a private copy (`swa9_1120/nltk_data`) + NLTK_DATA; the old scheduler and its 4 job
+  processes (ours) stopped by exact PID, the 4 lm-eval jobs re-ran 21:49-22:27 (exit 0). Two lessons kept in the
+  scripts: `pgrep -f` must be anchored (`^bash ...`), else it also matches the ssh command that runs it; a command line
+  cut at 140 characters hid the model path, and the kill check correctly refused.
+- The window race (`race/`, step 12), scheduled after the evaluation by `swa26_chain.sh`: `bin/tva_swa` = the BENCH copy of
+  `test_varlen_attention.cu` with `VARLEN_BENCH_WINDOW` / `VARLEN_BENCH_LOOP` (`patch_tva_window.py`, 5 asserted
+  patches, the pushed test file unchanged); `rivals_swa.py` (fa3 / fa4 `window_size_left = W - 1`, PyTorch `varlen_attn`
+  `(W - 1, 0)` = its FA2 kernels, FlexAttention with `q - kv < W`), each library gated first (spike test of the
+  convention + fp64); 8 layouts (4 sets of real Tulu rows, uniform 512 / 1,024 / 2,048 / 4,096), ABBA, 20 back-to-back
+  calls x 5 repeats on both sides. cuDNN not in it: its window needs the cudnn-frontend Python package (not installed;
+  installs need the user's OK). 22:29 first gate: fa3 PASS (spike 0.0294 seen / 0.0002 not seen; fp64 O 2.1e-3,
+  dQ 5.1e-3); fa4 / tvar / flex failed on a harness bug (the spike test read the gradients before the backward ran);
+  the chain was stopped at 22:32 (its partial logs kept in `race/aborted_2230/`), the bug fixed, the chain restarted
+  22:31:59 with all four libraries.
+- After the race (each only if it can end before 00:00): `cmp20d.sh 4` = Navin's trainer with BLU_EMBED_SCALE=0 (the
+  loss parity with identical settings) and `cp350.sh mem 5` (the row length where the 350M SFT needs CP).
+- 22:34-22:47, the window race (restarted chain; every library passed the gate: spike 0.0294 seen / 0.0002 not seen; fp64
+  O 2.1e-3, dQ 5.1e-3, dK 3.3e-3 (FA2 4.4e-3), dV 2.5e-3 (FA2 3.6e-3)): 82 runs, all with forward and backward numbers;
+  median round-to-round difference 0.29%. Ours / theirs, forward + backward: FA3 0.62-0.82, FA4 0.62-0.83, FA2
+  (PyTorch varlen_attn) 0.40-0.47, FlexAttention 0.52-0.63; real Tulu rows 0.65-0.73 of FA3. Our packed path vs our
+  plain-row (pretraining) path on uniform_4096: 1.014. uniform_4096 on GPU 5 varied 5-9% between rounds for every
+  contender, with the same ratios inside each round (ours / FA3 forward 0.839 / 0.848). Table: SWA doc 12.3;
+  `sft/docs/sft_kernel_benchmarks.md` section 9 updated on the laptop (+11 lines, copies md5-equal; not pushed yet).
+- 22:48-23:11, cmp20d (GPU 4): Navin's trainer with BLU_EMBED_SCALE=0: step-0 loss 11.0249 = ours 11.0249 (no window),
+  11.0245 vs 11.0243 (window); step 29: 9.5164 vs 9.5101, 9.4942 vs 9.4871; the window lowers step 29 by 0.022 / 0.023
+  in both. (Step times from different GPUs, not a speed comparison.)
+- The 350M CP ladder (cp350.sh, written 17/11, never run before): three setup problems found tonight, each only after
+  the run: (1) libyaml-cpp.so.0.8 not found (22:48-22:52, every row length exited at once): fixed by passing the
+  deps/yaml library folder in LD_LIBRARY_PATH; (2) NSTOP=${NSTOP:-8} was inside the comment of the TLIST line, so every
+  run was stopped at "step -1" (23:13); (3) the trainer CSV was found with `ls *.csv | head -1`, which gives gpu.csv
+  (timestamp header) instead of sft_muon.csv. cp350b.sh (2 asserted fixes, old lines kept as comments) started 23:15:41
+  on GPU 5 with a watchdog (STOP file 23:50, our processes stopped at 00:00); the failed attempts are kept in
+  cp350/runs_failed_yaml_2252 and runs_failed_nstop_2313. First length works: T 16,384: stopped after step 7, peak
+  30,941 MiB, median step 115.8 ms, no out-of-memory.
+- 23:15-23:44, the 350M CP ladder (cp350b.sh, GPU 5): fits up to 114,688 tokens per row (peak 136,217 MiB, 663.5 ms per
+  step); 122,880 runs out of memory (142,907 MiB at the failure). CP is needed from about 120,000 tokens per row (the
+  2026-11-17 calculation said about 121,000). Full table: `context_parallelism_sft_experiments.md` section 17.
+- 23:44: everything scheduled tonight finished before the 00:00 limit; no process of ours left on P035; all 8 GPUs at
+  0 MiB. Open for the user: the C-or-D decision, the BluTrain docs push (sft_kernel_benchmarks.md section 9), the
+  Neural_Networks push (with or without the package's code copies), the cudnn-frontend install for cuDNN in the race.
+
+### 45.202 2026-11-21 (IST): the user's questions on the arms (C against A), arm B run on P015 GPU 3 with inputs made on P015, the 2 x 2 complete
+
+- Morning, the user's questions: which arms ran (C window / window, D window / full, A full / full; the plan's B was
+  dropped on 2026-11-20 19:13 by the user), what C against A shows, and how "C served with full attention gets much
+  worse" was known without B. Answers: the A-vs-C gap is mostly the bases' gap (A -> D -0.0019, D -> C +0.0002); the
+  serving statement comes from the "other attention" rows of the 2026-11-20 evaluation (C run with full attention: +0.228
+  past position 2,048), not from B. Written as the "C against A" note at the end of SWA doc 12.2 and a line in
+  all_sft_optimizations.md 4.17 (package mirror synced, manifest 271 OK).
+- ~11:40 the user asked for B after all (to check the conclusion along the other path). P035's 8 GPUs: another team's
+  8-GPU run (Dedup_Ablation, since 00:47). The user: "GPU 3 in P015 is ours"; P015's home disk had 36 GB free (run_sft.sh
+  needs 50 GB) and /localstorage is root's, so the user made /localstorage/gautam_k (sudo, 12:00).
+- Transfer problem: from ~11:50 every transfer from the boxes to the laptop ran at ~0.3 MB/s (10:56: 14.7 MB/s through
+  the laptop; 4 parallel streams 0.26 MB/s in total; laptop -> P015 still ~3.2 MB/s), and P015 cannot ssh to P035. The
+  12 GB copy (swa27_copy_p015.sh) was stopped at 470 MB (11:47-12:04, our processes only) and the partial copy deleted.
+  A probe of other box-to-box ssh paths was refused by the session's safety check and not pursued.
+- The user: "can't we reproduce those in P015 instead of copying?" -> swa27_setup_p015.sh (12:21-12:32), every piece
+  checked against P035's md5 lists:
+  - fetch (the link had recovered: 25 s): sft_swa (3af3e48d), the bt tree without its 320 object files (built
+    libraries included), ldp.txt, deps/yaml, the data's two meta.json, tokenizer_base, nltk_data, hf_val_groups.py,
+    valgroups/base_kv4.json: 5,560 files equal;
+  - data: the laptop's m2_tulu_A (prepared there on 2026-10-29), 44 s: all 12 files equal to P035's;
+  - base: Navin's HF export on P015 (= P035's copy in all 7 files) converted with the same hf_to_blutrain.py (sha256
+    62b03e47) and --check: raw/kv4 = P035's in all 284 files; prepenv with P035's 34 versions (pip, 26 s);
+  - evalenv with P035's 110 versions (pip, 97 s; torch 2.14.1+cu130), the lm-eval task data, NLTK check, eval_inputs.ok.
+  - Not copied: P035's CUDA 13.4 runtime (465 MB compressed). B used P015's CUDA 13.0 runtime with the same binary and
+    libraries: in this build only FusedLinearGelu_sm89.o references cuBLAS (unused by the SwiGLU 350M on H200), cuRAND
+    only for random init / RNG state (B loads every weight from the base), all 67 imported cudart / cuRAND functions
+    exist in 13.0, the same driver 595.91.07.
+- B (swa27_armB.sh, P015 GPU 3, 12:23:36-13:52:28): start-up "sliding window ON ... LLLG x 7" + the mismatch warning
+  (base window 0, run 1024); step-0 val 1.678060 vs HF 1.678098 (the kv4 base with the window); 5,652 steps in 48 min,
+  ~468 ms per step; final val 1.180413 (HF native trainer rows 1.180420); exported with the window (LLLG x 7, 1024);
+  val groups (native + full attention); lm-eval with the window and with full attention (B_fullattn); 0 error lines;
+  GPU 3 free at the end. Records: profiling_reports/swa_port_2026_11_21/armB/ (scripts, setup logs, box_results/).
+- Results (SWA doc 12.2 "Arm B"): the window in SFT costs +0.0019 on the full-attention base (A -> B) against +0.0002 on
+  the window base (D -> C); B - A was ~+0.002 at every val check from step 500 on (step 0: +0.0058); B's cost sits in
+  long chats (positions 1,024-2,047 +0.0072, 2,048+ +0.0171; chats of at most 1,024 tokens +0.0004); B served with full
+  attention is better than with its window (-0.0036 past position 1,024); benchmarks within noise of A; the ARC-c and
+  WinoGrande gaps of A against C are also in B, so they come with the base. Conclusion: the window has to be learned in
+  pretraining (SFT keeps it free, as in C = D; SFT alone cannot add it for free). For our 350M nothing changes.
+- Open: clearing our P015 storage (the user, 21/11: "after this run we will clear all our storage"): listed to the user
+  for a go; the BluTrain docs push (sft_kernel_benchmarks.md section 9); the Neural_Networks push (code copies or .md
+  only); the cudnn-frontend install for cuDNN in the race; the seed repeats (run-to-run noise) if wanted.
+- Afternoon (the user: "upload to Hugging Face all needed ones, regarding these 4 checkpoints", same bucket, folder
+  `checkpoints_sft_swa_experimentations`): each arm as `swa350m_sft_{A_full_full, B_full_window, C_window_window,
+  D_window_full}/` = `hf/` (the HF export, 0.82 GB) + `blumodel_step_5652/` (the final DCP checkpoint with its
+  `model_config.json`, 3.79 GB) + `README.md` (model card, no internal names) + `MD5SUMS.txt`; 4.61 GB each, 18.4 GB in
+  total (the bucket 52.4 -> ~71 GB). Staged with hard links on the boxes (no extra disk), uploaded with `hf sync`
+  (huggingface_hub 2.3.0; the token from the laptop file over ssh stdin, never written on a box): A, C, D from P035
+  14:48-14:51 (13.8 GB in under 3 min), B from P015; both exit 0. Checked by downloading every file through the public
+  links on the boxes: 12 of 12 files equal in each of the 4 folders. The cards' vocab row had an unescaped `|` (in
+  `<|endoftext|>`) that splits a markdown table row: fixed (`make_cards.py`), the 4 cards + md5 lists re-uploaded and
+  re-checked equal. (The first staging command was refused by the session's safety check for an `rm -rf` on a shell
+  variable; rewritten with literal paths and no removal.)
+- The handover package for the DPO and RL teams: `work_docs/DPO_RL_handover_350M_SWA_2026_11_21/` (00 start page, 01
+  checkpoints with md5, 02 how SFT is wired, 03 SFT vs pretraining trainer, 04 flags and settings, 05 CP and SWA, 06
+  procedures, 07 results; `docs/` 17 detailed documents, `scripts/` 7 working scripts, `env/` the two pip version lists).
+  Found while writing it: `BLU_MAX_STEPS` is ignored in SFT mode (the trainer says so); `run_sft.sh` clears every
+  `BLU_*` variable, so kernel flags need a BIN wrapper (both written into 04 / 06).

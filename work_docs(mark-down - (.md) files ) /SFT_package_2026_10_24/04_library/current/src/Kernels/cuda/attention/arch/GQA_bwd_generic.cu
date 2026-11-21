@@ -76,12 +76,14 @@ void gqa_vj1_causal_bwd_launch_d128(
 // from fp32 P). Same outputs and determinism as Vj1d (one-writer dK/dV partials + fixed-order head sum).
 // The default Hopper backward since 2026-10-15 (USE_VJ2=0 selects Vj1d); dense rows, and packed rows as a
 // GqaChatPlan's Vj2 lists (design A; nullptr = dense).
+// win (2026-11-04): sliding window in keys, 0 = plain causal (dense rows only; see the WIN kernel there).
+// 2026-11-20 step 7 (packed rows + window): and packed rows (the plan's Vj2 lists), the window per chat.
 void gqa_vj2_causal_bwd_launch_d128(
     const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
     const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* lse,
     __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
     int B, int Hq, int Hkv, int G, int S, float scale,
-    const int32_t* chat_blocks, int n_chat_blocks, const int32_t* dq_tiles, int n_dq_tiles);
+    const int32_t* chat_blocks, int n_chat_blocks, const int32_t* dq_tiles, int n_dq_tiles, int win);
 
 // v44 / Vj1 / Vj1d all tile at Br=Bc=64 over the KV axis, so S must be a
 // multiple of 64. Vj1d's greduce grid is S/8, which 64 already covers.
@@ -145,13 +147,16 @@ static inline bool gqa_bwd_mode_packs() {
 }
 
 // chats reach only the Vj2 and Vj1d cases: the callers refuse a plan unless gqa_bwd_mode_packs(),
-// so Vj1 / v44 never see packed rows.
+// so Vj1 / v44 never see packed rows. A sliding window (win > 0, 2026-11-04) reaches only Vj2: the
+// callers refuse one unless gqa_bwd_mode() is Vj2 and S % 128 == 0.
 static inline void gqa_hopper_causal_bwd_d128(
     const __nv_bfloat16* Q, const __nv_bfloat16* K, const __nv_bfloat16* V,
     const __nv_bfloat16* O, const __nv_bfloat16* dO, const float* lse,
     __nv_bfloat16* dQ, __nv_bfloat16* dK, __nv_bfloat16* dV,
     int B, int Hq, int Hkv, int G, int S, float scale,
-    const GqaChatPlan* chats) {
+    const GqaChatPlan* chats, int win) {
+    if (win > 0 && !(gqa_bwd_mode() == GqaBwdMode::Vj2_Default && S % 128 == 0))
+        throw std::runtime_error("gqa_hopper_causal_bwd_d128: a sliding window needs the Vj2 backward");
     switch (gqa_bwd_mode()) {
         case GqaBwdMode::Vj1_Flash:
             gqa_vj1_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale);
@@ -167,7 +172,7 @@ static inline void gqa_hopper_causal_bwd_d128(
             if (S % 128 == 0) {
                 gqa_vj2_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale,
                                                chats ? chats->vj2_blocks : nullptr, chats ? chats->n_vj2_blocks : 0,
-                                               chats ? chats->dq_tiles : nullptr, chats ? chats->n_dq_tiles : 0);
+                                               chats ? chats->dq_tiles : nullptr, chats ? chats->n_dq_tiles : 0, win);
                 return;
             }
             gqa_vj1d_causal_bwd_launch_d128(Q,K,V,O,dO,lse,dQ,dK,dV,B,Hq,Hkv,G,S,scale,
@@ -726,7 +731,7 @@ void gqa_flash_attn_backward(
         gqa_hopper_causal_bwd_d128(
             dQ_in, dK_in, dV_in, dO, ddO, lse,
             dQ_out, dK_out, dV_out,
-            B, Nq_heads, Nkv_heads, G, T, scale, /*chats=*/nullptr);
+            B, Nq_heads, Nkv_heads, G, T, scale, /*chats=*/nullptr, /*win=*/0);
         return;
     }
 
@@ -793,12 +798,17 @@ void gqa_flash_attn_backward_qkv(
     bfloat16_t*       grad_k,
     bfloat16_t*       grad_v,
     int B, int Nq_heads, int Nkv_heads, int T, int hd,
-    bool is_causal, const GqaChatPlan* chats)
+    bool is_causal, const GqaChatPlan* chats, int window)
 {
     if (Nkv_heads <= 0 || Nq_heads % Nkv_heads != 0) {
         throw std::runtime_error(
             "gqa_flash_attn_backward_qkv: Nq_heads must be a positive multiple of Nkv_heads");
     }
+    // Sliding window (2026-11-04): only Vj2 has it. The same rule as the forward: window >= T is plain causal, and a
+    // shorter window any other path would compute as full causal is refused.
+    const bool windowed = window > 0 && window < T;
+    if (window < 0)
+        throw std::runtime_error("gqa_flash_attn_backward_qkv: window must be >= 0 (0 = no window)");
 
     const int   G     = Nq_heads / Nkv_heads;
     const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
@@ -840,11 +850,37 @@ void gqa_flash_attn_backward_qkv(
     // BLUTRAIN_NO_SM90_GQA forces the generic causal path below. Disabling this also
     // removes compute_drowsum_v22_sm90 and convert_dq_accum_to_bf16_v5_sm90,
     // which are fixed sub-steps of the v44 launch.
+    if (windowed) {
+        if (!(hopper_ok && gqa_bwd_mode() == GqaBwdMode::Vj2_Default && T % 128 == 0))
+            throw std::runtime_error(
+                "gqa_flash_attn_backward_qkv: a sliding window needs the Hopper Vj2 backward: causal, head_dim 128, "
+                "T % 128 == 0, an H100/H200, BLUTRAIN_NO_SM90[_GQA] unset, and none of USE_FLASH=1, "
+                "USE_DETERMINISTIC_DQ=1, USE_VJ2=0");
+        // Old lines (kept, not deleted; 2026-11-20 step 7 (packed rows + window): Vj2 runs a window over packed rows now, per chat):
+        // if (chats != nullptr)
+        //     throw std::runtime_error("gqa_flash_attn_backward_qkv: a sliding window with packed rows (a chats plan) "
+        //                              "is not implemented");
+        if (window % 128 != 0)
+            throw std::runtime_error("gqa_flash_attn_backward_qkv: the window must be a multiple of 128 keys, got " +
+                                     std::to_string(window));
+    }
+    // 2026-11-20 step 7, item A (FlashAttention's rule, commit 0842ec0 "Don't dispatch to local if window size >= seqlen_k", and
+    // flash_api.cpp: window_size_left >= max_seqlen_k - 1 -> no window): a window at least as long as the longest segment
+    // of the plan hides no key of any chat, so the kernels of before run (the plain backward copies, as the forward chose modes 1 / 3).
+    // The results are the same to the bit (for a chat of L <= W the window modes reduce to exactly the plain code: key
+    // range from 0, no edge tile, the same step count and masks; test_swa_packed.cu checks it in a batch that does run the
+    // window kernels). Only the KERNEL choice uses the batch: every check above is on the requested window and the same
+    // for every batch, so a run never starts fine and stops later at its first long chat. The forward and the backward
+    // decide from the same three values (window, T, the plan's gen_max_len), so they always agree. gen_max_len also counts
+    // a row's pad tail (a segment like any other): a long pad tail keeps the window kernels, which is still correct.
+    const bool win_kernels = windowed && !(chats != nullptr && window >= chats->gen_max_len);
+
     if (hopper_ok) {
         gqa_hopper_causal_bwd_d128(
             dQ_in, dK_in, dV_in, dO, ddO, lse,
             dQ_out, dK_out, dV_out,
-            B, Nq_heads, Nkv_heads, G, T, scale, chats);
+            // Old argument (kept, 2026-11-20 step 7, item A): ..., chats, windowed ? window : 0);
+            B, Nq_heads, Nkv_heads, G, T, scale, chats, win_kernels ? window : 0);
         return;
     }
 

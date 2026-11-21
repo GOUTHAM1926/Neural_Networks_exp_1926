@@ -15,6 +15,10 @@
 #   EMBED_SCALE=1 (the values of its pretraining run; like N_LAYERS / ROPE_THETA, they must match the checkpoint).
 #   SFT_CP=U (2026-11-07): context parallelism, U GPUs share every row (e.g. SFT_CP=2 NP=2 GPUS=0,1); U must divide NP,
 #   the query heads, the KV heads and T; not with SFT_TRAINED_ROWS (sft/README.md section 5.2).
+#   SWA_WINDOW=W SWA_GLOBAL_EVERY=N (2026-11-20 step 9 (SWA in SFT)): sliding-window attention, the window of the run that made the base
+#   (the 350M SWA base: SWA_WINDOW=1024 SWA_GLOBAL_EVERY=4); in packed rows each chat sees its own last W tokens. Like
+#   ROPE_THETA, no weight depends on it: the trainer compares it with the base's record and stops on a mismatch;
+#   SWA_MISMATCH_OK=1 allows a deliberate one (an ablation arm), printed as a warning (sft/README.md section 5.3).
 #   watch:  tail -3 <RUN_DIR>/status.txt ; grep -E '^step' <RUN_DIR>/run.log | tail -3
 #
 # The settings, and why (sft/README.md section 8; README_SFT_checkpoint_for_DPO.md section 6):
@@ -99,7 +103,9 @@ VARS="BLU_SFT_DATA BLU_ALL_BF16 BLU_EMB_BWD BLU_OPTIMIZER BLU_SFT_LR BLU_SFT_MUO
   if [ "$EXPORT" = 1 ]; then export BLU_EXPORT=$RUN_DIR/final.safetensors; XS="$XS -x BLU_EXPORT"; fi
   # 2026-11-06: + SFT_CP (context parallelism: U GPUs share each row, BLU_SFT_CP; unset = off). The previous line, kept:
   # for k in D_MODEL Q_HEADS KV_HEADS FFN_HIDDEN VOCAB EMBED_SCALE SFT_T SFT_TRAINED_ROWS; do   # the 135M base's shape (unset = built-in); SFT_T = row length; SFT_TRAINED_ROWS=1 = lm_head on trained rows only (2026-10-31, experimental, off by default)
-  for k in D_MODEL Q_HEADS KV_HEADS FFN_HIDDEN VOCAB EMBED_SCALE SFT_T SFT_TRAINED_ROWS SFT_CP; do   # the 135M base's shape (unset = built-in); SFT_T = row length; SFT_TRAINED_ROWS=1 = lm_head on trained rows only (2026-10-31, experimental, off by default); SFT_CP = context parallelism
+  # 2026-11-20 step 9 (SWA in SFT): + SWA_WINDOW SWA_GLOBAL_EVERY SWA_MISMATCH_OK (sliding window; unset = off). The previous line, kept:
+  # for k in D_MODEL Q_HEADS KV_HEADS FFN_HIDDEN VOCAB EMBED_SCALE SFT_T SFT_TRAINED_ROWS SFT_CP; do   # the 135M base's shape (unset = built-in); SFT_T = row length; SFT_TRAINED_ROWS=1 = lm_head on trained rows only (2026-10-31, experimental, off by default); SFT_CP = context parallelism
+  for k in D_MODEL Q_HEADS KV_HEADS FFN_HIDDEN VOCAB EMBED_SCALE SFT_T SFT_TRAINED_ROWS SFT_CP SWA_WINDOW SWA_GLOBAL_EVERY SWA_MISMATCH_OK; do   # the base's shape (unset = built-in); SFT_T = row length; SFT_TRAINED_ROWS=1 = lm_head on trained rows only (2026-10-31, experimental, off by default); SFT_CP = context parallelism; SWA_* = sliding window (2026-11-20)
       if [ -n "${!k:-}" ]; then export "BLU_$k=${!k}"; XS="$XS -x BLU_$k"; fi
   done
   mpirun --allow-run-as-root -np "$NP" -x LD_LIBRARY_PATH -x CUDA_VISIBLE_DEVICES $XS "$BIN" < /dev/null > "$LOG" 2>&1 )

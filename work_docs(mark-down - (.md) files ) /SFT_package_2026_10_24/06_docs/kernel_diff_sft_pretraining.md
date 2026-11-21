@@ -477,3 +477,26 @@ SwiGLU grid limits) are in kernels both trainers share: pretraining at long T ge
 - **2026-11-18:** the backward got ideas 1, 2 and 4. Pretraining gets ideas 1 and 4 too (dense rows): its step was
   0.54% faster on the 1.6B production config. Section 3.2 and README section 6.3.
 - Still exactly three kernels differ between SFT and pretraining (with the trained-rows switch off).
+
+## 2026-11-20: the sliding window, in both trainers
+
+- **The window belongs to the model, not to SFT.** Which layers are windowed and W are fixed by pretraining (the 350M SWA
+  base: W = 1,024, every 4th layer global), so both trainers have the same switches: `BLU_SWA_WINDOW` (0 = off, the
+  default) and `BLU_SWA_GLOBAL_EVERY` (layer i is global iff (i + 1) % N == 0). In a windowed layer query i sees keys
+  i-W+1 .. i (HF `sliding_window = W`); W must be a multiple of 128.
+- **Pretraining (plain rows, no chat plan):** the forward runs its window mode (MODE_WIN): query tile p reads key tiles
+  max(0, p - W/128) .. p, with the window mask in the first of them; the backward (Vj2 with the window flag) stops a key
+  block after the W/64 + 2 query steps that can still see it. Ideas 1 and 4 and the fp32-partials switch work with it.
+- **SFT (packed rows, chat plan):** the forward runs the packed modes with the window (CHATS_WIN, and CHATS_MX_WIN with
+  mixed units), the backward the packed Vj2 copies with the window flag; every index counts from the chat's own start,
+  so a chat of at most W tokens is unchanged. A batch whose chats all fit inside the window runs the SFT kernels of
+  before (as FlashAttention does; bit-identical results).
+- **So the difference between SFT and pretraining is still the same three kernels** (attention with the chat plan, RoPE
+  with per-chat positions, the loss with ignore index and the step's denominator): with the window on, both trainers run
+  the window version of their own attention.
+- **Without a window nothing changed:** every kernel both trainers ran before compiles to byte-identical machine code.
+- **Outside the kernels (both trainers):** the per-layer window in the model config, the FLOP count for MFU (min(t, W)
+  keys per query in windowed layers), `model_config.json` next to every checkpoint; SFT only: the start-up check of the
+  base's window (`BLU_SWA_MISMATCH_OK`), the converter and the exports (README section 5.3).
+- **Effect:** 350M pretraining step -8.6% with W 1,024 (production config, 1x H200); SFT on short-chat data -0.4% (most
+  chats are shorter than 1,024 tokens, so the window removes little work there). `sft_kernel_benchmarks.md` section 9.

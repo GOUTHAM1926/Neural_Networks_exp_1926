@@ -29,6 +29,18 @@ tokenizer.json (the new strings as added special tokens) is written next to the 
 --check: a numpy reference forward of the whole model (fp32 math) on a few texts; prints the next-token loss of the
 mapping as built and of wrong mappings (gate/up swapped, GPT-J RoPE, no embed scale). The right mapping must give the
 lowest loss by a clear margin.
+
+2026-11-20 step 9 (SWA in SFT):
+  * the sliding window travels with the model: read from config.json (use_sliding_window, sliding_window, layer_types,
+    else max_window_layers) and written into meta.json as "swa_window" / "swa_global_every" (layer i global iff
+    (i + 1) % swa_global_every == 0, the trainers' rule). The SFT trainer compares them with its own BLU_SWA_WINDOW /
+    BLU_SWA_GLOBAL_EVERY at start-up and stops on a mismatch. A layer pattern that is not "every N-th layer global" is
+    refused (the trainers cannot run it). No window in config.json: swa_window 0. --check's reference forward uses the
+    same window (--window / --global-every only confirm it: a different value is refused);
+  * merged from profiling_reports/swa_sft_2026_11_17/hf_to_blutrain_350m.py (the 350M copy of 2026-11-17, strict
+    generalizations): the export metadata may be training_meta.json or blu_meta.json; model.safetensors may be F32 as
+    well as BF16 (the trainer's exact load check still needs bf16-exact values, checked at write time as before); the
+    reference's embedding scale = bf16(sqrt(d_model)) (22.625 for the 135M's 512, as before).
 """
 import argparse
 import hashlib
@@ -57,10 +69,16 @@ def read_safetensors(path):
         head.pop("__metadata__", None)
         base, out = 8 + n, {}
         for name, e in head.items():
-            assert e["dtype"] == "BF16", (name, e["dtype"])
+            # 2026-11-20 step 9 (SWA in SFT) (from the 350M copy): F32 exports too. Old lines (kept):
+            #     assert e["dtype"] == "BF16", (name, e["dtype"])
+            #     out[name] = bf16_to_f32(np.frombuffer(f.read(b - a), dtype=np.uint16)).reshape(e["shape"])
+            assert e["dtype"] in ("BF16", "F32"), (name, e["dtype"])
             a, b = e["data_offsets"]
             f.seek(base + a)
-            out[name] = bf16_to_f32(np.frombuffer(f.read(b - a), dtype=np.uint16)).reshape(e["shape"])
+            if e["dtype"] == "F32":
+                out[name] = np.frombuffer(f.read(b - a), dtype="<f4").reshape(e["shape"]).astype(np.float32)
+            else:
+                out[name] = bf16_to_f32(np.frombuffer(f.read(b - a), dtype=np.uint16)).reshape(e["shape"])
     return out
 
 
@@ -100,12 +118,20 @@ def rope(x, theta, interleaved):
     return o
 
 
-def ref_logits(W, m, ids, swap_gate_up=False, interleaved=False, scale=True):
-    """Logits [T, vocab] of one sequence (positions 0..T-1), fp32 math."""
+# Old signature (kept, 2026-11-20 step 9 (SWA in SFT)): def ref_logits(W, m, ids, swap_gate_up=False, interleaved=False, scale=True):
+def ref_logits(W, m, ids, swap_gate_up=False, interleaved=False, scale=True, window=0, global_every=0):
+    """Logits [T, vocab] of one sequence (positions 0..T-1), fp32 math. window > 0: layer i is global iff
+    (i + 1) % global_every == 0, the others see key j from query i only when i - window < j <= i (HF sliding_window)."""
     d, L, Hq, Hk, hd, F = m["d"], m["L"], m["Hq"], m["Hk"], m["hd"], m["F"]
     G, T = Hq // Hk, len(ids)
-    x = W["wte.weight"][ids] * (np.float32(22.625) if scale else np.float32(1))   # bf16(sqrt(512)), as BluTrain
+    # 2026-11-20 step 9 (SWA in SFT) (from the 350M copy): bf16(sqrt(d_model)) (22.625 for 512, 32 for 1024). Old line (kept):
+    #     x = W["wte.weight"][ids] * (np.float32(22.625) if scale else np.float32(1))   # bf16(sqrt(512)), as BluTrain
+    es = float(round_bf16(np.array([np.sqrt(float(d))], dtype=np.float32))[0])
+    x = W["wte.weight"][ids] * (np.float32(es) if scale else np.float32(1))
     mask = np.triu(np.full((T, T), -np.inf, dtype=np.float32), 1)
+    wmask = mask.copy()                                    # 2026-11-20 step 9 (SWA in SFT): the windowed layers' mask
+    if window > 0:
+        wmask[np.tril(np.ones((T, T), dtype=bool), -window)] = -np.inf
     for i in range(L):
         q_ = f"layers.{i}."
         h = rms(x, W[q_ + "attn_norm.weight"], m["rms_eps"])
@@ -116,7 +142,9 @@ def ref_logits(W, m, ids, swap_gate_up=False, interleaved=False, scale=True):
         o = np.empty((T, Hq, hd), dtype=np.float32)
         for hh in range(Hq):
             kv = hh // G                                   # query head hh reads kv head hh // G (HF repeat_kv)
-            sc = q[:, hh] @ k[:, kv].T / np.sqrt(hd) + mask
+            # 2026-11-20 step 9 (SWA in SFT): the windowed layers use wmask. Old line (kept): sc = q[:, hh] @ k[:, kv].T / np.sqrt(hd) + mask
+            local = window > 0 and global_every > 0 and (i + 1) % global_every != 0
+            sc = q[:, hh] @ k[:, kv].T / np.sqrt(hd) + (wmask if local else mask)
             p = np.exp(sc - sc.max(-1, keepdims=True))
             o[:, hh] = (p / p.sum(-1, keepdims=True)) @ v[:, kv]
         x = x + o.reshape(T, Hq * hd) @ W[q_ + "wo.weight"]
@@ -145,6 +173,32 @@ CHECK_TEXTS = [
 ]
 
 
+def window_from_config(cfg, L):
+    """2026-11-20 step 9 (SWA in SFT): (swa_window, swa_global_every) of a Hugging Face config, in the trainers' rule (layer i global iff
+    (i + 1) % every == 0). (0, 4) when the config has no window. Raises when the layer pattern cannot be written so."""
+    sw = cfg.get("sliding_window") if cfg.get("use_sliding_window", False) else None   # HF Qwen3: off unless use_sliding_window
+    if not sw:
+        return 0, 4, "no sliding window in config.json (use_sliding_window false or sliding_window null)"
+    lt = cfg.get("layer_types")
+    if lt is None:                                         # HF Qwen2/3 without layer_types: i >= max_window_layers slide
+        mwl = int(cfg.get("max_window_layers", L))
+        lt = ["sliding_attention" if i >= mwl else "full_attention" for i in range(L)]
+    assert len(lt) == L, f"layer_types has {len(lt)} entries, the model {L} layers"
+    full = [i for i, t in enumerate(lt) if t == "full_attention"]
+    if not full:
+        every = L + 1                                      # every layer windowed
+    else:
+        every = full[0] + 1
+        want = [i for i in range(L) if (i + 1) % every == 0]
+        if full == list(range(L)):
+            return 0, 4, f"sliding_window {sw} but every layer is full_attention: no window"
+        if full != want:
+            raise SystemExit(f"layer_types: full-attention layers {full} are not 'every {every}-th layer' ({want}); "
+                             "the trainers cannot run this pattern")
+    pat = "".join("G" if t == "full_attention" else "L" for t in lt)
+    return int(sw), every, f"sliding window {sw}, every {every}-th layer global: {pat}"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--hf-dir", required=True)
@@ -152,14 +206,32 @@ def main():
     ap.add_argument("--new-tokens", default="",
                     help="comma-separated strings made single special tokens at the reserved ids 49152.. (arm B)")
     ap.add_argument("--check", action="store_true", help="numpy reference forward on a few texts (needs tokenizers)")
+    ap.add_argument("--window", type=int, default=None,
+                    help="2026-11-20 step 9 (SWA in SFT): only confirms config.json's sliding window (a different value is refused)")
+    ap.add_argument("--global-every", type=int, default=None, help="the same for the global-layer period")
     a = ap.parse_args()
 
-    meta = json.load(open(os.path.join(a.hf_dir, "training_meta.json")))
+    # 2026-11-20 step 9 (SWA in SFT) (from the 350M copy): training_meta.json or blu_meta.json (same field names). Old line (kept):
+    #     meta = json.load(open(os.path.join(a.hf_dir, "training_meta.json")))
+    mp = os.path.join(a.hf_dir, "training_meta.json")
+    meta = json.load(open(mp if os.path.exists(mp) else os.path.join(a.hf_dir, "blu_meta.json")))
     m = {"d": int(meta["d_model"]), "L": int(meta["n_layers"]), "Hq": int(meta["q_heads"]),
          "Hk": int(meta["kv_heads"]), "hd": int(meta["head_dim"]), "F": int(meta["ffn_hidden"]),
          "V": int(meta["vocab_size"]), "theta": float(meta["rope_theta"]), "rms_eps": float(meta["rms_eps"]),
          "qk_eps": float(meta["qk_eps"])}
     assert meta.get("embed_scale") == "1" and meta.get("weight_tying") == "1", "expected embed_scale=1, tied"
+    # 2026-11-20 step 9 (SWA in SFT): the sliding window, from config.json; the export metadata may carry it too (Navin's blu_meta.json:
+    # swa_window / swa_global_every), and then it must agree.
+    cfgj = json.load(open(os.path.join(a.hf_dir, "config.json")))
+    swa_w, swa_e, swa_desc = window_from_config(cfgj, m["L"])
+    if "swa_window" in meta:
+        mw = int(meta["swa_window"]); me = int(meta.get("swa_global_every", swa_e))
+        assert mw == swa_w and (mw == 0 or me == swa_e), f"export metadata window {mw}/{me} != config.json {swa_w}/{swa_e}"
+    if a.window is not None and a.window != swa_w:
+        raise SystemExit(f"--window {a.window} but config.json says {swa_w} ({swa_desc})")
+    if a.global_every is not None and swa_w > 0 and a.global_every != swa_e:
+        raise SystemExit(f"--global-every {a.global_every} but config.json says {swa_e} ({swa_desc})")
+    print(f"window: {swa_desc} -> meta.json swa_window {swa_w}, swa_global_every {swa_e}")
     st = os.path.join(a.hf_dir, "model.safetensors")
     hf = read_safetensors(st)
     assert len(hf) == 11 * m["L"] + 3, f"{len(hf)} tensors, expected {11 * m['L'] + 3}"
@@ -203,12 +275,20 @@ def main():
     with open(os.path.join(a.out, "index.txt"), "w") as idx:
         for name, t in W.items():
             t = np.ascontiguousarray(t, dtype=np.float32)
-            assert np.array_equal(round_bf16(t), t), f"{name}: not bf16-exact"   # the trainer's exact check relies on it
+            # 2026-11-20 step 9: the QK-norm scales are fp32 parameters in the trainer (ModelConfig::qk_dtype(), pinned by the
+            # fused QK-norm + RoPE kernel), so an F32 export (the 350M's) holds non-bf16 values there and the trainer stores
+            # them exactly; every other weight is a bf16 parameter (BLU_ALL_BF16=1) and must be bf16-exact. The trainer's
+            # exact load check (every weight read back bit for bit) covers both. Old line (kept; it stopped the 350M
+            # conversion at layers.0.q_gamma):
+            #     assert np.array_equal(round_bf16(t), t), f"{name}: not bf16-exact"   # the trainer's exact check relies on it
+            if not name.endswith(("q_gamma", "k_gamma")):
+                assert np.array_equal(round_bf16(t), t), f"{name}: not bf16-exact"   # the trainer's exact check relies on it
             t.tofile(os.path.join(a.out, name + ".bin"))
             idx.write(name + " " + " ".join(str(s) for s in t.shape) + "\n")
     info = {"source": os.path.abspath(st), "source_sha256": hashlib.sha256(open(st, "rb").read()).hexdigest(),
             "training_meta": meta, "tensors": len(W), "new_tokens": added, "layout": "BluTrain in_out, fp32",
-            "script_sha256": hashlib.sha256(open(__file__, "rb").read()).hexdigest()}
+            "script_sha256": hashlib.sha256(open(__file__, "rb").read()).hexdigest(),
+            "swa_window": swa_w, "swa_global_every": swa_e}   # 2026-11-20 step 9 (SWA in SFT): read by the SFT trainer's start-up check
     json.dump(info, open(os.path.join(a.out, "meta.json"), "w"), indent=1)
     print(f"wrote {len(W)} weights to {a.out} ({sum(t.size for t in W.values()):,} values)")
 
@@ -222,7 +302,8 @@ def main():
             losses = []
             for txt in CHECK_TEXTS:
                 ids = np.asarray([0] + tk.encode(txt, add_special_tokens=False).ids)   # every doc starts with id 0
-                losses.append(ref_loss(W, m, ids, **kw))
+                # 2026-11-20 step 9 (SWA in SFT): with the model's window. Old line (kept): losses.append(ref_loss(W, m, ids, **kw))
+                losses.append(ref_loss(W, m, ids, window=swa_w, global_every=swa_e, **kw))
             print(f"  {name:24s} " + "  ".join(f"{x:6.3f}" for x in losses) + f"   mean {np.mean(losses):6.3f}")
 
 

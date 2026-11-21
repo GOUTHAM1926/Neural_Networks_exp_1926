@@ -5709,3 +5709,49 @@ idea 4): `attention_forward_and_backward_gqa_tests_and_benchmarks_2026_11_18.md`
 3. `prepare_sft_data.py --seq-len`: no default and no fixed upper limit (user, 2026-11-01); not started.
 4. Uma Mahesh's independent test of the backward ideas (the doc and the patch for him were written on 2026-11-18).
 5. Earlier open items: the list of 2026-11-11 (work doc 45.191) still holds, minus the items above that are done.
+
+## Status 2026-11-20: what changed for SFT since 2026-11-18, and what is open
+
+(A summary of the decisions of 2026-11-19 / 11-20; the full record is in the work doc, sections 45.200-45.201, and in
+`post_Training_research/sliding_window_attention_sft_analysis.md`, sections 10-12. Not a word-for-word record of the
+questions.)
+
+**Pushed and verified (branch `dist_side_gautam_lottn`):**
+
+- 2026-11-19: the SFT docs brought up to date (BluTrain e24470c) and `all_sft_optimizations.md` (Neural_Networks 48d4165).
+- 2026-11-20: sliding-window attention (SWA) for the 350M model, in both trainers. TI 55d1058 (Navin's b913f32 ported onto
+  our current kernels), 2356565 (packed rows + window, with the tests), dd5b61a (the 350M's heads per GPU under CP in the
+  test); BluTrain 534538a (pretraining trainer), 651f9c4 (SFT trainer: `BLU_SWA_WINDOW` / `BLU_SWA_GLOBAL_EVERY`, the
+  start-up check of the base's window with `BLU_SWA_MISMATCH_OK`, `model_config.json` next to every checkpoint, the
+  converter and the exports carry the window; `sft/README.md` section 5.3). Results: packed + window = each chat alone,
+  bit for bit; the SFT trainer = Hugging Face transformers to 0.00007 (window on and off); CP = 2 = 1 GPU; 350M
+  pretraining step -8.6% with the window; SFT step -0.4% (d0_gen rows: most chats are shorter than 1,024 tokens).
+
+**Decisions (the user, 2026-11-19 / 11-20):**
+
+- SWA first, before the forward / backward cross-check items (`attention_explanation.md` 9.1); every applicable
+  optimization is also tried on the SWA kernels. One kernel serves pretraining and SFT. The 17/11 rule "optimize only if
+  SWA stays in SFT" is dropped: the 350M is pretrained with SWA.
+- Data for the SWA SFT study: Tülu 3 (`m2_tulu_A`); arms A (full base, full SFT), C (SWA base + window), D (SWA base +
+  full attention); arm B (full base switched to the window) dropped: not our case.
+- Every comparison uses identical settings, and every launch states its run count and total time first.
+- Ulysses CP needs no change for the window (each GPU holds whole rows for its heads); Ring / hybrid CP (more than 4 GPUs
+  per row for the 350M) needs Adhitya's window work.
+- Preproduction-135M against our branch (2026-11-19, 6 pairs; the setup differences are written next to the numbers):
+  SFT 135M -24.9%, 350M -12.0% (26 layers, not 28; GQA, not SWA), 1.6B -1.1%; pretraining 135M -2.9%, 350M -0.8%,
+  1.6B -0.7% (work doc 45.200).
+
+**Running:** the SWA SFT arms on Tülu 3, P035 GPU 7, from 20:09 IST: C, then D, then A, about 47 minutes each (SWA doc
+12.2).
+
+**Open:**
+
+1. After the arms: val loss by groups (chats of at most 1,024 tokens vs longer; answer positions 0-1k / 1k-2k / 2k-4k),
+   each model also with the other attention type, HF evaluations through Hugging Face transformers (vLLM and SGLang ignore
+   per-layer windows); then the decision between C and D.
+2. The race against FA3 / cuDNN / FA4 / FlexAttention / FA2 on window rows (step 12); then the window optimizations
+   (step 14: skip the fully masked half at the window edge, the mirror of idea 1; order the chats by their windowed cost;
+   register-to-predicate masks).
+3. The push to preproduction-135M: a build check of the merged trees (needs the user's OK), and the note to Navin (the
+   eqab trainers' bf16 atomic embedding backward is +44.9% slower with our TI).
+4. Items 2-5 of the 2026-11-18 list still hold; its item 1 (SWA) is in progress as above.
